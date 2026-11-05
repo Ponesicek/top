@@ -26,6 +26,25 @@ function createWindow() {
       spellcheck: true,
     },
   });
+  // No File/Edit/View/Window bar on Linux and Windows: typing, copy and paste work without it. macOS
+  // keeps its menu, which lives in the screen's top bar and carries Cmd+C/V/Q.
+  if (process.platform !== "darwin") {
+    win.removeMenu();
+    // The menu was also how dev builds opened DevTools and reloaded.
+    if (devUrl) {
+      win.webContents.on("before-input-event", (event, input) => {
+        if (input.type !== "keyDown") return;
+        const key = input.key.toLowerCase();
+        if (input.key === "F12" || (input.control && input.shift && key === "i")) {
+          event.preventDefault();
+          win.webContents.toggleDevTools();
+        } else if (input.control && !input.shift && key === "r") {
+          event.preventDefault();
+          win.webContents.reload();
+        }
+      });
+    }
+  }
   win.once("ready-to-show", () => win.show());
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);
