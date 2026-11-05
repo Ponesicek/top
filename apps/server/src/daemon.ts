@@ -5,8 +5,8 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, toToolDeclaration, type Models } from "@earendil-works/pi-ai";
 import type { BotSummary, WhenBusy } from "@top/protocol";
-import { BotRunner } from "./runner.ts";
-import type { InboxRow, StoredEntry, Store } from "./store.ts";
+import { BotRunner, type RunnerOptions } from "./runner.ts";
+import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
 import type { TopTool } from "./tools.ts";
 import { textOf } from "./wire.ts";
 
@@ -50,10 +50,16 @@ export class Daemon {
   readonly #inboxListeners = new Set<(bot: number) => void>();
   readonly #botListeners = new Set<(summary: BotSummary) => void>();
 
-  constructor(store: Store, models: Models, tools: readonly TopTool[], options: { thinking?: ThinkingLevel } = {}) {
+  /** `tools` and `sections` may differ per bot (each real bot works in its own folder). */
+  constructor(
+    store: Store,
+    models: Models,
+    tools: readonly TopTool[] | ((bot: BotRow) => readonly TopTool[]),
+    options: { thinking?: ThinkingLevel; sections?: (bot: BotRow) => RunnerOptions["sections"] } = {},
+  ) {
     this.store = store;
     for (const bot of store.bots()) {
-      const runner = new BotRunner(bot, store, models, tools, {
+      const runner = new BotRunner(bot, store, models, typeof tools === "function" ? tools(bot) : tools, {
         entry: (entry) => {
           for (const listener of this.#entryListeners) listener(entry);
           if (entry.kind !== "system") this.#touch(bot.id);
@@ -63,7 +69,7 @@ export class Daemon {
           this.#touch(id);
         },
         status: (id) => this.#touch(id),
-      }, options.thinking);
+      }, { thinkingLevel: options.thinking ?? "off", ...(options.sections ? { sections: options.sections(bot) } : {}) });
       this.runners.set(bot.id, runner);
       this.#summaries.set(bot.id, this.#summarize(bot.id));
     }

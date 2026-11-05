@@ -2,18 +2,21 @@
  * The Top daemon: runs the bots 24/7 on pi-agent-core with its own SQLite storage, and serves any
  * number of desktop and phone clients over one WebSocket each.
  *
- *   node --import tsx src/main.ts --model openai/gpt-6.1-sol [--thinking medium]   real bots
+ *   node --import tsx src/main.ts --model openai/gpt-6.1-sol [--thinking medium] [--workspace ~]   real bots
  *   node --import tsx src/main.ts [--load] [--tools] [--seed N] [--tps 100]          fake bots
  *   common: [--port 7357] [--host 127.0.0.1] [--data DIR] [--reset] [--no-compress]
  *
  * With `--model`, the bots run on that model, signed in through pi's credentials (see auth.ts) or an
- * API key in the environment. Without it they run on a scripted fake model with fake tools, for
+ * API key in the environment. Each works in its own folder, `<workspace>/bots/<name>`, with full access
+ * to the computer (see workspace.ts). Without it they run on a scripted fake model with fake tools, for
  * development, tests and benchmarks.
  */
 import { mkdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { DEFAULT_PORT } from "@top/protocol";
@@ -23,8 +26,9 @@ import { BOT_NAMES, createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from ".
 import { startLoad } from "./load.ts";
 import { seedHistory } from "./seed.ts";
 import { serve } from "./serve.ts";
-import { Store } from "./store.ts";
+import { Store, type BotRow } from "./store.ts";
 import { createFakeTools, type TopTool } from "./tools.ts";
+import { botFolder, computerTools, ensureFolder, workspaceSection } from "./workspace.ts";
 
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -32,6 +36,8 @@ const { values: args } = parseArgs({
   options: {
     model: { type: "string" },
     thinking: { type: "string", default: "medium" },
+    workspace: { type: "string" },
+    "allow-origin": { type: "string", multiple: true },
     port: { type: "string", default: String(DEFAULT_PORT) },
     host: { type: "string", default: "127.0.0.1" },
     data: { type: "string" },
@@ -53,6 +59,9 @@ const real = args.model !== undefined;
 if (real && (args.load || args.tools || Number(args.seed) > 0)) {
   fail("--load, --tools and --seed drive the fake bots; they can't be combined with --model.");
 }
+if (!real && args.workspace) fail("--workspace is for real bots (--model); the fake ones don't touch the computer.");
+// Where the bots' folders go: <workspace>/bots/<name>.
+const workspace = resolve((args.workspace ?? homedir()).replace(/^~(?=$|\/)/, homedir()));
 const thinking = args.thinking as ThinkingLevel;
 if (!THINKING_LEVELS.includes(thinking)) fail(`--thinking must be one of ${THINKING_LEVELS.join(", ")}.`);
 
@@ -63,7 +72,8 @@ mkdirSync(dataDir, { recursive: true });
 
 let models: MutableModels;
 let model: string;
-let tools: TopTool[];
+let tools: TopTool[] | ((bot: BotRow) => TopTool[]);
+let sections: ((bot: BotRow) => Record<string, string>) | undefined;
 let instructionsFor: ((name: string) => string) | undefined;
 let botNames: readonly string[];
 
@@ -84,13 +94,18 @@ if (real) {
   console.log(`[top] model ${model} (${auth.source ?? auth.type}), thinking ${thinking}`);
   // One bot to start with; adding more comes with a way to make them from the app.
   botNames = ["Atlas"];
-  // No tools yet: real ones come from MCP servers next. The fake ones pretend to deploy and email.
-  tools = [];
+  // Each bot works in a folder it owns, with pi's tools over the whole computer. The tools are
+  // declared to the model on its next request, and the workspace section with its next message.
+  const folderOf = (bot: BotRow) => ensureFolder(botFolder(workspace, bot.name));
+  tools = (bot) => computerTools(folderOf(bot));
+  sections = (bot) => {
+    const prompt = getCurrentSystemPrompt(store.context(bot.id).map((e) => e.message) as never);
+    return { workspace: workspaceSection(folderOf(bot), prompt.includes("You have no tools yet")) };
+  };
   instructionsFor = (name) =>
     [
       `You are ${name}, one of the user's bots, running in Top: a daemon that keeps you running 24/7 while the user's desktop and phone apps attach and detach.`,
       "Your answers arrive whole, not streamed, often on a phone, so lead with the answer and keep it tight. Use Markdown where it helps.",
-      "You have no tools yet. If a request needs one, say what you would do instead of pretending you did it.",
     ].join("\n");
 } else {
   model = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
@@ -101,21 +116,22 @@ if (real) {
 }
 
 const store = new Store(resolve(dataDir, "top.sqlite"));
-ensureBots(store, botNames, model, tools, instructionsFor);
+// Real bots' tools are declared on their first request, so their first system message holds only instructions.
+ensureBots(store, botNames, model, typeof tools === "function" ? [] : tools, instructionsFor);
 // The previous version made five real bots; drop the extra ones if they were never used.
 if (real) for (const bot of store.bots()) if (!botNames.includes(bot.name) && store.removeUnusedBot(bot.id)) console.log(`[top] removed unused bot ${bot.name}`);
 // One model for every bot for now; switching `--model` moves the existing bots over.
 for (const bot of store.bots()) if (bot.model !== model) store.setModel(bot.id, model);
 if (Number(args.seed) > 0) seedHistory(store, store.bots()[0]!.id, Number(args.seed));
 
-const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off" });
+const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", ...(sections ? { sections } : {}) });
 // Settle what the last process left unfinished (interrupted tool calls, half-done tasks), then run.
 await daemon.start();
 
-const server = serve(daemon, { host: args.host, port: Number(args.port), compress: !args["no-compress"] });
+const server = serve(daemon, { host: args.host, port: Number(args.port), compress: !args["no-compress"], allowOrigins: args["allow-origin"] ?? [] });
 const stopLoad = args.load ? startLoad(daemon, { tools: args.tools }) : () => {};
 
-console.log(`[top] ${daemon.runners.size} bot${daemon.runners.size === 1 ? "" : "s"}, data in ${dataDir}`);
+console.log(`[top] ${daemon.runners.size} bot${daemon.runners.size === 1 ? "" : "s"}, data in ${dataDir}${real ? `, working in ${resolve(workspace, "bots")}` : ""}`);
 console.log(`[top] listening on ws://${args.host}:${args.port}${args.load ? ` (synthetic load on${args.tools ? ", with tools" : ""})` : ""}`);
 
 async function shutdown() {

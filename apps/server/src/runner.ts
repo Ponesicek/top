@@ -11,7 +11,7 @@
  * ended instead of looping forever.
  */
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Models, ToolResultMessage } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, type AssistantMessage, type Models, type SystemMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
 import type { BotStatus } from "@top/protocol";
 import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
 import { text, type ToolResult, type TopTool } from "./tools.ts";
@@ -22,6 +22,12 @@ export const RESTART_LIMIT = 3;
 const RETRY_DELAYS_MS = process.env.TOP_RETRY_DELAYS_MS?.split(",").map(Number) ?? [1_000, 4_000, 15_000];
 
 export type RunnerStatus = { readonly status: BotStatus; readonly tool?: string; readonly error?: string; readonly since: number };
+
+export type RunnerOptions = {
+  readonly thinkingLevel?: ThinkingLevel;
+  /** Named system prompt sections the bot should have. A change is saved just before the next message the bot takes. */
+  readonly sections?: Readonly<Record<string, string>>;
+};
 
 export type RunnerEvents = {
   entry(entry: StoredEntry): void;
@@ -67,8 +73,11 @@ export class BotRunner {
   #abortRequested = false;
   #wakeRetry: (() => void) | undefined;
   #status: RunnerStatus = { status: "idle", since: Date.now() };
+  /** Prompt sections that changed since the transcript last said; saved with the next message taken. */
+  #systemUpdate: SystemMessage | undefined;
 
-  constructor(bot: BotRow, store: Store, models: Models, tools: readonly TopTool[], events: RunnerEvents, thinkingLevel: ThinkingLevel = "off") {
+  constructor(bot: BotRow, store: Store, models: Models, tools: readonly TopTool[], events: RunnerEvents, options: RunnerOptions = {}) {
+    const thinkingLevel = options.thinkingLevel ?? "off";
     this.id = bot.id;
     this.name = bot.name;
     this.#store = store;
@@ -85,6 +94,8 @@ export class BotRunner {
       description: tool.description,
       parameters: tool.parameters,
       replay: tool.replay ?? "never",
+      ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
+      ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
       execute: (toolCallId, params, signal) => tool.run(params as Record<string, unknown>, { key: this.#key(this.#assistantSeq, toolCallId), bot: this.id, signal }),
     }));
 
@@ -104,6 +115,16 @@ export class BotRunner {
       finishTurn: async () => (this.#abortRequested ? { action: "end" } : undefined),
     });
     this.#agent.subscribe((event) => this.#onEvent(event));
+
+    const current = getCurrentSystemMessage(this.#agent.state.messages as never)?.sections ?? {};
+    const changed = Object.entries(options.sections ?? {}).filter(([name, text]) => current[name] !== text);
+    if (changed.length) this.#systemUpdate = { role: "system", content: "", sections: Object.fromEntries(changed), timestamp: Date.now() };
+  }
+
+  /** The bot's current system prompt, as the model will see it (with any pending update). */
+  get systemPrompt(): SystemMessage | undefined {
+    const messages = this.#agent.state.messages as never as SystemMessage[];
+    return getCurrentSystemMessage(this.#systemUpdate ? [...messages, this.#systemUpdate] : messages);
   }
 
   get status(): RunnerStatus {
@@ -237,7 +258,10 @@ export class BotRunner {
         const [first, ...rest] = inbox;
         if (!first) break;
         const message = this.#userMessage(first);
-        if (!(await this.#run(() => this.#agent.prompt(message), rest))) break;
+        // A prompt change goes in just before the message, in the same run, so it's saved with it.
+        const update = this.#systemUpdate;
+        this.#systemUpdate = undefined;
+        if (!(await this.#run(() => this.#agent.prompt(update ? [update, message] : message), rest))) break;
       }
     } finally {
       this.#busy = false;

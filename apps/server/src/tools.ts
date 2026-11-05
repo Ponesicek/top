@@ -30,6 +30,9 @@ export type TopTool = {
   /** JSON Schema of the arguments. */
   readonly parameters: object;
   readonly replay?: "never" | "safe";
+  /** Normalizes raw arguments before schema validation (pi's tools accept older argument shapes). */
+  readonly prepareArguments?: (args: unknown) => Record<string, unknown>;
+  readonly executionMode?: "sequential" | "parallel";
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
   /** After a restart cut this call off: its result if it took effect, `false` if it surely did not, `undefined` if unknown. */
   recover?(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult | false | undefined>;

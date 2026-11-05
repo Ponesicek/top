@@ -140,10 +140,23 @@ class ClientConnection {
   }
 }
 
-export function serve(daemon: Daemon, options: { host: string; port: number; compress: boolean }) {
+/**
+ * Browsers let any web page open a WebSocket to localhost, and the bots can run commands, so a browser
+ * connection is accepted only from the app itself: the Electron build (`file://`) and the dev/web UI
+ * (`pnpm desktop`, `pnpm web` on :5199). Native clients (Node, the phone app) send no Origin.
+ */
+export const APP_ORIGINS = ["file://", "null", "http://localhost:5199", "http://127.0.0.1:5199"] as const;
+
+export function serve(daemon: Daemon, options: { host: string; port: number; compress: boolean; allowOrigins?: readonly string[] }) {
+  const allowed = new Set<string>([...APP_ORIGINS, ...(options.allowOrigins ?? [])]);
   const server = new WebSocketServer({
     host: options.host,
     port: options.port,
+    verifyClient: ({ origin }: { origin?: string }) => {
+      if (origin === undefined || allowed.has(origin)) return true;
+      console.warn(`[top] refused a connection from ${origin} (pass --allow-origin ${origin} to allow it)`);
+      return false;
+    },
     // Context takeover on both sides: repeated keys and names across frames cost almost nothing.
     perMessageDeflate: options.compress ? { threshold: 64, zlibDeflateOptions: { level: 6 } } : false,
   });

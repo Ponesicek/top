@@ -32,7 +32,16 @@ under pi's own file lock, so if `pi` works, Top works. Not signed in? Run `pi`, 
 key in the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) works too. Pick another model with
 `pnpm server --model anthropic/claude-opus-5-5`; `--thinking off|low|medium|high` sets reasoning
 (default medium). ChatGPT sign-ins can't use every model (`gpt-5.5` is refused); `gpt-6.1-sol` works.
-Real bots have no tools yet (MCP is next) and keep their data in `apps/server/.data/bots`.
+Each real bot owns a folder, `~/bots/<name>` (`--workspace DIR` puts them in `DIR/bots/<name>`),
+and works from it: commands start there and relative paths resolve there. Its tools are pi's coding
+tools (`bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`) with full access to the computer, as the
+user running the daemon. After a crash, `read`/`ls`/`grep`/`find`/`write` run again; a cut-off `bash`
+or `edit` is reported as interrupted, never re-run. Conversations live in `apps/server/.data/bots`.
+
+Because the bots can run commands, the daemon refuses browser connections from anything but the app
+(`file://` and the dev UI on :5199): browsers let any web page open a WebSocket to localhost.
+`--allow-origin URL` adds one. There's no login yet, so keep `--host` on 127.0.0.1 or a private
+network (Tailscale, an SSH tunnel): whoever reaches the port can run commands as you.
 
 Fake bots, for development and the tests, need no sign-in:
 
@@ -42,7 +51,7 @@ pnpm server:fake     # fake bots that answer only when you message them
 ```
 
 The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "crash".
-Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`, `--port`, `--host`,
+Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`, `--workspace`, `--allow-origin`, `--port`, `--host`,
 `--data`, `--reset`, `--no-compress`; fake only: `--load`, `--tools` (load includes tool calls),
 `--seed N`, `--tps N`.
 
@@ -134,6 +143,6 @@ Reconnect time depends mostly on where the client's retry backoff is when the da
   needs writing (or borrowing from pi's coding agent).
 - Push notifications when an answer lands, so the phone needn't stay connected.
 - The React Native app; a bigger local cache (IndexedDB / SQLite) there.
-- Real tools (MCP servers), choosing a model per bot, adding and renaming bots from the app
+- MCP tools, choosing a model per bot, adding and renaming bots from the app
   (real mode starts with one bot until then).
 - Login and device pairing for the daemon itself.
