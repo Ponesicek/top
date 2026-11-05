@@ -24,7 +24,7 @@ execFileSync("pnpm", ["exec", "vite", "build", "--logLevel", "error"], { cwd: de
 let server;
 function startServer(extra = []) {
   return new Promise((resolve, reject) => {
-    server = spawn(process.execPath, [serverMain, "--port", String(port), "--data", dataDir, "--load", ...extra], { stdio: ["ignore", "pipe", "inherit"] });
+    server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", ...extra], { stdio: ["ignore", "pipe", "inherit"] });
     server.stdout.on("data", (d) => String(d).includes("listening") && resolve());
     server.on("exit", (code) => code && code !== 0 && reject(new Error(`daemon exited ${code}`)));
   });

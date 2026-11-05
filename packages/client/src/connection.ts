@@ -16,6 +16,8 @@ export type ConnectionOptions = {
   /** No pong for this long means the connection is dead even if the socket says it is open. */
   readonly deadAfterMs?: number;
   readonly requestTimeoutMs?: number;
+  /** A handshake that hasn't opened by then is abandoned and retried. */
+  readonly connectTimeoutMs?: number;
 };
 
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
@@ -40,6 +42,7 @@ export class Connection {
   #attempt = 0;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   #pingTimer: ReturnType<typeof setInterval> | undefined;
+  #connectTimer: ReturnType<typeof setTimeout> | undefined;
   #lastPong = 0;
   #rttMs: number | undefined;
   #nextReq = 1;
@@ -55,6 +58,7 @@ export class Connection {
     if (!WebSocketImpl) throw new Error("No WebSocket implementation available");
     this.#options = {
       pingIntervalMs: 3_000,
+      connectTimeoutMs: 5_000,
       deadAfterMs: 8_000,
       requestTimeoutMs: 15_000,
       ...options,
@@ -121,8 +125,10 @@ export class Connection {
     this.#teardown();
     const socket = new this.#options.WebSocket(this.#options.url);
     this.#socket = socket;
+    this.#connectTimer = setTimeout(() => this.#socket === socket && this.#lost(), this.#options.connectTimeoutMs);
     socket.onopen = () => {
       if (this.#socket !== socket) return;
+      clearTimeout(this.#connectTimer);
       this.#attempt = 0;
       this.#lastPong = Date.now();
       socket.send(JSON.stringify({ t: "hello", clientId: this.#options.clientId, protocol: PROTOCOL_VERSION } satisfies ClientFrame));
@@ -152,8 +158,10 @@ export class Connection {
     socket.onclose = () => {
       if (this.#socket === socket) this.#lost();
     };
+    // Not every WebSocket follows an error with a close (Node 22's leaves a refused connection
+    // CONNECTING forever), so an error counts as a lost connection on its own.
     socket.onerror = () => {
-      // onclose follows; nothing to do here.
+      if (this.#socket === socket) this.#lost();
     };
   }
 
@@ -179,6 +187,7 @@ export class Connection {
 
   #teardown() {
     clearInterval(this.#pingTimer);
+    clearTimeout(this.#connectTimer);
     const socket = this.#socket;
     this.#socket = undefined;
     if (socket) {

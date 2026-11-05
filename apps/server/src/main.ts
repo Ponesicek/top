@@ -2,7 +2,7 @@
  * The Top daemon: owns one Pi Durable Harness on SQLite, runs the bots 24/7, and serves any number of
  * desktop and phone clients over one WebSocket each.
  *
- *   node src/main.ts [--port 7357] [--data .data] [--load] [--reset] [--tps 100]
+ *   node --import tsx src/main.ts [--port 7357] [--data .data] [--load] [--reset] [--tps 100]
  */
 import { rmSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";

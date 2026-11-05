@@ -17,7 +17,7 @@ let server: ChildProcess | undefined;
 
 function startServer(): Promise<void> {
   return new Promise((resolveStart, reject) => {
-    server = spawn(process.execPath, [serverMain, "--port", String(port), "--data", dataDir, "--tps", "60"], {
+    server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--tps", "60"], {
       stdio: ["ignore", "pipe", "inherit"],
     });
     server.stdout!.on("data", (chunk: Buffer) => {
