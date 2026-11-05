@@ -1,9 +1,10 @@
 /**
- * Fake bots for development and the performance spike: Pi AI's faux provider, scripted to stream
- * markdown answers (prose, lists, code blocks, tables) at a fixed token rate. Everything above the
- * model is real Pi Durable: commits, views, watches, the inbox.
+ * Fake bots for development, tests and benchmarks: Pi AI's faux provider, scripted to answer in
+ * markdown (prose, lists, code blocks, tables) at a fixed token rate, and to call tools when a message
+ * asks for one ("deploy web", "email the team", "check status", "crash"). Everything above the model is
+ * the real daemon: storage, the agent loop, tools, recovery.
  */
-import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 
 export const FAKE_PROVIDER = "faux";
 export const FAKE_MODEL = "top-fake";
@@ -18,12 +19,9 @@ const WORDS =
 const CODE_SAMPLES: readonly (readonly [string, string])[] = [
   [
     "ts",
-    `const watch = await conversation.watch(context, transcript.resume);
-watch.start(async (call) => {
-  if (call.kind !== "value") return;
-  socket.send(JSON.stringify({ t: "ops", sub, ops: encoder.encode(call.ops) }));
-  await drained(socket);
-});`,
+    `const missing = store.after(bot, frame.after, limit + 1);
+const gap = missing.length > limit ? { after: frame.after, before: missing[1]!.seq } : undefined;
+send(socket, { t: "sync", bot, entries: missing.slice(-limit).map(toWire), gap });`,
   ],
   [
     "rust",
@@ -69,14 +67,69 @@ function paragraph(): string {
   return Array.from({ length: 2 + Math.floor(Math.random() * 4) }, () => sentence()).join(" ");
 }
 
-function lastUserText(context: Parameters<FauxResponseFactory>[0]): string {
+type Context = Parameters<FauxResponseFactory>[0];
+type ContextMessage = Context["messages"][number];
+
+function contentText(message: ContextMessage | undefined): string {
+  if (!message || !("content" in message)) return "";
+  const content = message.content as string | { type: string; text?: string }[];
+  if (typeof content === "string") return content;
+  return content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+}
+
+/** Tool results since the last assistant message, newest last. */
+function trailingToolResults(context: Context): ContextMessage[] {
+  const results: ContextMessage[] = [];
   for (let i = context.messages.length - 1; i >= 0; i--) {
     const message = context.messages[i]!;
-    if (message.role !== "user") continue;
-    if (typeof message.content === "string") return message.content;
-    return message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    if (message.role !== "toolResult") break;
+    results.unshift(message);
+  }
+  return results;
+}
+
+let callCounter = 0;
+const call = (name: string, args: Record<string, string | number>) => fauxToolCall(name, args, { id: `call_${Date.now().toString(36)}_${++callCounter}` });
+
+/** The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "crash". */
+export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
+  const text = prompt.toLowerCase();
+  const secs = /(\d+(?:\.\d+)?)\s*s\b/.exec(text)?.[1];
+  const seconds: Record<string, number> = secs === undefined ? {} : { seconds: Number(secs) };
+  if (/\bcrash\b/.test(text)) return call("crash_daemon", {});
+  if (/\bdeploy\b/.test(text)) return call("deploy", { service: /deploy (?:the )?([a-z-]+)/.exec(text)?.[1] ?? "web", ...seconds });
+  if (/\bemail\b/.test(text)) return call("send_email", { to: "team@example.com", subject: "Status update", ...seconds });
+  if (/\bstatus\b/.test(text)) return call("check_status", { target: "The build", ...seconds });
+  return undefined;
+}
+
+function lastUserText(context: Context): string {
+  for (let i = context.messages.length - 1; i >= 0; i--) {
+    const message = context.messages[i]!;
+    if (message.role === "user") return contentText(message);
   }
   return "";
+}
+
+const failedOnce = new Set<string>();
+
+/** One scripted model response: a tool call when the message asks for one, else an answer. "fail once" and "fail always" fail the request. */
+export function respond(context: Context) {
+  const results = trailingToolResults(context);
+  if (results.length) {
+    const lines = results.map((r) => `- **${"toolName" in r ? r.toolName : "tool"}**: ${contentText(r)}`).join("\n");
+    return fauxAssistantMessage(`Done. Here is what happened:\n\n${lines}\n\n${sentence()}`);
+  }
+  const prompt = lastUserText(context);
+  const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider overloaded (test)" });
+  if (/\bfail always\b/i.test(prompt)) return failure();
+  if (/\bfail once\b/i.test(prompt) && !failedOnce.has(prompt)) {
+    failedOnce.add(prompt);
+    return failure();
+  }
+  const tool = toolFor(prompt);
+  if (tool) return fauxAssistantMessage([fauxText(`On it: ${tool.name.replace("_", " ")}.`), tool], { stopReason: "toolUse" });
+  return fauxAssistantMessage(fakeAnswer(prompt));
 }
 
 /** One markdown answer, roughly 150–700 tokens. */
@@ -102,6 +155,9 @@ export function fakeAnswer(prompt: string): string {
   return parts.join("\n\n");
 }
 
+/** Load prompts that make the bots use tools (`--tools`). */
+export const TOOL_PROMPTS = ["Check status of the build", "Deploy the web service 1s", "Email the team the status 1s"] as const;
+
 export const FAKE_PROMPTS = [
   "Summarize what changed in the build since this morning",
   "Why does the reconnect test flake on CI?",
@@ -120,10 +176,10 @@ export function createFakeModelProvider(tokensPerSecond: number) {
     tokensPerSecond,
     tokenSize: { min: 3, max: 6 },
   });
-  const respond: FauxResponseFactory = (context) => fauxAssistantMessage(fakeAnswer(lastUserText(context)));
+  const factory: FauxResponseFactory = (context) => respond(context);
   // The faux provider consumes one scripted step per request; keep the script topped up forever.
   const topUp = () => {
-    if (faux.getPendingResponseCount() < 256) faux.appendResponses(Array.from({ length: 1024 }, () => respond));
+    if (faux.getPendingResponseCount() < 256) faux.appendResponses(Array.from({ length: 1024 }, () => factory));
   };
   topUp();
   const timer = setInterval(topUp, 1_000);

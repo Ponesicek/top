@@ -92,7 +92,7 @@ try {
   row(`Keystroke → frame p50 (${t.botsBusyAtStart} bots busy)`, `${fmt(t.inputP50)} ms`, "< 16.7 ms", t.inputP50 < 16.7);
   row(`Keystroke → frame p99`, `${fmt(t.inputP99)} ms`, "next frame (≤ 20.7 ms)", t.inputP99 <= 20.7);
   row(`Keystrokes that missed the next frame`, `${t.inputMissedFrame} / ${t.inputSamples}`, "< 1%", t.inputMissedFrame / t.inputSamples < 0.01);
-  row(`Frames while typing+streaming, p99`, `${fmt(t.frameP99)} ms`, "≤ 20 ms (60 fps)", t.frameP99 <= 20);
+  row(`Frames while typing, bots working, p99`, `${fmt(t.frameP99)} ms`, "≤ 20 ms (60 fps)", t.frameP99 <= 20);
   const s = full.scroll;
   row(`Scroll 10k transcript: avg fps`, fmt(s.fps), "≥ 58", s.fps >= 58);
   row(`Scroll 10k transcript: frame p99`, `${fmt(s.frameP99)} ms`, "≤ 20 ms", s.frameP99 <= 20);

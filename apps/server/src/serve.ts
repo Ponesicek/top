@@ -1,177 +1,158 @@
 /**
- * One WebSocket per client. Each `watch` frame attaches a Pi Durable watch and forwards its
- * operations, encoded with a per-subscription Chord encoder.
+ * One WebSocket per client, compressed with permessage-deflate.
  *
- * Backpressure is free: the watch listener awaits the socket draining, and Chord folds every commit
- * that lands meanwhile into the next call (past 10,000 ops it sends one replacement instead). A slow
- * phone gets fewer, bigger updates; it never makes the daemon buffer without bound.
+ * Every client gets the bot summaries once, then one small frame per bot that changed. A client
+ * watches the bots it shows: `watch` answers with only the entries it is missing, then each new
+ * entry is pushed once. Reading and registering happen in the same tick (SQLite is synchronous), so
+ * no entry can slip between the catch-up and the live updates.
  */
 import { randomUUID } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
-import { encoder } from "@earendil-works/chord/delta";
-import type { ConversationWatch, Harness } from "@earendil-works/pi-durable";
-import { MESSAGE_KIND, PROTOCOL_VERSION, type ClientFrame, type MessageData, type ServerFrame, type WatchWindow, type WireId } from "@top/protocol";
+import { PROTOCOL_VERSION, type ClientFrame, type Entry, type QueuedMessage, type ServerFrame } from "@top/protocol";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { BotDirectory } from "./bots.ts";
+import type { Daemon } from "./daemon.ts";
+import { toWire } from "./wire.ts";
 
-const HIGH_WATER = 1 << 20; // 1 MiB queued on the socket: stop taking watch calls until it drains
-const HEARTBEAT_MS = 15_000;
+const HEARTBEAT_MS = 30_000;
+const DEFAULT_WINDOW = 50;
+const MAX_WINDOW = 200;
+/** A client this far behind is reading nothing; drop it and let it resync on reconnect. */
+const MAX_BUFFERED = 8 << 20;
 
 const serverId = randomUUID();
 
 function send(socket: WebSocket, frame: ServerFrame) {
-  if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(frame));
+  if (socket.readyState !== socket.OPEN) return;
+  if (socket.bufferedAmount > MAX_BUFFERED) return socket.terminate();
+  socket.send(JSON.stringify(frame));
 }
 
-function drained(socket: WebSocket): Promise<void> {
-  if (socket.bufferedAmount < HIGH_WATER || socket.readyState !== socket.OPEN) return Promise.resolve();
-  return new Promise((resolve) => {
-    const check = () => {
-      if (socket.bufferedAmount < HIGH_WATER || socket.readyState !== socket.OPEN) resolve();
-      else setTimeout(check, 16);
-    };
-    check();
-  });
-}
+const wire = (entries: readonly Parameters<typeof toWire>[0][]): Entry[] => entries.flatMap((e) => toWire(e) ?? []);
 
-function errorText(error: unknown): string {
-  if (error instanceof Error) return `${error.name}: ${error.message}`;
-  return String(error);
+function inboxOf(daemon: Daemon, bot: number): QueuedMessage[] {
+  return daemon.store.inbox(bot).map((row) => ({ requestId: row.requestId, text: row.text, mode: row.mode, at: row.at }));
 }
 
 class ClientConnection {
-  readonly #socket: WebSocket;
-  readonly #harness: Harness;
-  readonly #context: Context;
-  readonly #cancel: () => void;
-  readonly #watches = new Map<number, ConversationWatch>();
-  readonly #unsubscribeBots: () => void;
+  readonly socket: WebSocket;
+  readonly #daemon: Daemon;
+  readonly #watching = new Set<number>();
+  readonly #unsubscribe: (() => void)[];
   alive = true;
 
-  constructor(socket: WebSocket, harness: Harness, directory: BotDirectory) {
-    this.#socket = socket;
-    this.#harness = harness;
-    const { context, cancel } = withCancel(BACKGROUND_CONTEXT);
-    this.#context = context;
-    this.#cancel = cancel;
-    socket.on("message", (data) => void this.#receive(String(data)));
+  constructor(socket: WebSocket, daemon: Daemon) {
+    this.socket = socket;
+    this.#daemon = daemon;
+    socket.on("message", (data) => this.#receive(String(data)));
     socket.on("pong", () => (this.alive = true));
     socket.on("close", () => this.close());
     send(socket, { t: "welcome", serverId, protocol: PROTOCOL_VERSION });
-    send(socket, { t: "bots", bots: directory.list });
-    this.#unsubscribeBots = directory.subscribe((bots) => send(socket, { t: "bots", bots }));
+    send(socket, { t: "bots", bots: daemon.bots });
+    this.#unsubscribe = [
+      daemon.onBot((bot) => send(socket, { t: "bot", bot })),
+      daemon.onEntry((stored) => {
+        if (!this.#watching.has(stored.bot)) return;
+        const entry = toWire(stored);
+        if (entry) send(socket, { t: "entry", entry });
+      }),
+      daemon.onInbox((bot) => {
+        if (this.#watching.has(bot)) send(socket, { t: "inbox", bot, items: inboxOf(daemon, bot) });
+      }),
+    ];
   }
 
-  async #receive(text: string) {
+  #receive(text: string) {
     let frame: ClientFrame;
     try {
       frame = JSON.parse(text) as ClientFrame;
     } catch {
       return;
     }
+    const store = this.#daemon.store;
     switch (frame.t) {
       case "hello":
+        return;
       case "ping":
-        if (frame.t === "ping") send(this.#socket, { t: "pong", at: frame.at });
-        return;
-      case "watch":
-        return this.#watch(frame.sub, frame.conversationId, frame.window);
-      case "unwatch": {
-        const watch = this.#watches.get(frame.sub);
-        this.#watches.delete(frame.sub);
-        await watch?.stop();
-        return;
+        return send(this.socket, { t: "pong", at: frame.at });
+      case "watch": {
+        if (!this.#daemon.runners.has(frame.bot)) return;
+        const limit = Math.min(Math.max(1, frame.limit ?? DEFAULT_WINDOW), MAX_WINDOW);
+        let entries;
+        let gap;
+        let earlier;
+        if (frame.after === undefined) {
+          entries = store.newest(frame.bot, limit);
+          earlier = entries.length > 0 && store.hasBefore(frame.bot, entries[0]!.seq);
+        } else {
+          entries = store.after(frame.bot, frame.after, limit + 1);
+          if (entries.length > limit) {
+            // Missed more than fit: send the newest, and say what lies between.
+            entries = store.newest(frame.bot, limit);
+            gap = { after: frame.after, before: entries[0]!.seq };
+          }
+        }
+        this.#watching.add(frame.bot);
+        return send(this.socket, {
+          t: "sync",
+          bot: frame.bot,
+          entries: wire(entries),
+          ...(gap ? { gap } : {}),
+          ...(earlier ? { earlier: true } : {}),
+          inbox: inboxOf(this.#daemon, frame.bot),
+        });
       }
-      case "entries":
-        return this.#request(frame.req, async () => {
-          const conversation = await this.#conversation(frame.conversationId);
-          return conversation.entries(frame.query as never, frame.limit, undefined, this.#context);
+      case "unwatch":
+        this.#watching.delete(frame.bot);
+        return;
+      case "history":
+        return this.#answer(frame.req, () => {
+          const limit = Math.min(Math.max(1, frame.limit), MAX_WINDOW);
+          const { entries, more } = store.history(frame.bot, frame.before, frame.after ?? 0, limit);
+          return { entries: wire(entries), more };
+        });
+      case "detail":
+        return this.#answer(frame.req, () => {
+          const stored = store.entry(frame.seq);
+          if (!stored || stored.bot !== frame.bot) throw new Error(`No entry ${frame.seq}`);
+          return toWire(stored, true) ?? null;
         });
       case "submit":
-        return this.#request(frame.req, async () => {
-          const conversation = await this.#conversation(frame.conversationId);
-          const submission = await conversation.submit(
-            {
-              type: "input",
-              content: frame.content,
-              requestId: frame.requestId,
-              whenBusy: frame.whenBusy,
-              entry: {
-                kind: MESSAGE_KIND,
-                data: { requestId: frame.requestId, text: frame.content, clientId: frame.clientId } satisfies MessageData,
-              },
-            },
-            this.#context,
-          );
-          return { submissionId: submission.id };
-        });
+        return this.#answer(frame.req, () => this.#daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId));
       case "abort":
-        return this.#request(frame.req, async () => {
-          const conversation = await this.#conversation(frame.conversationId);
-          await conversation.abort(this.#context);
+        return this.#answer(frame.req, () => {
+          this.#daemon.runner(frame.bot).abort();
           return null;
         });
     }
   }
 
-  async #conversation(id: WireId) {
-    const conversation = await this.#harness.conversation(id as never, this.#context);
-    if (!conversation) throw new Error(`Unknown conversation ${id}`);
-    return conversation;
-  }
-
-  async #request(req: number, run: () => Promise<unknown>) {
+  #answer(req: number, run: () => unknown) {
     try {
-      send(this.#socket, { t: "result", req, ok: true, value: await run() });
+      send(this.socket, { t: "result", req, ok: true, value: run() });
     } catch (error) {
-      send(this.#socket, { t: "result", req, ok: false, error: errorText(error) });
-    }
-  }
-
-  async #watch(sub: number, conversationId: WireId, window: WatchWindow | undefined) {
-    try {
-      const conversation = await this.#conversation(conversationId);
-      const watch = await conversation.watch(this.#context, window as never);
-      this.#watches.set(sub, watch);
-      const encode = encoder();
-      send(this.#socket, { t: "view", sub, value: watch.value });
-      watch.start(async (call) => {
-        if (call.kind !== "value") return;
-        send(this.#socket, { t: "ops", sub, ops: encode.encode(call.ops) });
-        await drained(this.#socket);
-      });
-      void watch.closed.then((end) => {
-        if (this.#watches.get(sub) !== watch) return;
-        this.#watches.delete(sub);
-        send(this.#socket, { t: "end", sub, reason: end.kind });
-      });
-    } catch (error) {
-      send(this.#socket, { t: "end", sub, reason: errorText(error) });
+      send(this.socket, { t: "result", req, ok: false, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
     }
   }
 
   close() {
-    this.#unsubscribeBots();
-    this.#cancel();
-    for (const watch of this.#watches.values()) void watch.stop();
-    this.#watches.clear();
-  }
-
-  get socket() {
-    return this.#socket;
+    for (const unsubscribe of this.#unsubscribe.splice(0)) unsubscribe();
+    this.#watching.clear();
   }
 }
 
-export function serve(harness: Harness, directory: BotDirectory, options: { host: string; port: number }) {
-  const server = new WebSocketServer({ host: options.host, port: options.port, perMessageDeflate: false });
+export function serve(daemon: Daemon, options: { host: string; port: number; compress: boolean }) {
+  const server = new WebSocketServer({
+    host: options.host,
+    port: options.port,
+    // Context takeover on both sides: repeated keys and names across frames cost almost nothing.
+    perMessageDeflate: options.compress ? { threshold: 64, zlibDeflateOptions: { level: 6 } } : false,
+  });
   const clients = new Set<ClientConnection>();
   server.on("connection", (socket) => {
-    const client = new ClientConnection(socket, harness, directory);
+    const client = new ClientConnection(socket, daemon);
     clients.add(client);
     socket.on("close", () => clients.delete(client));
   });
-  // Drop clients that stopped answering pings (a phone that lost its network without a FIN).
+  // Drop clients that stopped answering (a phone that lost its network without closing the socket).
   const heartbeat = setInterval(() => {
     for (const client of clients) {
       if (!client.alive) {
@@ -182,6 +163,7 @@ export function serve(harness: Harness, directory: BotDirectory, options: { host
       client.socket.ping();
     }
   }, HEARTBEAT_MS);
+  heartbeat.unref();
   return {
     close: () =>
       new Promise<void>((resolve) => {

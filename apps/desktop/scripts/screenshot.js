@@ -15,7 +15,7 @@ const dataDir = mkdtempSync(join(tmpdir(), "top-shot-"));
 const userData = mkdtempSync(join(tmpdir(), "top-shot-profile-"));
 
 execFileSync("pnpm", ["exec", "vite", "build", "--logLevel", "error"], { cwd: desktopDir, stdio: "inherit" });
-const server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", "--seed", "40"], { stdio: ["ignore", "pipe", "inherit"] });
+const server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", "--tools", "--seed", "40"], { stdio: ["ignore", "pipe", "inherit"] });
 await new Promise((r) => server.stdout.on("data", (d) => String(d).includes("listening") && r()));
 
 const needsX = process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;

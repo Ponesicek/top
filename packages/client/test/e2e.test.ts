@@ -1,115 +1,340 @@
 /**
- * End to end against the real daemon (real Pi Durable on SQLite, fake model):
- * optimistic send, streaming, kill -9 mid-turn, restart, resume without loss or duplicates.
+ * End to end against the real daemon (pi-agent-core, SQLite storage, fake model with real tools),
+ * killed with SIGKILL at the worst moments:
+ *
+ * - mid-answer, with a message sent while it was down: nothing lost, nothing doubled;
+ * - mid-tool, for each recovery policy: a tool that may have taken effect is never run twice;
+ * - in a crash loop: the task ends instead of restarting forever;
+ * - a resent message is applied once; a long absence resumes with only the new entries plus a gap.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { MESSAGE_KIND, TopClient, type ConversationSnapshot, type ConversationSync } from "../src/index.ts";
+import { TopClient, type BotSummary, type ConversationSnapshot, type ConversationSync, type Entry } from "../src/index.ts";
 
 const serverMain = resolve(import.meta.dirname, "../../../apps/server/src/main.ts");
-const dataDir = mkdtempSync(join(tmpdir(), "top-e2e-"));
-const port = 7400 + Math.floor(Math.random() * 500);
-let server: ChildProcess | undefined;
-
-function startServer(): Promise<void> {
-  return new Promise((resolveStart, reject) => {
-    server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--tps", "60"], {
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-    server.stdout!.on("data", (chunk: Buffer) => {
-      if (String(chunk).includes("listening")) resolveStart();
-    });
-    server.on("exit", (code) => code && reject(new Error(`server exited ${code}`)));
-  });
-}
-
-function killServer(): Promise<void> {
-  return new Promise((r) => {
-    if (!server || server.exitCode !== null) return r();
-    server.once("exit", () => r());
-    server.kill("SIGKILL");
-  });
-}
-
+const cleanup: (() => Promise<void> | void)[] = [];
 after(async () => {
-  await killServer();
-  rmSync(dataDir, { recursive: true, force: true });
+  for (const fn of cleanup.reverse()) await fn();
 });
 
-function until(sync: ConversationSync, predicate: (s: ConversationSnapshot) => boolean, timeoutMs = 10_000) {
-  return new Promise<ConversationSnapshot>((r, reject) => {
+class Daemon {
+  readonly dataDir = mkdtempSync(join(tmpdir(), "top-e2e-"));
+  readonly port = 7400 + Math.floor(Math.random() * 500);
+  process: ChildProcess | undefined;
+  output = "";
+
+  readonly extra: string[];
+
+  constructor(extra: string[] = []) {
+    this.extra = extra;
+    cleanup.push(async () => {
+      await this.kill();
+      rmSync(this.dataDir, { recursive: true, force: true });
+    });
+  }
+
+  get url() {
+    return `ws://127.0.0.1:${this.port}`;
+  }
+
+  start(): Promise<void> {
+    return new Promise((resolveStart, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(this.port), "--data", this.dataDir, "--tps", "120", ...this.extra], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, TOP_RETRY_DELAYS_MS: "200,200,200" },
+      });
+      this.process = child;
+      let listening = false;
+      child.stdout!.on("data", (chunk: Buffer) => {
+        this.output += chunk;
+        if (String(chunk).includes("listening")) {
+          listening = true;
+          resolveStart();
+        }
+      });
+      child.stderr!.on("data", (chunk: Buffer) => (this.output += chunk));
+      child.on("exit", (code, signal) => {
+        if (listening) return;
+        reject(new Error(`daemon ${signal ? `died (${signal})` : `exited ${code}`} during startup\n${this.output.slice(-2000)}`));
+      });
+    });
+  }
+
+  exited(): Promise<void> {
+    return new Promise((r) => {
+      if (!this.process || this.process.exitCode !== null || this.process.signalCode !== null) return r();
+      this.process.once("exit", () => r());
+    });
+  }
+
+  async kill() {
+    if (this.process && this.process.exitCode === null && this.process.signalCode === null) this.process.kill("SIGKILL");
+    await this.exited();
+  }
+
+  effects(tool: string, phase: string): number {
+    try {
+      return readFileSync(join(this.dataDir, "effects.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { tool: string; phase: string })
+        .filter((e) => e.tool === tool && e.phase === phase).length;
+    } catch {
+      return 0;
+    }
+  }
+}
+
+function until<T>(subscribe: (listener: () => void) => () => void, read: () => T, predicate: (value: T) => boolean, what: string, timeoutMs = 20_000): Promise<T> {
+  return new Promise<T>((r, reject) => {
     const check = () => {
-      const snapshot = sync.getSnapshot();
-      if (predicate(snapshot)) {
-        unsubscribe();
-        clearTimeout(timer);
-        r(snapshot);
-      }
+      const value = read();
+      if (!predicate(value)) return;
+      off();
+      clearTimeout(timer);
+      r(value);
     };
-    const unsubscribe = sync.subscribe(check);
+    const off = subscribe(check);
     const timer = setTimeout(() => {
-      unsubscribe();
-      reject(new Error(`timed out; last status ${sync.getSnapshot().status}`));
+      off();
+      reject(new Error(`timed out waiting for ${what}`));
     }, timeoutMs);
     check();
   });
 }
 
-const messages = (s: ConversationSnapshot) =>
-  s.items.filter((i) => i.kind === "entry" && i.entry.kind === MESSAGE_KIND);
-const answers = (s: ConversationSnapshot) => s.items.filter((i) => i.kind === "entry" && i.entry.kind === "pi.assistant");
-const streamedText = (s: ConversationSnapshot) =>
-  ((s.live?.generation?.message as { content?: { type: string; text?: string }[] } | undefined)?.content ?? [])
-    .map((c) => c.text ?? "")
-    .join("");
+const untilBot = (sync: ConversationSync, predicate: (s: ConversationSnapshot) => boolean, what: string, timeoutMs?: number) =>
+  until(sync.subscribe, sync.getSnapshot, predicate, what, timeoutMs);
 
-test("send, crash mid-stream, resume", async () => {
-  await startServer();
-  const top = new TopClient({ url: `ws://127.0.0.1:${port}` });
-  try {
-    await new Promise<void>((r) => {
-      const off = top.subscribe(() => top.getSnapshot().ready && (off(), r()));
-    });
-    const bot = top.conversation(top.getSnapshot().bots[0]!.id);
-    bot.retain();
-    await until(bot, (s) => s.status === "live");
+const untilSummary = (top: TopClient, id: number, predicate: (b: BotSummary) => boolean, what: string, timeoutMs?: number) =>
+  until(top.subscribe, () => top.getSnapshot().bots.find((b) => b.id === id), (b) => !!b && predicate(b), what, timeoutMs);
 
-    // Optimistic: pending immediately, before any round trip.
-    const sent = bot.send("hello from the e2e test");
-    assert.equal(bot.getSnapshot().pending.length, 1);
-    assert.equal(bot.getSnapshot().pending[0]!.requestId, sent.requestId);
+const entries = (s: ConversationSnapshot) => s.items.flatMap((i) => (i.kind === "entry" ? [i.entry] : []));
+const ofKind = <K extends Entry["kind"]>(s: ConversationSnapshot, kind: K) => entries(s).filter((e): e is Extract<Entry, { kind: K }> => e.kind === kind);
 
-    // The real entry lands and retires the pending copy; the bot starts streaming.
-    await until(bot, (s) => s.pending.length === 0 && messages(s).length === 1);
-    await until(bot, (s) => streamedText(s).length > 20);
+async function connect(daemon: Daemon, botIndex: number) {
+  const top = new TopClient({ url: daemon.url });
+  cleanup.push(() => top.close());
+  await until(top.subscribe, top.getSnapshot, (s) => s.ready, "the roster");
+  const id = top.getSnapshot().bots[botIndex]!.id;
+  const bot = top.conversation(id);
+  bot.retain();
+  await untilBot(bot, (s) => s.status === "live", "the first sync");
+  return { top, bot, id };
+}
 
-    // kill -9 mid-turn. The client goes stale but keeps what it had.
-    await killServer();
-    const stale = await until(bot, (s) => s.status === "stale");
-    assert.equal(messages(stale).length, 1);
+const settled = (s: ConversationSnapshot) => s.status === "live" && s.pending.length === 0 && s.inbox.length === 0;
 
-    // Sending while the daemon is down: shows as pending, goes out on reconnect.
-    bot.send("sent while offline");
-    assert.equal(bot.getSnapshot().pending.length, 1);
+test("send, crash mid-answer, send while down, restart: nothing lost or doubled", async () => {
+  const daemon = new Daemon(["--tps", "40"]);
+  await daemon.start();
+  const { top, bot, id } = await connect(daemon, 0);
 
-    await startServer();
-    // Pi Durable resumes the interrupted turn; both messages answered exactly once.
-    const done = await until(
-      bot,
-      (s) => s.status === "live" && s.pending.length === 0 && messages(s).length === 2 && !s.live?.run && answers(s).length >= 2,
-      30_000,
-    );
-    const texts = messages(done).map((i) => (i.kind === "entry" ? (i.entry.data as { text: string }).text : ""));
-    assert.deepEqual(texts, ["hello from the e2e test", "sent while offline"]);
-    // Entry IDs strictly increase: nothing duplicated or reordered by the reconnect.
-    const ids = done.items.flatMap((i) => (i.kind === "entry" ? [Number(i.entry.id)] : []));
-    assert.deepEqual(ids, [...ids].sort((a, b) => a - b));
-    assert.equal(new Set(ids).size, ids.length);
-  } finally {
-    top.close();
+  // Optimistic: pending immediately, before any round trip.
+  const sent = bot.send("hello from the e2e test");
+  assert.equal(bot.getSnapshot().pending[0]!.requestId, sent.requestId);
+  await untilBot(bot, (s) => s.pending.length === 0 && ofKind(s, "user").length === 1, "the message to land");
+  await untilSummary(top, id, (b) => b.status === "thinking", "the bot to start answering");
+  await new Promise((r) => setTimeout(r, 300));
+
+  await daemon.kill();
+  const stale = await untilBot(bot, (s) => s.status === "stale", "the stale state");
+  assert.equal(ofKind(stale, "user").length, 1, "what we had stays on screen");
+
+  // Sent while the daemon is down: shows as pending, goes out on reconnect.
+  bot.send("sent while offline");
+  assert.equal(bot.getSnapshot().pending.length, 1);
+
+  await daemon.start();
+  const done = await until(
+    (listener) => {
+      const offs = [bot.subscribe(listener), top.subscribe(listener)];
+      return () => offs.forEach((off) => off());
+    },
+    () => ({ s: bot.getSnapshot(), b: top.getSnapshot().bots.find((x) => x.id === id) }),
+    ({ s, b }) => settled(s) && b?.status === "idle" && ofKind(s, "assistant").length >= 2 && ofKind(s, "user").length === 2,
+    "both messages answered",
+    40_000,
+  ).catch((error: Error) => {
+    const s = bot.getSnapshot();
+    const b = top.getSnapshot().bots.find((x) => x.id === id);
+    throw new Error(`${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`);
+  });
+  assert.deepEqual(ofKind(done.s, "user").map((e) => e.text), ["hello from the e2e test", "sent while offline"]);
+  const seqs = entries(done.s).map((e) => e.seq);
+  assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), "in order");
+  assert.equal(new Set(seqs).size, seqs.length, "no duplicates");
+  // The interrupted answer is simply asked again: one answer per message, no half answers.
+  assert.equal(ofKind(done.s, "assistant").length, 2);
+});
+
+/** Ask for a tool, kill the daemon while it runs, restart, and return the settled transcript. */
+async function killDuringTool(prompt: string, tool: string) {
+  const daemon = new Daemon();
+  await daemon.start();
+  const { top, bot, id } = await connect(daemon, 1);
+  bot.send(prompt);
+  await untilSummary(top, id, (b) => b.status === "tool" && b.tool === tool, `${tool} to start`);
+  await new Promise((r) => setTimeout(r, 400));
+  await daemon.kill();
+  await daemon.start();
+  const s = await untilBot(
+    bot,
+    (s) => settled(s) && ofKind(s, "tool").length === 1 && ofKind(s, "assistant").length === 2,
+    "the task to finish after the restart",
+    30_000,
+  );
+  await untilSummary(top, id, (b) => b.status === "idle", "idle");
+  return { daemon, s, result: ofKind(s, "tool")[0]! };
+}
+
+test("a tool that may have taken effect is not run again; the model is told", async () => {
+  const { daemon, result, s } = await killDuringTool("deploy web 4s", "deploy");
+  assert.equal(result.outcome, "interrupted");
+  assert.equal(result.isError, true);
+  assert.match(result.text, /may or may not have taken effect/);
+  assert.equal(daemon.effects("deploy", "effect"), 1, "deployed exactly once");
+  assert.match(ofKind(s, "assistant").at(-1)!.text, /Interrupted/, "the model saw what happened");
+});
+
+test("a tool that can check its outcome reports what really happened", async () => {
+  const { daemon, result } = await killDuringTool("email the team 4s", "send_email");
+  assert.equal(result.outcome, "recovered");
+  assert.equal(result.isError, undefined);
+  assert.match(result.text, /confirmed after a restart/);
+  assert.equal(daemon.effects("send_email", "effect"), 1, "sent exactly once");
+});
+
+test("a read-only tool is simply run again", async () => {
+  const { daemon, result } = await killDuringTool("check status 4s", "check_status");
+  assert.equal(result.outcome, "replayed");
+  assert.match(result.text, /healthy/);
+  assert.equal(daemon.effects("check_status", "start"), 2, "ran twice: once cut off, once after the restart");
+});
+
+test("a task that keeps crashing the daemon is ended, not restarted forever", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const { bot } = await connect(daemon, 2);
+  bot.send("crash");
+  let restarts = 0;
+  // The tool kills the daemon; every restart replays it (it says it's safe to), until the limit.
+  for (; restarts < 8; restarts++) {
+    await daemon.exited();
+    if (daemon.output.includes("task ended")) break;
+    await daemon.start().catch(() => {});
+    await Promise.race([daemon.exited(), new Promise((r) => setTimeout(r, 3_000))]);
+    if (daemon.process!.exitCode === null && daemon.process!.signalCode === null) break; // stayed up
   }
+  const s = await untilBot(bot, (s) => s.status === "live" && ofKind(s, "notice").length === 1, "the stop notice", 20_000);
+  assert.match(ofKind(s, "notice")[0]!.text, /restarted 4 times/);
+  assert.equal(ofKind(s, "tool")[0]!.outcome, "stopped");
+  assert.equal(daemon.effects("crash_daemon", "start"), 4, "the first run and three replays");
+  assert.ok(restarts <= 4, `stopped after ${restarts} restarts`);
+});
+
+test("Stop during a tool ends the task; the next queued message still runs", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const { top, bot, id } = await connect(daemon, 4);
+  bot.send("deploy web 6s");
+  await untilSummary(top, id, (b) => b.status === "tool", "the tool to start");
+  bot.send("after the stop");
+  await untilBot(bot, (s) => s.inbox.length === 1, "the second message to queue");
+  await bot.abort();
+  const s = await untilBot(bot, (s) => settled(s) && ofKind(s, "user").length === 2 && ofKind(s, "assistant").length === 2, "the queued message to run", 30_000);
+  await untilSummary(top, id, (b) => b.status === "idle", "idle");
+  const result = ofKind(s, "tool")[0]!;
+  assert.equal(result.isError, true);
+  assert.match(result.text, /Stopped/);
+  // No model request after the stop: the tool call, its stopped result, a note, then the next message.
+  assert.deepEqual(entries(s).map((e) => e.kind), ["user", "assistant", "tool", "notice", "user", "assistant"]);
+  assert.equal(ofKind(s, "notice")[0]!.text, "Stopped");
+  assert.match(ofKind(s, "assistant").at(-1)!.text, /after the stop/);
+  assert.equal(daemon.effects("deploy", "effect"), 1);
+});
+
+test("a failed model request is retried; only a final failure shows", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const { top, bot, id } = await connect(daemon, 1);
+  bot.send("fail once, then answer");
+  let s = await untilBot(bot, (s) => settled(s) && ofKind(s, "assistant").length === 1, "the answer after a retry");
+  assert.equal(ofKind(s, "assistant")[0]!.error, undefined, "the failed attempt left no trace");
+  bot.send("fail always");
+  await untilSummary(top, id, (b) => b.status === "failed", "the failure after three retries", 15_000);
+  s = await untilBot(bot, (s) => ofKind(s, "assistant").length === 2, "the failure entry");
+  assert.match(ofKind(s, "assistant")[1]!.error!, /overloaded/);
+  assert.equal(top.getSnapshot().bots.find((b) => b.id === id)!.error, "Provider overloaded (test)");
+});
+
+test("a resent message is applied once", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const { bot, id } = await connect(daemon, 3);
+  const socket = new WebSocket(daemon.url);
+  await new Promise((r) => (socket.onopen = r));
+  const results: unknown[] = [];
+  socket.onmessage = (event) => {
+    const frame = JSON.parse(String(event.data)) as { t: string; value?: unknown };
+    if (frame.t === "result") results.push(frame.value);
+  };
+  const submit = (req: number) => socket.send(JSON.stringify({ t: "submit", req, bot: id, requestId: "same-id", text: "only once", whenBusy: "followUp", clientId: "raw" }));
+  submit(1);
+  submit(2);
+  for (let waited = 0; results.length < 2 && waited < 5_000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+  socket.close();
+  assert.deepEqual(results, [{ duplicate: false }, { duplicate: true }]);
+  const s = await untilBot(bot, (s) => settled(s) && ofKind(s, "assistant").length === 1, "the answer");
+  assert.equal(ofKind(s, "user").filter((e) => e.text === "only once").length, 1);
+});
+
+test("reconnecting sends only what's new; a long absence leaves a gap that loads on demand", async () => {
+  const daemon = new Daemon(["--seed", "400"]);
+  await daemon.start();
+  const first = await connect(daemon, 0);
+  const s = first.bot.getSnapshot();
+  assert.equal(s.items[0]!.kind, "earlier", "older history is not sent until scrolled to");
+  assert.equal(entries(s).length, 50);
+  const cache = first.bot.exportCache()!;
+  first.top.close();
+
+  // Back with a warm cache and nothing new: the sync carries no entries at all.
+  const warm = new TopClient({ url: daemon.url });
+  cleanup.push(() => warm.close());
+  const warmBot = warm.conversation(first.id);
+  warmBot.hydrate(cache);
+  assert.equal(warmBot.getSnapshot().status, "stale");
+  let synced = 0;
+  const realSync = warmBot.receiveSync.bind(warmBot);
+  warmBot.receiveSync = (frame) => {
+    synced += frame.entries.length;
+    realSync(frame);
+  };
+  warmBot.retain();
+  await untilBot(warmBot, (x) => x.status === "live", "the warm sync");
+  assert.equal(synced, 0, "nothing re-sent");
+  assert.equal(entries(warmBot.getSnapshot()).length, 50);
+
+  // Back after missing ~390 entries: the newest 50 and a gap, never the whole history.
+  const stale = new TopClient({ url: daemon.url });
+  cleanup.push(() => stale.close());
+  const staleBot = stale.conversation(first.id);
+  const old = entries(s)[0]!;
+  staleBot.hydrate({ version: 2, entries: [{ ...old, seq: 10 }], gaps: [], earlier: true, inbox: [] });
+  staleBot.retain();
+  const gapped = await untilBot(staleBot, (x) => x.status === "live", "the stale sync");
+  const gap = gapped.items.find((i) => i.kind === "gap");
+  assert.ok(gap && gap.kind === "gap", "a gap marks what was skipped");
+  assert.equal(gap.gap.after, 10);
+  assert.equal(entries(gapped).length, 51);
+  await staleBot.fillGap(gap.gap);
+  const filled = staleBot.getSnapshot();
+  assert.equal(entries(filled).length, 101);
+  const rest = filled.items.find((i) => i.kind === "gap");
+  assert.ok(rest && rest.kind === "gap" && rest.gap.after === 10 && rest.gap.before < gap.gap.before, "the gap shrinks as it loads");
 });

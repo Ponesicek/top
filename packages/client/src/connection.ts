@@ -1,7 +1,10 @@
 /**
  * One WebSocket to the Top daemon that is never "just dead": it reconnects with backoff, notices a
- * silent connection (a phone that lost its network without a close) within a few seconds through
- * pings, and resolves or rejects every request.
+ * silent connection (a phone that lost its network without a close) through pings, and resolves or
+ * rejects every request.
+ *
+ * Pings are sparse (every 10 s) to keep a phone's radio asleep; when the app comes back to the
+ * foreground or the network changes, `kick()` checks the socket right away instead.
  */
 import { PROTOCOL_VERSION, type ClientFrame, type ServerFrame } from "@top/protocol";
 
@@ -57,9 +60,9 @@ export class Connection {
     const WebSocketImpl = options.WebSocket ?? globalThis.WebSocket;
     if (!WebSocketImpl) throw new Error("No WebSocket implementation available");
     this.#options = {
-      pingIntervalMs: 3_000,
+      pingIntervalMs: 10_000,
       connectTimeoutMs: 5_000,
-      deadAfterMs: 8_000,
+      deadAfterMs: 25_000,
       requestTimeoutMs: 15_000,
       ...options,
       WebSocket: WebSocketImpl,
@@ -80,9 +83,22 @@ export class Connection {
     this.#connect();
   }
 
-  /** Retry now instead of waiting out the backoff, for example when the OS reports the network is back. */
+  /**
+   * The app returned to the foreground or the network changed. If connected, check that the socket
+   * still answers (no answer within 3 s counts as a drop); otherwise retry now instead of waiting out
+   * the backoff.
+   */
   kick() {
-    if (this.#status === "open" || this.#closed) return;
+    if (this.#closed) return;
+    if (this.#status === "open") {
+      const socket = this.#socket;
+      const sentAt = Date.now();
+      this.send({ t: "ping", at: sentAt });
+      setTimeout(() => {
+        if (this.#socket === socket && this.#status === "open" && this.#lastPong < sentAt) this.#lost();
+      }, 3_000);
+      return;
+    }
     clearTimeout(this.#retryTimer);
     this.#attempt = 0;
     this.#connect();

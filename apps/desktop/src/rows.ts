@@ -1,61 +1,45 @@
 /** Transcript items → the rows the transcript renders. Row objects are stable per entry, so rows memoize. */
-import { MESSAGE_KIND, type ConversationSnapshot, type EntryRecord, type MessageData, type TranscriptItem } from "@top/client";
+import type { BotSummary, ConversationSnapshot, Entry, Gap, PendingMessage, QueuedMessage, ToolCallView, TranscriptItem } from "@top/client";
 
-type Part = { type: string; text?: string; thinking?: string; name?: string };
-type Message = { role?: string; content?: string | Part[]; timestamp?: number; stopReason?: string; errorMessage?: string };
+export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
 export type Row =
   | { readonly kind: "earlier"; readonly key: string }
-  | { readonly kind: "gap"; readonly key: string; readonly gap: Extract<TranscriptItem, { kind: "gap" }> }
+  | { readonly kind: "gap"; readonly key: string; readonly gap: Gap }
   | { readonly kind: "user"; readonly key: string; readonly text: string; readonly at?: number; readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer"; readonly requestId?: string; readonly error?: string }
-  | { readonly kind: "assistant"; readonly key: string; readonly text: string; readonly thinking?: string; readonly tools: readonly string[]; readonly at?: number; readonly error?: string }
+  | {
+      readonly kind: "assistant";
+      readonly key: string;
+      readonly seq: number;
+      readonly text: string;
+      readonly tools: readonly ToolCallView[];
+      readonly hasThinking: boolean;
+      readonly at: number;
+      readonly error?: string;
+    }
+  | { readonly kind: "tool"; readonly key: string; readonly entry: ToolEntry }
   | { readonly kind: "notice"; readonly key: string; readonly text: string }
-  | { readonly kind: "live"; readonly key: "live" };
+  | { readonly kind: "working"; readonly key: "working" };
 
-function textOf(message: Message | undefined): string {
-  if (!message) return "";
-  if (typeof message.content === "string") return message.content;
-  return (message.content ?? []).map((p) => (p.type === "text" ? (p.text ?? "") : "")).join("");
-}
+const entryRows = new WeakMap<Entry, Row>();
 
-const entryRows = new WeakMap<EntryRecord, Row | null>();
-
-function rowForEntry(entry: EntryRecord): Row | null {
+function rowForEntry(entry: Entry): Row {
   let row = entryRows.get(entry);
-  if (row !== undefined) return row;
-  const key = `e${entry.id}`;
-  const message = entry.model?.at(-1) as Message | undefined;
+  if (row) return row;
+  const key = `e${entry.seq}`;
   switch (entry.kind) {
-    case MESSAGE_KIND: {
-      const data = entry.data as MessageData;
-      row = { kind: "user", key, text: data.text, at: message?.timestamp };
+    case "user":
+      row = { kind: "user", key, text: entry.text, at: entry.at };
       break;
-    }
-    case "pi.user":
-      row = { kind: "user", key, text: textOf(message), at: message?.timestamp };
+    case "assistant":
+      row = { kind: "assistant", key, seq: entry.seq, text: entry.text, tools: entry.tools ?? [], hasThinking: !!entry.hasThinking, at: entry.at, error: entry.stopped ? "Stopped" : entry.error };
       break;
-    case "pi.assistant": {
-      const parts = typeof message?.content === "string" ? [] : (message?.content ?? []);
-      const thinking = parts.filter((p) => p.type === "thinking").map((p) => p.thinking ?? "").join("\n");
-      row = {
-        kind: "assistant",
-        key,
-        text: textOf(message),
-        thinking: thinking || undefined,
-        tools: parts.filter((p) => p.type === "toolCall").map((p) => p.name ?? "tool"),
-        at: message?.timestamp,
-        error: message?.stopReason === "error" || message?.stopReason === "aborted" ? (message.errorMessage ?? message.stopReason) : undefined,
-      };
+    case "tool":
+      row = { kind: "tool", key, entry };
       break;
-    }
-    case "pi.reset":
-      row = { kind: "notice", key, text: "Context reset" };
+    case "notice":
+      row = { kind: "notice", key, text: entry.text };
       break;
-    case "pi.compaction":
-      row = { kind: "notice", key, text: "Earlier messages summarized" };
-      break;
-    default:
-      row = null; // pi.system, tool results etc.: not shown in the chat view
   }
   entryRows.set(entry, row);
   return row;
@@ -63,18 +47,15 @@ function rowForEntry(entry: EntryRecord): Row | null {
 
 const itemRowsCache = new WeakMap<readonly TranscriptItem[], Row[]>();
 
-/** Rows for the committed transcript; recomputed only when `items` changes (entries appended or loaded). */
+/** Rows for the transcript; recomputed only when `items` changes (entries arrived or loaded). */
 export function committedRows(items: readonly TranscriptItem[]): Row[] {
   let rows = itemRowsCache.get(items);
   if (rows) return rows;
   rows = [];
   for (const item of items) {
     if (item.kind === "earlier") rows.push({ kind: "earlier", key: "earlier" });
-    else if (item.kind === "gap") rows.push({ kind: "gap", key: `gap${item.after}`, gap: item });
-    else {
-      const row = rowForEntry(item.entry);
-      if (row) rows.push(row);
-    }
+    else if (item.kind === "gap") rows.push({ kind: "gap", key: `gap${item.gap.after}`, gap: item.gap });
+    else rows.push(rowForEntry(item.entry));
   }
   itemRowsCache.set(items, rows);
   return rows;
@@ -87,25 +68,22 @@ function stable<T extends object>(source: T, make: () => Row): Row {
   return row;
 }
 
-/** Rows after the transcript: the streaming answer, queued messages, and messages not acknowledged yet. */
-export function tailRows(snapshot: ConversationSnapshot): Row[] {
+const WORKING: Row = { kind: "working", key: "working" };
+
+export const isWorking = (status: BotSummary["status"] | undefined) => status === "thinking" || status === "tool" || status === "retrying";
+
+/** Rows after the transcript: what the bot is doing, queued messages, and messages not acknowledged yet. */
+export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[] {
   const rows: Row[] = [];
-  if (snapshot.live?.run) rows.push({ kind: "live", key: "live" });
-  for (const item of snapshot.inbox?.items ?? []) {
-    if (item.mode === "write") continue;
-    rows.push(
-      stable(item, () => {
-        const data = (item.entry as { kind?: string; data?: MessageData } | undefined)?.data;
-        const text = data?.text ?? (typeof item.content === "string" ? item.content : "");
-        return { kind: "user", key: `q${item.id}`, text, state: item.mode === "steer" ? "steer" : "queued" };
-      }),
-    );
+  if (working) rows.push(WORKING);
+  for (const item of snapshot.inbox) {
+    rows.push(stable<QueuedMessage>(item, () => ({ kind: "user", key: `m${item.requestId}`, text: item.text, at: item.at, state: item.mode === "steer" ? "steer" : "queued" })));
   }
   for (const pending of snapshot.pending) {
     rows.push(
-      stable(pending, () => ({
+      stable<PendingMessage>(pending, () => ({
         kind: "user",
-        key: `p${pending.requestId}`,
+        key: `m${pending.requestId}`,
         text: pending.text,
         at: pending.createdAt,
         state: pending.state,
@@ -115,8 +93,4 @@ export function tailRows(snapshot: ConversationSnapshot): Row[] {
     );
   }
   return rows;
-}
-
-export function liveText(snapshot: ConversationSnapshot): string {
-  return textOf(snapshot.live?.generation?.message as Message | undefined);
 }

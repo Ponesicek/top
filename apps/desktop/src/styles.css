@@ -197,20 +197,22 @@ button {
   background: var(--faint);
 }
 
-.avatar.s-streaming::after {
-  background: var(--accent);
-}
 .avatar.s-thinking::after {
   background: var(--warn);
   animation: pulse 1s ease-in-out infinite;
 }
 .avatar.s-tool::after {
   background: var(--tool);
+  animation: pulse 1s ease-in-out infinite;
+}
+.avatar.s-retrying::after {
+  background: var(--warn);
 }
 .avatar.s-failed::after {
   background: var(--bad);
 }
-.avatar.s-streaming {
+.avatar.s-thinking,
+.avatar.s-tool {
   box-shadow: 0 0 0 1px var(--accent-soft), 0 0 14px var(--accent-soft);
 }
 
@@ -232,6 +234,13 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.unread {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .badge {
@@ -488,22 +497,6 @@ button {
   font-size: 12.5px;
 }
 
-/* The cursor sits at the end of the last text, inside a list's last item or a code block's last line. */
-.md.streaming > p:last-child::after,
-.md.streaming > :is(h1, h2, h3, h4, blockquote):last-child::after,
-.md.streaming > :is(ul, ol):last-child > li:last-child::after,
-.md.streaming > .code:last-child code::after {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 1.05em;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  background: var(--accent);
-  border-radius: 1px;
-  animation: blink 1s steps(1) infinite;
-}
-
 .dots {
   display: flex;
   gap: 5px;
@@ -542,6 +535,77 @@ button {
   border-radius: 6px;
   background: var(--panel-2);
   color: var(--tool);
+}
+
+/* Tool steps: one compact line per finished tool call. */
+.step {
+  margin: 2px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.step-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.step-icon {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  font: 700 11px/1 var(--mono);
+  color: var(--ok);
+}
+
+.step.bad .step-icon {
+  color: var(--bad);
+}
+
+.step-name {
+  flex: none;
+  font: 600 12px/1.4 var(--mono);
+  color: var(--tool);
+}
+
+.step-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outcome {
+  flex: none;
+  font: 600 10.5px/1 var(--mono);
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.step.bad .outcome {
+  background: rgba(240, 101, 101, 0.14);
+  color: var(--bad);
+}
+
+.step-full {
+  margin: 8px 0 2px 24px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: 12px/1.5 var(--mono);
+  color: var(--text);
+}
+
+.msg.working .who .meta {
+  color: var(--accent);
 }
 
 .error-note {

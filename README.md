@@ -1,79 +1,119 @@
 # Top
 
 A fast, never-drops client for your bots. One daemon runs the bots 24/7, and desktop and phone
-clients attach to it and detach whenever they like.
+clients attach to it and detach whenever they like. Nothing streams: answers arrive whole, tool calls
+show as steps, and the app says what each bot is doing while it does it.
 
 ```
 ┌──────────── Top daemon (apps/server) ────────────┐        ┌── desktop (apps/desktop, Electron) ──┐
-│ Pi Durable Harness on SQLite                     │  WS    │ @top/client                           │
-│  bots = conversations · turns = durable tasks    │◄──────►│  view + Chord ops, applied per frame  │
-│  watch() per client → Chord ops, backpressured   │        │  ConversationTranscript (gaps, pages) │
-└──────────────────────────────────────────────────┘        │  optimistic sends, requestId resend   │
-                                                            └── phone (React Native, next) ─────────┘
+│ pi-agent-core: one Agent per bot                 │  WS    │ @top/client                           │
+│ SQLite: entries · inbox · tool_calls · bots      │◄──────►│  entries after `seq`, gaps, paging    │
+│ every step saved before the next one starts      │ deflate│  optimistic sends, requestId resend   │
+└──────────────────────────────────────────────────┘        └── phone (React Native, next) ─────────┘
 ```
 
 | Package | What it is |
 |---|---|
-| `packages/protocol` | Wire frames (JSON over one WebSocket). No dependencies. |
-| `packages/client` | `@top/client`: connection, reconnect, view sync, transcript paging, optimistic sends. Framework-free, so it's shared by desktop and mobile. |
-| `apps/server` | The daemon. Owns the Harness, the bot roster, sidebar summaries, and serves clients. |
+| `packages/protocol` | Wire frames (JSON over one compressed WebSocket). No dependencies. |
+| `packages/client` | `@top/client`: connection, reconnect, catch-up by sequence number, history paging, optimistic sends. Framework-free, so it's shared by desktop and mobile. |
+| `apps/server` | The daemon: storage (`store.ts`), one runner per bot (`runner.ts`), tools and their crash policies (`tools.ts`), the WebSocket layer (`serve.ts`). |
 | `apps/desktop` | Electron + React. Virtualized transcript, performance overlay, benchmark. |
 
 ## Run it
 
 ```bash
 pnpm install
-pnpm server:load     # daemon with 5 fake bots streaming, one with a 10,000-message history
+pnpm server:load     # daemon with 5 fake bots under load, one with a 10,000-message history
 pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser at :5199)
 ```
 
-The bots use Pi AI's faux provider, so no API key is needed. Everything above the model is real Pi
-Durable: commits, views, the inbox, crash recovery. Daemon flags: `--port`, `--data`, `--load`,
-`--seed N`, `--tps N`, `--reset`.
+The bots use Pi AI's faux provider, so no API key is needed. The fake model calls tools when asked:
+"deploy web 3s", "email the team", "check status", "crash". Daemon flags: `--port`, `--data`,
+`--load`, `--tools` (load includes tool calls), `--seed N`, `--tps N`, `--reset`, `--no-compress`.
 
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
 `Esc` stops, `Ctrl+Shift+P` toggles the performance overlay.
 
+## Crash safety
+
+The bots' tools do real things, so a restart must never run one twice by accident. Every step is
+saved in SQLite (`synchronous=FULL`) before the next one starts:
+
+1. A message you send is stored in the inbox before the daemon confirms it. It moves into the
+   transcript in one transaction when the model takes it, so it is never lost or doubled.
+2. An answer is saved when it ends. pi-agent-core waits for that before it starts any tool.
+3. A tool call is recorded right before the tool runs, and its result is saved the moment it returns.
+
+After a crash, a tool call without a result is settled by the tool's own policy:
+
+| Tool says | What happens | Example |
+|---|---|---|
+| nothing (default) | The model is told it was interrupted and may have taken effect. Not run again. | `deploy` |
+| `recover()` | The tool checks its outcome by `ctx.key` (stable per call, also across restarts) and reports what really happened. | `send_email` |
+| `replay: "safe"` | It runs again. | `check_status` |
+| (never started) | The model is told it did not run. | |
+
+A task that keeps killing the daemon is ended after 3 restarts instead of looping. Stop is final: no
+tool or model request starts after it. A failed model request is retried after 1, 4 and 15 s; only
+the final failure shows.
+
+`pnpm test` kills the daemon with SIGKILL at each of these moments and counts the tools' real side
+effects afterwards.
+
+## Sync
+
+- **Entries are finished and never change.** Each has a sequence number from one counter shared by all
+  bots. A client says which it has (`after`) and gets only the ones it is missing, then each new one
+  once. Missed more than 50? It gets the newest 50 and a gap that loads when scrolled into view.
+- **The client sees what it shows, not what the model saw.** No usage counters or provider metadata;
+  tool output is cut to a preview, and `detail` fetches one entry in full when it's opened.
+- **The sidebar gets one small frame per bot that changed**, coalesced per 100 ms.
+- **Compressed.** permessage-deflate with context takeover, so repeated keys cost almost nothing.
+- **Pings are sparse** (10 s, dead after 25 s). When the app returns to the foreground or the network
+  changes, `kick()` checks the socket right away instead.
+- **Sends are optimistic and idempotent.** A message shows as pending at once, survives a drop, and is
+  resent with the same `requestId`; the daemon applies it once.
+- **Cold start doesn't wait for the network.** Each bot's newest 200 entries are cached locally and
+  shown as stale until the daemon answers, and the reconnect asks only for what's newer.
+
+## Data use
+
+`pnpm wire` measures the real client's TCP bytes against a loaded daemon (5 bots answering
+nonstop at 100 tokens/s). Before = the Pi Durable version with streaming:
+
+| Scenario | Before | After, no compression | After |
+|---|---|---|---|
+| Phone: following the open bot | 473 KB/min, 27.8 KB/answer | 59 KB/min, 3.1 KB/answer | 11 KB/min, 0.6 KB/answer |
+| Desktop: following all 5 bots | 769 KB/min, 8.9 KB/answer | 155 KB/min, 1.8 KB/answer | 31 KB/min, 0.4 KB/answer |
+| Open the 10,000-message bot, no cache | 40.6 KB | 29.9 KB | 7.9 KB |
+| Come back after 30 s away, with cache | 16.5 KB | 11.4 KB | 4.0 KB |
+| Connected, nothing happening | 1.4 KB/min | 0.4 KB/min | 0.2 KB/min |
+
+The fake answers draw from a ~70-word vocabulary and compress better than real text, so expect real
+numbers between the last two columns.
+
 ## The UX bar
 
 `pnpm bench` builds the app, starts a loaded daemon, drives Electron with real input events, and
-kills the daemon with `kill -9` partway through. Latest run (Linux, Xvfb, software rendering):
+kills the daemon with `kill -9` partway through. Same machine, same run conditions (Linux, Xvfb,
+software rendering), before → after:
 
-| Check | Result | Bar |
-|---|---|---|
-| Cold start → content, empty cache / cached | 279 / 229 ms | < 1 s |
-| Keystroke → frame, p50 / p99, 5 bots streaming | 11.3 / 19.5 ms | next 60 Hz frame |
-| Keystrokes that missed the next frame | 0 / 144 | < 1% |
-| Scrolling a 10,000-message transcript | 60 fps, p99 16.8 ms, 0 frames > 33 ms | steady 60 fps |
-| `kill -9` daemon | stale banner, transcript kept | no blank screen |
-| Reconnect after the daemon is back | 153 ms | < 1 s |
-| Message sent while the daemon was down | accepted 153 ms after restart, exactly 1 copy | lands once |
+| Check | Before | After | Bar |
+|---|---|---|---|
+| Cold start → content, empty cache / cached | 763 / 533 ms | 593 / 516 ms | < 1 s |
+| Keystroke → frame, p50 / p99, bots working | 11.2 / 22.1 ms ✘ | 11.7 / 20.3 ms | next 60 Hz frame |
+| Keystrokes that missed the next frame | 2 / 144 ✘ | 0 / 144 | < 1% |
+| Scrolling a 10,000-message transcript | 59.9 fps, 1 frame > 33 ms ✘ | 60 fps, 0 frames > 33 ms | steady 60 fps |
+| `kill -9` daemon | stale banner, transcript kept | stale banner, transcript kept | no blank screen |
+| Reconnect after the daemon is back | 209 ms | 358 ms | < 1 s |
+| Message sent while the daemon was down | accepted 209 ms after restart, 1 copy | accepted 411 ms after restart, 1 copy | lands once |
 
-`pnpm --filter @top/client test` runs the same crash/resume scenario headless.
+Reconnect time depends mostly on where the client's retry backoff is when the daemon comes back.
 
-## How the "never drops" part works
+## Not done yet
 
-- **The daemon commits before it shows.** Pi Durable stores every step, so a killed daemon resumes
-  interrupted turns on restart.
-- **Clients render state; they don't replay events.** The daemon sends the conversation view once,
-  then Chord ops. The client decodes ops as they arrive and applies them once per animation frame.
-- **Backpressure is free.** The daemon's watch listener waits for the socket to drain, and Chord folds
-  any commits that land meanwhile into the next update. A slow phone gets fewer, bigger updates.
-- **Reconnect resumes from what the client has.** `ConversationTranscript.resume` asks only for
-  entries after the newest one held. Anything missed beyond the window becomes a gap that loads
-  when scrolled into view.
-- **Dead connections are noticed fast.** Pings every 3 s, and silence for 8 s counts as a drop. Retries
-  run at 250 ms through a blip, then back off to 5 s with jitter.
-- **Sends are optimistic and idempotent.** A message shows as pending at once, survives a drop, and is
-  resent with the same `requestId`. The daemon places it as a `top.message` entry carrying that
-  `requestId`, so the client retires its pending copy exactly when the real one lands.
-- **Cold start doesn't wait for the network.** The last view of each bot is cached locally and shown
-  as stale until the daemon answers.
-
-## Notes
-
-- `patches/@earendil-works__pi-durable@1.5.0.patch` adds a `./transcript` export, so the client can
-  import `ConversationTranscript` without pulling in the Node-only parts of the package root.
-  Worth upstreaming.
-- Pi Durable is experimental. Its API is only touched in `apps/server/src` and
-  `packages/client/src/conversation.ts`.
+- Compaction: long-running bots will outgrow the model's context window. Pi Durable did this; it
+  needs writing (or borrowing from pi's coding agent).
+- Push notifications when an answer lands, so the phone needn't stay connected.
+- The React Native app; a bigger local cache (IndexedDB / SQLite) there.
+- Real models and real tools, login and device pairing.

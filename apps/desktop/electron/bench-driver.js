@@ -42,10 +42,11 @@ export async function runBench(win) {
   const result = { coldStartMs: firstContentAt - t0 };
 
   if (process.env.TOP_BENCH === "screenshot") {
-    // Wait for every bot to be live and a couple of them mid-answer, then capture the window.
+    // Wait for every bot to be live and a couple of them working, then capture the window.
     await until("window.__top.getSnapshot().bots.length >= 5 && window.__top.getSnapshot().connection === 'open'");
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
-    await until("window.__top.getSnapshot().bots.filter(b => b.status === 'streaming').length >= 2 && !!document.querySelector('.msg.live .md')", 30_000);
+    const shotSelector = JSON.stringify(process.env.TOP_SHOT_WAIT ?? "");
+    await until(`window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= 2 && document.querySelectorAll('.transcript .row').length > 3 && (!${shotSelector} || !!document.querySelector(${shotSelector}))`, 60_000);
     await sleep(Number(process.env.TOP_SHOT_DELAY ?? 1200));
     const image = await wc.capturePage();
     const { writeFileSync } = await import("node:fs");
@@ -126,10 +127,10 @@ export async function runBench(win) {
   await until("window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot().pending.length === 0", 20_000);
   const acceptedAt = Date.now();
   await until(`(() => { const s = window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot();
-    return s.status === 'live' && s.pending.length === 0 && s.items.some(i => i.kind === 'entry' && i.entry.data && i.entry.data.requestId === window.__benchMsg); })()`, 20_000);
+    return s.status === 'live' && s.pending.length === 0 && s.items.some(i => i.kind === 'entry' && i.entry.requestId === window.__benchMsg); })()`, 20_000);
   const deliveredAt = Date.now();
   const duplicates = await js(`(() => { const s = window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot();
-    return s.items.filter(i => i.kind === 'entry' && i.entry.data && i.entry.data.requestId === window.__benchMsg).length; })()`);
+    return s.items.filter(i => i.kind === 'entry' && i.entry.requestId === window.__benchMsg).length; })()`);
   result.reconnect = {
     downMs: restartedAt - lostAt,
     reconnectAfterRestartMs: reconnectedAt - restartedAt,

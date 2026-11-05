@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { WireId } from "@top/client";
+import type { BotId } from "@top/client";
 import { Composer } from "./components/Composer.tsx";
 import { Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
-import { conversation, top } from "./top.ts";
+import { conversation, markSeen, top, useBot } from "./top.ts";
 
 function readSelected(): string | undefined {
   try {
@@ -19,12 +19,15 @@ export function App() {
   // Re-render only when the roster changes, not on every status/preview update (those are the sidebar's).
   const roster = useSyncExternalStore(top.subscribe, () => top.getSnapshot().bots.map((b) => `${b.id}:${b.name}`).join("|"));
   const bots = useMemo(() => top.getSnapshot().bots, [roster]);
-  const [selected, setSelected] = useState<WireId | undefined>(readSelected);
+  const [selected, setSelected] = useState<BotId | undefined>(() => {
+    const saved = readSelected();
+    return saved === undefined ? undefined : Number(saved);
+  });
   const [hud, setHud] = useState(() => new URLSearchParams(location.search).has("perf"));
 
   const bot = bots.find((b) => String(b.id) === String(selected)) ?? bots[0];
 
-  const select = useCallback((id: WireId) => {
+  const select = useCallback((id: BotId) => {
     setSelected(id);
     try {
       localStorage.setItem("top.selected", String(id));
@@ -67,6 +70,12 @@ export function App() {
   }, [select]);
 
   const sync = bot ? conversation(bot.id) : undefined;
+
+  // The open bot's newest entry counts as read.
+  const summary = useBot(bot?.id);
+  useEffect(() => {
+    if (summary) markSeen(summary.id, summary.lastSeq);
+  }, [summary?.id, summary?.lastSeq]);
 
   return (
     <div className="app">

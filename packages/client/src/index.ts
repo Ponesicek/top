@@ -5,21 +5,24 @@
  *   const top = new TopClient({ url: "ws://127.0.0.1:7357" });
  *   const bot = top.conversation(id); bot.retain();
  *   useSyncExternalStore(bot.subscribe, bot.getSnapshot);
+ *
+ * Retain only the bots on screen when data is metered (a phone on cellular): the sidebar summaries
+ * cover the rest, and a retained bot catches up from what it holds when it is opened.
  */
-import type { BotSummary, ServerFrame, WireId } from "@top/protocol";
+import type { BotId, BotSummary, ServerFrame } from "@top/protocol";
 import { Connection, type ConnectionStatus } from "./connection.ts";
-import { ConversationSync, frameScheduler, type Scheduler } from "./conversation.ts";
+import { ConversationSync } from "./conversation.ts";
 
 export * from "./conversation.ts";
 export { Connection, OfflineError, TimeoutError, type ConnectionStatus } from "./connection.ts";
-export type { BotSummary, BotStatus, WhenBusy, WireId } from "@top/protocol";
-export { MESSAGE_KIND, type MessageData } from "@top/protocol";
+export type { BotId, BotStatus, BotSummary, Entry, Gap, QueuedMessage, Seq, ToolCallView, ToolOutcome, WhenBusy } from "@top/protocol";
 
 export type TopClientOptions = {
   readonly url: string;
   readonly clientId?: string;
   readonly WebSocket?: typeof WebSocket;
-  readonly schedule?: Scheduler;
+  readonly pingIntervalMs?: number;
+  readonly deadAfterMs?: number;
 };
 
 export type TopSnapshot = {
@@ -34,28 +37,26 @@ export type TopSnapshot = {
 export class TopClient {
   readonly clientId: string;
   readonly #connection: Connection;
-  readonly #schedule: Scheduler;
-  readonly #conversations = new Map<string, ConversationSync>();
-  readonly #bySub = new Map<number, ConversationSync>();
+  readonly #conversations = new Map<BotId, ConversationSync>();
   readonly #listeners = new Set<() => void>();
-  #nextSub = 1;
   readonly #rttTimer: ReturnType<typeof setInterval>;
   #snapshot: TopSnapshot = { connection: "connecting", rttMs: undefined, attempt: 0, bots: [], ready: false };
 
   constructor(options: TopClientOptions) {
     this.clientId = options.clientId ?? `client-${Math.random().toString(36).slice(2, 10)}`;
-    this.#schedule = options.schedule ?? frameScheduler;
-    this.#connection = new Connection({ url: options.url, clientId: this.clientId, WebSocket: options.WebSocket });
+    this.#connection = new Connection({
+      url: options.url,
+      clientId: this.clientId,
+      WebSocket: options.WebSocket,
+      ...(options.pingIntervalMs ? { pingIntervalMs: options.pingIntervalMs } : {}),
+      ...(options.deadAfterMs ? { deadAfterMs: options.deadAfterMs } : {}),
+    });
     this.#connection.onFrame = (frame) => this.#receive(frame);
     this.#connection.onOpen = () => {
-      this.#bySub.clear();
       for (const conversation of this.#conversations.values()) conversation.attach();
     };
     this.#connection.onStatus = () => {
-      if (this.#connection.status !== "open") {
-        this.#bySub.clear();
-        for (const conversation of this.#conversations.values()) conversation.disconnected();
-      }
+      if (this.#connection.status !== "open") for (const conversation of this.#conversations.values()) conversation.disconnected();
       this.#publish({ connection: this.#connection.status, attempt: this.#connection.attempt });
     };
     this.#connection.start();
@@ -77,20 +78,19 @@ export class TopClient {
     if (!this.#snapshot.ready && this.#snapshot.bots.length === 0) this.#publish({ bots });
   }
 
-  /** Reconnect now (for example on the browser's `online` event or when the app returns to the foreground). */
+  /**
+   * The app came back to the foreground or the network changed: reconnect now if we're down, or
+   * check right away that an open socket still works.
+   */
   kick() {
     this.#connection.kick();
   }
 
-  conversation(id: WireId): ConversationSync {
-    const key = String(id);
-    let conversation = this.#conversations.get(key);
+  conversation(id: BotId): ConversationSync {
+    let conversation = this.#conversations.get(id);
     if (!conversation) {
-      conversation = new ConversationSync(id, this.#connection, this.clientId, this.#schedule);
-      conversation.allocateSub = () => this.#nextSub++;
-      const c = conversation;
-      conversation.onSubscribe = (sub) => this.#bySub.set(sub, c);
-      this.#conversations.set(key, conversation);
+      conversation = new ConversationSync(id, this.#connection, this.clientId);
+      this.#conversations.set(id, conversation);
     }
     return conversation;
   }
@@ -105,15 +105,20 @@ export class TopClient {
       case "bots":
         this.#publish({ bots: frame.bots, ready: true });
         return;
-      case "view":
-        this.#bySub.get(frame.sub)?.receiveView(frame.sub, frame.value);
+      case "bot": {
+        const bots = this.#snapshot.bots;
+        const i = bots.findIndex((b) => b.id === frame.bot.id);
+        this.#publish({ bots: i < 0 ? [...bots, frame.bot] : bots.map((b, j) => (j === i ? frame.bot : b)) });
         return;
-      case "ops":
-        this.#bySub.get(frame.sub)?.receiveOps(frame.sub, frame.ops);
+      }
+      case "sync":
+        this.#conversations.get(frame.bot)?.receiveSync(frame);
         return;
-      case "end":
-        this.#bySub.get(frame.sub)?.receiveEnd(frame.sub);
-        this.#bySub.delete(frame.sub);
+      case "entry":
+        this.#conversations.get(frame.entry.bot)?.receiveEntry(frame.entry);
+        return;
+      case "inbox":
+        this.#conversations.get(frame.bot)?.receiveInbox(frame.items);
         return;
     }
   }

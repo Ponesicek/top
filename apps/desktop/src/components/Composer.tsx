@@ -1,10 +1,12 @@
 /**
- * The composer is isolated from streaming: it subscribes only to "is the bot running", so typing
+ * The composer is isolated from the transcript: it subscribes only to "is the bot working", so typing
  * never waits on a transcript render.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ConversationSync } from "@top/client";
 import { perf } from "../perf.ts";
+import { isWorking } from "../rows.ts";
+import { top } from "../top.ts";
 
 const drafts = new Map<string, string>();
 
@@ -12,7 +14,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
   const key = String(sync.id);
   const [text, setText] = useState(() => drafts.get(key) ?? "");
   const ref = useRef<HTMLTextAreaElement>(null);
-  const running = useSyncExternalStore(sync.subscribe, () => Boolean(sync.getSnapshot().live?.run));
+  const running = useSyncExternalStore(top.subscribe, () => isWorking(top.getSnapshot().bots.find((b) => b.id === sync.id)?.status));
 
   useEffect(() => {
     ref.current?.focus();

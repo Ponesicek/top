@@ -5,12 +5,13 @@
   "packageManager": "pnpm@11.20.0",
   "scripts": {
     "server": "pnpm --filter @top/server start",
-    "server:load": "pnpm --filter @top/server start --load --seed 10000",
+    "server:load": "pnpm --filter @top/server start --load --tools --seed 10000",
     "desktop": "pnpm --filter @top/desktop dev",
     "web": "pnpm --filter @top/desktop dev:web",
     "bench": "pnpm --filter @top/desktop bench",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "wire": "node --import tsx scripts/wire.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
