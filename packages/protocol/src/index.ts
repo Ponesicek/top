@@ -104,7 +104,12 @@ export type Gap = { readonly after: Seq; readonly before: Seq };
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
 export type ClientFrame =
-  | { readonly t: "hello"; readonly clientId: string; readonly protocol: typeof PROTOCOL_VERSION }
+  /**
+   * `serverId`: the daemon the client's entries came from (from an earlier `welcome`, or its cache).
+   * If it isn't this daemon, the `after` of this connection's watches is ignored and the newest entries
+   * are sent instead: those sequence numbers belong to another daemon's data.
+   */
+  | { readonly t: "hello"; readonly clientId: string; readonly protocol: typeof PROTOCOL_VERSION; readonly serverId?: string }
   /** Follow a bot. `after`: the newest entry the client holds; omit it to get the newest `limit`. */
   | { readonly t: "watch"; readonly bot: BotId; readonly after?: Seq; readonly limit?: number }
   | { readonly t: "unwatch"; readonly bot: BotId }
@@ -131,6 +136,7 @@ export type SubmitResult = { readonly duplicate: boolean };
 // ── daemon → client ──────────────────────────────────────────────────────────────
 
 export type ServerFrame =
+  /** `serverId` names this daemon's data and survives restarts. A different one means the client's entries are from elsewhere. */
   | { readonly t: "welcome"; readonly serverId: string; readonly protocol: typeof PROTOCOL_VERSION }
   /** Every bot, once per connection. */
   | { readonly t: "bots"; readonly bots: readonly BotSummary[] }

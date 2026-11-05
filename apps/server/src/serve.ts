@@ -6,7 +6,6 @@
  * entry is pushed once. Reading and registering happen in the same tick (SQLite is synchronous), so
  * no entry can slip between the catch-up and the live updates.
  */
-import { randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type ClientFrame, type Entry, type QueuedMessage, type ServerFrame } from "@top/protocol";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Daemon } from "./daemon.ts";
@@ -17,8 +16,6 @@ const DEFAULT_WINDOW = 50;
 const MAX_WINDOW = 200;
 /** A client this far behind is reading nothing; drop it and let it resync on reconnect. */
 const MAX_BUFFERED = 8 << 20;
-
-const serverId = randomUUID();
 
 function send(socket: WebSocket, frame: ServerFrame) {
   if (socket.readyState !== socket.OPEN) return;
@@ -37,6 +34,8 @@ class ClientConnection {
   readonly #daemon: Daemon;
   readonly #watching = new Set<number>();
   readonly #unsubscribe: (() => void)[];
+  /** The client's entries are from another daemon's data, so its `after` positions mean nothing here. */
+  #foreign = false;
   alive = true;
 
   constructor(socket: WebSocket, daemon: Daemon) {
@@ -45,7 +44,7 @@ class ClientConnection {
     socket.on("message", (data) => this.#receive(String(data)));
     socket.on("pong", () => (this.alive = true));
     socket.on("close", () => this.close());
-    send(socket, { t: "welcome", serverId, protocol: PROTOCOL_VERSION });
+    send(socket, { t: "welcome", serverId: daemon.store.id, protocol: PROTOCOL_VERSION });
     send(socket, { t: "bots", bots: daemon.bots });
     this.#unsubscribe = [
       daemon.onBot((bot) => send(socket, { t: "bot", bot })),
@@ -70,6 +69,7 @@ class ClientConnection {
     const store = this.#daemon.store;
     switch (frame.t) {
       case "hello":
+        this.#foreign = frame.serverId !== undefined && frame.serverId !== store.id;
         return;
       case "ping":
         return send(this.socket, { t: "pong", at: frame.at });
@@ -79,15 +79,16 @@ class ClientConnection {
         let entries;
         let gap;
         let earlier;
-        if (frame.after === undefined) {
+        const after = this.#foreign ? undefined : frame.after;
+        if (after === undefined) {
           entries = store.newest(frame.bot, limit);
           earlier = entries.length > 0 && store.hasBefore(frame.bot, entries[0]!.seq);
         } else {
-          entries = store.after(frame.bot, frame.after, limit + 1);
+          entries = store.after(frame.bot, after, limit + 1);
           if (entries.length > limit) {
             // Missed more than fit: send the newest, and say what lies between.
             entries = store.newest(frame.bot, limit);
-            gap = { after: frame.after, before: entries[0]!.seq };
+            gap = { after, before: entries[0]!.seq };
           }
         }
         this.#watching.add(frame.bot);

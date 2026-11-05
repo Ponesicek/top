@@ -23,7 +23,7 @@ show as steps, and the app says what each bot is doing while it does it.
 
 ```bash
 pnpm install
-pnpm server          # the daemon, with 5 bots on a real model (openai/gpt-6.1-sol)
+pnpm server          # the daemon, with one bot (Atlas) on a real model (openai/gpt-6.1-sol)
 pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser at :5199)
 ```
 
@@ -88,6 +88,9 @@ effects afterwards.
   changes, `kick()` checks the socket right away instead.
 - **Sends are optimistic and idempotent.** A message shows as pending at once, survives a drop, and is
   resent with the same `requestId`; the daemon applies it once.
+- **A cache belongs to one daemon's data.** The daemon has a permanent id; the client names the one its
+  entries came from in `hello`. Point the app at different data on the same address and it drops what
+  it held, instead of mixing two histories whose sequence numbers overlap.
 - **Cold start doesn't wait for the network.** Each bot's newest 200 entries are cached locally and
   shown as stale until the daemon answers, and the reconnect asks only for what's newer.
 
@@ -131,5 +134,6 @@ Reconnect time depends mostly on where the client's retry backoff is when the da
   needs writing (or borrowing from pi's coding agent).
 - Push notifications when an answer lands, so the phone needn't stay connected.
 - The React Native app; a bigger local cache (IndexedDB / SQLite) there.
-- Real tools (MCP servers), choosing a model per bot, adding and renaming bots from the app.
+- Real tools (MCP servers), choosing a model per bot, adding and renaming bots from the app
+  (real mode starts with one bot until then).
 - Login and device pairing for the daemon itself.

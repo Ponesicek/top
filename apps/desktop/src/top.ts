@@ -28,14 +28,25 @@ function safeJson<T>(key: string): T | undefined {
   }
 }
 
-const cacheKey = (suffix: string) => `top.cache.v2:${serverUrl}:${suffix}`;
+// v3 records which daemon the cache came from; v2 didn't, so it can't be trusted and is dropped.
+const cachePrefix = `top.cache.v3:${serverUrl}:`;
+const cacheKey = (suffix: string) => cachePrefix + suffix;
+function dropCache(prefix: string) {
+  try {
+    for (const key of Object.keys(localStorage)) if (key.startsWith(prefix)) localStorage.removeItem(key);
+  } catch {
+    // disabled storage: nothing cached
+  }
+}
+dropCache("top.cache.v2:");
 
-export const top = new TopClient({ url: serverUrl });
+const cachedServer = safeGet(cacheKey("server")) ?? undefined;
+export const top = new TopClient({ url: serverUrl, ...(cachedServer ? { serverId: cachedServer } : {}) });
 (window as unknown as { __top: TopClient }).__top = top;
 
 // ── hydrate from cache before the network answers ──────────────────────────────
 
-const cachedBots = safeJson<BotSummary[]>(cacheKey("bots"));
+const cachedBots = cachedServer ? safeJson<BotSummary[]>(cacheKey("bots")) : undefined;
 if (cachedBots) {
   top.hydrateBots(cachedBots);
   for (const bot of cachedBots) {
@@ -92,8 +103,23 @@ export function useBot(id: BotId | undefined): BotSummary | undefined {
 // ── unread: the newest entry seen per bot, kept locally ─────────────────────────
 
 const seenKey = cacheKey("seen");
-let seen: Record<string, number> = safeJson<Record<string, number>>(seenKey) ?? {};
+let seen: Record<string, number> = (cachedServer && safeJson<Record<string, number>>(seenKey)) || {};
 const seenListeners = new Set<() => void>();
+
+// A different daemon (another --data, or a reset): the client has dropped what it held from the old
+// one, so drop the cache and read marks too. They'd show its transcripts and hide new messages.
+let currentServer = cachedServer;
+top.subscribe(() => {
+  const { serverId } = top.getSnapshot();
+  if (!serverId || serverId === currentServer) return;
+  if (currentServer !== undefined) {
+    dropCache(cachePrefix);
+    seen = {};
+    for (const listener of seenListeners) listener();
+  }
+  currentServer = serverId;
+  safeSet(cacheKey("server"), serverId);
+});
 
 export function markSeen(id: BotId, seq: number) {
   if ((seen[id] ?? 0) >= seq) return;

@@ -44,7 +44,7 @@ export async function runBench(win) {
 
   if (process.env.TOP_BENCH === "screenshot") {
     // Wait for every bot to be live and a couple of them working, then capture the window.
-    await until("window.__top.getSnapshot().bots.length >= 5 && window.__top.getSnapshot().connection === 'open'");
+    await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
     const shotSelector = JSON.stringify(process.env.TOP_SHOT_WAIT ?? "");
     await until(`window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= ${Number(process.env.TOP_SHOT_BUSY ?? 2)} && document.querySelectorAll('.transcript .row').length >= ${Number(process.env.TOP_SHOT_ROWS ?? 4)} && (!${shotSelector} || !!document.querySelector(${shotSelector}))`, 60_000);
@@ -63,7 +63,7 @@ export async function runBench(win) {
     return;
   }
 
-  await until("window.__top.getSnapshot().bots.length >= 5 && window.__top.getSnapshot().connection === 'open'");
+  await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
   await sleep(1500); // let the load driver get every bot streaming
 
   // ── 1. typing while 5 bots stream ─────────────────────────────────────────

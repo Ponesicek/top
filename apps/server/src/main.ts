@@ -65,6 +65,7 @@ let models: MutableModels;
 let model: string;
 let tools: TopTool[];
 let instructionsFor: ((name: string) => string) | undefined;
+let botNames: readonly string[];
 
 if (real) {
   model = args.model!;
@@ -81,6 +82,8 @@ if (real) {
     if (!models.getModel(providerId, model.slice(slash + 1))) fail(`${providerId} has no model "${model.slice(slash + 1)}".`);
   }
   console.log(`[top] model ${model} (${auth.source ?? auth.type}), thinking ${thinking}`);
+  // One bot to start with; adding more comes with a way to make them from the app.
+  botNames = ["Atlas"];
   // No tools yet: real ones come from MCP servers next. The fake ones pretend to deploy and email.
   tools = [];
   instructionsFor = (name) =>
@@ -94,10 +97,13 @@ if (real) {
   models = createModels();
   models.setProvider(createFakeModelProvider(Number(args.tps)).provider);
   tools = createFakeTools(resolve(dataDir, "effects.jsonl"));
+  botNames = BOT_NAMES;
 }
 
 const store = new Store(resolve(dataDir, "top.sqlite"));
-ensureBots(store, BOT_NAMES, model, tools, instructionsFor);
+ensureBots(store, botNames, model, tools, instructionsFor);
+// The previous version made five real bots; drop the extra ones if they were never used.
+if (real) for (const bot of store.bots()) if (!botNames.includes(bot.name) && store.removeUnusedBot(bot.id)) console.log(`[top] removed unused bot ${bot.name}`);
 // One model for every bot for now; switching `--model` moves the existing bots over.
 for (const bot of store.bots()) if (bot.model !== model) store.setModel(bot.id, model);
 if (Number(args.seed) > 0) seedHistory(store, store.bots()[0]!.id, Number(args.seed));
@@ -109,7 +115,7 @@ await daemon.start();
 const server = serve(daemon, { host: args.host, port: Number(args.port), compress: !args["no-compress"] });
 const stopLoad = args.load ? startLoad(daemon, { tools: args.tools }) : () => {};
 
-console.log(`[top] ${daemon.runners.size} bots, data in ${dataDir}`);
+console.log(`[top] ${daemon.runners.size} bot${daemon.runners.size === 1 ? "" : "s"}, data in ${dataDir}`);
 console.log(`[top] listening on ws://${args.host}:${args.port}${args.load ? ` (synthetic load on${args.tools ? ", with tools" : ""})` : ""}`);
 
 async function shutdown() {

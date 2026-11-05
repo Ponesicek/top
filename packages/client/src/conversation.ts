@@ -160,6 +160,16 @@ export class ConversationSync {
     this.#publish("stale");
   }
 
+  /** Forget everything held: it came from another daemon. Messages still being sent stay. */
+  reset() {
+    this.#entries = [];
+    this.#gaps = [];
+    this.#earlier = false;
+    this.#inbox = [];
+    this.#known = false;
+    this.#publish("loading");
+  }
+
   // ── frames from the daemon ───────────────────────────────────────────────────
 
   receiveSync(frame: { entries: readonly Entry[]; gap?: Gap; earlier?: boolean; inbox: readonly QueuedMessage[] }) {

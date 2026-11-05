@@ -21,6 +21,8 @@ export type TopClientOptions = {
   readonly url: string;
   readonly clientId?: string;
   readonly WebSocket?: typeof WebSocket;
+  /** The daemon a cache being hydrated came from (`getSnapshot().serverId` when it was saved). */
+  readonly serverId?: string;
   readonly pingIntervalMs?: number;
   readonly deadAfterMs?: number;
 };
@@ -29,6 +31,11 @@ export type TopSnapshot = {
   readonly connection: ConnectionStatus;
   readonly rttMs: number | undefined;
   readonly attempt: number;
+  /**
+   * Names the daemon's data. It changes when the client meets a different daemon (another `--data`,
+   * or a reset), and everything held from the old one is dropped; a UI should drop its own cache then.
+   */
+  readonly serverId: string | undefined;
   readonly bots: readonly BotSummary[];
   /** Set once the first roster arrived; the UI can render from cache before that. */
   readonly ready: boolean;
@@ -40,10 +47,11 @@ export class TopClient {
   readonly #conversations = new Map<BotId, ConversationSync>();
   readonly #listeners = new Set<() => void>();
   readonly #rttTimer: ReturnType<typeof setInterval>;
-  #snapshot: TopSnapshot = { connection: "connecting", rttMs: undefined, attempt: 0, bots: [], ready: false };
+  #snapshot: TopSnapshot;
 
   constructor(options: TopClientOptions) {
     this.clientId = options.clientId ?? `client-${Math.random().toString(36).slice(2, 10)}`;
+    this.#snapshot = { connection: "connecting", rttMs: undefined, attempt: 0, serverId: options.serverId, bots: [], ready: false };
     this.#connection = new Connection({
       url: options.url,
       clientId: this.clientId,
@@ -51,6 +59,7 @@ export class TopClient {
       ...(options.pingIntervalMs ? { pingIntervalMs: options.pingIntervalMs } : {}),
       ...(options.deadAfterMs ? { deadAfterMs: options.deadAfterMs } : {}),
     });
+    this.#connection.serverId = options.serverId;
     this.#connection.onFrame = (frame) => this.#receive(frame);
     this.#connection.onOpen = () => {
       for (const conversation of this.#conversations.values()) conversation.attach();
@@ -102,6 +111,15 @@ export class TopClient {
 
   #receive(frame: ServerFrame) {
     switch (frame.t) {
+      case "welcome": {
+        if (frame.serverId === this.#snapshot.serverId) return;
+        // Another daemon's data: what we hold is not its history. Its watches already ignore our
+        // `after` (we said where our entries came from in `hello`), so the syncs that follow are fresh.
+        if (this.#snapshot.serverId !== undefined) for (const conversation of this.#conversations.values()) conversation.reset();
+        this.#connection.serverId = frame.serverId;
+        this.#publish({ serverId: frame.serverId });
+        return;
+      }
       case "bots":
         this.#publish({ bots: frame.bots, ready: true });
         return;

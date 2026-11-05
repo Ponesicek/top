@@ -52,6 +52,8 @@ export class Connection {
   readonly #requests = new Map<number, Pending>();
   #closed = false;
 
+  /** The daemon the client's entries came from; sent in `hello` (see the protocol). */
+  serverId: string | undefined;
   onFrame: (frame: ServerFrame) => void = () => {};
   onOpen: () => void = () => {};
   onStatus: () => void = () => {};
@@ -147,7 +149,8 @@ export class Connection {
       clearTimeout(this.#connectTimer);
       this.#attempt = 0;
       this.#lastPong = Date.now();
-      socket.send(JSON.stringify({ t: "hello", clientId: this.#options.clientId, protocol: PROTOCOL_VERSION } satisfies ClientFrame));
+      const hello: ClientFrame = { t: "hello", clientId: this.#options.clientId, protocol: PROTOCOL_VERSION, ...(this.serverId ? { serverId: this.serverId } : {}) };
+      socket.send(JSON.stringify(hello));
       this.#pingTimer = setInterval(() => this.#ping(), this.#options.pingIntervalMs);
       this.#setStatus("open");
       this.onOpen();

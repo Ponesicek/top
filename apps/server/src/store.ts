@@ -10,6 +10,7 @@
  *   call without a result had started (it may have taken effect) or not.
  * - `bots`: the roster, plus whether a task was running and how often the daemon restarted during it.
  */
+import { randomUUID } from "node:crypto";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
 export type EntryKind = "system" | "user" | "assistant" | "tool" | "notice";
@@ -48,6 +49,10 @@ export type InboxRow = {
 export type ToolCallRow = { readonly name: string; readonly args: string; readonly startedAt: number; readonly finishedAt: number | null };
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS bots (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
@@ -119,6 +124,8 @@ function inboxOf(row: Row): InboxRow {
 const VISIBLE = "kind != 'system'";
 
 export class Store {
+  /** Names this data, for clients: made once, kept across restarts. */
+  readonly id: string;
   readonly #db: DatabaseSync;
   readonly #q: Record<string, StatementSync>;
 
@@ -126,6 +133,8 @@ export class Store {
     this.#db = new DatabaseSync(path);
     this.#db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     this.#db.exec(SCHEMA);
+    this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('id', ?)").run(randomUUID());
+    this.id = String((this.#db.prepare("SELECT value FROM meta WHERE key = 'id'").get() as { value: string }).value);
     const p = (sql: string) => this.#db.prepare(sql);
     this.#q = {
       bots: p("SELECT * FROM bots ORDER BY id"),
@@ -196,6 +205,17 @@ export class Store {
 
   setRestarts(bot: number, restarts: number) {
     this.#q.setRestarts!.run(restarts, bot);
+  }
+
+  /** Delete a bot that was never used: no messages, nothing queued. False (and nothing changed) otherwise. */
+  removeUnusedBot(bot: number): boolean {
+    return this.transaction(() => {
+      if (this.lastSeq(bot) > 0 || this.inbox(bot).length > 0) return false;
+      this.#db.prepare("DELETE FROM entries WHERE bot = ?").run(bot);
+      this.#db.prepare("DELETE FROM tool_calls WHERE bot = ?").run(bot);
+      this.#db.prepare("DELETE FROM bots WHERE id = ?").run(bot);
+      return true;
+    });
   }
 
   /** `provider/model-id`. Takes effect when the daemon next starts. */

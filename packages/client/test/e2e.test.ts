@@ -5,7 +5,8 @@
  * - mid-answer, with a message sent while it was down: nothing lost, nothing doubled;
  * - mid-tool, for each recovery policy: a tool that may have taken effect is never run twice;
  * - in a crash loop: the task ends instead of restarting forever;
- * - a resent message is applied once; a long absence resumes with only the new entries plus a gap.
+ * - a resent message is applied once; a long absence resumes with only the new entries plus a gap;
+ * - a client that meets a different daemon on the same address drops what it held from the old one.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -21,16 +22,20 @@ after(async () => {
   for (const fn of cleanup.reverse()) await fn();
 });
 
+// Every daemon stays up until the suite ends, so give each its own port instead of a random one.
+let nextPort = 7400 + Math.floor(Math.random() * 50) * 10;
+
 class Daemon {
   readonly dataDir = mkdtempSync(join(tmpdir(), "top-e2e-"));
-  readonly port = 7400 + Math.floor(Math.random() * 500);
+  readonly port: number;
   process: ChildProcess | undefined;
   output = "";
 
   readonly extra: string[];
 
-  constructor(extra: string[] = []) {
+  constructor(extra: string[] = [], port = nextPort++) {
     this.extra = extra;
+    this.port = port;
     cleanup.push(async () => {
       await this.kill();
       rmSync(this.dataDir, { recursive: true, force: true });
@@ -337,4 +342,48 @@ test("reconnecting sends only what's new; a long absence leaves a gap that loads
   assert.equal(entries(filled).length, 101);
   const rest = filled.items.find((i) => i.kind === "gap");
   assert.ok(rest && rest.kind === "gap" && rest.gap.after === 10 && rest.gap.before < gap.gap.before, "the gap shrinks as it loads");
+});
+
+test("a different daemon on the same address: the old one's transcript is dropped, not mixed in", async () => {
+  const a = new Daemon(["--seed", "300"]);
+  await a.start();
+  const { top, bot } = await connect(a, 0);
+  assert.equal(entries(bot.getSnapshot()).length, 50);
+  const aId = top.getSnapshot().serverId!;
+  assert.ok(aId);
+  const cache = bot.exportCache()!;
+  await a.kill();
+
+  // Fresh data on the same port. Its sequence numbers start again from 1, below what the client holds.
+  const b = new Daemon([], a.port);
+  await b.start();
+  await until(top.subscribe, top.getSnapshot, (x) => x.serverId !== aId && x.connection === "open", "the new daemon");
+  await untilBot(bot, (x) => x.status === "live", "the fresh sync");
+  assert.equal(entries(bot.getSnapshot()).length, 0, "nothing from the old daemon");
+
+  bot.send("after the switch");
+  const s = await untilBot(bot, (x) => ofKind(x, "assistant").length === 1, "the answer");
+  assert.equal(entries(s)[0]!.kind, "user");
+  assert.equal((entries(s)[0] as Extract<Entry, { kind: "user" }>).text, "after the switch", "the new message is first, not above old ones");
+
+  // Its id survives a restart, so the client keeps what it has and resumes.
+  const bId = top.getSnapshot().serverId;
+  const held = entries(bot.getSnapshot()).length;
+  await b.kill();
+  await b.start();
+  await until(top.subscribe, top.getSnapshot, (x) => x.connection === "open", "the restarted daemon");
+  await untilBot(bot, (x) => x.status === "live", "the resumed sync");
+  assert.equal(top.getSnapshot().serverId, bId);
+  assert.equal(entries(bot.getSnapshot()).length, held);
+
+  // Cold start from the old daemon's cache: dropped as soon as the new daemon says who it is.
+  const cold = new TopClient({ url: b.url, serverId: aId });
+  cleanup.push(() => cold.close());
+  const coldBot = cold.conversation(bot.id);
+  coldBot.hydrate(cache);
+  assert.equal(entries(coldBot.getSnapshot()).length, 50);
+  coldBot.retain();
+  const fresh = await untilBot(coldBot, (x) => x.status === "live", "the cold sync");
+  assert.deepEqual(entries(fresh).map((e) => e.kind), entries(bot.getSnapshot()).map((e) => e.kind));
+  assert.ok(!entries(fresh).some((e) => e.kind === "user" && e.text.includes("(#")), "no seeded history");
 });
