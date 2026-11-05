@@ -19,8 +19,11 @@ const server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port",
 await new Promise((r) => server.stdout.on("data", (d) => String(d).includes("listening") && r()));
 
 const needsX = process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
-const args = [".", ...(process.platform === "linux" ? ["--no-sandbox"] : [])];
-const [cmd, cmdArgs] = needsX ? ["xvfb-run", ["-a", "-s", "-screen 0 1280x820x24", electron, ...args]] : [electron, args];
+// TOP_SHOT_SCALE=2 captures at 2x, like a hi-DPI screen.
+const scale = Number(process.env.TOP_SHOT_SCALE ?? 1);
+const args = [".", ...(process.platform === "linux" ? ["--no-sandbox"] : []), ...(scale !== 1 ? [`--force-device-scale-factor=${scale}`] : [])];
+const screen = `${Math.ceil(1280 * scale)}x${Math.ceil(820 * scale)}x24`;
+const [cmd, cmdArgs] = needsX ? ["xvfb-run", ["-a", "-s", `-screen 0 ${screen}`, electron, ...args]] : [electron, args];
 const child = spawn(cmd, cmdArgs, {
   cwd: desktopDir,
   stdio: ["pipe", "inherit", "ignore"],

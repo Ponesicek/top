@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node --import tsx src/main.ts",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.5.0",
