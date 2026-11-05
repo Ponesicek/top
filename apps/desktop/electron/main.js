@@ -17,7 +17,7 @@ function createWindow() {
     minWidth: 420,
     minHeight: 420,
     show: false,
-    backgroundColor: "#0d0e11",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#131417" : "#ffffff",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       contextIsolation: true,

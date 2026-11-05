@@ -16,10 +16,27 @@ export class BusyError extends Error {
   override name = "ConversationBusy";
 }
 
-function lastLine(text: string): string {
-  const lines = text.trimEnd().split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!.replace(/[`*#|>-]/g, "").trim();
+/**
+ * The answer's last line of prose, for the sidebar: code fences and table rows are skipped, and only
+ * Markdown syntax is removed (list/heading/quote markers, emphasis, backticks), so text like
+ * "follow-up" or "kill -9" survives intact.
+ */
+export function lastLine(text: string): string {
+  const prose: string[] = [];
+  let fenced = false;
+  for (const raw of text.split("\n")) {
+    if (/^\s*(```|~~~)/.test(raw)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced || /^\s*\|/.test(raw)) continue;
+    prose.push(raw);
+  }
+  for (let i = prose.length - 1; i >= 0; i--) {
+    const line = prose[i]!
+      .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|>\s?)+/, "")
+      .replace(/(\*\*|__|`)/g, "")
+      .trim();
     if (line) return line.slice(0, 120);
   }
   return "";

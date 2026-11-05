@@ -1,6 +1,11 @@
 import { memo, useSyncExternalStore } from "react";
+import { Activity } from "lucide-react";
 import type { BotId, BotSummary } from "@top/client";
-import { top, useSeen } from "../top.ts";
+import { serverUrl, top, useSeen } from "../top.ts";
+import { Avatar } from "./Avatar.tsx";
+
+/** The sidebar's short status, beside the name; the header spells out the tool. */
+const SHORT: Record<BotSummary["status"], string> = { idle: "", thinking: "Thinking", tool: "Running", retrying: "Retrying", failed: "Failed" };
 
 export function statusLabel(bot: BotSummary): string {
   switch (bot.status) {
@@ -18,41 +23,78 @@ export function statusLabel(bot: BotSummary): string {
 }
 
 const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect }: { bot: BotSummary; selected: boolean; unread: boolean; index: number; onSelect: (id: BotId) => void }) {
+  const busy = bot.status !== "idle";
+  // A working bot shows its work, not "unread"; an idle bot with something new swaps its gray ring for blue.
+  const fresh = unread && !busy;
   return (
-    <button className={`bot ${selected ? "selected" : ""}`} onClick={() => onSelect(bot.id)} title={`${bot.name} (Ctrl+${index + 1})`}>
-      <span className={`avatar s-${bot.status}`}>{bot.name[0]}</span>
+    <button className={`bot${selected ? " selected" : ""}${fresh ? " unread" : ""}`} onClick={() => onSelect(bot.id)} title={`${bot.name} (Ctrl+${index + 1})`} aria-current={selected || undefined}>
+      <Avatar name={bot.name} status={bot.status} />
       <span className="bot-text">
-        <span className="bot-name">
-          {bot.name}
-          {bot.queued > 0 && <span className="badge">{bot.queued}</span>}
-          {unread && <span className="unread" title="New messages" />}
+        <span className="bot-line">
+          <span className="bot-name">{bot.name}</span>
+          <span className={`state st-${bot.status}${fresh ? " fresh" : ""}`} title={fresh ? "Idle · new messages" : statusLabel(bot)}>
+            <i />
+            {busy ? SHORT[bot.status] : "Idle"}
+          </span>
+          {bot.queued > 0 && (
+            <span className="badge" title={`${bot.queued} queued`}>
+              {bot.queued} queued
+            </span>
+          )}
         </span>
-        <span className="bot-preview">{bot.status === "idle" ? bot.preview || "Idle" : bot.preview ? `${statusLabel(bot)} · ${bot.preview}` : statusLabel(bot)}</span>
+        {bot.preview ? <span className="bot-preview">{bot.preview}</span> : <span className="bot-preview empty-preview">No messages yet</span>}
       </span>
     </button>
   );
 });
 
-export function Sidebar({ selected, onSelect }: { selected: BotId | undefined; onSelect: (id: BotId) => void }) {
-  const { bots, connection, rttMs } = useSyncExternalStore(top.subscribe, top.getSnapshot);
+function host(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+export function Sidebar({ selected, onSelect, onTogglePerf }: { selected: BotId | undefined; onSelect: (id: BotId) => void; onTogglePerf: () => void }) {
+  const { bots, connection } = useSyncExternalStore(top.subscribe, top.getSnapshot);
   const seen = useSeen();
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="logo">top</span>
-        <span className={`conn c-${connection}`} title={rttMs !== undefined ? `Round trip ${rttMs} ms` : undefined}>
+        <span className="logo" aria-label="Top">
+          <span className="logo-mark" aria-hidden>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M7 8l4 4-4 4" />
+              <path d="M13 16h4.5" />
+            </svg>
+          </span>
+          top
+        </span>
+        <span className="brand-right">
+        {connection !== "open" && (
+        <span className={`conn c-${connection}`} title={host(serverUrl)}>
           <i />
-          {connection === "open" ? (rttMs !== undefined ? `${rttMs} ms` : "Live") : connection === "connecting" ? "Connecting" : "Reconnecting"}
+          {connection === "connecting" ? "Connecting" : "Reconnecting"}
+        </span>
+        )}
         </span>
       </div>
-      <div className="section-label">Bots</div>
+      <div className="section-label">
+        <span className="section-title">Bots</span>
+      </div>
       <nav className="bots">
         {bots.map((bot, i) => {
           const isSelected = bot.id === selected;
           return <BotItem key={bot.id} bot={bot} index={i} selected={isSelected} unread={!isSelected && bot.lastSeq > (seen[bot.id] ?? 0)} onSelect={onSelect} />;
         })}
       </nav>
-      <div className="sidebar-foot">Ctrl+Shift+P · performance</div>
+      <div className="sidebar-foot">
+        <button className="icon-btn" onClick={onTogglePerf} title="Performance overlay (Ctrl+Shift+P)" aria-label="Performance overlay">
+          <Activity size={16} strokeWidth={1.8} />
+          <span>Performance</span>
+        </button>
+      </div>
     </aside>
   );
 }

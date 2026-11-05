@@ -48,6 +48,13 @@ export async function runBench(win) {
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
     const shotSelector = JSON.stringify(process.env.TOP_SHOT_WAIT ?? "");
     await until(`window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= ${Number(process.env.TOP_SHOT_BUSY ?? 2)} && document.querySelectorAll('.transcript .row').length >= ${Number(process.env.TOP_SHOT_ROWS ?? 4)} && (!${shotSelector} || !!document.querySelector(${shotSelector}))`, 60_000);
+    // TOP_SHOT_SCROLL=1 brings the TOP_SHOT_WAIT element into view first (e.g. a tool step).
+    if (process.env.TOP_SHOT_SCROLL && process.env.TOP_SHOT_WAIT) await js(`document.querySelector(${shotSelector})?.scrollIntoView({ block: "center" })`);
+    // TOP_SHOT_HOVER=selector points the mouse at the last match (to capture hover states).
+    if (process.env.TOP_SHOT_HOVER) {
+      const rect = await js(`(() => { const all = document.querySelectorAll(${JSON.stringify(process.env.TOP_SHOT_HOVER)}); const r = all[all.length - 1]?.getBoundingClientRect(); return r && { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 20) }; })()`);
+      if (rect) wc.sendInputEvent({ type: "mouseMove", x: Math.round(rect.x), y: Math.round(rect.y) });
+    }
     await sleep(Number(process.env.TOP_SHOT_DELAY ?? 1200));
     const image = await wc.capturePage();
     const { writeFileSync } = await import("node:fs");

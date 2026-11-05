@@ -25,6 +25,7 @@ export function App() {
   });
   const [hud, setHud] = useState(() => new URLSearchParams(location.search).has("perf"));
 
+  const togglePerf = useCallback(() => setHud((h) => !h), []);
   const bot = bots.find((b) => String(b.id) === String(selected)) ?? bots[0];
 
   const select = useCallback((id: BotId) => {
@@ -79,11 +80,12 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar selected={bot?.id} onSelect={select} />
+      <Sidebar selected={bot?.id} onSelect={select} onTogglePerf={togglePerf} />
       <main className="main">
         {bot && sync ? (
           <>
             <Header sync={sync} name={bot.name} />
+            <div className="top-fade" aria-hidden />
             <Transcript key={String(bot.id)} sync={sync} name={bot.name} />
             <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
           </>
