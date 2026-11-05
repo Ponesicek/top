@@ -4,6 +4,7 @@
 //   app:    production build in Electron, driven with real input events
 //
 // Prints a table and writes bench-results.json.
+import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -12,8 +13,8 @@ import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const electron = require("electron");
-const desktopDir = new URL("..", import.meta.url).pathname;
-const serverMain = new URL("../../server/src/main.ts", import.meta.url).pathname;
+const desktopDir = fileURLToPath(new URL("..", import.meta.url));
+const serverMain = fileURLToPath(new URL("../../server/src/main.ts", import.meta.url));
 const port = 7600 + Math.floor(Math.random() * 300);
 const dataDir = mkdtempSync(join(tmpdir(), "top-bench-data-"));
 const userData = mkdtempSync(join(tmpdir(), "top-bench-profile-"));

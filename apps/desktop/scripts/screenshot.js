@@ -1,4 +1,5 @@
 // pnpm screenshot [out.png]: start a daemon under load, open the production build, capture the window.
+import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -7,8 +8,8 @@ import { join, resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const electron = require("electron");
-const desktopDir = new URL("..", import.meta.url).pathname;
-const serverMain = new URL("../../server/src/main.ts", import.meta.url).pathname;
+const desktopDir = fileURLToPath(new URL("..", import.meta.url));
+const serverMain = fileURLToPath(new URL("../../server/src/main.ts", import.meta.url));
 const outPath = resolve(process.argv[2] ?? "screenshot.png");
 const port = 7900 + Math.floor(Math.random() * 90);
 const dataDir = mkdtempSync(join(tmpdir(), "top-shot-"));
