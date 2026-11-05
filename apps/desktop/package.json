@@ -1,0 +1,31 @@
+{
+  "name": "@top/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "electron .",
+    "bench": "node scripts/bench.js",
+    "screenshot": "node scripts/screenshot.js",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.14.26",
+    "@top/client": "workspace:*",
+    "markdown-it": "^15.0.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "electron": "^45.2.2",
+    "vite": "^8.3.5"
+  }
+}

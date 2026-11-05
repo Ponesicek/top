@@ -1,0 +1,19 @@
+{
+  "name": "top",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.20.0",
+  "scripts": {
+    "server": "pnpm --filter @top/server start",
+    "server:load": "pnpm --filter @top/server start --load --seed 10000",
+    "desktop": "pnpm --filter @top/desktop dev",
+    "web": "pnpm --filter @top/desktop dev:web",
+    "bench": "pnpm --filter @top/desktop bench",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
+  }
+}
