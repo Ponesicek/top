@@ -1,5 +1,5 @@
 import { memo, useEffect, useState, useSyncExternalStore } from "react";
-import { Square, WifiOff } from "lucide-react";
+import { WifiOff } from "lucide-react";
 import type { ConversationSync } from "@top/client";
 import { isWorking } from "../rows.ts";
 import { useBot } from "../top.ts";
@@ -42,11 +42,6 @@ export const Header = memo(function Header({ sync, name }: { sync: ConversationS
           </span>
         )}
       </div>
-      {working && (
-        <button className="stop" onClick={() => void sync.abort().catch(() => {})} title="Stop (Esc)">
-          <Square size={11} fill="currentColor" strokeWidth={0} /> Stop
-        </button>
-      )}
       </div>
     </header>
   );

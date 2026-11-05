@@ -24,13 +24,15 @@ export function statusLabel(bot: BotSummary): string {
 
 const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect }: { bot: BotSummary; selected: boolean; unread: boolean; index: number; onSelect: (id: BotId) => void }) {
   const busy = bot.status !== "idle";
+  // A working bot shows its work, not "unread"; an idle bot with something new swaps its gray ring for blue.
+  const fresh = unread && !busy;
   return (
-    <button className={`bot${selected ? " selected" : ""}${unread ? " unread" : ""}`} onClick={() => onSelect(bot.id)} title={`${bot.name} (Ctrl+${index + 1})`} aria-current={selected || undefined}>
+    <button className={`bot${selected ? " selected" : ""}${fresh ? " unread" : ""}`} onClick={() => onSelect(bot.id)} title={`${bot.name} (Ctrl+${index + 1})`} aria-current={selected || undefined}>
       <Avatar name={bot.name} status={bot.status} />
       <span className="bot-text">
         <span className="bot-line">
           <span className="bot-name">{bot.name}</span>
-          <span className={`state st-${bot.status}`} title={statusLabel(bot)}>
+          <span className={`state st-${bot.status}${fresh ? " fresh" : ""}`} title={fresh ? "Idle · new messages" : statusLabel(bot)}>
             <i />
             {busy ? SHORT[bot.status] : "Idle"}
           </span>
@@ -40,10 +42,7 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect }
             </span>
           )}
         </span>
-        <span className="bot-line">
-          {bot.preview ? <span className="bot-preview">{bot.preview}</span> : <span className="bot-preview empty-preview">No messages yet</span>}
-          {unread && <span className="unread-dot" title="New messages" aria-label="New messages" />}
-        </span>
+        {bot.preview ? <span className="bot-preview">{bot.preview}</span> : <span className="bot-preview empty-preview">No messages yet</span>}
       </span>
     </button>
   );
@@ -58,9 +57,8 @@ function host(url: string): string {
 }
 
 export function Sidebar({ selected, onSelect, onTogglePerf }: { selected: BotId | undefined; onSelect: (id: BotId) => void; onTogglePerf: () => void }) {
-  const { bots, connection, rttMs } = useSyncExternalStore(top.subscribe, top.getSnapshot);
+  const { bots, connection } = useSyncExternalStore(top.subscribe, top.getSnapshot);
   const seen = useSeen();
-  const working = bots.filter((b) => b.status !== "idle").length;
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -74,15 +72,16 @@ export function Sidebar({ selected, onSelect, onTogglePerf }: { selected: BotId 
           top
         </span>
         <span className="brand-right">
-        <span className={`conn c-${connection}`} title={`${host(serverUrl)}${rttMs !== undefined ? ` · round trip ${rttMs} ms` : ""}`}>
+        {connection !== "open" && (
+        <span className={`conn c-${connection}`} title={host(serverUrl)}>
           <i />
-          {connection === "open" ? "Live" : connection === "connecting" ? "Connecting" : "Reconnecting"}
+          {connection === "connecting" ? "Connecting" : "Reconnecting"}
         </span>
+        )}
         </span>
       </div>
       <div className="section-label">
         <span className="section-title">Bots</span>
-        <span className={`section-count${working > 0 ? " busy" : ""}`}>{working > 0 ? `${working} working` : bots.length}</span>
       </div>
       <nav className="bots">
         {bots.map((bot, i) => {

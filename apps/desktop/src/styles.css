@@ -358,12 +358,7 @@ summary:focus-visible {
   font-weight: 600;
   color: var(--text-2);
 }
-.section-count {
-  font-weight: 500;
-}
-.section-count.busy {
-  color: var(--warn-text);
-}
+
 
 .bots {
   display: flex;
@@ -451,23 +446,17 @@ summary:focus-visible {
   font-weight: 400;
 }
 
-/* Unread: a heavier name and a blue dot at the end of the preview line, apart from the status lane. */
+/* Unread (idle bots only): a heavier name, a darker preview, and the blue status dot. */
 .bot.unread .bot-name {
   font-weight: 650;
 }
 .bot.unread .bot-preview:not(.empty-preview) {
   color: var(--text-2);
 }
-.bot-line .bot-preview {
-  flex: 1;
-  min-width: 0;
-}
-.unread-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+/* An idle bot with something new: its gray Idle ring becomes a solid blue dot. */
+.state.fresh i {
   background: var(--unread);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--unread) 18%, transparent);
 }
 
 .state {
@@ -648,23 +637,7 @@ summary:focus-visible {
   margin-left: 6px;
 }
 
-.stop {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  border: 0;
-  background: var(--bad-soft);
-  color: var(--bad-text);
-  border-radius: 999px;
-  padding: 7px 14px 7px 12px;
-  font: 600 13.5px/1 var(--font);
-  transition: background 90ms, color 90ms;
-}
 
-.stop:hover {
-  background: var(--bad);
-  color: #fff;
-}
 
 /* ── transcript ──────────────────────────────────────────────────────────── */
 
@@ -1502,6 +1475,16 @@ summary:focus-visible {
 }
 .send:active:not(:disabled) {
   transform: scale(0.94);
+}
+
+/* While a bot works, the send button is Stop. */
+.send.stop-send {
+  background: var(--bad-soft);
+  color: var(--bad-text);
+}
+.send.stop-send:hover {
+  background: var(--bad);
+  color: #fff;
 }
 
 .send:disabled {

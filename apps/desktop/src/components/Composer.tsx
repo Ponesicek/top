@@ -3,7 +3,7 @@
  * never waits on a transcript render.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
 import type { ConversationSync } from "@top/client";
 import { perf } from "../perf.ts";
 import { isWorking } from "../rows.ts";
@@ -78,6 +78,10 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
               Queue
             </button>
           </div>
+        ) : running ? (
+          <button className="send stop-send" onClick={() => void sync.abort().catch(() => {})} title="Stop (Esc)" aria-label="Stop">
+            <Square size={12} fill="currentColor" strokeWidth={0} />
+          </button>
         ) : (
           <button className="send" disabled={empty} onClick={() => send(false)} title="Send (Enter) · Shift+Enter for a new line" aria-label="Send">
             <ArrowUp size={17} strokeWidth={1.7} />
