@@ -154,6 +154,7 @@ export class Store {
       toolCall: p("SELECT * FROM tool_calls WHERE assistant_seq = ? AND tool_call_id = ?"),
       setRunActive: p("UPDATE bots SET run_active = ? WHERE id = ?"),
       setRestarts: p("UPDATE bots SET restarts = ? WHERE id = ?"),
+      setModel: p("UPDATE bots SET model = ? WHERE id = ?"),
     };
   }
 
@@ -195,6 +196,11 @@ export class Store {
 
   setRestarts(bot: number, restarts: number) {
     this.#q.setRestarts!.run(restarts, bot);
+  }
+
+  /** `provider/model-id`. Takes effect when the daemon next starts. */
+  setModel(bot: number, model: string) {
+    this.#q.setModel!.run(model, bot);
   }
 
   #botOf(row: Row): BotRow {

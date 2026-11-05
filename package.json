@@ -4,7 +4,8 @@
   "type": "module",
   "packageManager": "pnpm@11.20.0",
   "scripts": {
-    "server": "pnpm --filter @top/server start",
+    "server": "pnpm --filter @top/server start --model openai/gpt-6.1-sol",
+    "server:fake": "pnpm --filter @top/server start",
     "server:load": "pnpm --filter @top/server start --load --tools --seed 10000",
     "desktop": "pnpm --filter @top/desktop dev",
     "web": "pnpm --filter @top/desktop dev:web",

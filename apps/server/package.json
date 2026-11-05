@@ -11,10 +11,12 @@
     "@earendil-works/pi-agent-core": "1.5.0",
     "@earendil-works/pi-ai": "1.5.0",
     "@top/protocol": "workspace:*",
+    "proper-lockfile": "4.1.2",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/proper-lockfile": "4.1.4",
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3"
   }

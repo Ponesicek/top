@@ -32,7 +32,8 @@ export async function runBench(win) {
       if (await js(code).catch(() => false)) return true;
       await sleep(50);
     }
-    throw new Error(`timed out waiting for: ${code}`);
+    const state = await js("JSON.stringify({ connection: window.__top?.getSnapshot().connection, bots: window.__top?.getSnapshot().bots.length, page: document.body.innerText.slice(0, 300) })").catch((e) => String(e));
+    throw new Error(`timed out waiting for: ${code}\n  state: ${state}`);
   };
 
   await new Promise((r) => wc.once("did-finish-load", r));
@@ -46,7 +47,7 @@ export async function runBench(win) {
     await until("window.__top.getSnapshot().bots.length >= 5 && window.__top.getSnapshot().connection === 'open'");
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
     const shotSelector = JSON.stringify(process.env.TOP_SHOT_WAIT ?? "");
-    await until(`window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= 2 && document.querySelectorAll('.transcript .row').length > 3 && (!${shotSelector} || !!document.querySelector(${shotSelector}))`, 60_000);
+    await until(`window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= ${Number(process.env.TOP_SHOT_BUSY ?? 2)} && document.querySelectorAll('.transcript .row').length >= ${Number(process.env.TOP_SHOT_ROWS ?? 4)} && (!${shotSelector} || !!document.querySelector(${shotSelector}))`, 60_000);
     await sleep(Number(process.env.TOP_SHOT_DELAY ?? 1200));
     const image = await wc.capturePage();
     const { writeFileSync } = await import("node:fs");

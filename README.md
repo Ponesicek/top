@@ -23,13 +23,28 @@ show as steps, and the app says what each bot is doing while it does it.
 
 ```bash
 pnpm install
-pnpm server:load     # daemon with 5 fake bots under load, one with a 10,000-message history
+pnpm server          # the daemon, with 5 bots on a real model (openai/gpt-6.1-sol)
 pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser at :5199)
 ```
 
-The bots use Pi AI's faux provider, so no API key is needed. The fake model calls tools when asked:
-"deploy web 3s", "email the team", "check status", "crash". Daemon flags: `--port`, `--data`,
-`--load`, `--tools` (load includes tool calls), `--seed N`, `--tps N`, `--reset`, `--no-compress`.
+The bots sign in through pi, the coding agent: Top reads and refreshes pi's `~/.pi/agent/auth.json`
+under pi's own file lock, so if `pi` works, Top works. Not signed in? Run `pi`, then `/login`. An API
+key in the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) works too. Pick another model with
+`pnpm server --model anthropic/claude-opus-5-5`; `--thinking off|low|medium|high` sets reasoning
+(default medium). ChatGPT sign-ins can't use every model (`gpt-5.5` is refused); `gpt-6.1-sol` works.
+Real bots have no tools yet (MCP is next) and keep their data in `apps/server/.data/bots`.
+
+Fake bots, for development and the tests, need no sign-in:
+
+```bash
+pnpm server:load     # 5 fake bots under load, one with a 10,000-message history
+pnpm server:fake     # fake bots that answer only when you message them
+```
+
+The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "crash".
+Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`, `--port`, `--host`,
+`--data`, `--reset`, `--no-compress`; fake only: `--load`, `--tools` (load includes tool calls),
+`--seed N`, `--tps N`.
 
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
 `Esc` stops, `Ctrl+Shift+P` toggles the performance overlay.
@@ -116,4 +131,5 @@ Reconnect time depends mostly on where the client's retry backoff is when the da
   needs writing (or borrowing from pi's coding agent).
 - Push notifications when an answer lands, so the phone needn't stay connected.
 - The React Native app; a bigger local cache (IndexedDB / SQLite) there.
-- Real models and real tools, login and device pairing.
+- Real tools (MCP servers), choosing a model per bot, adding and renaming bots from the app.
+- Login and device pairing for the daemon itself.

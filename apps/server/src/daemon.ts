@@ -2,6 +2,7 @@
  * The daemon's parts wired together: storage, one runner per bot, and the sidebar summaries.
  * The WebSocket layer (serve.ts) and the load driver both go through `submit()` and the listeners here.
  */
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, toToolDeclaration, type Models } from "@earendil-works/pi-ai";
 import type { BotSummary, WhenBusy } from "@top/protocol";
 import { BotRunner } from "./runner.ts";
@@ -25,10 +26,16 @@ function lastLine(text: string): string {
 }
 
 /** Create the bots on first start. Each bot's transcript begins with its system message. */
-export function ensureBots(store: Store, names: readonly string[], model: string, tools: readonly TopTool[]) {
+export function ensureBots(
+  store: Store,
+  names: readonly string[],
+  model: string,
+  tools: readonly TopTool[],
+  instructionsFor: (name: string) => string = (name) => `You are ${name}, one of the user's bots.`,
+) {
   if (store.bots().length > 0) return;
   for (const name of names) {
-    const instructions = `You are ${name}, one of the user's bots.`;
+    const instructions = instructionsFor(name);
     const id = store.createBot(name, instructions, model);
     store.append(id, "system", createInitialSystemMessage(instructions, tools.map(toToolDeclaration)));
   }
@@ -43,7 +50,7 @@ export class Daemon {
   readonly #inboxListeners = new Set<(bot: number) => void>();
   readonly #botListeners = new Set<(summary: BotSummary) => void>();
 
-  constructor(store: Store, models: Models, tools: readonly TopTool[]) {
+  constructor(store: Store, models: Models, tools: readonly TopTool[], options: { thinking?: ThinkingLevel } = {}) {
     this.store = store;
     for (const bot of store.bots()) {
       const runner = new BotRunner(bot, store, models, tools, {
@@ -56,7 +63,7 @@ export class Daemon {
           this.#touch(id);
         },
         status: (id) => this.#touch(id),
-      });
+      }, options.thinking);
       this.runners.set(bot.id, runner);
       this.#summaries.set(bot.id, this.#summarize(bot.id));
     }

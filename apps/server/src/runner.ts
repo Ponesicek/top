@@ -10,7 +10,7 @@
  * policy (see tools.ts) and the task continues. If the daemon keeps dying during one task, the task is
  * ended instead of looping forever.
  */
-import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Models, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { BotStatus } from "@top/protocol";
 import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
@@ -68,14 +68,15 @@ export class BotRunner {
   #wakeRetry: (() => void) | undefined;
   #status: RunnerStatus = { status: "idle", since: Date.now() };
 
-  constructor(bot: BotRow, store: Store, models: Models, tools: readonly TopTool[], events: RunnerEvents) {
+  constructor(bot: BotRow, store: Store, models: Models, tools: readonly TopTool[], events: RunnerEvents, thinkingLevel: ThinkingLevel = "off") {
     this.id = bot.id;
     this.name = bot.name;
     this.#store = store;
     this.#events = events;
     this.#tools = new Map(tools.map((tool) => [tool.name, tool]));
-    const [provider, modelId] = bot.model.split("/") as [string, string];
-    const model = models.getModel(provider, modelId);
+    // Split at the first slash only: model ids can contain one too (OpenRouter's "anthropic/claude-…").
+    const slash = bot.model.indexOf("/");
+    const model = models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
     if (!model) throw new Error(`Bot ${bot.name}: unknown model ${bot.model}`);
 
     const agentTools: AgentTool<any>[] = tools.map((tool) => ({
@@ -89,7 +90,7 @@ export class BotRunner {
 
     this.#agent = new Agent({
       // The stored transcript starts with the bot's system message, so the Agent adds none of its own.
-      initialState: { model, tools: agentTools, messages: store.context(bot.id).map((e) => e.message as AgentMessage) },
+      initialState: { model, thinkingLevel, tools: agentTools, messages: store.context(bot.id).map((e) => e.message as AgentMessage) },
       streamFn: models.streamSimple.bind(models),
       identity: { attribution: null },
       beforeToolCall: async ({ toolCall, args }) => {

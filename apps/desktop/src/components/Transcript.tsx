@@ -238,9 +238,11 @@ export const Transcript = memo(function Transcript({ sync, name }: { sync: Conve
   }, [firstKey]);
   const items = virtualizer.getVirtualItems();
 
+  // A new bot's "No messages yet" is its content too.
+  const shown = snapshot.items.length > 0 || snapshot.status !== "loading";
   useEffect(() => {
-    if (snapshot.items.length) perf.markFirstContent();
-  }, [snapshot.items.length]);
+    if (shown) perf.markFirstContent();
+  }, [shown]);
 
   // Copy buttons inside rendered markdown (one delegated listener).
   const onClick = useCallback((event: React.MouseEvent) => {
