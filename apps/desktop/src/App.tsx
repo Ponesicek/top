@@ -5,6 +5,7 @@ import { Composer } from "./components/Composer.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
 import { Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
+import { Settings } from "./components/Settings.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import { Button } from "./components/ui/button.tsx";
@@ -19,6 +20,24 @@ function readSelected(): string | undefined {
   }
 }
 
+/** The overlay stays on across restarts; `?perf` turns it on regardless. */
+function readPerfHud(): boolean {
+  if (new URLSearchParams(location.search).has("perf")) return true;
+  try {
+    return localStorage.getItem("top.perfHud") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function savePerfHud(on: boolean) {
+  try {
+    localStorage.setItem("top.perfHud", on ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
 export function App() {
   // Re-render only when the roster changes, not on every status/preview update (those are the sidebar's).
   const roster = useSyncExternalStore(top.subscribe, () => top.getSnapshot().bots.map((b) => `${b.id}:${b.name}`).join("|"));
@@ -27,16 +46,26 @@ export function App() {
     const saved = readSelected();
     return saved === undefined ? undefined : Number(saved);
   });
-  const [hud, setHud] = useState(() => new URLSearchParams(location.search).has("perf"));
+  const [hud, setHudState] = useState(readPerfHud);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const ready = useSyncExternalStore(top.subscribe, () => top.getSnapshot().ready);
 
-  const togglePerf = useCallback(() => setHud((h) => !h), []);
+  const setHud = useCallback((update: (on: boolean) => boolean) => {
+    setHudState((h) => {
+      const next = update(h);
+      savePerfHud(next);
+      return next;
+    });
+  }, []);
+  const setPerfHud = useCallback((on: boolean) => setHud(() => on), [setHud]);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
   const openNewBot = useCallback(() => setCreating(true), []);
   const bot = bots.find((b) => String(b.id) === String(selected)) ?? bots[0];
 
   const select = useCallback((id: BotId) => {
     setSelected(id);
+    setSettingsOpen(false);
     try {
       localStorage.setItem("top.selected", String(id));
     } catch {
@@ -49,6 +78,12 @@ export function App() {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         setHud((h) => !h);
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
+      } else if (e.key === "Escape" && settingsOpen) {
+        e.preventDefault();
+        setSettingsOpen(false);
       } else if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
         const target = top.getSnapshot().bots[Number(e.key) - 1];
         if (target) {
@@ -67,7 +102,7 @@ export function App() {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [bot?.id, select]);
+  }, [bot?.id, select, setHud, settingsOpen]);
 
   // Expose a tiny driver for `pnpm bench`.
   useEffect(() => {
@@ -79,18 +114,20 @@ export function App() {
 
   const sync = bot ? conversation(bot.id) : undefined;
 
-  // The open bot's newest entry counts as read.
+  // The open bot's newest entry counts as read; with settings open, no bot is open.
   const summary = useBot(bot?.id);
   useEffect(() => {
-    if (summary) markSeen(summary.id, summary.lastSeq);
-  }, [summary?.id, summary?.lastSeq]);
+    if (summary && !settingsOpen) markSeen(summary.id, summary.lastSeq);
+  }, [summary?.id, summary?.lastSeq, settingsOpen]);
 
   return (
     <TooltipProvider delay={500}>
     <div className="grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]">
-      <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} onTogglePerf={togglePerf} />
+      <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
       <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
-        {bot && sync ? (
+        {settingsOpen ? (
+          <Settings perfHud={hud} onPerfHudChange={setPerfHud} />
+        ) : bot && sync ? (
           <>
             <Header sync={sync} name={bot.name} />
             {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}

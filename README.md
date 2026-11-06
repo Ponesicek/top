@@ -60,7 +60,7 @@ description the bot reads as part of its instructions); hover over a bot to dele
 erases its conversation everywhere; files in its folder stay.
 
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
-`Esc` stops, `Ctrl+Shift+P` toggles the performance overlay.
+`Esc` stops, `Ctrl+,` opens settings, `Ctrl+Shift+P` toggles the performance overlay.
 
 ## Crash safety
 

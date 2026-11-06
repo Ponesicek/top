@@ -1,5 +1,5 @@
 import { memo, useCallback, useState, useSyncExternalStore } from "react";
-import { Activity, Plus, Trash2 } from "lucide-react";
+import { Plus, Settings, Trash2 } from "lucide-react";
 import type { BotId, BotSummary } from "@top/client";
 import { cn } from "../lib/utils.ts";
 import { serverUrl, top, useSeen } from "../top.ts";
@@ -111,12 +111,14 @@ export function Sidebar({
   selected,
   onSelect,
   onNewBot,
-  onTogglePerf,
+  settingsOpen,
+  onOpenSettings,
 }: {
   selected: BotId | undefined;
   onSelect: (id: BotId) => void;
   onNewBot: () => void;
-  onTogglePerf: () => void;
+  settingsOpen: boolean;
+  onOpenSettings: () => void;
 }) {
   const { bots, connection } = useSyncExternalStore(top.subscribe, top.getSnapshot);
   const seen = useSeen();
@@ -156,7 +158,8 @@ export function Sidebar({
       </div>
       <nav className="bots flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pt-0.5 pb-2.5">
         {bots.map((bot, i) => {
-          const isSelected = bot.id === selected;
+          // While settings fill the main area, no bot is open.
+          const isSelected = !settingsOpen && bot.id === selected;
           return (
             <BotItem
               key={bot.id}
@@ -172,10 +175,17 @@ export function Sidebar({
       </nav>
       {deleting && <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />}
       <div className="flex-none px-3 pt-2 pb-3">
-        <Tooltip content="Performance overlay (Ctrl+Shift+P)" side="right">
-          <Button variant="ghost" size="xs" className="font-medium text-secondary-foreground" onClick={onTogglePerf} aria-label="Performance overlay">
-            <Activity size={16} strokeWidth={1.8} />
-            <span className="narrow:hidden">Performance</span>
+        <Tooltip content="Settings (Ctrl+,)" side="right">
+          <Button
+            variant="ghost"
+            size="xs"
+            className={cn("font-medium text-secondary-foreground", settingsOpen && "bg-foreground/7 text-foreground")}
+            onClick={onOpenSettings}
+            aria-label="Settings"
+            aria-current={settingsOpen ? "page" : undefined}
+          >
+            <Settings size={16} strokeWidth={1.8} />
+            <span className="narrow:hidden">Settings</span>
           </Button>
         </Tooltip>
       </div>
