@@ -1,9 +1,14 @@
-import { memo, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useState, useSyncExternalStore } from "react";
 import { Activity, Plus, Trash2 } from "lucide-react";
 import type { BotId, BotSummary } from "@top/client";
+import { cn } from "../lib/utils.ts";
 import { serverUrl, top, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";
+import { StatusDot } from "./StatusDot.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
+import { Tooltip } from "./ui/tooltip.tsx";
 
 /** The sidebar's short status, beside the name; the header spells out the tool. */
 const SHORT: Record<BotSummary["status"], string> = { idle: "", thinking: "Thinking", tool: "Running", retrying: "Retrying", failed: "Failed" };
@@ -41,35 +46,55 @@ const BotItem = memo(function BotItem({
   const busy = bot.status !== "idle";
   // A working bot shows its work, not "unread"; an idle bot with something new swaps its gray ring for blue.
   const fresh = unread && !busy;
+  const failed = bot.status === "failed";
   const shortcut = index < 9 ? ` (Ctrl+${index + 1})` : "";
   return (
-    <div className="bot-row">
+    // Delete shows on hover (or keyboard focus), in place of the status beside the name.
+    <div className="group/bot relative flex flex-col">
       <button
-        className={`bot${selected ? " selected" : ""}${fresh ? " unread" : ""}`}
+        className={cn(
+          "flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-[9px] text-left transition-[background-color,box-shadow] duration-90 hover:bg-foreground/5 narrow:justify-center",
+          selected ? "bg-sidebar-row-selected shadow-row-selected [--avatar-ring:var(--color-sidebar-row-selected)] hover:bg-sidebar-row-selected" : "[--avatar-ring:var(--color-sidebar)]",
+        )}
         onClick={() => onSelect(bot.id)}
         title={bot.description ? `${bot.name}${shortcut}\n${bot.description}` : `${bot.name}${shortcut}`}
         aria-current={selected || undefined}
       >
         <Avatar name={bot.name} status={bot.status} />
-        <span className="bot-text">
-          <span className="bot-line">
-            <span className="bot-name">{bot.name}</span>
-            <span className={`state st-${bot.status}${fresh ? " fresh" : ""}`} title={fresh ? "Idle · new messages" : statusLabel(bot)}>
-              <i />
+        <span className="flex min-w-0 flex-1 flex-col gap-px narrow:hidden">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={cn("min-w-0 flex-1 truncate text-[15px] leading-[1.35] tracking-[-0.005em]", fresh ? "font-[650]" : "font-[550]")}>{bot.name}</span>
+            <span
+              className={cn(
+                "inline-flex flex-none items-center gap-1.5 text-meta leading-none font-[550] group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible",
+                failed ? "rounded-full bg-destructive-surface py-[3px] pr-[7px] pl-1.5 text-destructive-foreground" : "text-muted-foreground",
+              )}
+              title={fresh ? "Idle · new messages" : statusLabel(bot)}
+            >
+              <StatusDot status={bot.status} fresh={fresh} />
               {busy ? SHORT[bot.status] : "Idle"}
             </span>
             {bot.queued > 0 && (
-              <span className="badge" title={`${bot.queued} queued`}>
+              <Badge className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible" title={`${bot.queued} queued`}>
                 {bot.queued} queued
-              </span>
+              </Badge>
             )}
           </span>
-          {bot.preview ? <span className="bot-preview">{bot.preview}</span> : <span className="bot-preview empty-preview">No messages yet</span>}
+          <span className={cn("truncate text-small leading-[1.4]", fresh && bot.preview ? "text-secondary-foreground" : "text-muted-foreground")}>{bot.preview || "No messages yet"}</span>
         </span>
       </button>
-      <button className="bot-delete" onClick={() => onDelete(bot)} title={`Delete ${bot.name}`} aria-label={`Delete ${bot.name}`}>
-        <Trash2 size={14} strokeWidth={1.9} />
-      </button>
+      <Tooltip content={`Delete ${bot.name}`} side="right">
+        <Button
+          data-delete
+          variant="ghost-destructive"
+          size="icon-row"
+          className="absolute top-[9px] right-2 opacity-0 group-hover/bot:opacity-100 focus-visible:opacity-100 narrow:hidden"
+          onClick={() => onDelete(bot)}
+          aria-label={`Delete ${bot.name}`}
+        >
+          <Trash2 size={14} strokeWidth={1.9} />
+        </Button>
+      </Tooltip>
     </div>
   );
 });
@@ -96,34 +121,40 @@ export function Sidebar({
   const { bots, connection } = useSyncExternalStore(top.subscribe, top.getSnapshot);
   const seen = useSeen();
   const [deleting, setDeleting] = useState<BotSummary>();
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const askDelete = useCallback((bot: BotSummary) => {
+    setDeleting(bot);
+    setDeleteOpen(true);
+  }, []);
   return (
-    <aside className="sidebar">
-      <div className="brand">
-        <span className="logo" aria-label="Top">
-          <span className="logo-mark" aria-hidden>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+    <aside className="flex min-w-0 flex-col border-r bg-sidebar [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
+      <div className="flex h-15 flex-none items-center justify-between pr-4 pl-4.5 narrow:justify-center narrow:p-0">
+        <span className="inline-flex items-center gap-[9px] text-[17px] leading-none font-semibold tracking-[-0.03em] narrow:gap-0 narrow:text-[0px]" aria-label="Top">
+          {/* The mark is a shell prompt, "›_": the app is named after the Unix `top`. */}
+          <span className="relative size-6 rounded-md bg-linear-145/srgb from-[#ff9a5c] to-[#ec4d16] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.2)]" aria-hidden>
+            <svg className="block" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
               <path d="M7 8l4 4-4 4" />
               <path d="M13 16h4.5" />
             </svg>
           </span>
           top
         </span>
-        <span className="brand-right">
         {connection !== "open" && (
-        <span className={`conn c-${connection}`} title={host(serverUrl)}>
-          <i />
-          {connection === "connecting" ? "Connecting" : "Reconnecting"}
-        </span>
+          <Badge variant="warning" size="lg" className="narrow:hidden" title={host(serverUrl)}>
+            <i className="size-1.5 animate-blink rounded-full bg-current" />
+            {connection === "connecting" ? "Connecting" : "Reconnecting"}
+          </Badge>
         )}
-        </span>
       </div>
-      <div className="section-label">
-        <span className="section-title">Bots</span>
-        <button className="icon-btn add-bot" onClick={onNewBot} title="New bot" aria-label="New bot">
-          <Plus size={16} strokeWidth={2} />
-        </button>
+      <div className="flex items-center justify-between px-5 pt-4 pb-2.5 text-micro font-semibold text-secondary-foreground narrow:hidden">
+        Bots
+        <Tooltip content="New bot">
+          <Button variant="ghost" size="icon-xs" className="-m-1.5" onClick={onNewBot} aria-label="New bot">
+            <Plus size={16} strokeWidth={2} />
+          </Button>
+        </Tooltip>
       </div>
-      <nav className="bots">
+      <nav className="bots flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pt-0.5 pb-2.5">
         {bots.map((bot, i) => {
           const isSelected = bot.id === selected;
           return (
@@ -134,17 +165,19 @@ export function Sidebar({
               selected={isSelected}
               unread={!isSelected && bot.lastSeq > (seen[bot.id] ?? 0)}
               onSelect={onSelect}
-              onDelete={setDeleting}
+              onDelete={askDelete}
             />
           );
         })}
       </nav>
-      {deleting && <DeleteBotDialog bot={deleting} onClose={() => setDeleting(undefined)} />}
-      <div className="sidebar-foot">
-        <button className="icon-btn" onClick={onTogglePerf} title="Performance overlay (Ctrl+Shift+P)" aria-label="Performance overlay">
-          <Activity size={16} strokeWidth={1.8} />
-          <span>Performance</span>
-        </button>
+      {deleting && <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />}
+      <div className="flex-none px-3 pt-2 pb-3">
+        <Tooltip content="Performance overlay (Ctrl+Shift+P)" side="right">
+          <Button variant="ghost" size="xs" className="font-medium text-secondary-foreground" onClick={onTogglePerf} aria-label="Performance overlay">
+            <Activity size={16} strokeWidth={1.8} />
+            <span className="narrow:hidden">Performance</span>
+          </Button>
+        </Tooltip>
       </div>
     </aside>
   );

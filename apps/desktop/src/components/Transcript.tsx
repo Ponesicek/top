@@ -14,8 +14,13 @@ import { perf } from "../perf.ts";
 import { committedRows, isWorking, tailRows, type Row, type ToolEntry } from "../rows.ts";
 import { useBot } from "../top.ts";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, Loader2, RotateCcw, ShieldCheck } from "lucide-react";
+import { cn } from "../lib/utils.ts";
 import { Avatar } from "./Avatar.tsx";
+import { Empty, EmptyCard } from "./Empty.tsx";
 import { statusLabel } from "./Sidebar.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "./ui/collapsible.tsx";
 
 const BOTTOM_SLACK = 48;
 const scrollMemory = new Map<string, { offset: number; atBottom: boolean }>();
@@ -39,11 +44,21 @@ function stretchLabel(at: number): string {
   return `${d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} · ${time(at)}`;
 }
 
-/** A message's time: shown on hover, and reachable by keyboard (one tab stop per message, not per paragraph). */
-function MessageTime({ at }: { at: number | undefined }) {
+/**
+ * A message's time: shown on hover, and reachable by keyboard (one tab stop per message, not per paragraph).
+ * `hover` reveals it while the pointer is on the message (user rows; bot rows show it per paragraph instead).
+ */
+function MessageTime({ at, hover = false }: { at: number | undefined; hover?: boolean }) {
   if (!at) return null;
   return (
-    <time className="hover-time" dateTime={new Date(at).toISOString()} tabIndex={0}>
+    <time
+      className={cn(
+        "pointer-events-none flex-none rounded text-xs leading-6 whitespace-nowrap text-muted-foreground tabular-nums opacity-0 transition-opacity duration-120 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        hover && "group-hover/msg:opacity-100",
+      )}
+      dateTime={new Date(at).toISOString()}
+      tabIndex={0}
+    >
       {time(at)}
     </time>
   );
@@ -62,69 +77,95 @@ function lastTime(rows: readonly Row[], index: number): number | undefined {
   return undefined;
 }
 
+const USER_STATE: Record<NonNullable<Extract<Row, { kind: "user" }>["state"]>, { label: string; bubble?: string }> = {
+  sending: { label: "Sending…", bubble: "opacity-65" },
+  accepted: { label: "Sent" },
+  queued: { label: "Queued", bubble: "bg-transparent text-foreground shadow-[inset_0_0_0_1.5px_var(--color-input)]" },
+  steer: { label: "Steering", bubble: "shadow-[inset_0_0_0_1.5px_var(--color-primary)]" },
+  failed: { label: "Not sent", bubble: "shadow-[inset_0_0_0_1.5px_var(--color-destructive)]" },
+};
+
 const UserRow = memo(function UserRow({ row, sync, divided }: { row: Extract<Row, { kind: "user" }>; sync: ConversationSync; divided: boolean }) {
-  const label =
-    row.state === "sending" ? "Sending…" : row.state === "accepted" ? "Sent" : row.state === "queued" ? "Queued" : row.state === "steer" ? "Steering" : row.state === "failed" ? "Not sent" : "";
+  const state = row.state ? USER_STATE[row.state] : undefined;
+  const failed = row.state === "failed";
   return (
-    <div className={`msg user ${row.state ?? ""}`}>
-      <div className="bubble-line">
-        {!divided && <MessageTime at={row.at} />}
-        <div className="bubble">{row.text}</div>
+    <div className="group/msg flex flex-col items-end pt-4 pb-0.5">
+      <div className="flex w-full items-center justify-end gap-2.5">
+        {!divided && <MessageTime at={row.at} hover />}
+        <div className={cn("max-w-[min(78%,600px)] rounded-[18px_18px_6px_18px] bg-message px-4 py-2.5 whitespace-pre-wrap text-message-foreground shadow-message [overflow-wrap:anywhere]", state?.bubble)}>
+          {row.text}
+        </div>
       </div>
-      {label && (
-      <div className="meta">
-        {row.state === "failed" && <AlertTriangle size={12} strokeWidth={2.4} />}
-        {label}
-        {row.state === "failed" && row.requestId && (
-          <>
-            {" · "}
-            <button className="link" onClick={() => sync.retry(row.requestId!)}>Retry</button>
-            {" · "}
-            <button className="link" onClick={() => sync.discard(row.requestId!)}>Discard</button>
-          </>
-        )}
-      </div>
+      {state && (
+        <div className={cn("mt-[5px] inline-flex items-center gap-1 text-meta leading-[1.3] tabular-nums", failed ? "text-destructive-foreground" : "text-muted-foreground")}>
+          {failed && <AlertTriangle size={12} strokeWidth={2.4} />}
+          {state.label}
+          {failed && row.requestId && (
+            <>
+              {" · "}
+              <Button variant="link" size="link" onClick={() => sync.retry(row.requestId!)}>
+                Retry
+              </Button>
+              {" · "}
+              <Button variant="link" size="link" onClick={() => sync.discard(row.requestId!)}>
+                Discard
+              </Button>
+            </>
+          )}
+        </div>
       )}
     </div>
   );
 });
+
+function ErrorNote({ children }: { children: React.ReactNode }) {
+  return <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-destructive-surface px-2.5 py-[5px] text-meta leading-[1.4] font-[550] text-destructive-foreground">{children}</div>;
+}
+
+/** The chevron of a disclosure: points right, turns down while its panel is open. */
+const chevron = "transition-transform duration-120 group-data-[panel-open]/disclosure:rotate-90";
 
 /** An answer right after another answer or a tool step continues the same turn: no second avatar or name. */
 const AssistantRow = memo(function AssistantRow({ row, name, sync, cont, divided }: { row: Extract<Row, { kind: "assistant" }>; name: string; sync: ConversationSync; cont: boolean; divided: boolean }) {
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   const [thinking, setThinking] = useState<string | undefined>();
   return (
-    <div className={`msg assistant${cont ? " cont" : " bare"}`} style={divided || !row.at ? undefined : ({ "--t": JSON.stringify(time(row.at)) } as React.CSSProperties)}>
-      {cont ? <span className="gutter" /> : <Avatar name={name} size="sm" title={`${name} · ${time(row.at)}`} />}
-      {/* Pointer: the time appears beside the paragraph or block under it (CSS, from --t). Keyboard: this
-          focusable time shows at the top of the answer. */}
+    <div
+      className={cn("relative flex gap-3 pb-1", cont ? "pt-1.5" : "pt-[9px]")}
+      style={divided || !row.at ? undefined : ({ "--t": JSON.stringify(time(row.at)) } as React.CSSProperties)}
+    >
+      {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" title={`${name} · ${time(row.at)}`} />}
+      {/* Pointer: the time appears beside the paragraph or block under it (styles.css, from --t). Keyboard:
+          this focusable time shows at the top of the answer, in the margin left of the avatars. */}
       {!divided && (
-        <span className="time-rail">
+        <span className={cn("absolute right-[calc(100%+12px)] no-margin:hidden", cont ? "top-1.5" : "top-[11px]")}>
           <MessageTime at={row.at} />
         </span>
       )}
-      <div className="msg-body">
-      {row.hasThinking && (
-        <details
-          className="thinking"
-          onToggle={(e) => {
-            if ((e.target as HTMLDetailsElement).open && thinking === undefined)
-              void sync.detail(row.seq).then((entry) => setThinking(entry.kind === "assistant" ? (entry.thinking ?? "") : ""), () => setThinking("Couldn't load."));
-          }}
-        >
-          <summary>
-            <ChevronRight size={13} strokeWidth={2.2} className="chev" /> Thought process
-          </summary>
-          <p>{thinking ?? "Loading…"}</p>
-        </details>
-      )}
-      {row.text && <div className="md" dangerouslySetInnerHTML={{ __html: html }} />}
-      {row.error && (
-        <div className="error-note">
-          {row.error === "Stopped" ? <CircleSlash size={13} strokeWidth={2.2} /> : <AlertTriangle size={13} strokeWidth={2.2} />}
-          {row.error === "Stopped" ? "Stopped" : `Failed: ${row.error}`}
-        </div>
-      )}
+      <div className="min-w-0 flex-1">
+        {row.hasThinking && (
+          <Collapsible
+            className="mt-0.5 mb-1.5 text-small text-secondary-foreground"
+            onOpenChange={(open) => {
+              if (open && thinking === undefined)
+                void sync.detail(row.seq).then((entry) => setThinking(entry.kind === "assistant" ? (entry.thinking ?? "") : ""), () => setThinking("Couldn't load."));
+            }}
+          >
+            <CollapsibleTrigger className="group/disclosure inline-flex items-center gap-1 rounded-md font-[550] text-muted-foreground hover:text-secondary-foreground">
+              <ChevronRight size={13} strokeWidth={2.2} className={chevron} /> Thought process
+            </CollapsibleTrigger>
+            <CollapsiblePanel>
+              <p className="mt-1.5 mb-1 border-l-2 border-input pl-3 whitespace-pre-wrap">{thinking ?? "Loading…"}</p>
+            </CollapsiblePanel>
+          </Collapsible>
+        )}
+        {row.text && <div className="md" dangerouslySetInnerHTML={{ __html: html }} />}
+        {row.error && (
+          <ErrorNote>
+            {row.error === "Stopped" ? <CircleSlash size={13} strokeWidth={2.2} /> : <AlertTriangle size={13} strokeWidth={2.2} />}
+            {row.error === "Stopped" ? "Stopped" : `Failed: ${row.error}`}
+          </ErrorNote>
+        )}
       </div>
     </div>
   );
@@ -146,42 +187,58 @@ const OUTCOME_LABEL: Record<ToolOutcome, string> = {
   stopped: "Stopped",
 };
 
+/** The 18px circle every step starts with: green done, red failed, amber or blue while live. */
+function StepIcon({ className, children }: { className: string; children: React.ReactNode }) {
+  return (
+    <span className={cn("grid size-[18px] flex-none place-items-center rounded-full", className)} aria-hidden>
+      {children}
+    </span>
+  );
+}
+
+/** Tool steps: one compact line per finished tool call, aligned with the answer text. */
 const ToolRow = memo(function ToolRow({ entry, sync }: { entry: ToolEntry; sync: ConversationSync }) {
   const [full, setFull] = useState<string | undefined>();
-  const [open, setOpen] = useState(false);
   const failed = entry.isError || entry.outcome === "interrupted" || entry.outcome === "stopped";
   return (
-    <div className={`step ${failed ? "bad" : "ok"}${open ? " open" : ""}`}>
-      <div className="step-line">
-        <span className="step-icon">{failed ? <AlertTriangle size={12} strokeWidth={2.4} /> : <Check size={12} strokeWidth={2.4} />}</span>
-        <span className="step-name">{entry.name}</span>
-        <span className="step-text">{entry.text}</span>
-        {entry.outcome && <Outcome outcome={entry.outcome} />}
+    <Collapsible
+      className="mt-1 ml-10 py-1 text-small"
+      onOpenChange={(open) => {
+        if (open && full === undefined) void sync.detail(entry.seq).then((e) => setFull(e.kind === "tool" ? e.text : ""), () => setFull("Couldn't load."));
+      }}
+    >
+      <div className="flex min-w-0 items-center gap-[9px]">
+        <StepIcon className={failed ? "bg-destructive-surface text-destructive" : "bg-success-surface text-success-foreground"}>
+          {failed ? <AlertTriangle size={12} strokeWidth={2.4} /> : <Check size={12} strokeWidth={2.4} />}
+        </StepIcon>
+        <span className="flex-none font-mono text-[13px] leading-[1.4] font-medium text-foreground [font-variant-ligatures:none]">{entry.name}</span>
+        <span className="min-w-0 flex-1 truncate text-secondary-foreground">{entry.text}</span>
+        {entry.outcome && <Outcome outcome={entry.outcome} failed={failed} />}
         {entry.truncated && (
-          <button
-            className="link step-more"
-            onClick={() => {
-              setOpen((o) => !o);
-              if (full === undefined) void sync.detail(entry.seq).then((e) => setFull(e.kind === "tool" ? e.text : ""), () => setFull("Couldn't load."));
-            }}
-          >
-            {open ? "Hide" : "Full output"}
-            <ChevronRight size={12} strokeWidth={2.4} className="chev" />
-          </button>
+          <CollapsibleTrigger render={<Button variant="link" size="link" className="group/disclosure flex-none gap-0.5" />}>
+            <span className="group-data-[panel-open]/disclosure:hidden">Full output</span>
+            <span className="hidden group-data-[panel-open]/disclosure:inline">Hide</span>
+            <ChevronRight size={12} strokeWidth={2.4} className={chevron} />
+          </CollapsibleTrigger>
         )}
       </div>
-      {open && <pre className="step-full">{full ?? "Loading…"}</pre>}
-    </div>
+      <CollapsiblePanel
+        render={<pre />}
+        className="mt-1.5 mb-0.5 ml-[27px] max-h-80 overflow-auto rounded-xl border bg-code px-3 py-2.5 font-mono text-[13px] leading-[1.55] whitespace-pre-wrap text-code-foreground [font-variant-ligatures:none]"
+      >
+        {full ?? "Loading…"}
+      </CollapsiblePanel>
+    </Collapsible>
   );
 });
 
-function Outcome({ outcome }: { outcome: ToolOutcome }) {
+function Outcome({ outcome, failed }: { outcome: ToolOutcome; failed: boolean }) {
   const Icon = OUTCOME_ICON[outcome];
   return (
-    <span className={`outcome o-${outcome}`}>
+    <Badge size="md" variant={failed ? "destructive" : outcome === "recovered" || outcome === "replayed" ? "tool" : "warning"}>
       <Icon size={11} strokeWidth={2.6} />
       {OUTCOME_LABEL[outcome]}
-    </span>
+    </Badge>
   );
 }
 
@@ -193,34 +250,40 @@ function WorkingRow({ bot, name, cont }: { bot: BotSummary | undefined; name: st
     return () => clearInterval(timer);
   }, []);
   const seconds = bot ? Math.max(0, Math.floor((Date.now() - bot.since) / 1000)) : 0;
+  const tool = bot?.status === "tool";
   return (
-    <div className={`msg assistant working w-${bot?.status ?? "thinking"}${cont ? " cont" : ""}`}>
-      {cont ? <span className="gutter" /> : <Avatar name={name} size="sm" />}
-      <div className="msg-body">
-        <div className="working-label">
-          <span className="step-icon live" aria-hidden>
-            {bot?.status === "tool" ? (
-              <Loader2 size={12} strokeWidth={2.4} className="spin" />
+    <div className={cn("relative flex gap-3 pb-1", cont ? "pt-1.5" : "pt-[9px]")}>
+      {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" />}
+      <div className="min-w-0 flex-1">
+        <div className={cn("inline-flex items-center gap-[9px] text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
+          {/* The live step uses the same circle as finished steps: amber while thinking, blue while a tool runs. */}
+          <StepIcon className={tool ? "bg-tool-surface text-tool" : "bg-warning-surface text-warning"}>
+            {tool ? (
+              <Loader2 size={12} strokeWidth={2.4} className="animate-spin motion-reduce:animate-none" />
             ) : (
-              <span className="dots">
-                <i />
-                <i />
-                <i />
+              <span className="inline-flex gap-0.5">
+                <i className="size-[3px] animate-bounce-dot rounded-full bg-current" />
+                <i className="size-[3px] animate-bounce-dot rounded-full bg-current [animation-delay:0.15s]" />
+                <i className="size-[3px] animate-bounce-dot rounded-full bg-current [animation-delay:0.3s]" />
               </span>
             )}
-          </span>
+          </StepIcon>
           {bot ? statusLabel(bot) : "Working"}
-          {seconds >= 2 && <span className="meta"> · {seconds} s</span>}
+          {seconds >= 2 && <span className="text-meta text-muted-foreground tabular-nums"> · {seconds} s</span>}
         </div>
         {bot?.status === "retrying" && bot.error && (
-          <div className="error-note">
+          <ErrorNote>
             <RotateCcw size={13} strokeWidth={2.2} /> Retrying: {bot.error}
-          </div>
+          </ErrorNote>
         )}
       </div>
     </div>
   );
 }
+
+/** A rule across the column with a short line in the middle: "Load earlier messages", notices. */
+const DIVIDER =
+  "flex items-center gap-3 py-4 text-meta leading-[1.4] font-medium text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
 
 function AutoLoad({ onVisible, label }: { onVisible: () => Promise<void>; label: string }) {
   const [busy, setBusy] = useState(false);
@@ -239,10 +302,10 @@ function AutoLoad({ onVisible, label }: { onVisible: () => Promise<void>; label:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <div className="marker">
-      <button className="link" onClick={run} disabled={busy}>
+    <div className={DIVIDER}>
+      <Button variant="link" size="link" onClick={run} disabled={busy}>
         {busy ? "Loading…" : failed ? `Couldn't load. ${label}` : label}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -358,8 +421,8 @@ export const Transcript = memo(function Transcript({ sync, name }: { sync: Conve
   const loadEarlier = useCallback(() => sync.loadEarlier(), [sync]);
 
   return (
-    <div className="transcript" ref={scrollRef} onScroll={onScroll} onClick={onClick}>
-      <div ref={innerRef} className="transcript-inner" style={{ height: virtualizer.getTotalSize() }}>
+    <div className="transcript relative flex-1 overflow-y-auto [contain:strict] [overflow-anchor:none] [scrollbar-gutter:stable]" ref={scrollRef} onScroll={onScroll} onClick={onClick}>
+      <div ref={innerRef} className="relative mx-auto w-full max-w-220" style={{ height: virtualizer.getTotalSize() }}>
         {items.map((item) => {
           const row = rows[item.index]!;
           const prev = rows[item.index - 1];
@@ -370,8 +433,17 @@ export const Transcript = memo(function Transcript({ sync, name }: { sync: Conve
           const prevAt = opensTurn ? lastTime(rows, item.index) : undefined;
           const showTime = opensTurn && !!row.at && (prevAt === undefined || row.at - prevAt > NEW_STRETCH_MS);
           return (
-            <div key={item.key} data-index={item.index} ref={virtualizer.measureElement} className="row" style={{ transform: `translateY(${item.start}px)` }}>
-              {showTime && (row.kind === "user" || row.kind === "assistant") && row.at ? <div className="stretch">{stretchLabel(row.at)}</div> : null}
+            <div
+              key={item.key}
+              data-index={item.index}
+              ref={virtualizer.measureElement}
+              className="row absolute top-0 left-0 w-full px-8 will-change-transform narrow:px-4"
+              style={{ transform: `translateY(${item.start}px)` }}
+            >
+              {/* Opens a stretch of conversation: a centered, quiet time. */}
+              {showTime && (row.kind === "user" || row.kind === "assistant") && row.at ? (
+                <div className="pt-5 pb-1 text-center text-meta leading-4 font-medium text-muted-foreground tabular-nums">{stretchLabel(row.at)}</div>
+              ) : null}
               {row.kind === "user" ? (
                 <UserRow row={row} sync={sync} divided={showTime} />
               ) : row.kind === "assistant" ? (
@@ -385,28 +457,22 @@ export const Transcript = memo(function Transcript({ sync, name }: { sync: Conve
               ) : row.kind === "gap" ? (
                 <AutoLoad onVisible={() => sync.fillGap(row.gap)} label="Load missed messages" />
               ) : (
-                <div className="notice">{row.text}</div>
+                <div className={DIVIDER}>{row.text}</div>
               )}
             </div>
           );
         })}
       </div>
-      {snapshot.status === "loading" && rows.length === 0 && (
-        <div className="empty">
-          <div className="empty-card">
-            <Avatar name={name} size="lg" />
-            <p className="empty-sub">Connecting to {name}…</p>
-          </div>
-        </div>
-      )}
-      {snapshot.status !== "loading" && rows.length === 0 && (
-        <div className="empty">
-          <div className="empty-card">
-            <Avatar name={name} size="lg" />
-            <h2>{name}</h2>
-            <p className="empty-sub">No messages yet. Say hi and give {name} something to do.</p>
-          </div>
-        </div>
+      {rows.length === 0 && (
+        <Empty>
+          {snapshot.status === "loading" ? (
+            <EmptyCard visual={<Avatar name={name} size="lg" />}>Connecting to {name}…</EmptyCard>
+          ) : (
+            <EmptyCard visual={<Avatar name={name} size="lg" />} title={name}>
+              No messages yet. Say hi and give {name} something to do.
+            </EmptyCard>
+          )}
+        </Empty>
       )}
     </div>
   );

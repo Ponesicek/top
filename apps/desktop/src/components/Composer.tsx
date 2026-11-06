@@ -1,6 +1,7 @@
 /**
  * The composer is isolated from the transcript: it subscribes only to "is the bot working", so typing
- * never waits on a transcript render.
+ * never waits on a transcript render. Its buttons are a memoized child that re-renders only when
+ * "empty" or "working" flips, not on every keystroke.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowUp, Square } from "lucide-react";
@@ -8,8 +9,43 @@ import type { ConversationSync } from "@top/client";
 import { perf } from "../perf.ts";
 import { isWorking } from "../rows.ts";
 import { top } from "../top.ts";
+import { Button } from "./ui/button.tsx";
+import { Tooltip } from "./ui/tooltip.tsx";
 
 const drafts = new Map<string, string>();
+
+const Actions = memo(function Actions({ empty, running, onSend, onStop }: { empty: boolean; running: boolean; onSend: (steer: boolean) => void; onStop: () => void }) {
+  // Steer and Queue appear once there is something to send; empty, the composer stays calm.
+  if (running && !empty)
+    return (
+      <div className="flex flex-none gap-1.5">
+        <Tooltip content="Steer: interrupt with this message (Ctrl+Enter)">
+          <Button variant="outline" onClick={() => onSend(true)}>
+            Steer
+          </Button>
+        </Tooltip>
+        <Tooltip content="Queue after the current task (Enter)">
+          <Button onClick={() => onSend(false)}>Queue</Button>
+        </Tooltip>
+      </div>
+    );
+  // While a bot works, the send button is Stop.
+  if (running)
+    return (
+      <Tooltip content="Stop (Esc)">
+        <Button variant="stop" size="icon" onClick={onStop} aria-label="Stop">
+          <Square size={12} fill="currentColor" strokeWidth={0} />
+        </Button>
+      </Tooltip>
+    );
+  return (
+    <Tooltip content="Send (Enter) · Shift+Enter for a new line">
+      <Button size="icon" className="disabled:bg-foreground/8" disabled={empty} onClick={() => onSend(false)} aria-label="Send">
+        <ArrowUp size={17} strokeWidth={1.7} />
+      </Button>
+    </Tooltip>
+  );
+});
 
 export const Composer = memo(function Composer({ sync, name }: { sync: ConversationSync; name: string }) {
   const key = String(sync.id);
@@ -40,58 +76,52 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
     },
     [text, running, sync, key],
   );
+  // The buttons get stable callbacks that always see the latest text.
+  const latestSend = useRef(send);
+  latestSend.current = send;
+  const onSend = useCallback((steer: boolean) => latestSend.current(steer), []);
+  const onStop = useCallback(() => void sync.abort().catch(() => {}), [sync]);
 
-  const empty = !text.trim();
   return (
-    <div className="composer-dock">
-    <div className="composer-wrap">
-      <div className="composer" onMouseDown={(e) => e.target === e.currentTarget && (e.preventDefault(), ref.current?.focus())}>
-        <span className="compose-gutter" aria-hidden>
-          ›
-        </span>
-        <textarea
-          ref={ref}
-          value={text}
-          rows={1}
-          placeholder={`Message ${name}…`}
-          onChange={(e) => {
-            setText(e.target.value);
-            drafts.set(key, e.target.value);
-          }}
-          onKeyDown={(e) => {
-            perf.trackInput(e.nativeEvent);
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send(e.ctrlKey || e.metaKey);
-            } else if (e.key === "Escape" && running) {
-              void sync.abort().catch(() => {});
-            }
-          }}
-        />
-        {/* Steer and Queue appear once there is something to send; empty, the composer stays calm. */}
-        {running && !empty ? (
-          <div className="composer-actions">
-            <button className="ghost" onClick={() => send(true)} title="Steer: interrupt with this message (Ctrl+Enter)">
-              Steer
-            </button>
-            <button className="primary" onClick={() => send(false)} title="Queue after the current task (Enter)">
-              Queue
-            </button>
-          </div>
-        ) : running ? (
-          <button className="send stop-send" onClick={() => void sync.abort().catch(() => {})} title="Stop (Esc)" aria-label="Stop">
-            <Square size={12} fill="currentColor" strokeWidth={0} />
-          </button>
-        ) : (
-          <button className="send" disabled={empty} onClick={() => send(false)} title="Send (Enter) · Shift+Enter for a new line" aria-label="Send">
-            <ArrowUp size={17} strokeWidth={1.7} />
-          </button>
-        )}
+    // The composer shares the transcript column: its text starts where answers start. The dock reserves
+    // the same scrollbar gutter as the transcript, so both center on the same axis.
+    <div className="flex-none overflow-hidden [scrollbar-gutter:stable]">
+      <div className="mx-auto max-w-220 px-8 pt-1 pb-3 narrow:px-4 narrow:pb-2">
+        <div
+          className="composer flex cursor-text items-end gap-2 rounded-[18px] border border-input bg-popover p-[7px] shadow-composer transition-[border-color,box-shadow] duration-120 focus-within:shadow-[var(--shadow-composer),var(--shadow-focus-value)]"
+          onMouseDown={(e) => e.target === e.currentTarget && (e.preventDefault(), ref.current?.focus())}
+        >
+          {/* A typed shell prompt, the same "›" as the logo's "›_": decoration, not a control. The avatar
+              column stays empty otherwise: it is you writing, not the bot. */}
+          <span className="pointer-events-none grid h-9 w-6 flex-none place-items-center font-mono text-[17px] leading-none font-semibold text-link/70 select-none narrow:hidden" aria-hidden>
+            ›
+          </span>
+          <textarea
+            ref={ref}
+            value={text}
+            rows={1}
+            placeholder={`Message ${name}…`}
+            className="max-h-60 min-w-0 flex-1 resize-none overflow-y-hidden bg-transparent py-[7px] text-[15px] leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground"
+            onChange={(e) => {
+              setText(e.target.value);
+              drafts.set(key, e.target.value);
+            }}
+            onKeyDown={(e) => {
+              perf.trackInput(e.nativeEvent);
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send(e.ctrlKey || e.metaKey);
+              } else if (e.key === "Escape" && running) {
+                onStop();
+              }
+            }}
+          />
+          <Actions empty={!text.trim()} running={running} onSend={onSend} onStop={onStop} />
+        </div>
+        {/* Only the working state's keys need explaining (idle is the usual Enter / Shift+Enter). The line
+            keeps its height either way, so the transcript doesn't jump when a bot starts or stops. */}
+        <div className="h-[23px] truncate pt-[7px] pl-10 text-meta leading-4 text-muted-foreground">{running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}</div>
       </div>
-      {/* Only the working state's keys need explaining (idle is the usual Enter / Shift+Enter). The line
-          keeps its height either way, so the transcript doesn't jump when a bot starts or stops. */}
-      <div className="composer-hint">{running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}</div>
-    </div>
     </div>
   );
 });

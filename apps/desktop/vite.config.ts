@@ -1,3 +1,4 @@
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
@@ -16,7 +17,7 @@ function csp(): Plugin {
 
 export default defineConfig({
   base: "./",
-  plugins: [react(), csp()],
+  plugins: [react(), tailwindcss(), csp()],
   server: { port: 5199, strictPort: true },
   build: { target: "chrome140", outDir: "dist", sourcemap: true },
 });

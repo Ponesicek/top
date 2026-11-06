@@ -2,10 +2,13 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import type { BotId } from "@top/client";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { Composer } from "./components/Composer.tsx";
+import { Empty, EmptyCard } from "./components/Empty.tsx";
 import { Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
+import { Button } from "./components/ui/button.tsx";
+import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { conversation, markSeen, top, useBot } from "./top.ts";
 
 function readSelected(): string | undefined {
@@ -83,40 +86,38 @@ export function App() {
   }, [summary?.id, summary?.lastSeq]);
 
   return (
-    <div className="app">
+    <TooltipProvider delay={500}>
+    <div className="grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]">
       <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} onTogglePerf={togglePerf} />
-      <main className="main">
+      <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
         {bot && sync ? (
           <>
             <Header sync={sync} name={bot.name} />
-            <div className="top-fade" aria-hidden />
+            {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}
+            <div className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent" aria-hidden />
             <Transcript key={String(bot.id)} sync={sync} name={bot.name} />
             <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
           </>
         ) : ready ? (
-          <div className="empty">
-            <div className="empty-card">
-              <h2>No bots yet</h2>
-              <p className="empty-sub">Make one to start a conversation.</p>
-              <button className="primary empty-action" onClick={openNewBot}>
-                New bot
-              </button>
-            </div>
-          </div>
+          <Empty>
+            <EmptyCard title="No bots yet" action={<Button onClick={openNewBot}>New bot</Button>}>
+              Make one to start a conversation.
+            </EmptyCard>
+          </Empty>
         ) : (
-          <div className="empty">Waiting for the Top daemon…</div>
+          <Empty>Waiting for the Top daemon…</Empty>
         )}
       </main>
-      {creating && (
-        <NewBotDialog
-          onClose={() => setCreating(false)}
-          onCreated={(id) => {
-            setCreating(false);
-            select(id);
-          }}
-        />
-      )}
+      <NewBotDialog
+        open={creating}
+        onOpenChange={setCreating}
+        onCreated={(id) => {
+          setCreating(false);
+          select(id);
+        }}
+      />
       {hud && <PerfHud />}
     </div>
+    </TooltipProvider>
   );
 }
