@@ -20,23 +20,23 @@ import {
   McpAuthRequiredError,
   McpClient,
   McpHttpError,
+  type McpTransport,
   StdioTransport,
   StreamableHttpTransport,
-  toLlmContent,
-  type McpTransport,
   type Tool,
+  toLlmContent,
 } from "@earendil-works/pi-mcp";
 import {
   adaptOAuthProvider,
   authorizeMcp,
   McpOAuthAuthorizationRequiredError,
   McpOAuthProvider,
-  OAuthCallbackServer,
   type McpOAuthState,
+  OAuthCallbackServer,
 } from "@earendil-works/pi-mcp/oauth";
-import { MAX_MCP_NAME, type McpSecret, type McpServerConfig, type McpServerState, type McpServerView } from "@top/protocol";
+import { check, MAX_MCP_NAME, type McpSecret, McpServerConfig, type McpServerState, type McpServerView } from "@top/protocol";
 import { COLLAR } from "./collar/index.ts";
-import type { McpServerRow, Store } from "./store.ts";
+import type { Store } from "./store.ts";
 import type { ToolResult, TopTool } from "./tools.ts";
 
 /** Wait before each reconnect of a failed server; the last one repeats. */
@@ -115,7 +115,7 @@ export class McpManager {
       this.#servers.set(row.id, {
         id: row.id,
         name: row.name,
-        config: JSON.parse(row.config) as McpServerConfig,
+        config: check(McpServerConfig, JSON.parse(row.config), `saved settings of MCP server ${row.name}`),
         bots: new Set(assignments.get(row.id) ?? []),
         state: "connecting",
         error: undefined,
@@ -169,7 +169,7 @@ export class McpManager {
    */
   save(id: number | undefined, name: string, config: McpServerConfig): number {
     const existing = id === undefined ? undefined : this.#get(id);
-    name = String(name ?? "").trim().replace(/\s+/g, " ");
+    name = name.trim().replace(/\s+/g, " ");
     if (!name) throw new McpServerError("Give the server a name.");
     if (name.length > MAX_MCP_NAME) throw new McpServerError(`Keep the name under ${MAX_MCP_NAME + 1} characters.`);
     if (!slug(name)) throw new McpServerError("Use some letters or digits in the name.");
@@ -255,7 +255,8 @@ export class McpManager {
     const connection = this.#get(id);
     const config = connection.config;
     if (config.transport !== "http") throw new McpServerError(`${connection.name} runs as a program; it has no sign-in.`);
-    if (hasAuthorization(config)) throw new McpServerError(`${connection.name} signs in with its Authorization header. Remove the header to sign in with OAuth instead.`);
+    if (hasAuthorization(config))
+      throw new McpServerError(`${connection.name} signs in with its Authorization header. Remove the header to sign in with OAuth instead.`);
 
     let authorizationUrl: string | undefined;
     const provider = this.#oauthProvider(connection, (url) => (authorizationUrl = url.href));
@@ -265,7 +266,7 @@ export class McpManager {
       await provider.invalidateCredentials("client");
     }
     const callback = await this.#callbackServer();
-    let result;
+    let result: Awaited<ReturnType<typeof authorizeMcp>>;
     try {
       result = await authorizeMcp(provider, { serverUrl: config.url, skipRefresh: true });
     } catch (error) {
@@ -328,7 +329,10 @@ export class McpManager {
         if (!current?.client || current.state !== "ready") {
           throw new Error(`The MCP server "${server}" isn't connected${current?.error ? `: ${current.error}` : ""}.`);
         }
-        const result = await current.client.callTool(tool.name, args, { ...(ctx.signal ? { signal: ctx.signal } : {}), timeoutMs: CALL_TIMEOUT_MS });
+        const result = await current.client.callTool(tool.name, args, {
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+          timeoutMs: CALL_TIMEOUT_MS,
+        });
         return { content: toLlmContent(result), details: {}, isError: result.isError === true } as ToolResult;
       },
     };
@@ -349,7 +353,10 @@ export class McpManager {
     this.#changed(connection);
     await previous?.close().catch(() => {});
 
-    const client = new McpClient({ ...(this.#options.clientInfo ?? { name: "top", version: "0.0.0" }), requestTimeoutMs: CONNECT_TIMEOUT_MS });
+    const client = new McpClient({
+      ...(this.#options.clientInfo ?? { name: "top", version: "0.0.0" }),
+      requestTimeoutMs: CONNECT_TIMEOUT_MS,
+    });
     let transport: McpTransport | undefined;
     const current = () => this.#servers.get(connection.id) === connection && connection.generation === generation && !this.#closed;
     try {
@@ -501,30 +508,27 @@ export class McpManager {
     return connection;
   }
 
-  /** Check a config from a client and fill in the secrets it left out from `previous`. */
+  /** Check a config from a client (its shape is checked already) and fill in the secrets it left out from `previous`. */
   #validate(config: McpServerConfig, previous: McpServerConfig | undefined): McpServerConfig {
-    if (config?.transport === "stdio") {
-      const command = String(config.command ?? "").trim();
+    if (config.transport === "stdio") {
+      const command = config.command.trim();
       if (!command) throw new McpServerError("Give the command that starts the server.");
-      const args = Array.isArray(config.args) ? config.args.map(String) : [];
+      const args = [...config.args];
       const env = secrets(config.env, previous?.transport === "stdio" ? previous.env : [], false, "variable");
       for (const v of env) if (!ENV_NAME.test(v.name)) throw new McpServerError(`"${v.name}" isn't a valid environment variable name.`);
       return { transport: "stdio", command, args, env };
     }
-    if (config?.transport === "http") {
-      const url = String(config.url ?? "").trim();
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        throw new McpServerError("Give the server's full URL, starting with https://.");
-      }
-      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new McpServerError("The URL has to start with https:// or http://.");
-      const headers = secrets(config.headers, previous?.transport === "http" ? previous.headers : [], true, "header");
-      for (const h of headers) if (!HEADER_NAME.test(h.name)) throw new McpServerError(`"${h.name}" isn't a valid header name.`);
-      return { transport: "http", url: parsed.href, headers };
+    const url = config.url.trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new McpServerError("Give the server's full URL, starting with https://.");
     }
-    throw new McpServerError("Choose how to reach the server: a command or a URL.");
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new McpServerError("The URL has to start with https:// or http://.");
+    const headers = secrets(config.headers, previous?.transport === "http" ? previous.headers : [], true, "header");
+    for (const h of headers) if (!HEADER_NAME.test(h.name)) throw new McpServerError(`"${h.name}" isn't a valid header name.`);
+    return { transport: "http", url: parsed.href, headers };
   }
 
   #view(connection: Connection): McpServerView {
@@ -553,17 +557,17 @@ export class McpManager {
  * The secrets a client sent, with stored values for those it sent without one. A name may appear once
  * (headers ignore case).
  */
-function secrets(sent: readonly McpSecret[] | undefined, stored: readonly McpSecret[], ignoreCase: boolean, what: string): McpSecret[] {
+function secrets(sent: readonly McpSecret[], stored: readonly McpSecret[], ignoreCase: boolean, what: string): McpSecret[] {
   const key = (name: string) => (ignoreCase ? name.toLowerCase() : name);
   const before = new Map(stored.map((s) => [key(s.name), s.value]));
   const seen = new Set<string>();
   const result: McpSecret[] = [];
-  for (const secret of Array.isArray(sent) ? sent : []) {
-    const name = String(secret?.name ?? "").trim();
+  for (const secret of sent) {
+    const name = secret.name.trim();
     if (!name) continue;
     if (seen.has(key(name))) throw new McpServerError(`The ${what} ${name} is there twice.`);
     seen.add(key(name));
-    const value = secret.value === undefined ? before.get(key(name)) : String(secret.value);
+    const value = secret.value ?? before.get(key(name));
     if (value === undefined) throw new McpServerError(`Give the ${what} ${name} a value.`);
     result.push({ name, value });
   }

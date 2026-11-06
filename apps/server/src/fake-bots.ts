@@ -5,7 +5,7 @@
  * `call echo__echo {"text": "hi"}`). Everything above the model is
  * the real daemon: storage, the agent loop, tools, recovery.
  */
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
+import { type FauxResponseFactory, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
 export const FAKE_PROVIDER = "faux";
 export const FAKE_MODEL = "top-fake";
@@ -58,10 +58,10 @@ function pick<T>(items: readonly T[]): T {
 function sentence(min = 6, max = 18): string {
   const n = min + Math.floor(Math.random() * (max - min));
   const words = Array.from({ length: n }, () => pick(WORDS));
-  if (Math.random() < 0.3) words[Math.floor(Math.random() * n)] = "`" + pick(WORDS) + "()`";
-  if (Math.random() < 0.2) words[Math.floor(Math.random() * n)] = "**" + pick(WORDS) + "**";
+  if (Math.random() < 0.3) words[Math.floor(Math.random() * n)] = `\`${pick(WORDS)}()\``;
+  if (Math.random() < 0.2) words[Math.floor(Math.random() * n)] = `**${pick(WORDS)}**`;
   const text = words.join(" ");
-  return text[0]!.toUpperCase() + text.slice(1) + ".";
+  return `${text[0]!.toUpperCase() + text.slice(1)}.`;
 }
 
 function paragraph(): string {
@@ -157,7 +157,7 @@ export function fakeAnswer(prompt: string): string {
     else if (roll < 0.6) parts.push(Array.from({ length: 3 + Math.floor(Math.random() * 3) }, () => `- ${sentence(4, 10)}`).join("\n"));
     else if (roll < 0.85) {
       const [lang, code] = pick(CODE_SAMPLES);
-      parts.push("```" + lang + "\n" + code + "\n```");
+      parts.push(`\`\`\`${lang}\n${code}\n\`\`\``);
     } else {
       parts.push(
         "| step | p50 | p99 |\n|---|---|---|\n" +

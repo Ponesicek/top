@@ -14,7 +14,7 @@ show as steps, and the app says what each bot is doing while it does it.
 
 | Package | What it is |
 |---|---|
-| `packages/protocol` | Wire frames (JSON over one compressed WebSocket). No dependencies. |
+| `packages/protocol` | Wire frames (JSON over one compressed WebSocket), as TypeBox schemas: the types derive from them, and both ends check every frame that arrives. |
 | `packages/client` | `@top/client`: connection, reconnect, catch-up by sequence number, history paging, optimistic sends. Framework-free, so it's shared by desktop and mobile. |
 | `apps/server` | The daemon: storage (`store.ts`), one runner per bot (`runner.ts`), tools and their crash policies (`tools.ts`), the WebSocket layer (`serve.ts`). |
 | `apps/desktop` | Electron + React. Virtualized transcript, performance overlay, benchmark. |
@@ -26,6 +26,9 @@ pnpm install
 pnpm server          # the daemon, with one bot (Atlas) on a real model (openai/gpt-6.1-sol)
 pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser at :5199)
 ```
+
+Before committing: `pnpm check` (Biome: lint, format, import order; `pnpm fix` applies the safe fixes),
+`pnpm typecheck` and `pnpm test`.
 
 The bots sign in through pi, the coding agent: Top reads and refreshes pi's `~/.pi/agent/auth.json`
 under pi's own file lock, so if `pi` works, Top works. Not signed in? Run `pi`, then `/login`. An API

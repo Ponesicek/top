@@ -11,10 +11,10 @@
  * ended instead of looping forever.
  */
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { getCurrentSystemMessage, type AssistantMessage, type Models, type SystemMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { type AssistantMessage, getCurrentSystemMessage, type Models, type SystemMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
 import type { BotStatus } from "@top/protocol";
-import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
-import { text, type ToolResult, type TopTool } from "./tools.ts";
+import type { BotRow, InboxRow, Store, StoredEntry } from "./store.ts";
+import { type ToolResult, type TopTool, text } from "./tools.ts";
 
 /** A task may survive this many daemon restarts; the next one ends it. */
 export const RESTART_LIMIT = 3;
@@ -37,8 +37,7 @@ export type RunnerEvents = {
 
 type ToolCallPart = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 
-const toolCallsOf = (message: AssistantMessage): ToolCallPart[] =>
-  message.content.filter((part) => part.type === "toolCall") as unknown as ToolCallPart[];
+const toolCallsOf = (message: AssistantMessage): ToolCallPart[] => message.content.filter((part) => part.type === "toolCall") as unknown as ToolCallPart[];
 
 function toolResultMessage(toolCallId: string, toolName: string, result: ToolResult, isError: boolean): ToolResultMessage {
   return {
@@ -225,7 +224,9 @@ export class BotRunner {
         isError = recovered.isError === true;
       } else if (recovered === false) {
         outcome = "not_run";
-        result = text("Did not take effect: the daemon restarted while this tool ran, and the tool confirmed it did not complete. Call it again if it is still needed.");
+        result = text(
+          "Did not take effect: the daemon restarted while this tool ran, and the tool confirmed it did not complete. Call it again if it is still needed.",
+        );
       } else {
         outcome = "interrupted";
         result = text("Interrupted: the daemon restarted while this tool was running. It may or may not have taken effect. Check before calling it again.");
@@ -272,7 +273,7 @@ export class BotRunner {
     const tools = this.#toolSource();
     this.#tools = new Map(tools.map((tool) => [tool.name, tool]));
     this.#agent.state.tools = tools.map(
-      (tool): AgentTool<any> => ({
+      (tool): AgentTool => ({
         name: tool.name,
         label: tool.label,
         description: tool.description,
@@ -280,7 +281,8 @@ export class BotRunner {
         replay: tool.replay ?? "never",
         ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
         ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
-        execute: (toolCallId, params, signal) => tool.run(params as Record<string, unknown>, { key: this.#key(this.#assistantSeq, toolCallId), bot: this.id, signal }),
+        execute: (toolCallId, params, signal) =>
+          tool.run(params as Record<string, unknown>, { key: this.#key(this.#assistantSeq, toolCallId), bot: this.id, signal }),
       }),
     );
   }

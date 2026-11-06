@@ -6,7 +6,7 @@
  * Pings are sparse (every 10 s) to keep a phone's radio asleep; when the app comes back to the
  * foreground or the network changes, `kick()` checks the socket right away instead.
  */
-import { PROTOCOL_VERSION, type ClientFrame, type ServerFrame } from "@top/protocol";
+import { type ClientFrame, PROTOCOL_VERSION, parseServerFrame, type ServerFrame } from "@top/protocol";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting";
 
@@ -149,7 +149,12 @@ export class Connection {
       clearTimeout(this.#connectTimer);
       this.#attempt = 0;
       this.#lastPong = Date.now();
-      const hello: ClientFrame = { t: "hello", clientId: this.#options.clientId, protocol: PROTOCOL_VERSION, ...(this.serverId ? { serverId: this.serverId } : {}) };
+      const hello: ClientFrame = {
+        t: "hello",
+        clientId: this.#options.clientId,
+        protocol: PROTOCOL_VERSION,
+        ...(this.serverId ? { serverId: this.serverId } : {}),
+      };
       socket.send(JSON.stringify(hello));
       this.#pingTimer = setInterval(() => this.#ping(), this.#options.pingIntervalMs);
       this.#setStatus("open");
@@ -158,7 +163,18 @@ export class Connection {
     socket.onmessage = (event) => {
       if (this.#socket !== socket) return;
       this.#lastPong = Date.now(); // any traffic proves the connection is alive
-      const frame = JSON.parse(String(event.data)) as ServerFrame;
+      const parsed = parseServerFrame(String(event.data));
+      if (!parsed.ok) {
+        // A request it answered badly fails now rather than at its timeout.
+        const pending = parsed.req === undefined ? undefined : this.#requests.get(parsed.req);
+        if (pending) {
+          this.#requests.delete(parsed.req!);
+          clearTimeout(pending.timer);
+          pending.reject(new Error(parsed.error));
+        } else console.warn(`[top] ignored a frame from the daemon: ${parsed.error}`);
+        return;
+      }
+      const frame = parsed.frame;
       if (frame.t === "pong") {
         this.#rttMs = Date.now() - frame.at;
         return;

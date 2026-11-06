@@ -8,13 +8,14 @@
  * - a resent message is applied once; a long absence resumes with only the new entries plus a gap;
  * - a client that meets a different daemon on the same address drops what it held from the old one.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+
+import assert from "node:assert/strict";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
-import assert from "node:assert/strict";
-import { TopClient, type BotSummary, type ConversationSnapshot, type ConversationSync, type Entry } from "../src/index.ts";
+import { type BotSummary, type ConversationSnapshot, type ConversationSync, type Entry, TopClient } from "../src/index.ts";
 
 const serverMain = resolve(import.meta.dirname, "../../../apps/server/src/main.ts");
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -48,10 +49,14 @@ class Daemon {
 
   start(): Promise<void> {
     return new Promise((resolveStart, reject) => {
-      const child = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(this.port), "--data", this.dataDir, "--tps", "120", ...this.extra], {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, TOP_RETRY_DELAYS_MS: "200,200,200" },
-      });
+      const child = spawn(
+        process.execPath,
+        ["--import", "tsx", serverMain, "--port", String(this.port), "--data", this.dataDir, "--tps", "120", ...this.extra],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, TOP_RETRY_DELAYS_MS: "200,200,200" },
+        },
+      );
       this.process = child;
       let listening = false;
       child.stdout!.on("data", (chunk: Buffer) => {
@@ -94,7 +99,13 @@ class Daemon {
   }
 }
 
-function until<T>(subscribe: (listener: () => void) => () => void, read: () => T, predicate: (value: T) => boolean, what: string, timeoutMs = 20_000): Promise<T> {
+function until<T>(
+  subscribe: (listener: () => void) => () => void,
+  read: () => T,
+  predicate: (value: T) => boolean,
+  what: string,
+  timeoutMs = 20_000,
+): Promise<T> {
   return new Promise<T>((r, reject) => {
     const check = () => {
       const value = read();
@@ -116,7 +127,13 @@ const untilBot = (sync: ConversationSync, predicate: (s: ConversationSnapshot) =
   until(sync.subscribe, sync.getSnapshot, predicate, what, timeoutMs);
 
 const untilSummary = (top: TopClient, id: number, predicate: (b: BotSummary) => boolean, what: string, timeoutMs?: number) =>
-  until(top.subscribe, () => top.getSnapshot().bots.find((b) => b.id === id), (b) => !!b && predicate(b), what, timeoutMs);
+  until(
+    top.subscribe,
+    () => top.getSnapshot().bots.find((b) => b.id === id),
+    (b) => !!b && predicate(b),
+    what,
+    timeoutMs,
+  );
 
 const entries = (s: ConversationSnapshot) => s.items.flatMap((i) => (i.kind === "entry" ? [i.entry] : []));
 const ofKind = <K extends Entry["kind"]>(s: ConversationSnapshot, kind: K) => entries(s).filter((e): e is Extract<Entry, { kind: K }> => e.kind === kind);
@@ -158,7 +175,9 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
   const done = await until(
     (listener) => {
       const offs = [bot.subscribe(listener), top.subscribe(listener)];
-      return () => offs.forEach((off) => off());
+      return () => {
+        for (const off of offs) off();
+      };
     },
     () => ({ s: bot.getSnapshot(), b: top.getSnapshot().bots.find((x) => x.id === id) }),
     ({ s, b }) => settled(s) && b?.status === "idle" && ofKind(s, "assistant").length >= 2 && ofKind(s, "user").length === 2,
@@ -167,11 +186,20 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
   ).catch((error: Error) => {
     const s = bot.getSnapshot();
     const b = top.getSnapshot().bots.find((x) => x.id === id);
-    throw new Error(`${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`);
+    throw new Error(
+      `${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`,
+    );
   });
-  assert.deepEqual(ofKind(done.s, "user").map((e) => e.text), ["hello from the e2e test", "sent while offline"]);
+  assert.deepEqual(
+    ofKind(done.s, "user").map((e) => e.text),
+    ["hello from the e2e test", "sent while offline"],
+  );
   const seqs = entries(done.s).map((e) => e.seq);
-  assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), "in order");
+  assert.deepEqual(
+    seqs,
+    [...seqs].sort((a, b) => a - b),
+    "in order",
+  );
   assert.equal(new Set(seqs).size, seqs.length, "no duplicates");
   // The interrupted answer is simply asked again: one answer per message, no half answers.
   assert.equal(ofKind(done.s, "assistant").length, 2);
@@ -251,13 +279,21 @@ test("Stop during a tool ends the task; the next queued message still runs", asy
   bot.send("after the stop");
   await untilBot(bot, (s) => s.inbox.length === 1, "the second message to queue");
   await bot.abort();
-  const s = await untilBot(bot, (s) => settled(s) && ofKind(s, "user").length === 2 && ofKind(s, "assistant").length === 2, "the queued message to run", 30_000);
+  const s = await untilBot(
+    bot,
+    (s) => settled(s) && ofKind(s, "user").length === 2 && ofKind(s, "assistant").length === 2,
+    "the queued message to run",
+    30_000,
+  );
   await untilSummary(top, id, (b) => b.status === "idle", "idle");
   const result = ofKind(s, "tool")[0]!;
   assert.equal(result.isError, true);
   assert.match(result.text, /Stopped/);
   // No model request after the stop: the tool call, its stopped result, a note, then the next message.
-  assert.deepEqual(entries(s).map((e) => e.kind), ["user", "assistant", "tool", "notice", "user", "assistant"]);
+  assert.deepEqual(
+    entries(s).map((e) => e.kind),
+    ["user", "assistant", "tool", "notice", "user", "assistant"],
+  );
   assert.equal(ofKind(s, "notice")[0]!.text, "Stopped");
   assert.match(ofKind(s, "assistant").at(-1)!.text, /after the stop/);
   assert.equal(daemon.effects("deploy", "effect"), 1);
@@ -288,7 +324,8 @@ test("a resent message is applied once", async () => {
     const frame = JSON.parse(String(event.data)) as { t: string; value?: unknown };
     if (frame.t === "result") results.push(frame.value);
   };
-  const submit = (req: number) => socket.send(JSON.stringify({ t: "submit", req, bot: id, requestId: "same-id", text: "only once", whenBusy: "followUp", clientId: "raw" }));
+  const submit = (req: number) =>
+    socket.send(JSON.stringify({ t: "submit", req, bot: id, requestId: "same-id", text: "only once", whenBusy: "followUp", clientId: "raw" }));
   submit(1);
   submit(2);
   for (let waited = 0; results.length < 2 && waited < 5_000; waited += 20) await new Promise((r) => setTimeout(r, 20));
@@ -384,7 +421,10 @@ test("a different daemon on the same address: the old one's transcript is droppe
   assert.equal(entries(coldBot.getSnapshot()).length, 50);
   coldBot.retain();
   const fresh = await untilBot(coldBot, (x) => x.status === "live", "the cold sync");
-  assert.deepEqual(entries(fresh).map((e) => e.kind), entries(bot.getSnapshot()).map((e) => e.kind));
+  assert.deepEqual(
+    entries(fresh).map((e) => e.kind),
+    entries(bot.getSnapshot()).map((e) => e.kind),
+  );
   assert.ok(!entries(fresh).some((e) => e.kind === "user" && e.text.includes("(#")), "no seeded history");
 });
 
@@ -414,7 +454,10 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   a.bot.send("deploy web 5s");
   await untilSummary(a.top, a.id, (bot) => bot.status === "tool", "the first bot running a tool");
   await a.top.deleteBot(a.id);
-  assert.equal(a.top.getSnapshot().bots.some((bot) => bot.id === a.id), false);
+  assert.equal(
+    a.top.getSnapshot().bots.some((bot) => bot.id === a.id),
+    false,
+  );
   await until(b.top.subscribe, b.top.getSnapshot, (s) => !s.bots.some((bot) => bot.id === a.id), "the deleted bot gone on the other client");
   await assert.rejects(a.top.deleteBot(a.id), /Unknown bot/);
 
@@ -448,7 +491,12 @@ test("MCP servers set up from the app: every client sees them, bots get them onl
   const id = await a.top.saveMcpServer(undefined, "Echo", config);
   await assert.rejects(a.top.saveMcpServer(undefined, "echo", config), /already a server named Echo/);
   const ready = (top: TopClient) =>
-    until(top.subscribe, () => top.getSnapshot().mcpServers.find((s) => s.id === id), (s) => s?.state === "ready", "the server connected");
+    until(
+      top.subscribe,
+      () => top.getSnapshot().mcpServers.find((s) => s.id === id),
+      (s) => s?.state === "ready",
+      "the server connected",
+    );
   const seen = await ready(b.top);
   assert.deepEqual(seen!.tools, ["echo", "env", "fail"]);
   assert.deepEqual(seen!.bots, [], "no bot has it until it's given one");
@@ -460,7 +508,12 @@ test("MCP servers set up from the app: every client sees them, bots get them onl
   assert.match(ofKind(s, "tool").at(-1)!.text, /not found/i);
 
   await a.top.assignMcp(id, a.id, true);
-  await until(b.top.subscribe, () => b.top.getSnapshot().mcpServers.find((s) => s.id === id)?.bots, (bots) => bots?.[0] === a.id, "the assignment on the other client");
+  await until(
+    b.top.subscribe,
+    () => b.top.getSnapshot().mcpServers.find((s) => s.id === id)?.bots,
+    (bots) => bots?.[0] === a.id,
+    "the assignment on the other client",
+  );
   await assert.rejects(a.top.assignMcp(id, 9_999, true), /Unknown bot/);
 
   // From its next message, it can: the call goes through the agent loop to the server and back.
@@ -488,5 +541,8 @@ test("no MCP server may take the name of Top's own tools (Collar)", async () => 
   await daemon.start();
   const a = await connect(daemon, 0);
   const echo = resolve(import.meta.dirname, "../../../apps/server/test/fixtures/echo-mcp.mjs");
-  await assert.rejects(a.top.saveMcpServer(undefined, " Collar! ", { transport: "stdio", command: process.execPath, args: [echo], env: [] }), /name of Top's own tools/);
+  await assert.rejects(
+    a.top.saveMcpServer(undefined, " Collar! ", { transport: "stdio", command: process.execPath, args: [echo], env: [] }),
+    /name of Top's own tools/,
+  );
 });

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { cn } from "../lib/utils.ts";
-import { perf, percentile, setFrameSampling } from "../perf.ts";
+import { percentile, perf, setFrameSampling } from "../perf.ts";
 import { top } from "../top.ts";
 
 function Value({ ok, children }: { ok?: boolean; children: React.ReactNode }) {

@@ -1,15 +1,24 @@
-import { useId, type ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import { CHAT_STYLES, type ChatStyle } from "../chatStyle.ts";
 import { cn } from "../lib/utils.ts";
 import { canScale, SCALES, type Scale } from "../scale.ts";
 import { McpServers } from "./McpServers.tsx";
 
 const SCALE_OPTIONS = SCALES.map((s) => ({ value: String(s), label: `${Math.round(s * 100)}%` }));
+
 import { Section } from "./SettingsSection.tsx";
 import { Switch } from "./ui/switch.tsx";
 
 /** One setting: a label and a line about it on the left, its control on the right. */
-function Row({ label, description, control }: { label: string; description?: ReactNode; control: (ids: { labelId: string; descriptionId: string }) => ReactNode }) {
+function Row({
+  label,
+  description,
+  control,
+}: {
+  label: string;
+  description?: ReactNode;
+  control: (ids: { labelId: string; descriptionId: string }) => ReactNode;
+}) {
   const labelId = useId();
   const descriptionId = useId();
   return (
@@ -35,10 +44,21 @@ function Kbd({ children }: { children: ReactNode }) {
 
 /** The settings page fills the main area, in place of a conversation. */
 /** A few buttons in a track, the chosen one raised. */
-function Segmented<T extends string>({ value, options, onChange, labelledBy }: { value: T; options: readonly { value: T; label: string }[]; onChange: (v: T) => void; labelledBy: string }) {
+function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  labelledBy,
+}: {
+  value: T;
+  options: readonly { value: T; label: string }[];
+  onChange: (v: T) => void;
+  labelledBy: string;
+}) {
   return (
     <div role="radiogroup" aria-labelledby={labelledBy} className="flex flex-none gap-0.5 rounded-field bg-secondary p-0.75">
       {options.map((o) => (
+        // biome-ignore lint/a11y/useSemanticElements: a segmented control; TODO: Base UI RadioGroup, which adds arrow-key navigation
         <button
           key={o.value}
           type="button"
@@ -96,12 +116,7 @@ export function Settings({
                   </>
                 }
                 control={({ labelId }) => (
-                  <Segmented
-                    value={String(scale)}
-                    options={SCALE_OPTIONS}
-                    onChange={(value) => onScaleChange(Number(value) as Scale)}
-                    labelledBy={labelId}
-                  />
+                  <Segmented value={String(scale)} options={SCALE_OPTIONS} onChange={(value) => onScaleChange(Number(value) as Scale)} labelledBy={labelId} />
                 )}
               />
             )}
@@ -115,7 +130,9 @@ export function Settings({
                   Frame rate, input latency, long tasks and round-trip time, in the top-right corner. <Kbd>Ctrl+Shift+P</Kbd>
                 </>
               }
-              control={({ labelId, descriptionId }) => <Switch checked={perfHud} onCheckedChange={onPerfHudChange} aria-labelledby={labelId} aria-describedby={descriptionId} />}
+              control={({ labelId, descriptionId }) => (
+                <Switch checked={perfHud} onCheckedChange={onPerfHudChange} aria-labelledby={labelId} aria-describedby={descriptionId} />
+              )}
             />
           </Section>
         </div>

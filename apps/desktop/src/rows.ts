@@ -6,7 +6,15 @@ export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 export type Row =
   | { readonly kind: "earlier"; readonly key: string }
   | { readonly kind: "gap"; readonly key: string; readonly gap: Gap }
-  | { readonly kind: "user"; readonly key: string; readonly text: string; readonly at?: number; readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer"; readonly requestId?: string; readonly error?: string }
+  | {
+      readonly kind: "user";
+      readonly key: string;
+      readonly text: string;
+      readonly at?: number;
+      readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer";
+      readonly requestId?: string;
+      readonly error?: string;
+    }
   | {
       readonly kind: "assistant";
       readonly key: string;
@@ -32,7 +40,16 @@ function rowForEntry(entry: Entry): Row {
       row = { kind: "user", key, text: entry.text, at: entry.at };
       break;
     case "assistant":
-      row = { kind: "assistant", key, seq: entry.seq, text: entry.text, tools: entry.tools ?? [], hasThinking: !!entry.hasThinking, at: entry.at, error: entry.stopped ? "Stopped" : entry.error };
+      row = {
+        kind: "assistant",
+        key,
+        seq: entry.seq,
+        text: entry.text,
+        tools: entry.tools ?? [],
+        hasThinking: !!entry.hasThinking,
+        at: entry.at,
+        error: entry.stopped ? "Stopped" : entry.error,
+      };
       break;
     case "tool":
       row = { kind: "tool", key, entry };
@@ -64,7 +81,10 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
 const tailCache = new WeakMap<object, Row>();
 function stable<T extends object>(source: T, make: () => Row): Row {
   let row = tailCache.get(source);
-  if (!row) tailCache.set(source, (row = make()));
+  if (!row) {
+    row = make();
+    tailCache.set(source, row);
+  }
   return row;
 }
 
@@ -77,7 +97,15 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
   const rows: Row[] = [];
   if (working) rows.push(WORKING);
   for (const item of snapshot.inbox) {
-    rows.push(stable<QueuedMessage>(item, () => ({ kind: "user", key: `m${item.requestId}`, text: item.text, at: item.at, state: item.mode === "steer" ? "steer" : "queued" })));
+    rows.push(
+      stable<QueuedMessage>(item, () => ({
+        kind: "user",
+        key: `m${item.requestId}`,
+        text: item.text,
+        at: item.at,
+        state: item.mode === "steer" ? "steer" : "queued",
+      })),
+    );
   }
   for (const pending of snapshot.pending) {
     rows.push(
@@ -135,7 +163,8 @@ export function displayRows(rows: readonly Row[]): DisplayRow[] {
   };
   for (const row of rows) {
     if (row.kind === "tool") {
-      (run ??= []).push(row.entry);
+      run ??= [];
+      run.push(row.entry);
       continue;
     }
     // A tool-call-only answer sits between tool steps; skipping it keeps the run together.

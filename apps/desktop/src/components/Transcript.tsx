@@ -7,13 +7,13 @@
  * scrolled up; keep the visible row in place when older messages load above it.
  */
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { ConversationSnapshot, ConversationSync } from "@top/client";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { ChatStyle } from "../chatStyle.ts";
-import { perf } from "../perf.ts";
-import { committedRows, displayRows, isWorking, tailRows, type DisplayRow, type Row } from "../rows.ts";
-import { useBot } from "../top.ts";
 import { cn } from "../lib/utils.ts";
+import { perf } from "../perf.ts";
+import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows } from "../rows.ts";
+import { useBot } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
@@ -114,6 +114,7 @@ export const Transcript = memo(function Transcript({ sync, name, style = "defaul
 
   // Keep the first visible row still when rows are inserted above it (load earlier, gap filled).
   const firstKey = rows[0]?.key;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs only when rows are inserted above, i.e. the first row changes
   useLayoutEffect(() => {
     const saved = anchor.current;
     if (saved && !atBottom.current) {
@@ -121,7 +122,6 @@ export const Transcript = memo(function Transcript({ sync, name, style = "defaul
       const item = index >= 0 ? virtualizer.measurementsCache[index] : undefined;
       if (item && scrollRef.current) scrollRef.current.scrollTop = item.start - saved.offset;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstKey]);
   const items = virtualizer.getVirtualItems();
 
@@ -160,10 +160,16 @@ export const Transcript = memo(function Transcript({ sync, name, style = "defaul
     hoveredTurn.current = turn;
     turnStyle.current.textContent = turn ? `.turn-time[data-turn-time="${CSS.escape(turn)}"]{opacity:1}` : "";
   }, []);
-  const onMouseOver = useCallback((event: React.MouseEvent) => markTurn((event.target as HTMLElement).closest("[data-turn]")?.getAttribute("data-turn") ?? null), [markTurn]);
+  const onMouseOver = useCallback(
+    (event: React.MouseEvent) => markTurn((event.target as HTMLElement).closest("[data-turn]")?.getAttribute("data-turn") ?? null),
+    [markTurn],
+  );
   const onMouseLeave = useCallback(() => markTurn(null), [markTurn]);
 
   return (
+    // Delegated handlers: clicks come from the copy buttons in rendered code (real buttons, so keys work
+    // too), and hover only reveals turn times, which keyboard users reach by focusing them.
+    // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents lint/a11y/useKeyWithMouseEvents: delegation, see above
     <div
       className={cn("transcript relative flex-1 overflow-y-auto [contain:strict] [overflow-anchor:none] [scrollbar-gutter:stable]", look.scroll)}
       ref={scrollRef}

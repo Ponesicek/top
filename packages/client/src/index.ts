@@ -9,13 +9,20 @@
  * Retain only the bots on screen when data is metered (a phone on cellular): the sidebar summaries
  * cover the rest, and a retained bot catches up from what it holds when it is opened.
  */
-import type { BotId, BotSummary, CreateBotResult, McpServerConfig, McpServerId, McpServerView, McpSignInResult, SaveMcpServerResult, ServerFrame } from "@top/protocol";
+import type {
+  BotId,
+  BotSummary,
+  CreateBotResult,
+  McpServerConfig,
+  McpServerId,
+  McpServerView,
+  McpSignInResult,
+  SaveMcpServerResult,
+  ServerFrame,
+} from "@top/protocol";
 import { Connection, type ConnectionStatus } from "./connection.ts";
 import { ConversationSync } from "./conversation.ts";
 
-export * from "./conversation.ts";
-export { Connection, OfflineError, TimeoutError, type ConnectionStatus } from "./connection.ts";
-export { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, MAX_MCP_NAME } from "@top/protocol";
 export type {
   BotId,
   BotStatus,
@@ -33,6 +40,9 @@ export type {
   ToolOutcome,
   WhenBusy,
 } from "@top/protocol";
+export { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, MAX_MCP_NAME } from "@top/protocol";
+export { Connection, type ConnectionStatus, OfflineError, TimeoutError } from "./connection.ts";
+export * from "./conversation.ts";
 
 export type TopClientOptions = {
   readonly url: string;

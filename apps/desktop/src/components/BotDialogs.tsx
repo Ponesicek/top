@@ -1,8 +1,20 @@
-import { useRef, useState, type FormEvent } from "react";
-import { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, OfflineError, TimeoutError, type BotId, type BotSummary } from "@top/client";
+import { type BotId, type BotSummary, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, OfflineError, TimeoutError } from "@top/client";
+import { type FormEvent, useRef, useState } from "react";
 import { top } from "../top.ts";
 import { Button } from "./ui/button.tsx";
-import { AlertDialog, AlertDialogClose, AlertDialogPopup, Dialog, DialogBody, DialogClose, DialogDescription, DialogError, DialogFooter, DialogPopup, DialogTitle } from "./ui/dialog.tsx";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogPopup,
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogDescription,
+  DialogError,
+  DialogFooter,
+  DialogPopup,
+  DialogTitle,
+} from "./ui/dialog.tsx";
 import { Field, FieldHint, FieldLabel, Input, Textarea } from "./ui/field.tsx";
 
 /** What went wrong, in words for the user. The daemon's own refusals already are ("There's already a bot named Atlas."). */
@@ -125,7 +137,17 @@ function DeleteBotBody({ bot, onDone }: { bot: BotSummary; onDone: () => void })
 }
 
 /** Focus starts on Cancel (the first control): Enter right after opening must not delete. */
-export function DeleteBotDialog({ bot, open, onOpenChange, onClosed }: { bot: BotSummary | undefined; open: boolean; onOpenChange: (open: boolean) => void; onClosed: () => void }) {
+export function DeleteBotDialog({
+  bot,
+  open,
+  onOpenChange,
+  onClosed,
+}: {
+  bot: BotSummary | undefined;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onClosed: () => void;
+}) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={(o) => !o && onClosed()}>
       <AlertDialogPopup>{bot && <DeleteBotBody key={bot.id} bot={bot} onDone={() => onOpenChange(false)} />}</AlertDialogPopup>

@@ -165,7 +165,12 @@ export class Store {
     this.#db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     this.#db.exec(SCHEMA);
     // Columns added after the first release.
-    const columns = new Set(this.#db.prepare("PRAGMA table_info(bots)").all().map((row) => String(row.name)));
+    const columns = new Set(
+      this.#db
+        .prepare("PRAGMA table_info(bots)")
+        .all()
+        .map((row) => String(row.name)),
+    );
     if (!columns.has("description")) this.#db.exec("ALTER TABLE bots ADD COLUMN description TEXT NOT NULL DEFAULT ''");
     if (!columns.has("deleted")) this.#db.exec("ALTER TABLE bots ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
     this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('id', ?)").run(randomUUID());
@@ -341,12 +346,7 @@ export class Store {
 
   // ── entries ──────────────────────────────────────────────────────────────────
 
-  append(
-    bot: number,
-    kind: EntryKind,
-    message: unknown,
-    extra: { requestId?: string; toolCallId?: string; outcome?: string; at?: number } = {},
-  ): StoredEntry {
+  append(bot: number, kind: EntryKind, message: unknown, extra: { requestId?: string; toolCallId?: string; outcome?: string; at?: number } = {}): StoredEntry {
     const at = extra.at ?? Date.now();
     const json = JSON.stringify(message);
     const result = this.#q.append!.run(bot, kind, json, extra.requestId ?? null, extra.toolCallId ?? null, extra.outcome ?? null, at);

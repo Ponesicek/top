@@ -3,14 +3,28 @@
  * date rules between days, and the row you point at lit up. A run continues while the same author
  * keeps talking within a few minutes; its later rows show their time in the gutter on hover.
  */
-import { memo, useMemo } from "react";
+
 import type { BotSummary } from "@top/client";
-import { renderCached } from "../../markdown.ts";
-import { author, rowTime, type DisplayRow, type ToolGroupRow } from "../../rows.ts";
+import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
+import { renderCached } from "../../markdown.ts";
+import { author, type DisplayRow, rowTime, type ToolGroupRow } from "../../rows.ts";
 import { Avatar } from "../Avatar.tsx";
 import { statusLabel } from "../Sidebar.tsx";
-import { AnswerError, Dots, prevTime, RetryNote, sameDay, time, ToolGroup, UserState, useElapsed, type RowContext, type RowRenderer } from "./parts.tsx";
+import {
+  AnswerError,
+  Dots,
+  Markdown,
+  prevTime,
+  RetryNote,
+  type RowContext,
+  type RowRenderer,
+  sameDay,
+  ToolGroup,
+  time,
+  UserState,
+  useElapsed,
+} from "./parts.tsx";
 
 /** A run of messages from one author breaks after this long a pause. */
 const RUN_MS = 7 * 60_000;
@@ -33,7 +47,14 @@ function DateRule({ at }: { at: number }) {
 }
 
 function YouAvatar() {
-  return <span className="grid size-10 flex-none place-items-center rounded-full bg-primary text-body leading-none font-heading text-primary-foreground select-none" aria-hidden>Y</span>;
+  return (
+    <span
+      className="grid size-10 flex-none place-items-center rounded-full bg-primary text-body leading-none font-heading text-primary-foreground select-none"
+      aria-hidden
+    >
+      Y
+    </span>
+  );
 }
 
 /**
@@ -49,7 +70,9 @@ function Shell({ head, who, name, at, children }: { head: boolean; who: "user" |
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
               <span className="text-body leading-snug font-heading tracking-name text-foreground">{who === "user" ? "You" : name}</span>
-              {who === "bot" && <span className="relative -top-px rounded-sm bg-primary px-1 py-px text-[10px] leading-3.5 font-bold text-primary-foreground">BOT</span>}
+              {who === "bot" && (
+                <span className="relative -top-px rounded-sm bg-primary px-1 py-px text-[10px] leading-3.5 font-bold text-primary-foreground">BOT</span>
+              )}
               {at ? (
                 <time className="text-micro text-muted-foreground tabular-nums" dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()}>
                   {stamp(at)}
@@ -62,7 +85,10 @@ function Shell({ head, who, name, at, children }: { head: boolean; who: "user" |
       ) : (
         <>
           {at ? (
-            <time className="absolute top-1.5 left-4 w-10 text-center text-[10.5px] leading-5 text-muted-foreground tabular-nums opacity-0 group-hover/msg:opacity-100" dateTime={new Date(at).toISOString()}>
+            <time
+              className="absolute top-1.5 left-4 w-10 text-center text-[10.5px] leading-5 text-muted-foreground tabular-nums opacity-0 group-hover/msg:opacity-100"
+              dateTime={new Date(at).toISOString()}
+            >
               {time(at)}
             </time>
           ) : null}
@@ -76,7 +102,15 @@ function Shell({ head, who, name, at, children }: { head: boolean; who: "user" |
 const UserMessage = memo(function UserMessage({ row, ctx, head }: { row: Extract<DisplayRow, { kind: "user" }>; ctx: RowContext; head: boolean }) {
   return (
     <Shell head={head} who="user" name={ctx.name} at={row.at}>
-      <div className={cn("whitespace-pre-wrap text-foreground [overflow-wrap:anywhere]", row.state === "sending" && "opacity-60", row.state === "failed" && "text-destructive-foreground")}>{row.text}</div>
+      <div
+        className={cn(
+          "whitespace-pre-wrap text-foreground [overflow-wrap:anywhere]",
+          row.state === "sending" && "opacity-60",
+          row.state === "failed" && "text-destructive-foreground",
+        )}
+      >
+        {row.text}
+      </div>
       <UserState row={row} sync={ctx.sync} className="mt-0.5" />
     </Shell>
   );
@@ -86,7 +120,7 @@ const BotMessage = memo(function BotMessage({ row, ctx, head }: { row: Extract<D
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
     <Shell head={head} who="bot" name={ctx.name} at={row.at}>
-      {row.text && <div className="md" dangerouslySetInnerHTML={{ __html: html }} />}
+      {row.text && <Markdown html={html} />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
   );

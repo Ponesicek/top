@@ -37,7 +37,13 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
 }
 
 function DialogDescription({ className, ...props }: DialogPrimitive.Description.Props) {
-  return <DialogPrimitive.Description className={cn("-mt-1.5 text-sm leading-normal text-secondary-foreground", className)} data-slot="dialog-description" {...props} />;
+  return (
+    <DialogPrimitive.Description
+      className={cn("-mt-1.5 text-sm leading-normal text-secondary-foreground", className)}
+      data-slot="dialog-description"
+      {...props}
+    />
+  );
 }
 
 function DialogBody({ className, ...props }: ComponentProps<"div">) {
@@ -71,4 +77,16 @@ function AlertDialogPopup({ className, children, ...props }: AlertDialogPrimitiv
 const DialogClose = DialogPrimitive.Close;
 const AlertDialogClose = AlertDialogPrimitive.Close;
 
-export { AlertDialog, AlertDialogClose, AlertDialogPopup, Dialog, DialogBody, DialogClose, DialogDescription, DialogError, DialogFooter, DialogPopup, DialogTitle };
+export {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogPopup,
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogDescription,
+  DialogError,
+  DialogFooter,
+  DialogPopup,
+  DialogTitle,
+};

@@ -3,13 +3,29 @@
  * first bubble of each run, the time inside each message and day chips between days. Tables and code
  * blocks stand on their own between the bot's bubbles, so they keep the full width.
  */
-import { memo, useMemo } from "react";
+
 import type { BotSummary } from "@top/client";
-import { renderSegments } from "../../markdown.ts";
-import { author, rowTime, type DisplayRow, type ToolGroupRow } from "../../rows.ts";
+import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
+import { renderSegments } from "../../markdown.ts";
+import { author, type DisplayRow, rowTime, type ToolGroupRow } from "../../rows.ts";
 import { statusLabel } from "../Sidebar.tsx";
-import { AnswerError, dayLabel, Dots, prevTime, RetryNote, sameDay, time, ToolGroup, USER_BUBBLE_STATE, UserState, useElapsed, type RowContext, type RowRenderer } from "./parts.tsx";
+import {
+  AnswerError,
+  Dots,
+  dayLabel,
+  Markdown,
+  prevTime,
+  RetryNote,
+  type RowContext,
+  type RowRenderer,
+  sameDay,
+  ToolGroup,
+  time,
+  USER_BUBBLE_STATE,
+  UserState,
+  useElapsed,
+} from "./parts.tsx";
 
 const BUBBLE = "chat-bubble relative w-fit max-w-[min(75%,540px)] rounded-[9px] pt-1.25 pr-2.25 pb-1.75 pl-2.5 shadow-bubble";
 
@@ -40,7 +56,11 @@ function Tail({ side }: { side: "in" | "out" }) {
 function Stamp({ at }: { at: number | undefined }) {
   if (!at) return null;
   return (
-    <time className="absolute right-2.25 bottom-1.25 text-[11px] leading-none text-muted-foreground tabular-nums" dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()}>
+    <time
+      className="absolute right-2.25 bottom-1.25 text-[11px] leading-none text-muted-foreground tabular-nums"
+      dateTime={new Date(at).toISOString()}
+      title={new Date(at).toLocaleString()}
+    >
       {time(at)}
     </time>
   );
@@ -78,16 +98,19 @@ const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<Displ
   const last = segments.length - 1;
   return (
     <div className={cn("flex flex-col items-start gap-0.75 pl-2", first ? "pt-2.5" : "pt-0.5")}>
+      {/* An entry never changes, so neither do its segments: their index is a stable key. */}
       {segments.map((segment, i) =>
         segment.kind === "prose" ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: segments of an immutable entry
           <div key={i} className={cn(BUBBLE, "bg-chat-in text-foreground", first && i === 0 && "rounded-tl-none")}>
             {first && i === 0 && <Tail side="in" />}
-            <div className="md" dangerouslySetInnerHTML={{ __html: i === last ? withStampSpace(segment.html, time(row.at)) : segment.html }} />
+            <Markdown html={i === last ? withStampSpace(segment.html, time(row.at)) : segment.html} />
             {i === last && <Stamp at={row.at} />}
           </div>
         ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: segments of an immutable entry
           <div key={i} className="chat-block max-w-full overflow-x-auto px-px pb-0.5">
-            <div className="md" dangerouslySetInnerHTML={{ __html: segment.html }} />
+            <Markdown html={segment.html} />
             {i === last && (
               <time className="block pt-0.5 pl-1 text-[11px] text-muted-foreground tabular-nums" dateTime={new Date(row.at).toISOString()}>
                 {time(row.at)}

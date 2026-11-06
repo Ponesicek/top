@@ -3,12 +3,12 @@
  * The WebSocket layer (serve.ts) and the load driver both go through `submit()` and the listeners here.
  */
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { createInitialSystemMessage, toToolDeclaration, type Models } from "@earendil-works/pi-ai";
-import { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type BotSummary, type WhenBusy } from "@top/protocol";
+import { createInitialSystemMessage, type Models, toToolDeclaration } from "@earendil-works/pi-ai";
+import { type BotSummary, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type WhenBusy } from "@top/protocol";
 import { collarTools } from "./collar/index.ts";
-import { BotRunner, type RunnerOptions } from "./runner.ts";
-import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
 import type { McpManager } from "./mcp.ts";
+import { BotRunner, type RunnerOptions } from "./runner.ts";
+import type { BotRow, InboxRow, Store, StoredEntry } from "./store.ts";
 import type { TopTool } from "./tools.ts";
 import { textOf } from "./wire.ts";
 
@@ -35,8 +35,7 @@ export function lastLine(text: string): string {
     prose.push(raw);
   }
   for (let i = prose.length - 1; i >= 0; i--) {
-    const line = prose[i]!
-      .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|>\s?)+/, "")
+    const line = prose[i]!.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|>\s?)+/, "")
       .replace(/(\*\*|__|`)/g, "")
       .trim();
     if (line) return line.slice(0, 120);
@@ -126,19 +125,26 @@ export class Daemon {
     const own = [...(typeof this.#tools === "function" ? this.#tools(bot) : this.#tools), ...this.#collar];
     const mcp = this.#options.mcp;
     const tools = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
-    const runner: BotRunner = new BotRunner(bot, this.store, this.#models, tools, {
-      entry: (entry) => {
-        if (!live()) return;
-        for (const listener of this.#entryListeners) listener(entry);
-        if (entry.kind !== "system") this.#touch(bot.id);
+    const runner: BotRunner = new BotRunner(
+      bot,
+      this.store,
+      this.#models,
+      tools,
+      {
+        entry: (entry) => {
+          if (!live()) return;
+          for (const listener of this.#entryListeners) listener(entry);
+          if (entry.kind !== "system") this.#touch(bot.id);
+        },
+        inbox: (id) => {
+          if (!live()) return;
+          for (const listener of this.#inboxListeners) listener(id);
+          this.#touch(id);
+        },
+        status: (id) => live() && this.#touch(id),
       },
-      inbox: (id) => {
-        if (!live()) return;
-        for (const listener of this.#inboxListeners) listener(id);
-        this.#touch(id);
-      },
-      status: (id) => live() && this.#touch(id),
-    }, { thinkingLevel: thinking ?? "off", ...(sections ? { sections: sections(bot) } : {}) });
+      { thinkingLevel: thinking ?? "off", ...(sections ? { sections: sections(bot) } : {}) },
+    );
     this.runners.set(bot.id, runner);
     this.#summaries.set(bot.id, this.#summarize(bot.id));
     return runner;

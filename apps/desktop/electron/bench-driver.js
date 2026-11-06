@@ -32,7 +32,9 @@ export async function runBench(win) {
       if (await js(code).catch(() => false)) return true;
       await sleep(50);
     }
-    const state = await js("JSON.stringify({ connection: window.__top?.getSnapshot().connection, bots: window.__top?.getSnapshot().bots.length, page: document.body.innerText.slice(0, 300) })").catch((e) => String(e));
+    const state = await js(
+      "JSON.stringify({ connection: window.__top?.getSnapshot().connection, bots: window.__top?.getSnapshot().bots.length, page: document.body.innerText.slice(0, 300) })",
+    ).catch((e) => String(e));
     throw new Error(`timed out waiting for: ${code}\n  state: ${state}`);
   };
 
@@ -47,12 +49,17 @@ export async function runBench(win) {
     await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
     const shotSelector = JSON.stringify(process.env.TOP_SHOT_WAIT ?? "");
-    await until(`window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= ${Number(process.env.TOP_SHOT_BUSY ?? 2)} && document.querySelectorAll('.transcript .row').length >= ${Number(process.env.TOP_SHOT_ROWS ?? 4)} && (!${shotSelector} || !!document.querySelector(${shotSelector}))`, 60_000);
+    await until(
+      `window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= ${Number(process.env.TOP_SHOT_BUSY ?? 2)} && document.querySelectorAll('.transcript .row').length >= ${Number(process.env.TOP_SHOT_ROWS ?? 4)} && (!${shotSelector} || !!document.querySelector(${shotSelector}))`,
+      60_000,
+    );
     // TOP_SHOT_SCROLL=1 brings the TOP_SHOT_WAIT element into view first (e.g. a tool step).
     if (process.env.TOP_SHOT_SCROLL && process.env.TOP_SHOT_WAIT) await js(`document.querySelector(${shotSelector})?.scrollIntoView({ block: "center" })`);
     // TOP_SHOT_HOVER=selector points the mouse at the last match (to capture hover states).
     if (process.env.TOP_SHOT_HOVER) {
-      const rect = await js(`(() => { const all = document.querySelectorAll(${JSON.stringify(process.env.TOP_SHOT_HOVER)}); const r = all[all.length - 1]?.getBoundingClientRect(); return r && { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 20) }; })()`);
+      const rect = await js(
+        `(() => { const all = document.querySelectorAll(${JSON.stringify(process.env.TOP_SHOT_HOVER)}); const r = all[all.length - 1]?.getBoundingClientRect(); return r && { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 20) }; })()`,
+      );
       if (rect) wc.sendInputEvent({ type: "mouseMove", x: Math.round(rect.x), y: Math.round(rect.y) });
     }
     // TOP_SHOT_JS=code runs in the page before the capture (open a dialog, fill a field).
@@ -92,7 +99,9 @@ export async function runBench(win) {
   }
   await sleep(200);
   result.typing = { ...(await js("window.__topPerf.report()")), botsBusyAtStart: streaming, keys: typed };
-  await js(`(() => { const t = document.querySelector('.composer textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await js(
+    `(() => { const t = document.querySelector('.composer textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+  );
 
   // ── 2. scrolling a 10,000-message transcript ──────────────────────────────
   await js("window.__topSelect(0)");
@@ -136,8 +145,11 @@ export async function runBench(win) {
   // Durably accepted: the daemon has it (queued in the inbox or placed), the pending copy is gone.
   await until("window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot().pending.length === 0", 20_000);
   const acceptedAt = Date.now();
-  await until(`(() => { const s = window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot();
-    return s.status === 'live' && s.pending.length === 0 && s.items.some(i => i.kind === 'entry' && i.entry.requestId === window.__benchMsg); })()`, 20_000);
+  await until(
+    `(() => { const s = window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot();
+    return s.status === 'live' && s.pending.length === 0 && s.items.some(i => i.kind === 'entry' && i.entry.requestId === window.__benchMsg); })()`,
+    20_000,
+  );
   const deliveredAt = Date.now();
   const duplicates = await js(`(() => { const s = window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot();
     return s.items.filter(i => i.kind === 'entry' && i.entry.requestId === window.__benchMsg).length; })()`);

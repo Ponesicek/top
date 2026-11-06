@@ -13,6 +13,7 @@
  */
 import { appendFileSync, readFileSync } from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import Type, { type TProperties } from "typebox";
 
 export type ToolContext = {
   /** Stable for this one tool call, also across restarts. */
@@ -27,7 +28,7 @@ export type TopTool = {
   readonly name: string;
   readonly label: string;
   readonly description: string;
-  /** JSON Schema of the arguments. */
+  /** JSON Schema of the arguments (a TypeBox `Type.Object(…)` is one). */
   readonly parameters: object;
   readonly replay?: "never" | "safe";
   /** Normalizes raw arguments before schema validation (pi's tools accept older argument shapes). */
@@ -44,10 +45,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("Stopped"));
     const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(timer);
-      reject(new Error("Stopped"));
-    }, { once: true });
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("Stopped"));
+      },
+      { once: true },
+    );
   });
 }
 
@@ -71,7 +76,8 @@ export function createFakeTools(effectsPath: string): TopTool[] {
     }
   };
   const seconds = (args: Record<string, unknown>, fallback: number) => Math.max(0, Number(args.seconds ?? fallback)) * 1_000;
-  const schema = (properties: Record<string, object>) => ({ type: "object", properties, additionalProperties: false });
+  const schema = (properties: TProperties) => Type.Object(properties, { additionalProperties: false });
+  const { Optional, String: Str, Number: Num } = Type;
 
   return [
     {
@@ -80,7 +86,7 @@ export function createFakeTools(effectsPath: string): TopTool[] {
       name: "deploy",
       label: "Deploy",
       description: "Deploy a service. Takes effect immediately.",
-      parameters: schema({ service: { type: "string" }, seconds: { type: "number" } }),
+      parameters: schema({ service: Optional(Str()), seconds: Optional(Num()) }),
       async run(args, ctx) {
         record("deploy", "effect", ctx.key, args.service);
         await sleep(seconds(args, 2), ctx.signal);
@@ -93,14 +99,16 @@ export function createFakeTools(effectsPath: string): TopTool[] {
       name: "send_email",
       label: "Send email",
       description: "Send an email.",
-      parameters: schema({ to: { type: "string" }, subject: { type: "string" }, seconds: { type: "number" } }),
+      parameters: schema({ to: Optional(Str()), subject: Optional(Str()), seconds: Optional(Num()) }),
       async run(args, ctx) {
         if (!recorded("send_email", "effect", ctx.key)) record("send_email", "effect", ctx.key, args.to);
         await sleep(seconds(args, 2), ctx.signal);
         return text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")}.`);
       },
       async recover(args, ctx) {
-        return recorded("send_email", "effect", ctx.key) ? text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")} (confirmed after a restart).`) : false;
+        return recorded("send_email", "effect", ctx.key)
+          ? text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")} (confirmed after a restart).`)
+          : false;
       },
     },
     {
@@ -108,7 +116,7 @@ export function createFakeTools(effectsPath: string): TopTool[] {
       name: "check_status",
       label: "Check status",
       description: "Check the status of a system. Read-only.",
-      parameters: schema({ target: { type: "string" }, seconds: { type: "number" } }),
+      parameters: schema({ target: Optional(Str()), seconds: Optional(Num()) }),
       replay: "safe",
       async run(args, ctx) {
         record("check_status", "start", ctx.key, args.target);

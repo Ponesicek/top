@@ -1,5 +1,5 @@
-import { memo } from "react";
 import type { BotStatus } from "@top/client";
+import { memo } from "react";
 import { cn } from "../lib/utils.ts";
 
 /**
@@ -35,7 +35,19 @@ const SIZES = {
  * The bot's initial on its color. A failed bot gets a red presence dot, ringed in `--avatar-ring` (the
  * color behind the avatar) so it reads as cut out of the circle.
  */
-export const Avatar = memo(function Avatar({ name, status, size = "md", title, className }: { name: string; status?: BotStatus; size?: keyof typeof SIZES; title?: string; className?: string }) {
+export const Avatar = memo(function Avatar({
+  name,
+  status,
+  size = "md",
+  title,
+  className,
+}: {
+  name: string;
+  status?: BotStatus;
+  size?: keyof typeof SIZES;
+  title?: string;
+  className?: string;
+}) {
   return (
     <span
       className={cn(
@@ -48,7 +60,9 @@ export const Avatar = memo(function Avatar({ name, status, size = "md", title, c
       title={title}
     >
       {name.slice(0, 1).toUpperCase()}
-      {status === "failed" && <i className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-[2.5px] border-(--avatar-ring,var(--color-sidebar)) bg-destructive" />}
+      {status === "failed" && (
+        <i className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-[2.5px] border-(--avatar-ring,var(--color-sidebar)) bg-destructive" />
+      )}
     </span>
   );
 });

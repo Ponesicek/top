@@ -1,8 +1,9 @@
 // Electron main process. Deliberately thin: the renderer owns the socket and all state, so the
 // same UI runs in a browser (pnpm web) and the main process never sits on the hot path.
-import { app, BrowserWindow, nativeTheme, shell } from "electron";
-import { fileURLToPath } from "node:url";
+
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { app, BrowserWindow, nativeTheme, shell } from "electron";
 
 const here = dirname(fileURLToPath(import.meta.url));
 if (process.env.TOP_USER_DATA) app.setPath("userData", process.env.TOP_USER_DATA);

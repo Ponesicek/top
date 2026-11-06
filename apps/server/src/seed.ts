@@ -1,6 +1,6 @@
 /** `--seed N`: give the first bot an N-message history, to test cold start and scrolling on long transcripts. */
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { fakeAnswer, FAKE_PROMPTS } from "./fake-bots.ts";
+import { FAKE_PROMPTS, fakeAnswer } from "./fake-bots.ts";
 import type { Store } from "./store.ts";
 
 export function seedHistory(store: Store, bot: number, count: number) {

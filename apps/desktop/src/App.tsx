@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { BotId } from "@top/client";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { type ChatStyle, readChatStyle, saveChatStyle } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
@@ -10,9 +11,8 @@ import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
-import { conversation, markSeen, top, useBot } from "./top.ts";
-import { readChatStyle, saveChatStyle, type ChatStyle } from "./chatStyle.ts";
-import { applyScale, canScale, readScale, stepScale, type Scale } from "./scale.ts";
+import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
+import { conversation, markSeen, top, useBot, useRoster } from "./top.ts";
 
 function readSelected(): string | undefined {
   try {
@@ -42,8 +42,7 @@ function savePerfHud(on: boolean) {
 
 export function App() {
   // Re-render only when the roster changes, not on every status/preview update (those are the sidebar's).
-  const roster = useSyncExternalStore(top.subscribe, () => top.getSnapshot().bots.map((b) => `${b.id}:${b.name}`).join("|"));
-  const bots = useMemo(() => top.getSnapshot().bots, [roster]);
+  const bots = useRoster();
   const [selected, setSelected] = useState<BotId | undefined>(() => {
     const saved = readSelected();
     return saved === undefined ? undefined : Number(saved);
@@ -132,45 +131,57 @@ export function App() {
 
   // The open bot's newest entry counts as read; with settings open, no bot is open.
   const summary = useBot(bot?.id);
+  const seenId = summary?.id;
+  const seenSeq = summary?.lastSeq;
   useEffect(() => {
-    if (summary && !settingsOpen) markSeen(summary.id, summary.lastSeq);
-  }, [summary?.id, summary?.lastSeq, settingsOpen]);
+    if (seenId !== undefined && seenSeq !== undefined && !settingsOpen) markSeen(seenId, seenSeq);
+  }, [seenId, seenSeq, settingsOpen]);
 
   return (
     <TooltipProvider delay={500}>
-    <div className="grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]">
-      <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
-      <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
-        {settingsOpen ? (
-          <Settings perfHud={hud} onPerfHudChange={setPerfHud} chatStyle={chatStyle} onChatStyleChange={setChatStyle} scale={scale} onScaleChange={setScale} />
-        ) : bot && sync ? (
-          <>
-            <Header sync={sync} name={bot.name} />
-            {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}
-            <div className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent" aria-hidden />
-            <Transcript key={String(bot.id)} sync={sync} name={bot.name} style={chatStyle} />
-            <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
-          </>
-        ) : ready ? (
-          <Empty>
-            <EmptyCard title="No bots yet" action={<Button onClick={openNewBot}>New bot</Button>}>
-              Make one to start a conversation.
-            </EmptyCard>
-          </Empty>
-        ) : (
-          <Empty>Waiting for the Top daemon…</Empty>
-        )}
-      </main>
-      <NewBotDialog
-        open={creating}
-        onOpenChange={setCreating}
-        onCreated={(id) => {
-          setCreating(false);
-          select(id);
-        }}
-      />
-      {hud && <PerfHud />}
-    </div>
+      <div className="grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]">
+        <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
+        <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
+          {settingsOpen ? (
+            <Settings
+              perfHud={hud}
+              onPerfHudChange={setPerfHud}
+              chatStyle={chatStyle}
+              onChatStyleChange={setChatStyle}
+              scale={scale}
+              onScaleChange={setScale}
+            />
+          ) : bot && sync ? (
+            <>
+              <Header sync={sync} name={bot.name} />
+              {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}
+              <div
+                className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
+                aria-hidden
+              />
+              <Transcript key={String(bot.id)} sync={sync} name={bot.name} style={chatStyle} />
+              <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
+            </>
+          ) : ready ? (
+            <Empty>
+              <EmptyCard title="No bots yet" action={<Button onClick={openNewBot}>New bot</Button>}>
+                Make one to start a conversation.
+              </EmptyCard>
+            </Empty>
+          ) : (
+            <Empty>Waiting for the Top daemon…</Empty>
+          )}
+        </main>
+        <NewBotDialog
+          open={creating}
+          onOpenChange={setCreating}
+          onCreated={(id) => {
+            setCreating(false);
+            select(id);
+          }}
+        />
+        {hud && <PerfHud />}
+      </div>
     </TooltipProvider>
   );
 }

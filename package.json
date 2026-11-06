@@ -12,9 +12,12 @@
     "bench": "pnpm --filter @top/desktop bench",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
+    "check": "biome check .",
+    "fix": "biome check --write .",
     "wire": "node --import tsx scripts/wire.ts"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@types/node": "^24.19.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"

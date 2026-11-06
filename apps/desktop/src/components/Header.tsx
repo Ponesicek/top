@@ -1,6 +1,6 @@
-import { memo, useEffect, useState, useSyncExternalStore } from "react";
-import { WifiOff } from "lucide-react";
 import type { ConversationSync } from "@top/client";
+import { WifiOff } from "lucide-react";
+import { memo, useEffect, useState, useSyncExternalStore } from "react";
 import { cn } from "../lib/utils.ts";
 import { isWorking } from "../rows.ts";
 import { useBot } from "../top.ts";

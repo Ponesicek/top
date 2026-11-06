@@ -6,53 +6,80 @@
  * number from one counter shared by all bots. A client says which entries it already has (`after`),
  * gets only the ones it is missing, then each new entry once. The sidebar gets one small summary per
  * bot that changed.
+ *
+ * Every frame is a TypeBox schema and its type is derived from it, so what the code assumes is what
+ * `parseClientFrame` / `parseServerFrame` check when a frame arrives. The schemas check shape only;
+ * limits with a message for the user (name lengths, …) are checked where the frame is handled.
  */
+import Type, { type Static, type TAddReadonly, type TObject, type TProperties, type TSchema } from "typebox";
+import { Compile } from "typebox/compile";
 
 export const PROTOCOL_VERSION = 2;
 export const DEFAULT_PORT = 7357;
 
-export type BotId = number;
+// ── schema helpers ───────────────────────────────────────────────────────────────
+
+type TStruct<P extends TProperties> = TObject<{ [K in keyof P]: TAddReadonly<P[K]> }>;
+
+/** An object whose properties are all readonly. Unknown properties are allowed, so a newer peer can add some. */
+function Struct<const P extends TProperties>(properties: P): TStruct<P> {
+  return Type.Object(Object.fromEntries(Object.entries(properties).map(([key, value]) => [key, Type.Readonly(value)]))) as never;
+}
+
+/** A readonly array. */
+const List = <T extends TSchema>(item: T) => Type.Immutable(Type.Array(item));
+const Optional = Type.Optional;
+
+// ── bots and entries ─────────────────────────────────────────────────────────────
+
+export const BotId = Type.Integer();
+export type BotId = Static<typeof BotId>;
 /** Global, strictly increasing entry number. Entries of one bot are increasing but not contiguous. */
-export type Seq = number;
+export const Seq = Type.Integer();
+export type Seq = Static<typeof Seq>;
 
-export type BotStatus =
+export const BotStatus = Type.Enum([
   /** Nothing running. */
-  | "idle"
+  "idle",
   /** Waiting on the model. */
-  | "thinking"
+  "thinking",
   /** Running a tool (`tool` names it). */
-  | "tool"
+  "tool",
   /** The model request failed; retrying after a backoff. */
-  | "retrying"
+  "retrying",
   /** The last run ended in an error it could not recover from. */
-  | "failed";
+  "failed",
+]);
+export type BotStatus = Static<typeof BotStatus>;
 
-export type BotSummary = {
-  readonly id: BotId;
-  readonly name: string;
+export const BotSummary = Struct({
+  id: BotId,
+  name: Type.String(),
   /** What the bot is for, as given when it was made. Empty when none was given. */
-  readonly description: string;
-  readonly status: BotStatus;
+  description: Type.String(),
+  status: BotStatus,
   /** The running tool's name while `status` is `tool`. */
-  readonly tool?: string;
+  tool: Optional(Type.String()),
   /** When the current status began (ms since epoch), for an elapsed timer. */
-  readonly since: number;
+  since: Type.Number(),
   /** The failure or retry reason, when there is one. */
-  readonly error?: string;
+  error: Optional(Type.String()),
   /** The last line of the bot's latest answer, for the sidebar. */
-  readonly preview: string;
+  preview: Type.String(),
   /** Messages waiting behind the running task. */
-  readonly queued: number;
+  queued: Type.Integer(),
   /** Newest entry of this bot, so a client can show "unread" without loading it. */
-  readonly lastSeq: Seq;
-};
+  lastSeq: Seq,
+});
+export type BotSummary = Static<typeof BotSummary>;
 
-export type ToolCallView = {
-  readonly id: string;
-  readonly name: string;
+export const ToolCallView = Struct({
+  id: Type.String(),
+  name: Type.String(),
   /** The arguments, shortened to one line. */
-  readonly summary: string;
-};
+  summary: Type.String(),
+});
+export type ToolCallView = Static<typeof ToolCallView>;
 
 /**
  * What happened to a tool call that was cut off by a daemon restart:
@@ -62,46 +89,54 @@ export type ToolCallView = {
  * - `replayed`: the tool is safe to repeat, so it ran again.
  * - `stopped`: it kept crashing the daemon, so the task was ended.
  */
-export type ToolOutcome = "interrupted" | "not_run" | "recovered" | "replayed" | "stopped";
+export const ToolOutcome = Type.Enum(["interrupted", "not_run", "recovered", "replayed", "stopped"]);
+export type ToolOutcome = Static<typeof ToolOutcome>;
 
-type EntryBase = { readonly seq: Seq; readonly bot: BotId; readonly at: number };
+const entryBase = { seq: Seq, bot: BotId, at: Type.Number() };
 
-export type Entry =
-  | (EntryBase & { readonly kind: "user"; readonly text: string; readonly requestId?: string })
-  | (EntryBase & {
-      readonly kind: "assistant";
-      readonly text: string;
-      readonly tools?: readonly ToolCallView[];
-      /** Thinking text exists; fetch it with `detail`. */
-      readonly hasThinking?: true;
-      /** Full thinking text, only in a `detail` answer. */
-      readonly thinking?: string;
-      readonly error?: string;
-      readonly stopped?: true;
-    })
-  | (EntryBase & {
-      readonly kind: "tool";
-      readonly toolCallId: string;
-      readonly name: string;
-      /** The result text, shortened unless this came from `detail`. */
-      readonly text: string;
-      readonly truncated?: true;
-      readonly isError?: true;
-      readonly outcome?: ToolOutcome;
-    })
-  | (EntryBase & { readonly kind: "notice"; readonly text: string });
+export const Entry = Type.Union([
+  Struct({ ...entryBase, kind: Type.Literal("user"), text: Type.String(), requestId: Optional(Type.String()) }),
+  Struct({
+    ...entryBase,
+    kind: Type.Literal("assistant"),
+    text: Type.String(),
+    tools: Optional(List(ToolCallView)),
+    /** Thinking text exists; fetch it with `detail`. */
+    hasThinking: Optional(Type.Literal(true)),
+    /** Full thinking text, only in a `detail` answer. */
+    thinking: Optional(Type.String()),
+    error: Optional(Type.String()),
+    stopped: Optional(Type.Literal(true)),
+  }),
+  Struct({
+    ...entryBase,
+    kind: Type.Literal("tool"),
+    toolCallId: Type.String(),
+    name: Type.String(),
+    /** The result text, shortened unless this came from `detail`. */
+    text: Type.String(),
+    truncated: Optional(Type.Literal(true)),
+    isError: Optional(Type.Literal(true)),
+    outcome: Optional(ToolOutcome),
+  }),
+  Struct({ ...entryBase, kind: Type.Literal("notice"), text: Type.String() }),
+]);
+export type Entry = Static<typeof Entry>;
 
-export type WhenBusy = "steer" | "followUp" | "reject";
+export const WhenBusy = Type.Enum(["steer", "followUp", "reject"]);
+export type WhenBusy = Static<typeof WhenBusy>;
 
-export type QueuedMessage = {
-  readonly requestId: string;
-  readonly text: string;
-  readonly mode: "steer" | "followUp";
-  readonly at: number;
-};
+export const QueuedMessage = Struct({
+  requestId: Type.String(),
+  text: Type.String(),
+  mode: Type.Enum(["steer", "followUp"]),
+  at: Type.Number(),
+});
+export type QueuedMessage = Static<typeof QueuedMessage>;
 
 /** Entries strictly between `after` and `before` exist on the daemon but were not sent. */
-export type Gap = { readonly after: Seq; readonly before: Seq };
+export const Gap = Struct({ after: Seq, before: Seq });
+export type Gap = Static<typeof Gap>;
 
 // ── MCP servers ──────────────────────────────────────────────────────────────────
 //
@@ -109,94 +144,119 @@ export type Gap = { readonly after: Seq; readonly before: Seq };
 // given one. Each is its own connection with its own credentials, so the same URL can be added twice
 // (two accounts). Every bot it's assigned to shares that one connection.
 
-export type McpServerId = number;
+export const McpServerId = Type.Integer();
+export type McpServerId = Static<typeof McpServerId>;
 
 /**
  * An environment variable (stdio) or HTTP header whose value may be a secret. The daemon never sends
  * values back: in a view `value` is absent. When saving, an absent `value` keeps the stored one.
  */
-export type McpSecret = { readonly name: string; readonly value?: string };
+export const McpSecret = Struct({ name: Type.String(), value: Optional(Type.String()) });
+export type McpSecret = Static<typeof McpSecret>;
 
-export type McpServerConfig =
+export const McpServerConfig = Type.Union([
   /** A local program the daemon starts, speaking MCP over stdin/stdout. */
-  | { readonly transport: "stdio"; readonly command: string; readonly args: readonly string[]; readonly env: readonly McpSecret[] }
+  Struct({ transport: Type.Literal("stdio"), command: Type.String(), args: List(Type.String()), env: List(McpSecret) }),
   /** A remote server over Streamable HTTP. Without an `Authorization` header, it signs in with OAuth if it asks. */
-  | { readonly transport: "http"; readonly url: string; readonly headers: readonly McpSecret[] };
+  Struct({ transport: Type.Literal("http"), url: Type.String(), headers: List(McpSecret) }),
+]);
+export type McpServerConfig = Static<typeof McpServerConfig>;
 
-export type McpServerState =
+export const McpServerState = Type.Enum([
   /** Starting the program or reaching the server. */
-  | "connecting"
+  "connecting",
   /** Connected; its tools are offered to the bots it's assigned to. */
-  | "ready"
+  "ready",
   /** The server wants the user to sign in (OAuth) before it can be used. */
-  | "signin"
+  "signin",
   /** It couldn't be started or reached (`error` says why); it is retried now and then. */
-  | "failed";
+  "failed",
+]);
+export type McpServerState = Static<typeof McpServerState>;
 
-export type McpServerView = {
-  readonly id: McpServerId;
-  readonly name: string;
+export const McpServerView = Struct({
+  id: McpServerId,
+  name: Type.String(),
   /** Secret values are left out. */
-  readonly config: McpServerConfig;
+  config: McpServerConfig,
   /** The bots that have this server's tools. */
-  readonly bots: readonly BotId[];
-  readonly state: McpServerState;
-  readonly error?: string;
+  bots: List(BotId),
+  state: McpServerState,
+  error: Optional(Type.String()),
   /** The server's tool names, while it is connected. */
-  readonly tools: readonly string[];
+  tools: List(Type.String()),
   /** It holds OAuth credentials (an account is signed in). */
-  readonly signedIn?: true;
-};
+  signedIn: Optional(Type.Literal(true)),
+});
+export type McpServerView = Static<typeof McpServerView>;
 
 /** The longest MCP server name `saveMcpServer` accepts. */
 export const MAX_MCP_NAME = 40;
 
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
-export type ClientFrame =
+const req = Type.Integer();
+
+export const ClientFrame = Type.Union([
   /**
    * `serverId`: the daemon the client's entries came from (from an earlier `welcome`, or its cache).
    * If it isn't this daemon, the `after` of this connection's watches is ignored and the newest entries
    * are sent instead: those sequence numbers belong to another daemon's data.
    */
-  | { readonly t: "hello"; readonly clientId: string; readonly protocol: typeof PROTOCOL_VERSION; readonly serverId?: string }
+  Struct({
+    t: Type.Literal("hello"),
+    clientId: Type.String(),
+    protocol: Type.Literal(PROTOCOL_VERSION),
+    serverId: Optional(Type.String()),
+  }),
   /** Follow a bot. `after`: the newest entry the client holds; omit it to get the newest `limit`. */
-  | { readonly t: "watch"; readonly bot: BotId; readonly after?: Seq; readonly limit?: number }
-  | { readonly t: "unwatch"; readonly bot: BotId }
+  Struct({ t: Type.Literal("watch"), bot: BotId, after: Optional(Seq), limit: Optional(Type.Integer()) }),
+  Struct({ t: Type.Literal("unwatch"), bot: BotId }),
   /** Entries older than `before` (and newer than `after`, if given), newest first up to `limit`. */
-  | { readonly t: "history"; readonly req: number; readonly bot: BotId; readonly before: Seq; readonly after?: Seq; readonly limit: number }
+  Struct({ t: Type.Literal("history"), req, bot: BotId, before: Seq, after: Optional(Seq), limit: Type.Integer() }),
   /** One entry in full: untruncated tool output, thinking, tool arguments. */
-  | { readonly t: "detail"; readonly req: number; readonly bot: BotId; readonly seq: Seq }
-  | {
-      readonly t: "submit";
-      readonly req: number;
-      readonly bot: BotId;
-      /** Idempotency key: a resend after a drop is applied once. */
-      readonly requestId: string;
-      readonly text: string;
-      readonly whenBusy: WhenBusy;
-      readonly clientId: string;
-    }
-  | { readonly t: "abort"; readonly req: number; readonly bot: BotId }
+  Struct({ t: Type.Literal("detail"), req, bot: BotId, seq: Seq }),
+  Struct({
+    t: Type.Literal("submit"),
+    req,
+    bot: BotId,
+    /** Idempotency key: a resend after a drop is applied once. */
+    requestId: Type.String(),
+    text: Type.String(),
+    whenBusy: WhenBusy,
+    clientId: Type.String(),
+  }),
+  Struct({ t: Type.Literal("abort"), req, bot: BotId }),
   /** Make a bot. Answers with its id; every client gets its summary in a `bot` frame first. */
-  | { readonly t: "createBot"; readonly req: number; readonly name: string; readonly description: string }
+  Struct({ t: Type.Literal("createBot"), req, name: Type.String(), description: Type.String() }),
   /** Delete a bot and its whole transcript. Every client gets `botRemoved`. */
-  | { readonly t: "deleteBot"; readonly req: number; readonly bot: BotId }
+  Struct({ t: Type.Literal("deleteBot"), req, bot: BotId }),
   /** Add an MCP server (no `id`) or change one. Answers with its id; every client gets an `mcpServer` frame. */
-  | { readonly t: "saveMcpServer"; readonly req: number; readonly id?: McpServerId; readonly name: string; readonly config: McpServerConfig }
+  Struct({
+    t: Type.Literal("saveMcpServer"),
+    req,
+    id: Optional(McpServerId),
+    name: Type.String(),
+    config: McpServerConfig,
+  }),
   /** Remove an MCP server: its bots lose its tools, and its credentials are erased. */
-  | { readonly t: "deleteMcpServer"; readonly req: number; readonly id: McpServerId }
+  Struct({ t: Type.Literal("deleteMcpServer"), req, id: McpServerId }),
   /** Give a bot an MCP server's tools (`on`), or take them away. They change from the bot's next message. */
-  | { readonly t: "assignMcp"; readonly req: number; readonly server: McpServerId; readonly bot: BotId; readonly on: boolean }
+  Struct({ t: Type.Literal("assignMcp"), req, server: McpServerId, bot: BotId, on: Type.Boolean() }),
   /** Start signing in to an MCP server. Answers with the page to open in a browser on the daemon's computer. */
-  | { readonly t: "mcpSignIn"; readonly req: number; readonly id: McpServerId }
+  Struct({ t: Type.Literal("mcpSignIn"), req, id: McpServerId }),
   /** Forget an MCP server's credentials, to sign in again (as another account). */
-  | { readonly t: "mcpSignOut"; readonly req: number; readonly id: McpServerId }
+  Struct({ t: Type.Literal("mcpSignOut"), req, id: McpServerId }),
   /** Reconnect to an MCP server now instead of waiting for the next retry. */
-  | { readonly t: "mcpRetry"; readonly req: number; readonly id: McpServerId }
-  | { readonly t: "ping"; readonly at: number };
+  Struct({ t: Type.Literal("mcpRetry"), req, id: McpServerId }),
+  Struct({ t: Type.Literal("ping"), at: Type.Number() }),
+]);
+export type ClientFrame = Static<typeof ClientFrame>;
 
-export type HistoryResult = { readonly entries: readonly Entry[]; /** More entries remain in the asked range. */ readonly more: boolean };
+export type HistoryResult = {
+  readonly entries: readonly Entry[] /** More entries remain in the asked range. */;
+  readonly more: boolean;
+};
 export type SubmitResult = { readonly duplicate: boolean };
 export type CreateBotResult = { readonly id: BotId };
 export type SaveMcpServerResult = { readonly id: McpServerId };
@@ -208,30 +268,93 @@ export const MAX_BOT_DESCRIPTION = 2_000;
 
 // ── daemon → client ──────────────────────────────────────────────────────────────
 
-export type ServerFrame =
+export const ServerFrame = Type.Union([
   /** `serverId` names this daemon's data and survives restarts. A different one means the client's entries are from elsewhere. */
-  | { readonly t: "welcome"; readonly serverId: string; readonly protocol: typeof PROTOCOL_VERSION }
+  Struct({ t: Type.Literal("welcome"), serverId: Type.String(), protocol: Type.Literal(PROTOCOL_VERSION) }),
   /** Every bot, once per connection. */
-  | { readonly t: "bots"; readonly bots: readonly BotSummary[] }
+  Struct({ t: Type.Literal("bots"), bots: List(BotSummary) }),
   /** One bot's summary changed, or a new bot was made. */
-  | { readonly t: "bot"; readonly bot: BotSummary }
+  Struct({ t: Type.Literal("bot"), bot: BotSummary }),
   /** A bot was deleted, with its transcript. */
-  | { readonly t: "botRemoved"; readonly bot: BotId }
+  Struct({ t: Type.Literal("botRemoved"), bot: BotId }),
   /** Every MCP server, once per connection. */
-  | { readonly t: "mcpServers"; readonly servers: readonly McpServerView[] }
+  Struct({ t: Type.Literal("mcpServers"), servers: List(McpServerView) }),
   /** One MCP server was added or changed (its settings, bots, state or tools). */
-  | { readonly t: "mcpServer"; readonly server: McpServerView }
-  | { readonly t: "mcpServerRemoved"; readonly id: McpServerId }
+  Struct({ t: Type.Literal("mcpServer"), server: McpServerView }),
+  Struct({ t: Type.Literal("mcpServerRemoved"), id: McpServerId }),
   /**
    * The answer to `watch`: the entries the client is missing (ascending). When more were missing than
    * fit, the newest ones and a `gap`. `earlier`: older entries exist before the first one sent (only
    * when the client sent no `after`).
    */
-  | { readonly t: "sync"; readonly bot: BotId; readonly entries: readonly Entry[]; readonly gap?: Gap; readonly earlier?: boolean; readonly inbox: readonly QueuedMessage[] }
+  Struct({
+    t: Type.Literal("sync"),
+    bot: BotId,
+    entries: List(Entry),
+    gap: Optional(Gap),
+    earlier: Optional(Type.Boolean()),
+    inbox: List(QueuedMessage),
+  }),
   /** A new entry of a watched bot. */
-  | { readonly t: "entry"; readonly entry: Entry }
+  Struct({ t: Type.Literal("entry"), entry: Entry }),
   /** A watched bot's queue changed. */
-  | { readonly t: "inbox"; readonly bot: BotId; readonly items: readonly QueuedMessage[] }
-  | { readonly t: "result"; readonly req: number; readonly ok: true; readonly value: unknown }
-  | { readonly t: "result"; readonly req: number; readonly ok: false; readonly error: string }
-  | { readonly t: "pong"; readonly at: number };
+  Struct({ t: Type.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
+  Struct({ t: Type.Literal("result"), req, ok: Type.Literal(true), value: Type.Unknown() }),
+  Struct({ t: Type.Literal("result"), req, ok: Type.Literal(false), error: Type.String() }),
+  Struct({ t: Type.Literal("pong"), at: Type.Number() }),
+]);
+export type ServerFrame = Static<typeof ServerFrame>;
+
+// ── checking what arrives ────────────────────────────────────────────────────────
+
+export type Parsed<T> =
+  | { readonly ok: true; readonly frame: T }
+  /** `req`: the frame's request number, when it had one, so the sender can be told. */
+  | { readonly ok: false; readonly error: string; readonly req?: number };
+
+/**
+ * A parser for a union of frames tagged by `t`. It picks the variant(s) by `t` first, so an error names
+ * the field that's wrong instead of "matches none of 16 frames", and only that variant is checked.
+ */
+function frameParser<T>(union: { anyOf: readonly TSchema[] }): (text: string) => Parsed<T> {
+  const byTag = new Map<string, ReturnType<typeof Compile>[]>();
+  for (const variant of union.anyOf) {
+    const tag = String((variant as { properties: { t: { const: string } } }).properties.t.const);
+    byTag.set(tag, [...(byTag.get(tag) ?? []), Compile(variant)]);
+  }
+  return (text) => {
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return { ok: false, error: "Not JSON" };
+    }
+    const record = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+    const req = Number.isInteger(record.req) ? (record.req as number) : undefined;
+    const fail = (error: string): Parsed<T> => ({ ok: false, error, ...(req === undefined ? {} : { req }) });
+    const variants = byTag.get(String(record.t));
+    if (!variants) return fail(`Unknown frame ${JSON.stringify(record.t)}`);
+    for (const variant of variants) if (variant.Check(value)) return { ok: true, frame: value as T };
+    const [error] = variants[0]!.Errors(value);
+    return fail(`Bad ${String(record.t)} frame: ${error ? `${error.instancePath || "/"} ${error.message}` : "invalid"}`);
+  };
+}
+
+/** Parse and check a frame from a client. */
+export const parseClientFrame = frameParser<ClientFrame>(ClientFrame);
+/** Parse and check a frame from the daemon. */
+export const parseServerFrame = frameParser<ServerFrame>(ServerFrame);
+
+const validators = new WeakMap<TSchema, ReturnType<typeof Compile>>();
+
+/** Check a value read back from storage or elsewhere; throws with the first problem. */
+export function check<T extends TSchema>(schema: T, value: unknown, what: string): Static<T> {
+  let validator = validators.get(schema);
+  if (!validator) {
+    validator = Compile(schema);
+    validators.set(schema, validator);
+  }
+  if (validator.Check(value)) return value as Static<T>;
+  const [error] = validator.Errors(value);
+  throw new Error(`Bad ${what}: ${error ? `${error.instancePath || "/"} ${error.message}` : "invalid"}`);
+}

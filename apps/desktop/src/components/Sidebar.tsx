@@ -1,6 +1,6 @@
-import { memo, useCallback, useState, useSyncExternalStore } from "react";
-import { Plus, Settings, Trash2 } from "lucide-react";
 import type { BotId, BotSummary } from "@top/client";
+import { Plus, Settings, Trash2 } from "lucide-react";
+import { memo, useCallback, useState, useSyncExternalStore } from "react";
 import { cn } from "../lib/utils.ts";
 import { serverUrl, top, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
@@ -52,9 +52,12 @@ const BotItem = memo(function BotItem({
     // Delete shows on hover (or keyboard focus), in place of the status beside the name.
     <div className="group/bot relative flex flex-col">
       <button
+        type="button"
         className={cn(
           "flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-2.25 text-left transition duration-90 hover:bg-foreground/5 narrow:justify-center",
-          selected ? "bg-sidebar-row-selected shadow-row-selected [--avatar-ring:var(--color-sidebar-row-selected)] hover:bg-sidebar-row-selected" : "[--avatar-ring:var(--color-sidebar)]",
+          selected
+            ? "bg-sidebar-row-selected shadow-row-selected [--avatar-ring:var(--color-sidebar-row-selected)] hover:bg-sidebar-row-selected"
+            : "[--avatar-ring:var(--color-sidebar)]",
         )}
         onClick={() => onSelect(bot.id)}
         title={bot.description ? `${bot.name}${shortcut}\n${bot.description}` : `${bot.name}${shortcut}`}
@@ -80,7 +83,9 @@ const BotItem = memo(function BotItem({
               </Badge>
             )}
           </span>
-          <span className={cn("truncate text-small leading-snug", fresh && bot.preview ? "text-secondary-foreground" : "text-muted-foreground")}>{bot.preview || "No messages yet"}</span>
+          <span className={cn("truncate text-small leading-snug", fresh && bot.preview ? "text-secondary-foreground" : "text-muted-foreground")}>
+            {bot.preview || "No messages yet"}
+          </span>
         </span>
       </button>
       <Tooltip content={`Delete ${bot.name}`} side="right">
@@ -131,10 +136,28 @@ export function Sidebar({
   return (
     <aside className="flex min-w-0 flex-col border-r bg-sidebar [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
       <div className="flex h-15 flex-none items-center justify-between pr-4 pl-4.5 narrow:justify-center narrow:p-0">
-        <span className="inline-flex items-center gap-2.25 text-[17px] leading-none font-semibold tracking-[-0.03em] narrow:gap-0 narrow:text-[0px]" aria-label="Top">
+        <span
+          className="inline-flex items-center gap-2.25 text-[17px] leading-none font-semibold tracking-[-0.03em] narrow:gap-0 narrow:text-[0px]"
+          role="img"
+          aria-label="Top"
+        >
           {/* The mark is a shell prompt, "›_": the app is named after the Unix `top`. */}
-          <span className="relative size-6 rounded-md bg-linear-145/srgb from-[#ff9a5c] to-[#ec4d16] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.2)]" aria-hidden>
-            <svg className="block" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+          <span
+            className="relative size-6 rounded-md bg-linear-145/srgb from-[#ff9a5c] to-[#ec4d16] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.2)]"
+            aria-hidden
+          >
+            <svg
+              className="block"
+              aria-hidden="true"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#fff"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d="M7 8l4 4-4 4" />
               <path d="M13 16h4.5" />
             </svg>

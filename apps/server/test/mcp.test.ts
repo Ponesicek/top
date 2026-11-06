@@ -74,11 +74,17 @@ test("a bot gets a server's tools only once it's assigned, and they run", async 
   mcp.assign(id, bot, true);
   assert.deepEqual(mcp.views()[0]!.bots, [bot]);
   const tools = mcp.toolsFor(bot);
-  assert.deepEqual(tools.map((t) => t.name), ["echo__echo", "echo__env", "echo__fail"]);
+  assert.deepEqual(
+    tools.map((t) => t.name),
+    ["echo__echo", "echo__env", "echo__fail"],
+  );
   assert.deepEqual(mcp.toolsFor(other), []);
   assert.match(tools[0]!.description, /MCP server "Echo"/);
   // Read-only tools run again after a restart; the rest are reported as interrupted.
-  assert.deepEqual(tools.map((t) => t.replay), ["safe", "never", "never"]);
+  assert.deepEqual(
+    tools.map((t) => t.replay),
+    ["safe", "never", "never"],
+  );
 
   assert.equal(textOf(await run(tools[0], { text: "hi" })), "echo: hi");
   const failed = await run(tools[2], {});
@@ -97,7 +103,11 @@ test("secrets never leave the daemon, and an empty value keeps the stored one", 
   assert.deepEqual(view.config, { transport: "stdio", command: process.execPath, args: [echoServer], env: [{ name: "TOKEN" }] });
   assert.ok(!JSON.stringify(mcp.views()).includes("s3cret"));
 
-  const env = () => run(mcp.toolsFor(bot).find((t) => t.name === "echo__env"), { name: "TOKEN" }).then(textOf);
+  const env = () =>
+    run(
+      mcp.toolsFor(bot).find((t) => t.name === "echo__env"),
+      { name: "TOKEN" },
+    ).then(textOf);
   assert.equal(await env(), "s3cret");
 
   // Saved again without a value (as the app does when it isn't changed): reconnects with the old one.
@@ -122,8 +132,15 @@ test("one server can be added twice, as two accounts, and each bot picks", async
 
   const names = mcp.toolsFor(bot).map((t) => t.name);
   assert.ok(names.includes("echo_work__env") && names.includes("echo_home__env"));
-  assert.deepEqual(mcp.toolsFor(other).map((t) => t.name), ["echo_home__echo", "echo_home__env", "echo_home__fail"]);
-  const account = (tool: string) => run(mcp.toolsFor(bot).find((t) => t.name === tool), { name: "ACCOUNT" }).then(textOf);
+  assert.deepEqual(
+    mcp.toolsFor(other).map((t) => t.name),
+    ["echo_home__echo", "echo_home__env", "echo_home__fail"],
+  );
+  const account = (tool: string) =>
+    run(
+      mcp.toolsFor(bot).find((t) => t.name === tool),
+      { name: "ACCOUNT" },
+    ).then(textOf);
   assert.equal(await account("echo_work__env"), "work");
   assert.equal(await account("echo_home__env"), "home");
 
@@ -133,7 +150,12 @@ test("one server can be added twice, as two accounts, and each bot picks", async
 
 test("a server that won't start says why, and removing one takes its tools away", async () => {
   const { mcp, bot } = setup();
-  const broken = mcp.save(undefined, "Broken", { transport: "stdio", command: process.execPath, args: ["-e", "console.error('missing API key'); process.exit(1)"], env: [] });
+  const broken = mcp.save(undefined, "Broken", {
+    transport: "stdio",
+    command: process.execPath,
+    args: ["-e", "console.error('missing API key'); process.exit(1)"],
+    env: [],
+  });
   mcp.start();
   const view = await until(mcp, broken, (v) => v.state === "failed");
   assert.match(view.error ?? "", /missing API key/);

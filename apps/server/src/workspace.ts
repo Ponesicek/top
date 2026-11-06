@@ -11,22 +11,18 @@ import { mkdirSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import {
-  createBashTool,
-  createEditTool,
-  createFindTool,
-  createGrepTool,
-  createLsTool,
-  createReadTool,
-  createWriteTool,
-} from "@earendil-works/pi-coding-agent";
+import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import type { TopTool } from "./tools.ts";
 
 const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
 
 /** `<root>/bots/<name>`, with the name made safe as a folder name. */
 export function botFolder(root: string, name: string): string {
-  const safe = name.trim().replace(/[^\p{L}\p{N}._ -]+/gu, "_").replace(/^\.+/, "_") || "bot";
+  const safe =
+    name
+      .trim()
+      .replace(/[^\p{L}\p{N}._ -]+/gu, "_")
+      .replace(/^\.+/, "_") || "bot";
   return join(root, "bots", safe);
 }
 
@@ -36,7 +32,11 @@ export function ensureFolder(folder: string): string {
   return folder;
 }
 
-function adapt(tool: AgentTool<any>): TopTool {
+// pi's tools each have their own parameter schema; any one of them goes in.
+// biome-ignore lint/suspicious/noExplicitAny: plain AgentTool doesn't accept pi's concrete tools (typecheck fails), any does
+type AnyAgentTool = AgentTool<any>;
+
+function adapt(tool: AnyAgentTool): TopTool {
   return {
     name: tool.name,
     label: tool.label,
@@ -59,7 +59,7 @@ export function computerTools(folder: string): TopTool[] {
     createGrepTool(folder),
     createFindTool(folder),
     createLsTool(folder),
-  ].map((tool) => adapt(tool as AgentTool<any>));
+  ].map((tool) => adapt(tool as AnyAgentTool));
 }
 
 /** The `workspace` section of a bot's system prompt. `outdated` says an earlier "no tools" note no longer holds. */

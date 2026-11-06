@@ -21,13 +21,13 @@ import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { DEFAULT_PORT } from "@top/protocol";
 import { PiAuthFile } from "./auth.ts";
-import { Daemon, defaultInstructions, ensureBots, purpose, type NewBot } from "./daemon.ts";
+import { Daemon, defaultInstructions, ensureBots, type NewBot, purpose } from "./daemon.ts";
 import { BOT_NAMES, createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "./fake-bots.ts";
 import { startLoad } from "./load.ts";
 import { McpManager } from "./mcp.ts";
 import { seedHistory } from "./seed.ts";
 import { serve } from "./serve.ts";
-import { Store, type BotRow } from "./store.ts";
+import { type BotRow, Store } from "./store.ts";
 import { createFakeTools, type TopTool } from "./tools.ts";
 import { botFolder, computerTools, ensureFolder, workspaceSection } from "./workspace.ts";
 
@@ -85,9 +85,18 @@ if (real) {
   const providerId = model.slice(0, slash);
   const credentials = new PiAuthFile();
   models = builtinModels({ credentials });
-  if (!models.getProvider(providerId)) fail(`Unknown provider "${providerId}". Known: ${models.getProviders().map((p) => p.id).join(", ")}.`);
+  if (!models.getProvider(providerId))
+    fail(
+      `Unknown provider "${providerId}". Known: ${models
+        .getProviders()
+        .map((p) => p.id)
+        .join(", ")}.`,
+    );
   const auth = await models.checkAuth(providerId);
-  if (!auth) fail(`Not signed in to ${providerId}. Run \`pi\`, then \`/login\` (Top shares pi's ${credentials.path}), or set the provider's API key in the environment.`);
+  if (!auth)
+    fail(
+      `Not signed in to ${providerId}. Run \`pi\`, then \`/login\` (Top shares pi's ${credentials.path}), or set the provider's API key in the environment.`,
+    );
   if (!models.getModel(providerId, model.slice(slash + 1))) {
     await models.refresh({ providers: [providerId] });
     if (!models.getModel(providerId, model.slice(slash + 1))) fail(`${providerId} has no model "${model.slice(slash + 1)}".`);
@@ -136,7 +145,9 @@ await daemon.start();
 const server = serve(daemon, { host: args.host, port: Number(args.port), compress: !args["no-compress"], allowOrigins: args["allow-origin"] ?? [] });
 const stopLoad = args.load ? startLoad(daemon, { tools: args.tools }) : () => {};
 
-console.log(`[top] ${daemon.runners.size} bot${daemon.runners.size === 1 ? "" : "s"}, data in ${dataDir}${real ? `, working in ${resolve(workspace, "bots")}` : ""}`);
+console.log(
+  `[top] ${daemon.runners.size} bot${daemon.runners.size === 1 ? "" : "s"}, data in ${dataDir}${real ? `, working in ${resolve(workspace, "bots")}` : ""}`,
+);
 console.log(`[top] listening on ws://${args.host}:${args.port}${args.load ? ` (synthetic load on${args.tools ? ", with tools" : ""})` : ""}`);
 
 async function shutdown() {

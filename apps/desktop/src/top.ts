@@ -1,6 +1,7 @@
 /** The app's one TopClient, plus the local cache that makes cold start instant and reconnects cheap. */
+
+import { type BotId, type BotSummary, type ConversationCache, type ConversationSync, TopClient } from "@top/client";
 import { useSyncExternalStore } from "react";
-import { TopClient, type BotId, type BotSummary, type ConversationCache, type ConversationSync } from "@top/client";
 
 const params = new URLSearchParams(location.search);
 export const serverUrl = params.get("server") ?? safeGet("top.server") ?? "ws://127.0.0.1:7357";
@@ -94,8 +95,7 @@ function persist() {
     if (cache) safeSet(cacheKey(`bot:${bot.id}`), JSON.stringify(cache));
   }
 }
-const idle = (fn: () => void) =>
-  "requestIdleCallback" in window ? requestIdleCallback(fn, { timeout: 2_000 }) : setTimeout(fn, 0);
+const idle = (fn: () => void) => ("requestIdleCallback" in window ? requestIdleCallback(fn, { timeout: 2_000 }) : setTimeout(fn, 0));
 setInterval(() => idle(persist), 5_000);
 addEventListener("pagehide", persist);
 
@@ -106,6 +106,21 @@ document.addEventListener("visibilitychange", () => document.visibilityState ===
 
 export function conversation(id: BotId): ConversationSync {
   return top.conversation(id);
+}
+
+export type RosterBot = { readonly id: BotId; readonly name: string };
+
+let roster: { readonly key: string; readonly bots: readonly RosterBot[] } = { key: "[]", bots: [] };
+function rosterSnapshot(): readonly RosterBot[] {
+  const bots = top.getSnapshot().bots;
+  const key = JSON.stringify(bots.map((b) => [b.id, b.name]));
+  if (key !== roster.key) roster = { key, bots: bots.map(({ id, name }) => ({ id, name })) };
+  return roster.bots;
+}
+
+/** Every bot's id and name; re-renders only when a bot is added, removed or renamed, not on status changes. */
+export function useRoster(): readonly RosterBot[] {
+  return useSyncExternalStore(top.subscribe, rosterSnapshot);
 }
 
 /** One bot's summary; re-renders only when that bot changes. */

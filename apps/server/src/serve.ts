@@ -6,9 +6,10 @@
  * entry is pushed once. Reading and registering happen in the same tick (SQLite is synchronous), so
  * no entry can slip between the catch-up and the live updates.
  */
-import { PROTOCOL_VERSION, type ClientFrame, type Entry, type QueuedMessage, type ServerFrame } from "@top/protocol";
-import { WebSocketServer, type WebSocket } from "ws";
+import { type Entry, type Gap, PROTOCOL_VERSION, parseClientFrame, type QueuedMessage, type ServerFrame } from "@top/protocol";
+import { type WebSocket, WebSocketServer } from "ws";
 import type { Daemon } from "./daemon.ts";
+import type { StoredEntry } from "./store.ts";
 import { toWire } from "./wire.ts";
 
 const HEARTBEAT_MS = 30_000;
@@ -59,9 +60,7 @@ class ClientConnection {
         const entry = toWire(stored);
         if (entry) send(socket, { t: "entry", entry });
       }),
-      ...(mcp
-        ? [mcp.onChange((server) => send(socket, { t: "mcpServer", server })), mcp.onRemoved((id) => send(socket, { t: "mcpServerRemoved", id }))]
-        : []),
+      ...(mcp ? [mcp.onChange((server) => send(socket, { t: "mcpServer", server })), mcp.onRemoved((id) => send(socket, { t: "mcpServerRemoved", id }))] : []),
       daemon.onInbox((bot) => {
         if (this.#watching.has(bot)) send(socket, { t: "inbox", bot, items: inboxOf(daemon, bot) });
       }),
@@ -69,12 +68,14 @@ class ClientConnection {
   }
 
   #receive(text: string) {
-    let frame: ClientFrame;
-    try {
-      frame = JSON.parse(text) as ClientFrame;
-    } catch {
+    const parsed = parseClientFrame(text);
+    if (!parsed.ok) {
+      // Answer a request, so the client isn't left waiting for its timeout; drop anything else.
+      if (parsed.req !== undefined) send(this.socket, { t: "result", req: parsed.req, ok: false, error: parsed.error });
+      else console.warn(`[top] ignored a frame from a client: ${parsed.error}`);
       return;
     }
+    const frame = parsed.frame;
     const store = this.#daemon.store;
     switch (frame.t) {
       case "hello":
@@ -85,9 +86,9 @@ class ClientConnection {
       case "watch": {
         if (!this.#daemon.runners.has(frame.bot)) return;
         const limit = Math.min(Math.max(1, frame.limit ?? DEFAULT_WINDOW), MAX_WINDOW);
-        let entries;
-        let gap;
-        let earlier;
+        let entries: StoredEntry[];
+        let gap: Gap | undefined;
+        let earlier = false;
         const after = this.#foreign ? undefined : frame.after;
         if (after === undefined) {
           entries = store.newest(frame.bot, limit);
@@ -133,7 +134,7 @@ class ClientConnection {
           return null;
         });
       case "createBot":
-        return this.#answer(frame.req, () => ({ id: this.#daemon.createBot(String(frame.name ?? ""), String(frame.description ?? "")) }));
+        return this.#answer(frame.req, () => ({ id: this.#daemon.createBot(frame.name, frame.description) }));
       case "deleteBot":
         return this.#answer(frame.req, () => {
           this.#daemon.deleteBot(frame.bot);
@@ -149,7 +150,7 @@ class ClientConnection {
       case "assignMcp":
         return this.#answer(frame.req, () => {
           if (!this.#daemon.runners.has(frame.bot)) throw new Error(`Unknown bot ${frame.bot}`);
-          this.#mcp().assign(frame.server, frame.bot, frame.on === true);
+          this.#mcp().assign(frame.server, frame.bot, frame.on);
           return null;
         });
       case "mcpSignIn":
@@ -176,7 +177,12 @@ class ClientConnection {
   /** A synchronous answer goes out in the same tick, before anything the request set off. */
   #answer(req: number, run: () => unknown) {
     const fail = (error: unknown) =>
-      send(this.socket, { t: "result", req, ok: false, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+      send(this.socket, {
+        t: "result",
+        req,
+        ok: false,
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      });
     try {
       const value = run();
       if (value instanceof Promise) value.then((v) => send(this.socket, { t: "result", req, ok: true, value: v }), fail);

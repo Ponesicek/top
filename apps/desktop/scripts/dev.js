@@ -1,7 +1,8 @@
 // pnpm desktop: Vite dev server + Electron pointed at it.
-import { fileURLToPath } from "node:url";
+
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const require = createRequire(import.meta.url);

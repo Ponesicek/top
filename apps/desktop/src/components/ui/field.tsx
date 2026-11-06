@@ -12,7 +12,9 @@ function Field({ className, ...props }: FieldPrimitive.Root.Props) {
 }
 
 function FieldLabel({ className, ...props }: FieldPrimitive.Label.Props) {
-  return <FieldPrimitive.Label className={cn("text-code leading-tight font-semibold text-secondary-foreground", className)} data-slot="field-label" {...props} />;
+  return (
+    <FieldPrimitive.Label className={cn("text-code leading-tight font-semibold text-secondary-foreground", className)} data-slot="field-label" {...props} />
+  );
 }
 
 /** A quiet note beside a label ("optional"). */
@@ -27,7 +29,13 @@ function Input({ className, ...props }: InputPrimitive.Props) {
 function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   return (
     <FieldPrimitive.Control
-      render={(defaultProps) => <textarea {...mergeProps<"textarea">(defaultProps, props)} className={cn(CONTROL_CLASS, "max-h-80 min-h-23 resize-y", className)} data-slot="textarea" />}
+      render={(defaultProps) => (
+        <textarea
+          {...mergeProps<"textarea">(defaultProps, props)}
+          className={cn(CONTROL_CLASS, "max-h-80 min-h-23 resize-y", className)}
+          data-slot="textarea"
+        />
+      )}
     />
   );
 }

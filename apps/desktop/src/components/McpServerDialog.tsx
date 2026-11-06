@@ -1,6 +1,6 @@
-import { useId, useRef, useState, type FormEvent } from "react";
-import { X } from "lucide-react";
 import { MAX_MCP_NAME, type McpSecret, type McpServerConfig, type McpServerView } from "@top/client";
+import { X } from "lucide-react";
+import { type FormEvent, useId, useRef, useState } from "react";
 import { joinCommand, splitCommand } from "../command.ts";
 import { cn } from "../lib/utils.ts";
 import { top } from "../top.ts";
@@ -42,6 +42,7 @@ function SecretList({
   const labelId = useId();
   const update = (key: number, change: Partial<SecretRow>) => onChange(rows.map((r) => (r.key === key ? { ...r, ...change } : r)));
   return (
+    // biome-ignore lint/a11y/useSemanticElements: a <fieldset> brings its own layout quirks; role="group" names the rows just as well
     <div className="flex flex-col gap-1.5" role="group" aria-labelledby={labelId}>
       <span id={labelId} className="text-code leading-tight font-semibold text-secondary-foreground">
         {label} <FieldHint>{hint}</FieldHint>
@@ -65,7 +66,13 @@ function SecretList({
             aria-label={`${row.name || label}: value`}
             onValueChange={(value) => update(row.key, { value })}
           />
-          <Button variant="ghost" size="icon-xs" className="flex-none" aria-label={`Remove ${row.name || "this row"}`} onClick={() => onChange(rows.filter((r) => r.key !== row.key))}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="flex-none"
+            aria-label={`Remove ${row.name || "this row"}`}
+            onClick={() => onChange(rows.filter((r) => r.key !== row.key))}
+          >
             <X size={14} strokeWidth={2} />
           </Button>
         </div>
@@ -150,6 +157,7 @@ function McpServerForm({ server, onDone }: { server: McpServerView | undefined; 
                 { value: "stdio", label: "Command" },
               ] as const
             ).map((o) => (
+              // biome-ignore lint/a11y/useSemanticElements: a segmented control; TODO: Base UI RadioGroup, which adds arrow-key navigation
               <button
                 key={o.value}
                 type="button"
@@ -188,7 +196,13 @@ function McpServerForm({ server, onDone }: { server: McpServerView | undefined; 
               <FieldLabel>
                 Command <FieldHint>runs on the daemon's computer</FieldHint>
               </FieldLabel>
-              <Input value={commandLine} placeholder="npx -y @modelcontextprotocol/server-everything" spellCheck={false} className="font-mono text-[13px]" onValueChange={setCommandLine} />
+              <Input
+                value={commandLine}
+                placeholder="npx -y @modelcontextprotocol/server-everything"
+                spellCheck={false}
+                className="font-mono text-[13px]"
+                onValueChange={setCommandLine}
+              />
             </Field>
             <SecretList
               label="Environment"

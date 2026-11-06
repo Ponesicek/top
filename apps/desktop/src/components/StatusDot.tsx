@@ -13,7 +13,14 @@ export function StatusDot({ status, fresh = false, pulse = false }: { status: Bo
     return <i className={cn("size-1.75 flex-none rounded-full", fresh ? "bg-info ring-2 ring-info/18" : "inset-ring-[1.5px] inset-ring-muted-foreground")} />;
   const amber = status === "thinking" || status === "retrying";
   if (pulse)
-    return <i className={cn("size-1.75 flex-none animate-ring rounded-full bg-(--dot) motion-reduce:animate-none", amber ? "[--dot:var(--color-warning)]" : "[--dot:var(--color-destructive)]")} />;
+    return (
+      <i
+        className={cn(
+          "size-1.75 flex-none animate-ring rounded-full bg-(--dot) motion-reduce:animate-none",
+          amber ? "[--dot:var(--color-warning)]" : "[--dot:var(--color-destructive)]",
+        )}
+      />
+    );
   // The sidebar says "Failed" in a red pill instead.
   if (!amber) return null;
   return <i className="size-1.75 flex-none rounded-full bg-warning ring-2 ring-warning-surface" />;

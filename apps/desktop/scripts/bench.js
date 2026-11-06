@@ -4,12 +4,13 @@
 //   app:    production build in Electron, driven with real input events
 //
 // Prints a table and writes bench-results.json.
-import { fileURLToPath } from "node:url";
-import { spawn, execSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+
+import { execSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const electron = require("electron");
@@ -26,7 +27,9 @@ execSync("pnpm exec vite build --logLevel error", { cwd: desktopDir, stdio: "inh
 let server;
 function startServer(extra = []) {
   return new Promise((resolve, reject) => {
-    server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", ...extra], { stdio: ["ignore", "pipe", "inherit"] });
+    server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", ...extra], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
     server.stdout.on("data", (d) => String(d).includes("listening") && resolve());
     server.on("exit", (code) => code && code !== 0 && reject(new Error(`daemon exited ${code}`)));
   });
@@ -58,8 +61,7 @@ function runElectron(mode) {
     let buffer = "";
     child.stdout.on("data", async (chunk) => {
       buffer += chunk;
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
+      for (let nl = buffer.indexOf("\n"); nl >= 0; nl = buffer.indexOf("\n")) {
         const line = buffer.slice(0, nl);
         buffer = buffer.slice(nl + 1);
         if (line.startsWith("BENCH:KILL")) await killServer();
@@ -100,12 +102,26 @@ try {
   row(`Scroll 10k transcript: frame p99`, `${fmt(s.frameP99)} ms`, "≤ 20 ms", s.frameP99 <= 20);
   row(`Scroll: frames over 33 ms`, String(s.framesOver33ms), "0", s.framesOver33ms === 0);
   const r = full.reconnect;
-  row(`kill -9: stale banner, transcript kept`, `${r.staleBannerShown ? "yes" : "no"}, ${r.rowsKeptWhileDown} rows`, "no blank screen", r.staleBannerShown && r.rowsKeptWhileDown > 0);
+  row(
+    `kill -9: stale banner, transcript kept`,
+    `${r.staleBannerShown ? "yes" : "no"}, ${r.rowsKeptWhileDown} rows`,
+    "no blank screen",
+    r.staleBannerShown && r.rowsKeptWhileDown > 0,
+  );
   row(`Reconnect after daemon restart`, `${fmt(r.reconnectAfterRestartMs)} ms`, "< 1000 ms", r.reconnectAfterRestartMs < 1000);
-  row(`Offline message durably accepted after restart`, `${fmt(r.offlineMessageAcceptedAfterRestartMs)} ms`, "< 1500 ms", r.offlineMessageAcceptedAfterRestartMs < 1500);
+  row(
+    `Offline message durably accepted after restart`,
+    `${fmt(r.offlineMessageAcceptedAfterRestartMs)} ms`,
+    "< 1500 ms",
+    r.offlineMessageAcceptedAfterRestartMs < 1500,
+  );
   row(`Copies of the offline message`, String(r.copiesOfOfflineMessage), "exactly 1", r.copiesOfOfflineMessage === 1);
-  console.log(`\n  offline message placed in the transcript ${fmt(r.offlineMessagePlacedAfterRestartMs)} ms after restart (it queues behind the bot's resumed turn)`);
-  console.log(`  scroll covered ${Math.round(s.scrolledPx)} px, ${s.itemsLoaded} entries loaded, ${s.rowsInDom} rows in the DOM; long tasks: typing ${t.longTasks}, scroll ${s.longTasks}`);
+  console.log(
+    `\n  offline message placed in the transcript ${fmt(r.offlineMessagePlacedAfterRestartMs)} ms after restart (it queues behind the bot's resumed turn)`,
+  );
+  console.log(
+    `  scroll covered ${Math.round(s.scrolledPx)} px, ${s.itemsLoaded} entries loaded, ${s.rowsInDom} rows in the DOM; long tasks: typing ${t.longTasks}, scroll ${s.longTasks}`,
+  );
   const out = join(desktopDir, "bench-results.json");
   writeFileSync(out, JSON.stringify({ at: new Date().toISOString(), platform: process.platform, xvfb: !process.env.DISPLAY, full, warm }, null, 2));
   console.log(`  raw numbers: ${out}`);

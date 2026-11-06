@@ -18,7 +18,8 @@ import yaml from "highlight.js/lib/languages/yaml";
 import MarkdownIt from "markdown-it";
 
 // A handful of languages the bots actually write; anything else stays plain.
-for (const [name, lang] of Object.entries({ bash, css, diff, go, javascript, json, python, rust, sql, typescript, xml, yaml })) hljs.registerLanguage(name, lang);
+for (const [name, lang] of Object.entries({ bash, css, diff, go, javascript, json, python, rust, sql, typescript, xml, yaml }))
+  hljs.registerLanguage(name, lang);
 hljs.registerAliases(["sh", "shell", "zsh", "console"], { languageName: "bash" });
 hljs.registerAliases(["ts", "tsx"], { languageName: "typescript" });
 hljs.registerAliases(["js", "jsx", "mjs"], { languageName: "javascript" });

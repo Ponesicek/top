@@ -268,7 +268,10 @@ export class ConversationSync {
     for (const entry of this.#entries) {
       while (g < gaps.length && gaps[g]!.before <= entry.seq) items.push({ kind: "gap", gap: gaps[g++]! });
       let item = this.#itemOf.get(entry);
-      if (!item) this.#itemOf.set(entry, (item = { kind: "entry", entry }));
+      if (!item) {
+        item = { kind: "entry", entry };
+        this.#itemOf.set(entry, item);
+      }
       items.push(item);
     }
     return items;
@@ -302,7 +305,11 @@ export class ConversationSync {
 
   #update(requestId: string, change: Partial<PendingMessage>): PendingMessage | undefined {
     let updated: PendingMessage | undefined;
-    this.#pending = this.#pending.map((p) => (p.requestId === requestId ? (updated = { ...p, ...change }) : p));
+    this.#pending = this.#pending.map((p) => {
+      if (p.requestId !== requestId) return p;
+      updated = { ...p, ...change };
+      return updated;
+    });
     if (updated) this.#publish();
     return updated;
   }

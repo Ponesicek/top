@@ -1,9 +1,9 @@
-import { useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Plus } from "lucide-react";
 import type { BotId, McpServerView } from "@top/client";
+import { Plus } from "lucide-react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import { joinCommand } from "../command.ts";
 import { cn } from "../lib/utils.ts";
-import { serverUrl, top } from "../top.ts";
+import { serverUrl, top, useRoster } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
 import { McpServerDialog } from "./McpServerDialog.tsx";
 import { Section } from "./SettingsSection.tsx";
@@ -149,9 +149,8 @@ function ServerRow({ server, bots, onEdit }: { server: McpServerView; bots: read
 /** The MCP servers on the daemon, and which bots use each. A bot starts with none. */
 export function McpServers() {
   const servers = useSyncExternalStore(top.subscribe, () => top.getSnapshot().mcpServers);
-  // Only names and ids: the roster string doesn't change when a bot's status does.
-  const roster = useSyncExternalStore(top.subscribe, () => top.getSnapshot().bots.map((b) => `${b.id}:${b.name}`).join("|"));
-  const bots = useMemo(() => top.getSnapshot().bots.map((b) => ({ id: b.id, name: b.name })), [roster]);
+  // Only names and ids: they don't change when a bot's status does.
+  const bots = useRoster();
   const [editing, setEditing] = useState<number | "new">();
   const [open, setOpen] = useState(false);
   // Live while the dialog is open (state and tools change); the last one seen while it animates out
@@ -177,7 +176,9 @@ export function McpServers() {
         }
       >
         {servers.length === 0 ? (
-          <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">Give bots tools from other apps and services. Each bot gets only the servers you choose.</p>
+          <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">
+            Give bots tools from other apps and services. Each bot gets only the servers you choose.
+          </p>
         ) : (
           servers.map((server) => <ServerRow key={server.id} server={server} bots={bots} onEdit={() => openEditor(server.id)} />)
         )}

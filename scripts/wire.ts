@@ -14,7 +14,7 @@
  * - resume:  a client comes back after 30 s away with its cache, and catches up
  * - idle:    a client connected to a daemon with nothing happening
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { Socket } from "node:net";
@@ -85,10 +85,14 @@ function answers(conversation: AnyConversation): Set<string> {
 async function startDaemon(extra: string[]): Promise<{ url: string; stop(): Promise<void> }> {
   const port = 7700 + Math.floor(Math.random() * 200);
   const dataDir = mkdtempSync(join(tmpdir(), "top-wire-"));
-  const child: ChildProcess = spawn(process.execPath, ["--import", "tsx", join(tree, "apps/server/src/main.ts"), "--port", String(port), "--data", dataDir, ...extra], {
-    stdio: ["ignore", "pipe", "inherit"],
-    cwd: join(tree, "apps/server"),
-  });
+  const child: ChildProcess = spawn(
+    process.execPath,
+    ["--import", "tsx", join(tree, "apps/server/src/main.ts"), "--port", String(port), "--data", dataDir, ...extra],
+    {
+      stdio: ["ignore", "pipe", "inherit"],
+      cwd: join(tree, "apps/server"),
+    },
+  );
   await new Promise<void>((r) => child.stdout!.on("data", (d: Buffer) => String(d).includes("listening") && r()));
   return {
     url: `ws://127.0.0.1:${port}`,

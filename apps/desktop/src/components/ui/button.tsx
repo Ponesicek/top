@@ -38,4 +38,4 @@ function Button({ className, variant, size, render, ...props }: ButtonProps) {
   return useRender({ defaultTagName: "button", render, props: mergeProps<"button">(defaultProps, props) });
 }
 
-export { Button, buttonVariants, type ButtonProps };
+export { Button, type ButtonProps, buttonVariants };

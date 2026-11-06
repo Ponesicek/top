@@ -39,7 +39,10 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       return { ...base, kind: "user", text: textOf(message.content), ...(stored.requestId ? { requestId: stored.requestId } : {}) };
     case "assistant": {
       const parts = typeof message.content === "string" ? [] : (message.content ?? []);
-      const thinking = parts.filter((p) => p.type === "thinking").map((p) => p.thinking ?? "").join("\n");
+      const thinking = parts
+        .filter((p) => p.type === "thinking")
+        .map((p) => p.thinking ?? "")
+        .join("\n");
       const tools: ToolCallView[] = parts
         .filter((p) => p.type === "toolCall")
         .map((p) => ({ id: String(p.id), name: String(p.name), summary: full ? JSON.stringify(p.arguments ?? {}) : summarize(p.arguments) }));

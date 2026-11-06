@@ -1,9 +1,10 @@
 /** Pieces every transcript style shares: times, tool steps, the folded tool group, notes. */
-import { memo, useCallback, useEffect, useState } from "react";
+
 import type { BotSummary, ConversationSync, ToolOutcome } from "@top/client";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
-import type { DisplayRow, Row, ToolEntry, ToolGroupRow } from "../../rows.ts";
+import { memo, useCallback, useEffect, useState } from "react";
 import { cn } from "../../lib/utils.ts";
+import type { DisplayRow, Row, ToolEntry, ToolGroupRow } from "../../rows.ts";
 import { Badge } from "../ui/badge.tsx";
 import { Button } from "../ui/button.tsx";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible.tsx";
@@ -52,7 +53,16 @@ export function useElapsed(bot: BotSummary | undefined): number {
 }
 
 export function ErrorNote({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("mt-2 inline-flex items-center gap-1.5 rounded-md bg-destructive-surface px-2.5 py-1.25 text-meta leading-snug font-label text-destructive-foreground", className)}>{children}</div>;
+  return (
+    <div
+      className={cn(
+        "mt-2 inline-flex items-center gap-1.5 rounded-md bg-destructive-surface px-2.5 py-1.25 text-meta leading-snug font-label text-destructive-foreground",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function AnswerError({ error, className }: { error: string; className?: string }) {
@@ -102,7 +112,11 @@ const ToolStep = memo(function ToolStep({ entry, sync }: { entry: ToolEntry; syn
     <Collapsible
       className="py-0.75 text-small"
       onOpenChange={(open) => {
-        if (open && full === undefined) void sync.detail(entry.seq).then((e) => setFull(e.kind === "tool" ? e.text : ""), () => setFull("Couldn't load."));
+        if (open && full === undefined)
+          void sync.detail(entry.seq).then(
+            (e) => setFull(e.kind === "tool" ? e.text : ""),
+            () => setFull("Couldn't load."),
+          );
       }}
     >
       <div className="flex min-w-0 items-center gap-2.25">
@@ -150,7 +164,19 @@ function toolNames(entries: readonly ToolEntry[]): string {
  * A run of tool calls as one quiet line ("Used 4 tools · bash, read"), opening into the steps.
  * `trigger` styles the line for the transcript style it sits in.
  */
-export const ToolGroup = memo(function ToolGroup({ row, sync, className, trigger, panel }: { row: ToolGroupRow; sync: ConversationSync; className?: string; trigger?: string; panel?: string }) {
+export const ToolGroup = memo(function ToolGroup({
+  row,
+  sync,
+  className,
+  trigger,
+  panel,
+}: {
+  row: ToolGroupRow;
+  sync: ConversationSync;
+  className?: string;
+  trigger?: string;
+  panel?: string;
+}) {
   const failed = row.entries.filter(failedStep).length;
   const count = row.entries.length;
   return (
@@ -189,7 +215,13 @@ export function UserState({ row, sync, className }: { row: UserRowData; sync: Co
   if (!row.state) return null;
   const failed = row.state === "failed";
   return (
-    <span className={cn("inline-flex items-center gap-1 text-meta leading-tight tabular-nums", failed ? "text-destructive-foreground" : "text-muted-foreground", className)}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 text-meta leading-tight tabular-nums",
+        failed ? "text-destructive-foreground" : "text-muted-foreground",
+        className,
+      )}
+    >
       {failed && <AlertTriangle size={12} strokeWidth={2.4} />}
       {USER_STATE[row.state]}
       {failed && row.requestId && (
@@ -237,6 +269,15 @@ export function RetryNote({ bot }: { bot: BotSummary | undefined }) {
   );
 }
 
+/**
+ * HTML from markdown.ts: model text rendered with raw HTML off, so it is escaped; the one place it
+ * enters the DOM.
+ */
+export function Markdown({ html }: { html: string }) {
+  // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown.ts escapes the text (markdown-it with html: false, hljs)
+  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
 /** A rule across the column with a short line in the middle: "Load earlier messages", notices. */
 export const DIVIDER =
   "flex items-center gap-3 py-4 text-meta leading-snug font-medium text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
@@ -252,10 +293,10 @@ export function AutoLoad({ onVisible, label }: { onVisible: () => Promise<void>;
       .catch(() => setFailed(true))
       .finally(() => setBusy(false));
   }, [busy, onVisible]);
+  // Load as soon as the marker is rendered, i.e. scrolled into (over)view; once.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: on mount only
   useEffect(() => {
     run();
-    // load as soon as the marker is rendered, i.e. scrolled into (over)view
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
     <div className={DIVIDER}>
