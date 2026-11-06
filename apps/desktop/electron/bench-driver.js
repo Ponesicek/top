@@ -55,8 +55,10 @@ export async function runBench(win) {
       const rect = await js(`(() => { const all = document.querySelectorAll(${JSON.stringify(process.env.TOP_SHOT_HOVER)}); const r = all[all.length - 1]?.getBoundingClientRect(); return r && { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 20) }; })()`);
       if (rect) wc.sendInputEvent({ type: "mouseMove", x: Math.round(rect.x), y: Math.round(rect.y) });
     }
+    // TOP_SHOT_JS=code runs in the page before the capture (open a dialog, fill a field).
+    if (process.env.TOP_SHOT_JS) await js(process.env.TOP_SHOT_JS);
     await sleep(Number(process.env.TOP_SHOT_DELAY ?? 1200));
-    const image = await wc.capturePage();
+    const image = await wc.capturePage(undefined, { stayHidden: true });
     const { writeFileSync } = await import("node:fs");
     writeFileSync(process.env.TOP_SHOT_PATH, image.toPNG());
     out("RESULT", { ...result, screenshot: process.env.TOP_SHOT_PATH });

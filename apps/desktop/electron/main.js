@@ -9,6 +9,8 @@ if (process.env.TOP_USER_DATA) app.setPath("userData", process.env.TOP_USER_DATA
 if (process.env.TOP_THEME === "dark" || process.env.TOP_THEME === "light") nativeTheme.themeSource = process.env.TOP_THEME;
 const devUrl = process.env.VITE_DEV_SERVER_URL;
 const query = process.env.TOP_QUERY ?? "";
+/** `pnpm screenshot` captures the page without ever putting a window on screen. */
+const headless = process.env.TOP_BENCH === "screenshot";
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -24,6 +26,8 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
+      // Screenshots render in a window that is never shown, so it must keep painting while hidden.
+      ...(headless ? { backgroundThrottling: false } : {}),
     },
   });
   // No File/Edit/View/Window bar on Linux and Windows: typing, copy and paste work without it. macOS
@@ -45,7 +49,7 @@ function createWindow() {
       });
     }
   }
-  win.once("ready-to-show", () => win.show());
+  if (!headless) win.once("ready-to-show", () => win.show());
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };

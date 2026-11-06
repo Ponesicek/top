@@ -5,7 +5,7 @@
 //
 // Prints a table and writes bench-results.json.
 import { fileURLToPath } from "node:url";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -20,7 +20,8 @@ const dataDir = mkdtempSync(join(tmpdir(), "top-bench-data-"));
 const userData = mkdtempSync(join(tmpdir(), "top-bench-profile-"));
 
 console.log("[bench] building renderer…");
-execFileSync("pnpm", ["exec", "vite", "build", "--logLevel", "error"], { cwd: desktopDir, stdio: "inherit" });
+// One command string: pnpm is a .cmd shim on Windows, which Node runs only through a shell.
+execSync("pnpm exec vite build --logLevel error", { cwd: desktopDir, stdio: "inherit" });
 
 let server;
 function startServer(extra = []) {

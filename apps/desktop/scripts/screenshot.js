@@ -1,6 +1,6 @@
 // pnpm screenshot [out.png]: start a daemon under load, open the production build, capture the window.
 import { fileURLToPath } from "node:url";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -15,7 +15,8 @@ const port = 7900 + Math.floor(Math.random() * 90);
 const dataDir = mkdtempSync(join(tmpdir(), "top-shot-"));
 const userData = mkdtempSync(join(tmpdir(), "top-shot-profile-"));
 
-execFileSync("pnpm", ["exec", "vite", "build", "--logLevel", "error"], { cwd: desktopDir, stdio: "inherit" });
+// One command string: pnpm is a .cmd shim on Windows, which Node runs only through a shell.
+execSync("pnpm exec vite build --logLevel error", { cwd: desktopDir, stdio: "inherit" });
 const server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", "--tools", "--seed", "40"], { stdio: ["ignore", "pipe", "inherit"] });
 await new Promise((r) => server.stdout.on("data", (d) => String(d).includes("listening") && r()));
 
@@ -32,6 +33,8 @@ const child = spawn(cmd, cmdArgs, {
 });
 await new Promise((r) => child.on("exit", r));
 server.kill("SIGKILL");
-rmSync(dataDir, { recursive: true, force: true });
+// Windows keeps the daemon's files locked until it has exited.
+await new Promise((r) => (server.exitCode !== null || server.signalCode !== null ? r() : server.once("exit", r)));
+rmSync(dataDir, { recursive: true, force: true, maxRetries: 5 });
 rmSync(userData, { recursive: true, force: true });
 console.log(outPath);
