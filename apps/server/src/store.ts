@@ -577,9 +577,10 @@ export class Store {
     });
   }
 
-  /** A message from Top itself (not the user), queued as a follow-up. Call inside a transaction. */
+  /** A message from Top itself (not the user), queued for the bot. Call inside a transaction. */
   #queueEvent(bot: number, requestId: string, text: string, source: MessageSource): InboxRow {
-    this.#q.insertInbox!.run(bot, requestId, text, "followUp", null, source, Date.now());
+    // Steered: mid-task it reaches the bot at its next step, not only when the task would end.
+    this.#q.insertInbox!.run(bot, requestId, text, "steer", null, source, Date.now());
     return this.inboxRow(requestId)!;
   }
 

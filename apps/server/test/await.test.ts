@@ -24,6 +24,8 @@ after(async () => {
 });
 
 const FOREGROUND_MS = 150;
+/** How long Top's messages to an idle bot wait for others (see runner.ts): short, for quick tests. */
+const GATHER_MS = 100;
 
 /** A tool that runs until the test lets it finish, or its signal stops it. */
 function slowTool() {
@@ -73,7 +75,7 @@ function setup(tools: TopTool[] = [], existing?: { dir: string; store: Store }) 
   }
   const models = createModels();
   models.setProvider(createFakeModelProvider(2_000).provider);
-  const daemon = new Daemon(store, models, tools, { foregroundMs: FOREGROUND_MS });
+  const daemon = new Daemon(store, models, tools, { foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS });
   cleanup.push(() => daemon.close());
   const bot = store.bots()[0]!.id;
   return { dir, store, daemon, bot };
@@ -320,16 +322,17 @@ test("with wait_seconds, a call that ends in time is an ordinary result", async 
   const background = backgroundGroup(daemon)[0]!;
   assert.equal(resultText(await background.run({ tool: "soon__tool", arguments: { value: "x" }, wait_seconds: 5 }, { key: "k", bot })), "got x");
   assert.equal(daemon.jobs.count(bot), 0);
-  // Without waiting, the same call is a job.
-  assert.match(resultText(await background.run({ tool: "soon__tool", arguments: { value: "y" } }, { key: "k2", bot })), /^Started as background job/);
+  // Started straight in the background, a call this quick still answers: it gets a second to fail or end.
+  assert.equal(resultText(await background.run({ tool: "soon__tool", arguments: { value: "y" } }, { key: "k2", bot })), "got y");
+  assert.equal(daemon.jobs.count(bot), 0);
 });
 
 test("stop_after_minutes stops a job that runs too long, and the bot is told it timed out", async () => {
   const slow = slowTool();
   const { store, daemon, bot } = setup([slow.tool]);
   const background = backgroundGroup(daemon)[0]!;
-  const started = resultText(await background.run({ tool: "slow__tool", stop_after_minutes: 0.003, note: "flaky agent" }, { key: "k", bot }));
-  assert.match(started, /It will be stopped if it's still running 180ms after it started/);
+  const started = resultText(await background.run({ tool: "slow__tool", stop_after_minutes: 0.025, note: "flaky agent" }, { key: "k", bot }));
+  assert.match(started, /It will be stopped if it's still running 2s after it started/);
   const [message] = await until("the timeout message", () => {
     const found = fromTop(store, bot, "job");
     return found.length ? found : undefined;
@@ -356,4 +359,53 @@ test("background checks the tool and its arguments before starting anything", as
   assert.match(resultText(waiting), /can't run in the background/);
   assert.match(resultText(await run({ tool: "strict__tool", arguments: { n: "3" }, wait_seconds: 1 })), /^ran$/, "coerced like a direct call");
   assert.equal(daemon.jobs.count(bot), 0);
+});
+
+test("jobs that end together while the bot is idle reach it in one task", async () => {
+  const a = slowTool();
+  const b = slowTool();
+  const { store, daemon, bot } = setup([a.tool, { ...b.tool, name: "other__tool" }]);
+  await daemon.start();
+  const background = backgroundGroup(daemon)[0]!;
+  await background.run({ tool: "slow__tool" }, { key: "k1", bot });
+  await background.run({ tool: "other__tool" }, { key: "k2", bot });
+  assert.equal(daemon.jobs.count(bot), 2);
+
+  // A moment apart, as two agents finish: the first doesn't start a task of its own.
+  a.finish("first done");
+  await new Promise((resolve) => setTimeout(resolve, GATHER_MS / 2));
+  b.finish("second done");
+  await until("the bot to answer", () => entries(store, bot).at(-1)?.kind === "assistant" && idle(daemon, bot));
+  const kinds = entries(store, bot)
+    .filter((e) => e.kind === "user" || e.kind === "assistant")
+    .map((e) => (e.kind === "user" ? e.source : e.kind));
+  assert.deepEqual(kinds, ["job", "job", "assistant"], "both messages first, then one answer");
+});
+
+test("a job that ends while the bot is busy reaches it at its next step, not when the task ends", async () => {
+  const slow = slowTool();
+  let release: () => void = () => {};
+  const hold: TopTool = {
+    name: "hold__tool",
+    label: "Hold",
+    description: "Runs until the test lets it go.",
+    parameters: Type.Object({}),
+    background: false,
+    run: () => new Promise((resolve) => (release = () => resolve(text("held")))),
+  };
+  const { store, daemon, bot } = setup([slow.tool, hold]);
+  await daemon.start();
+  await backgroundGroup(daemon)[0]!.run({ tool: "slow__tool" }, { key: "k1", bot });
+
+  daemon.submit(bot, "r1", "call hold__tool {}", "followUp", null);
+  await until("the bot to be in its tool call", () => daemon.runner(bot).status.tool === "hold__tool");
+  slow.finish("agent 2 done");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  release();
+  await until("the bot to answer", () => entries(store, bot).at(-1)?.kind === "assistant" && idle(daemon, bot));
+
+  const kinds = entries(store, bot).map((e) => (e.kind === "user" ? (e.source ?? "user") : e.kind));
+  const held = kinds.indexOf("tool");
+  assert.deepEqual(kinds.slice(held, held + 3), ["tool", "job", "assistant"], "the job's message right after the tool result, in the same task");
+  assert.equal(kinds.filter((k) => k === "assistant").length, 2, "one answer after the message, not a second task");
 });

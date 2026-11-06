@@ -27,7 +27,15 @@ export type RunnerOptions = {
   readonly thinkingLevel?: ThinkingLevel;
   /** Named system prompt sections the bot should have. A change is saved just before the next message the bot takes. */
   readonly sections?: Readonly<Record<string, string>>;
+  /**
+   * How long a message from Top itself (a job's result, a wake-up) waits before it starts a task for
+   * an idle bot, so ones that come close together start one task, not one each.
+   */
+  readonly gatherMs?: number;
 };
+
+/** See `RunnerOptions.gatherMs`. */
+const GATHER_MS = 2_000;
 
 export type RunnerEvents = {
   entry(entry: StoredEntry): void;
@@ -76,6 +84,9 @@ export class BotRunner {
   #status: RunnerStatus = { status: "idle", since: Date.now() };
   /** Prompt sections that changed since the transcript last said; saved with the next message taken. */
   #systemUpdate: SystemMessage | undefined;
+  readonly #gatherMs: number;
+  /** A task waiting to start on messages from Top, in case more come (see `RunnerOptions.gatherMs`). */
+  #gatherTimer: ReturnType<typeof setTimeout> | undefined;
 
   /**
    * `tools` is asked again at the start of every run, so tools that come and go (an MCP server given
@@ -89,6 +100,7 @@ export class BotRunner {
     this.#store = store;
     this.#events = events;
     this.#toolSource = tools;
+    this.#gatherMs = options.gatherMs ?? GATHER_MS;
     // Split at the first slash only: model ids can contain one too (OpenRouter's "anthropic/claude-…").
     const slash = bot.model.indexOf("/");
     const model = models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
@@ -99,6 +111,9 @@ export class BotRunner {
       initialState: { model, thinkingLevel, tools: [], messages: store.context(bot.id).map((e) => e.message as AgentMessage) },
       streamFn: models.streamSimple.bind(models),
       identity: { attribution: null },
+      // Messages that queue up while the bot works reach it together, at one step.
+      steeringMode: "all",
+      followUpMode: "all",
       beforeToolCall: async ({ toolCall, args }) => {
         // Stop means stop: no tool starts after the user asked to stop, whatever the model wants.
         if (this.#abortRequested) return { block: true, reason: "Not run: stopped by the user." };
@@ -139,12 +154,19 @@ export class BotRunner {
 
   /** Start working: after `recover()`, and whenever a message arrives. */
   start() {
+    clearTimeout(this.#gatherTimer);
+    this.#gatherTimer = undefined;
     void this.#drive();
   }
 
   /** A message was accepted into the inbox. */
   submitted(row: InboxRow) {
-    if (!this.#busy) return this.start();
+    if (!this.#busy) {
+      // The user's starts a task now; Top's waits a moment for others (several jobs ending together).
+      if (!row.source || !(this.#gatherMs > 0)) return this.start();
+      this.#gatherTimer ??= setTimeout(() => this.start(), this.#gatherMs);
+      return;
+    }
     // Mid-run: hand it to the Agent so it lands at the next turn (steer) or when the task would end
     // (follow-up). Between runs, the next run picks it up from the inbox.
     if (this.#agent.state.isStreaming) this.#deliver(row);
@@ -155,6 +177,12 @@ export class BotRunner {
     this.#abortRequested = true;
     this.#wakeRetry?.();
     this.#agent.abort();
+  }
+
+  /** Start nothing more on its own: the daemon is shutting down, or the bot is being deleted. */
+  close() {
+    clearTimeout(this.#gatherTimer);
+    this.#gatherTimer = undefined;
   }
 
   // ── recovery ─────────────────────────────────────────────────────────────────
@@ -253,13 +281,13 @@ export class BotRunner {
           if (!(await this.#run(() => this.#agent.continue(), inbox))) break;
           continue;
         }
-        const [first, ...rest] = inbox;
-        if (!first) break;
-        const message = this.#userMessage(first);
-        // A prompt change goes in just before the message, in the same run, so it's saved with it.
+        if (!inbox.length) break;
+        // Everything waiting goes in together: one task for several jobs that ended while it was idle.
+        const messages = inbox.map((row) => this.#userMessage(row));
+        // A prompt change goes in just before the messages, in the same run, so it's saved with them.
         const update = this.#systemUpdate;
         this.#systemUpdate = undefined;
-        if (!(await this.#run(() => this.#agent.prompt(update ? [update, message] : message), rest))) break;
+        if (!(await this.#run(() => this.#agent.prompt(update ? [update, ...messages] : messages), [], inbox))) break;
       }
     } finally {
       this.#busy = false;
@@ -288,10 +316,11 @@ export class BotRunner {
   }
 
   /** One run of the agent loop, with retries. False if something unexpected broke and driving should stop. */
-  async #run(start: () => Promise<void>, queued: readonly InboxRow[]): Promise<boolean> {
+  async #run(start: () => Promise<void>, queued: readonly InboxRow[], prompted: readonly InboxRow[] = []): Promise<boolean> {
     this.#refreshTools();
     this.#agent.clearAllQueues();
     this.#delivered.clear();
+    for (const row of prompted) this.#delivered.add(row.requestId);
     for (const row of queued) this.#deliver(row);
     this.#abortRequested = false;
     this.#pendingError = undefined;

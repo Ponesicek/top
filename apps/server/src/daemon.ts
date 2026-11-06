@@ -95,6 +95,8 @@ type DaemonOptions = {
   files?: (bot: BotRow) => string;
   /** How long a tool call may run before it moves to the background (see jobs.ts). */
   foregroundMs?: number;
+  /** How long Top's own messages to an idle bot wait for others before starting a task (see runner.ts). */
+  gatherMs?: number;
 };
 
 export class Daemon {
@@ -135,7 +137,7 @@ export class Daemon {
   }
 
   #add(bot: BotRow): BotRunner {
-    const { thinking, sections } = this.#options;
+    const { thinking, sections, gatherMs } = this.#options;
     // A deleted bot may still be finishing a step; nothing it does after that is announced.
     const live = () => this.runners.get(bot.id) === runner;
     // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run. Any of
@@ -164,7 +166,7 @@ export class Daemon {
         },
         status: (id) => live() && this.#touch(id),
       },
-      { thinkingLevel: thinking ?? "off", ...(sections ? { sections: sections(bot) } : {}) },
+      { thinkingLevel: thinking ?? "off", ...(sections ? { sections: sections(bot) } : {}), ...(gatherMs !== undefined ? { gatherMs } : {}) },
     );
     this.runners.set(bot.id, runner);
     this.#summaries.set(bot.id, this.#summarize(bot.id));
@@ -218,6 +220,7 @@ export class Daemon {
     this.wakes.changed();
     for (const listener of this.#removedListeners) listener(id);
     this.#options.mcp?.botRemoved(id);
+    runner.close();
     runner.abort();
     this.jobs.stopAll(id);
     void runner
@@ -247,6 +250,7 @@ export class Daemon {
   /** Stop the clocks (the daemon is shutting down). */
   close() {
     this.wakes.close();
+    for (const runner of this.runners.values()) runner.close();
     for (const timer of this.#dirty.values()) clearTimeout(timer);
     this.#dirty.clear();
     this.closeFiles();

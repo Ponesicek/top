@@ -1,11 +1,12 @@
 /**
  * Tool calls that run too long go on in the background.
  *
- * Every tool call gets a time limit (`TOP_TOOL_FOREGROUND_MS`, 2 minutes by default). A call still
+ * Every tool call gets a time limit (`TOP_TOOL_FOREGROUND_MS`, 30 seconds by default). A call still
  * running when it's up becomes a background job: the model gets a result at once saying so, the task
  * goes on, and the call keeps running. When it ends, its result comes to the bot as a message (an
- * inbox row with source `job`), which starts a new task if the bot was idle. The bot needn't poll; it
- * can look at a job's output so far, wait for it, or stop it with Collar's `jobs` tool.
+ * inbox row with source `job`): mid-task it lands at the bot's next step, and if the bot is idle it
+ * starts a new task. The bot needn't poll; it can look at a job's output so far, wait for it, or stop
+ * it with Collar's `jobs` tool.
  *
  * - The user's Stop stops the bot's background jobs too: they're part of the task that was stopped.
  * - A job is in memory only. If the daemon restarts while one runs, the bot is told it was cut off and
@@ -18,7 +19,12 @@ import { type ToolContext, type ToolResult, type TopTool, text } from "./tools.t
 import { summarize } from "./wire.ts";
 
 /** How long a tool call may keep a task waiting before it moves to the background. */
-export const FOREGROUND_MS = Number(process.env.TOP_TOOL_FOREGROUND_MS ?? 120_000);
+export const FOREGROUND_MS = Number(process.env.TOP_TOOL_FOREGROUND_MS ?? 30_000);
+/**
+ * A call started straight in the background still gets this long: one that fails at once (a typo in
+ * a command, a server that refuses) comes back as its result, not as a job that ends a moment later.
+ */
+const STARTUP_GRACE_MS = 1_000;
 /** The most of a job's result that reaches the model; the end is kept, where a command's outcome is. */
 const RESULT_CHARS = 30_000;
 /** How long `stop` waits for a stopped job to wind down before answering. */
@@ -150,7 +156,8 @@ export class Jobs {
       .finally(() => clearTimeout(deadline));
 
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const first = await Promise.race([outcome, new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), options.foregroundMs)))]);
+    const waitMs = options.foregroundMs > 0 ? options.foregroundMs : STARTUP_GRACE_MS;
+    const first = await Promise.race([outcome, new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), waitMs)))]);
     clearTimeout(timer);
     if (first) {
       ctx.signal?.removeEventListener("abort", forward);

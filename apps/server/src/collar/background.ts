@@ -19,7 +19,7 @@ const parameters = Type.Object(
     arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Its arguments, as you'd pass them calling it directly." })),
     wait_seconds: Type.Optional(
       Type.Number({
-        description: `How long to wait for it before it goes on in the background. Default 0: start it and carry on. If it ends sooner you get its result here, like a direct call. At most ${MAX_WAIT_MS / 60_000} minutes.`,
+        description: `How long to wait for it before it goes on in the background. Default 0: start it and carry on (it still gets a second, so a call that fails at once answers here). If it ends sooner you get its result here, like a direct call. At most ${MAX_WAIT_MS / 60_000} minutes.`,
       }),
     ),
     stop_after_minutes: Type.Optional(
