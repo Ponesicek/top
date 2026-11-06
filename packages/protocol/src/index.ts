@@ -103,6 +103,54 @@ export type QueuedMessage = {
 /** Entries strictly between `after` and `before` exist on the daemon but were not sent. */
 export type Gap = { readonly after: Seq; readonly before: Seq };
 
+// ── MCP servers ──────────────────────────────────────────────────────────────────
+//
+// MCP servers are set up once on the daemon and then assigned to bots; a bot has none until it is
+// given one. Each is its own connection with its own credentials, so the same URL can be added twice
+// (two accounts). Every bot it's assigned to shares that one connection.
+
+export type McpServerId = number;
+
+/**
+ * An environment variable (stdio) or HTTP header whose value may be a secret. The daemon never sends
+ * values back: in a view `value` is absent. When saving, an absent `value` keeps the stored one.
+ */
+export type McpSecret = { readonly name: string; readonly value?: string };
+
+export type McpServerConfig =
+  /** A local program the daemon starts, speaking MCP over stdin/stdout. */
+  | { readonly transport: "stdio"; readonly command: string; readonly args: readonly string[]; readonly env: readonly McpSecret[] }
+  /** A remote server over Streamable HTTP. Without an `Authorization` header, it signs in with OAuth if it asks. */
+  | { readonly transport: "http"; readonly url: string; readonly headers: readonly McpSecret[] };
+
+export type McpServerState =
+  /** Starting the program or reaching the server. */
+  | "connecting"
+  /** Connected; its tools are offered to the bots it's assigned to. */
+  | "ready"
+  /** The server wants the user to sign in (OAuth) before it can be used. */
+  | "signin"
+  /** It couldn't be started or reached (`error` says why); it is retried now and then. */
+  | "failed";
+
+export type McpServerView = {
+  readonly id: McpServerId;
+  readonly name: string;
+  /** Secret values are left out. */
+  readonly config: McpServerConfig;
+  /** The bots that have this server's tools. */
+  readonly bots: readonly BotId[];
+  readonly state: McpServerState;
+  readonly error?: string;
+  /** The server's tool names, while it is connected. */
+  readonly tools: readonly string[];
+  /** It holds OAuth credentials (an account is signed in). */
+  readonly signedIn?: true;
+};
+
+/** The longest MCP server name `saveMcpServer` accepts. */
+export const MAX_MCP_NAME = 40;
+
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
 export type ClientFrame =
@@ -134,11 +182,25 @@ export type ClientFrame =
   | { readonly t: "createBot"; readonly req: number; readonly name: string; readonly description: string }
   /** Delete a bot and its whole transcript. Every client gets `botRemoved`. */
   | { readonly t: "deleteBot"; readonly req: number; readonly bot: BotId }
+  /** Add an MCP server (no `id`) or change one. Answers with its id; every client gets an `mcpServer` frame. */
+  | { readonly t: "saveMcpServer"; readonly req: number; readonly id?: McpServerId; readonly name: string; readonly config: McpServerConfig }
+  /** Remove an MCP server: its bots lose its tools, and its credentials are erased. */
+  | { readonly t: "deleteMcpServer"; readonly req: number; readonly id: McpServerId }
+  /** Give a bot an MCP server's tools (`on`), or take them away. They change from the bot's next message. */
+  | { readonly t: "assignMcp"; readonly req: number; readonly server: McpServerId; readonly bot: BotId; readonly on: boolean }
+  /** Start signing in to an MCP server. Answers with the page to open in a browser on the daemon's computer. */
+  | { readonly t: "mcpSignIn"; readonly req: number; readonly id: McpServerId }
+  /** Forget an MCP server's credentials, to sign in again (as another account). */
+  | { readonly t: "mcpSignOut"; readonly req: number; readonly id: McpServerId }
+  /** Reconnect to an MCP server now instead of waiting for the next retry. */
+  | { readonly t: "mcpRetry"; readonly req: number; readonly id: McpServerId }
   | { readonly t: "ping"; readonly at: number };
 
 export type HistoryResult = { readonly entries: readonly Entry[]; /** More entries remain in the asked range. */ readonly more: boolean };
 export type SubmitResult = { readonly duplicate: boolean };
 export type CreateBotResult = { readonly id: BotId };
+export type SaveMcpServerResult = { readonly id: McpServerId };
+export type McpSignInResult = { readonly url: string };
 
 /** The longest bot name and description `createBot` accepts. */
 export const MAX_BOT_NAME = 40;
@@ -155,6 +217,11 @@ export type ServerFrame =
   | { readonly t: "bot"; readonly bot: BotSummary }
   /** A bot was deleted, with its transcript. */
   | { readonly t: "botRemoved"; readonly bot: BotId }
+  /** Every MCP server, once per connection. */
+  | { readonly t: "mcpServers"; readonly servers: readonly McpServerView[] }
+  /** One MCP server was added or changed (its settings, bots, state or tools). */
+  | { readonly t: "mcpServer"; readonly server: McpServerView }
+  | { readonly t: "mcpServerRemoved"; readonly id: McpServerId }
   /**
    * The answer to `watch`: the entries the client is missing (ascending). When more were missing than
    * fit, the newest ones and a `gap`. `earlier`: older entries exist before the first one sent (only

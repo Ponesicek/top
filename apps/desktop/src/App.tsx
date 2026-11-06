@@ -12,6 +12,7 @@ import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { conversation, markSeen, top, useBot } from "./top.ts";
 import { readChatStyle, saveChatStyle, type ChatStyle } from "./chatStyle.ts";
+import { applyScale, canScale, readScale, stepScale, type Scale } from "./scale.ts";
 
 function readSelected(): string | undefined {
   try {
@@ -54,6 +55,11 @@ export function App() {
     setChatStyleState(style);
     saveChatStyle(style);
   }, []);
+  const [scale, setScaleState] = useState<Scale>(readScale);
+  const setScale = useCallback((next: Scale) => {
+    setScaleState(next);
+    applyScale(next);
+  }, []);
   const [creating, setCreating] = useState(false);
   const ready = useSyncExternalStore(top.subscribe, () => top.getSnapshot().ready);
 
@@ -84,6 +90,10 @@ export function App() {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         setHud((h) => !h);
+      } else if (canScale && (e.ctrlKey || e.metaKey) && !e.altKey && ["=", "+", "-", "0"].includes(e.key)) {
+        // Interface size, as in a browser (the window menu that did this is gone on Windows/Linux).
+        e.preventDefault();
+        setScale(e.key === "0" ? 1 : stepScale(scale, e.key === "-" ? -1 : 1));
       } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === ",") {
         e.preventDefault();
         setSettingsOpen(true);
@@ -108,7 +118,7 @@ export function App() {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [bot?.id, select, setHud, settingsOpen]);
+  }, [bot?.id, select, setHud, settingsOpen, scale, setScale]);
 
   // Expose a tiny driver for `pnpm bench`.
   useEffect(() => {
@@ -132,7 +142,7 @@ export function App() {
       <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
       <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
         {settingsOpen ? (
-          <Settings perfHud={hud} onPerfHudChange={setPerfHud} chatStyle={chatStyle} onChatStyleChange={setChatStyle} />
+          <Settings perfHud={hud} onPerfHudChange={setPerfHud} chatStyle={chatStyle} onChatStyleChange={setChatStyle} scale={scale} onScaleChange={setScale} />
         ) : bot && sync ? (
           <>
             <Header sync={sync} name={bot.name} />

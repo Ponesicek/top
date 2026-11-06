@@ -50,7 +50,8 @@ pnpm server:load     # 5 fake bots under load, one with a 10,000-message history
 pnpm server:fake     # fake bots that answer only when you message them
 ```
 
-The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "crash".
+The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "crash",
+or any MCP tool by its full name: `call github_work__search {"query": "top"}`.
 Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`, `--workspace`, `--allow-origin`, `--port`, `--host`,
 `--data`, `--reset`, `--no-compress`; fake only: `--load`, `--tools` (load includes tool calls),
 `--seed N`, `--tps N`.
@@ -60,7 +61,30 @@ description the bot reads as part of its instructions); hover over a bot to dele
 erases its conversation everywhere; files in its folder stay.
 
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
-`Esc` stops, `Ctrl+,` opens settings, `Ctrl+Shift+P` toggles the performance overlay.
+`Esc` stops, `Ctrl+,` opens settings, `Ctrl+=` / `Ctrl+-` / `Ctrl+0` change the interface size (also in
+settings), `Ctrl+Shift+P` toggles the performance overlay.
+
+### MCP servers
+
+Settings → **MCP servers** keeps every MCP connection in one place, on the daemon, and each bot gets
+only the ones you switch on for it (a new bot has none). A server is either a **URL** (Streamable
+HTTP) or a **command** the daemon runs (stdio, e.g. `npx -y @modelcontextprotocol/server-github`), with
+headers or environment variables for keys. Their values stay on the daemon: the app shows only the names.
+
+- **The same server twice** is two connections, each with its own credentials: add "GitHub (work)" and
+  "GitHub (personal)" and give each bot the account it should use. A server's tools are named after it
+  (`github_work__create_issue`), so a bot with both never mixes them up.
+- **Sign-in.** A URL without an `Authorization` header signs in with OAuth when the server asks: press
+  **Sign in**, and the browser comes back to the daemon on port `--port` + 1 (7358). That redirect goes
+  to 127.0.0.1, so finish it on the daemon's computer. To switch accounts, Edit → **Sign out**. With
+  two connections to one service, the browser may pick the account it's already signed in to; switch it
+  in the browser first.
+- **When tools change.** A bot picks up servers given to it, removed, or newly connected from its next
+  message. One connection serves every bot that has it; a server that fails is retried (2 s up to every
+  5 min), or right away with **Retry**.
+- **Crash safety.** A cut-off call to a tool the server marks read-only or idempotent runs again;
+  any other is reported as interrupted, like `bash`. So is one whose server hasn't reconnected yet when
+  the daemon restarts.
 
 ## Crash safety
 
@@ -147,5 +171,6 @@ Reconnect time depends mostly on where the client's retry backoff is when the da
   needs writing (or borrowing from pi's coding agent).
 - Push notifications when an answer lands, so the phone needn't stay connected.
 - The React Native app; a bigger local cache (IndexedDB / SQLite) there.
-- MCP tools, choosing a model per bot, renaming bots and editing their descriptions.
+- Choosing a model per bot, renaming bots and editing their descriptions.
+- MCP resources and prompts (only tools so far), and signing in to an MCP server from the phone.
 - Login and device pairing for the daemon itself.

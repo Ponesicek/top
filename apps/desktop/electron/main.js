@@ -12,16 +12,28 @@ const query = process.env.TOP_QUERY ?? "";
 /** `pnpm screenshot` captures the page without ever putting a window on screen. */
 const headless = process.env.TOP_BENCH === "screenshot";
 
+/**
+ * No title bar: the app's own header and sidebar are the window's drag areas. macOS keeps its traffic
+ * lights inset; Windows and Linux keep their window buttons, drawn over the header's top-right corner
+ * in the app's own background (`--background` in styles.css) and text colors.
+ */
+const overlay = () =>
+  nativeTheme.shouldUseDarkColors ? { color: "#141413", symbolColor: "#eeedea", height: 40 } : { color: "#fefdfc", symbolColor: "#1a1917", height: 40 };
+
 function createWindow() {
+  const mac = process.platform === "darwin";
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 420,
     minHeight: 420,
     show: false,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#131417" : "#ffffff",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#141413" : "#fefdfc",
+    titleBarStyle: mac ? "hiddenInset" : "hidden",
+    ...(mac ? {} : { titleBarOverlay: overlay() }),
     webPreferences: {
+      // Lets the page set its own zoom (the "Interface size" setting); see preload.cjs.
+      preload: join(here, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -48,6 +60,12 @@ function createWindow() {
         }
       });
     }
+  }
+  if (!mac) {
+    // The app follows the system's light/dark setting; so do the window buttons.
+    const recolor = () => !win.isDestroyed() && win.setTitleBarOverlay(overlay());
+    nativeTheme.on("updated", recolor);
+    win.on("closed", () => nativeTheme.off("updated", recolor));
   }
   if (!headless) win.once("ready-to-show", () => win.show());
   win.webContents.setWindowOpenHandler(({ url }) => {

@@ -24,6 +24,7 @@ import { PiAuthFile } from "./auth.ts";
 import { Daemon, defaultInstructions, ensureBots, purpose, type NewBot } from "./daemon.ts";
 import { BOT_NAMES, createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "./fake-bots.ts";
 import { startLoad } from "./load.ts";
+import { McpManager } from "./mcp.ts";
 import { seedHistory } from "./seed.ts";
 import { serve } from "./serve.ts";
 import { Store, type BotRow } from "./store.ts";
@@ -125,7 +126,10 @@ for (const bot of store.bots()) if (bot.model !== model) store.setModel(bot.id, 
 const seeded = store.bots()[0];
 if (Number(args.seed) > 0 && seeded) seedHistory(store, seeded.id, Number(args.seed));
 
-const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", newBot, ...(sections ? { sections } : {}) });
+// MCP servers set up in the app. Signing in to one redirects to the port after the daemon's.
+const mcp = new McpManager(store, { oauthPort: Number(args.port) + 1, clientInfo: { name: "Top", version: "0.0.0" } });
+mcp.start();
+const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", newBot, mcp, ...(sections ? { sections } : {}) });
 // Settle what the last process left unfinished (interrupted tool calls, half-done tasks), then run.
 await daemon.start();
 
@@ -138,6 +142,8 @@ console.log(`[top] listening on ws://${args.host}:${args.port}${args.load ? ` (s
 async function shutdown() {
   stopLoad();
   await server.close();
+  // Stops the MCP servers' programs too.
+  await mcp.close();
   store.close();
   process.exit(0);
 }

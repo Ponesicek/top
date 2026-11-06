@@ -1,7 +1,8 @@
 /**
  * Fake bots for development, tests and benchmarks: Pi AI's faux provider, scripted to answer in
  * markdown (prose, lists, code blocks, tables) at a fixed token rate, and to call tools when a message
- * asks for one ("deploy web", "email the team", "check status", "crash"). Everything above the model is
+ * asks for one ("deploy web", "email the team", "check status", "crash", or an MCP tool by name:
+ * `call echo__echo {"text": "hi"}`). Everything above the model is
  * the real daemon: storage, the agent loop, tools, recovery.
  */
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
@@ -89,10 +90,22 @@ function trailingToolResults(context: Context): ContextMessage[] {
 }
 
 let callCounter = 0;
-const call = (name: string, args: Record<string, string | number>) => fauxToolCall(name, args, { id: `call_${Date.now().toString(36)}_${++callCounter}` });
+type JsonObject = Parameters<typeof fauxToolCall>[1];
+const call = (name: string, args: JsonObject) => fauxToolCall(name, args, { id: `call_${Date.now().toString(36)}_${++callCounter}` });
 
-/** The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "crash". */
+/** The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "crash", "call server__tool {…}". */
 export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
+  // An MCP tool by its full name, with JSON arguments.
+  const named = /\bcall ([A-Za-z0-9-]+__[A-Za-z0-9_-]+)(?:\s+(\{.*\}))?/s.exec(prompt);
+  if (named) {
+    let args: JsonObject = {};
+    try {
+      args = named[2] ? (JSON.parse(named[2]) as JsonObject) : {};
+    } catch {
+      // not JSON: call it without arguments
+    }
+    return call(named[1]!, args);
+  }
   const text = prompt.toLowerCase();
   const secs = /(\d+(?:\.\d+)?)\s*s\b/.exec(text)?.[1];
   const seconds: Record<string, number> = secs === undefined ? {} : { seconds: Number(secs) };

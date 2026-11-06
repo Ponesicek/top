@@ -1,16 +1,12 @@
 import { useId, type ReactNode } from "react";
 import { CHAT_STYLES, type ChatStyle } from "../chatStyle.ts";
 import { cn } from "../lib/utils.ts";
-import { Switch } from "./ui/switch.tsx";
+import { canScale, SCALES, type Scale } from "../scale.ts";
+import { McpServers } from "./McpServers.tsx";
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-2.5">
-      <h2 className="m-0 px-1 text-micro font-semibold text-secondary-foreground">{title}</h2>
-      <div className="flex flex-col divide-y rounded-2xl bg-popover inset-ring inset-ring-border">{children}</div>
-    </section>
-  );
-}
+const SCALE_OPTIONS = SCALES.map((s) => ({ value: String(s), label: `${Math.round(s * 100)}%` }));
+import { Section } from "./SettingsSection.tsx";
+import { Switch } from "./ui/switch.tsx";
 
 /** One setting: a label and a line about it on the left, its control on the right. */
 function Row({ label, description, control }: { label: string; description?: ReactNode; control: (ids: { labelId: string; descriptionId: string }) => ReactNode }) {
@@ -66,16 +62,20 @@ export function Settings({
   onPerfHudChange,
   chatStyle,
   onChatStyleChange,
+  scale,
+  onScaleChange,
 }: {
   perfHud: boolean;
   onPerfHudChange: (on: boolean) => void;
   chatStyle: ChatStyle;
   onChatStyleChange: (style: ChatStyle) => void;
+  scale: Scale;
+  onScaleChange: (scale: Scale) => void;
 }) {
   return (
     <>
       <header className="h-15 flex-none border-b [scrollbar-gutter:stable] [-webkit-app-region:drag]">
-        <div className="mx-auto flex h-full max-w-170 items-center px-8">
+        <div className="clear-window-controls mx-auto flex h-full max-w-170 items-center pl-8 [--column:42.5rem]">
           <h1 className="m-0 text-base leading-tight font-heading tracking-name">Settings</h1>
         </div>
       </header>
@@ -87,7 +87,26 @@ export function Settings({
               description={CHAT_STYLES.find((s) => s.value === chatStyle)?.description}
               control={({ labelId }) => <Segmented value={chatStyle} options={CHAT_STYLES} onChange={onChatStyleChange} labelledBy={labelId} />}
             />
+            {canScale && (
+              <Row
+                label="Interface size"
+                description={
+                  <>
+                    Text and controls, all at once. <Kbd>Ctrl+=</Kbd> <Kbd>Ctrl+-</Kbd>
+                  </>
+                }
+                control={({ labelId }) => (
+                  <Segmented
+                    value={String(scale)}
+                    options={SCALE_OPTIONS}
+                    onChange={(value) => onScaleChange(Number(value) as Scale)}
+                    labelledBy={labelId}
+                  />
+                )}
+              />
+            )}
           </Section>
+          <McpServers />
           <Section title="Performance">
             <Row
               label="Performance overlay"

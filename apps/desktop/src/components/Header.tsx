@@ -29,7 +29,7 @@ export const Header = memo(function Header({ sync, name }: { sync: ConversationS
   const state = bot?.status ?? "idle";
   return (
     <header className="h-15 flex-none overflow-hidden border-b [scrollbar-gutter:stable] [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
-      <div className="mx-auto flex h-full max-w-220 items-center justify-between gap-4 px-8">
+      <div className="clear-window-controls mx-auto flex h-full max-w-220 items-center justify-between gap-4 pl-8 [--column:55rem]">
         <div className="flex min-w-0 items-center gap-2.75">
           <Avatar name={name} size="sm" />
           <div className="flex min-w-0 flex-col">

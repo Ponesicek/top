@@ -11,6 +11,8 @@
  * - `bots`: the roster, plus whether a task was running and how often the daemon restarted during it.
  *   A deleted bot is first marked `deleted` (it may still be winding down a step), then purged with
  *   everything it wrote; a restart purges any that were only marked.
+ * - `mcp_servers`: MCP connections set up in the app, with their secrets and OAuth credentials, and
+ *   `bot_mcp`: which bots use which. A bot has none until it is given one.
  */
 import { randomUUID } from "node:crypto";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -47,6 +49,15 @@ export type InboxRow = {
   readonly mode: "steer" | "followUp";
   readonly clientId: string | null;
   readonly at: number;
+};
+
+export type McpServerRow = {
+  readonly id: number;
+  readonly name: string;
+  /** JSON: the protocol's `McpServerConfig`, secret values included. */
+  readonly config: string;
+  /** JSON: pi-mcp's `McpOAuthState`, once the server signed in with OAuth. */
+  readonly oauth: string | null;
 };
 
 export type ToolCallRow = { readonly name: string; readonly args: string; readonly startedAt: number; readonly finishedAt: number | null };
@@ -97,6 +108,17 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   finished_at INTEGER,
   PRIMARY KEY (assistant_seq, tool_call_id)
 );
+CREATE TABLE IF NOT EXISTS mcp_servers (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  config TEXT NOT NULL,
+  oauth TEXT
+);
+CREATE TABLE IF NOT EXISTS bot_mcp (
+  bot INTEGER NOT NULL REFERENCES bots(id),
+  server INTEGER NOT NULL REFERENCES mcp_servers(id),
+  PRIMARY KEY (bot, server)
+);
 `;
 
 type Row = Record<string, unknown>;
@@ -124,6 +146,10 @@ function inboxOf(row: Row): InboxRow {
     clientId: (row.client_id as string | null) ?? null,
     at: Number(row.at),
   };
+}
+
+function mcpServerOf(row: Row): McpServerRow {
+  return { id: Number(row.id), name: String(row.name), config: String(row.config), oauth: (row.oauth as string | null) ?? null };
 }
 
 const VISIBLE = "kind != 'system'";
@@ -220,13 +246,14 @@ export class Store {
     this.transaction(() => {
       this.#db.prepare("UPDATE bots SET deleted = 1, run_active = 0, name = ? WHERE id = ?").run(`deleted:${bot}:${randomUUID()}`, bot);
       this.#db.prepare("DELETE FROM inbox WHERE bot = ?").run(bot);
+      this.#db.prepare("DELETE FROM bot_mcp WHERE bot = ?").run(bot);
     });
   }
 
   /** Remove a bot and everything it wrote. */
   purgeBot(bot: number) {
     this.transaction(() => {
-      for (const table of ["entries", "inbox", "tool_calls"]) this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
+      for (const table of ["entries", "inbox", "tool_calls", "bot_mcp"]) this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
       this.#db.prepare("DELETE FROM bots WHERE id = ?").run(bot);
     });
   }
@@ -263,6 +290,53 @@ export class Store {
       runActive: Number(row.run_active) === 1,
       restarts: Number(row.restarts),
     };
+  }
+
+  // ── MCP servers ──────────────────────────────────────────────────────────────
+
+  mcpServers(): McpServerRow[] {
+    return this.#db.prepare("SELECT * FROM mcp_servers ORDER BY id").all().map(mcpServerOf);
+  }
+
+  mcpServer(id: number): McpServerRow | undefined {
+    const row = this.#db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(id);
+    return row ? mcpServerOf(row) : undefined;
+  }
+
+  createMcpServer(name: string, config: string): number {
+    return Number(this.#db.prepare("INSERT INTO mcp_servers (name, config) VALUES (?, ?)").run(name, config).lastInsertRowid);
+  }
+
+  /** Change a server's name and settings. `resetOAuth` drops its credentials (they were for another URL). */
+  updateMcpServer(id: number, name: string, config: string, resetOAuth: boolean) {
+    this.#db.prepare(`UPDATE mcp_servers SET name = ?, config = ?${resetOAuth ? ", oauth = NULL" : ""} WHERE id = ?`).run(name, config, id);
+  }
+
+  setMcpOAuth(id: number, oauth: string | null) {
+    this.#db.prepare("UPDATE mcp_servers SET oauth = ? WHERE id = ?").run(oauth, id);
+  }
+
+  deleteMcpServer(id: number) {
+    this.transaction(() => {
+      this.#db.prepare("DELETE FROM bot_mcp WHERE server = ?").run(id);
+      this.#db.prepare("DELETE FROM mcp_servers WHERE id = ?").run(id);
+    });
+  }
+
+  /** The bots (not deleted) that use each server: server id → bot ids. */
+  mcpAssignments(): Map<number, number[]> {
+    const map = new Map<number, number[]>();
+    const rows = this.#db.prepare("SELECT bot, server FROM bot_mcp JOIN bots ON bots.id = bot_mcp.bot WHERE bots.deleted = 0 ORDER BY bot").all();
+    for (const row of rows) {
+      const server = Number(row.server);
+      map.set(server, [...(map.get(server) ?? []), Number(row.bot)]);
+    }
+    return map;
+  }
+
+  assignMcp(server: number, bot: number, on: boolean) {
+    if (on) this.#db.prepare("INSERT OR IGNORE INTO bot_mcp (bot, server) VALUES (?, ?)").run(bot, server);
+    else this.#db.prepare("DELETE FROM bot_mcp WHERE bot = ? AND server = ?").run(bot, server);
   }
 
   // ── entries ──────────────────────────────────────────────────────────────────

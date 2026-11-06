@@ -9,14 +9,30 @@
  * Retain only the bots on screen when data is metered (a phone on cellular): the sidebar summaries
  * cover the rest, and a retained bot catches up from what it holds when it is opened.
  */
-import type { BotId, BotSummary, CreateBotResult, ServerFrame } from "@top/protocol";
+import type { BotId, BotSummary, CreateBotResult, McpServerConfig, McpServerId, McpServerView, McpSignInResult, SaveMcpServerResult, ServerFrame } from "@top/protocol";
 import { Connection, type ConnectionStatus } from "./connection.ts";
 import { ConversationSync } from "./conversation.ts";
 
 export * from "./conversation.ts";
 export { Connection, OfflineError, TimeoutError, type ConnectionStatus } from "./connection.ts";
-export { MAX_BOT_DESCRIPTION, MAX_BOT_NAME } from "@top/protocol";
-export type { BotId, BotStatus, BotSummary, Entry, Gap, QueuedMessage, Seq, ToolCallView, ToolOutcome, WhenBusy } from "@top/protocol";
+export { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, MAX_MCP_NAME } from "@top/protocol";
+export type {
+  BotId,
+  BotStatus,
+  BotSummary,
+  Entry,
+  Gap,
+  McpSecret,
+  McpServerConfig,
+  McpServerId,
+  McpServerState,
+  McpServerView,
+  QueuedMessage,
+  Seq,
+  ToolCallView,
+  ToolOutcome,
+  WhenBusy,
+} from "@top/protocol";
 
 export type TopClientOptions = {
   readonly url: string;
@@ -38,6 +54,8 @@ export type TopSnapshot = {
    */
   readonly serverId: string | undefined;
   readonly bots: readonly BotSummary[];
+  /** The MCP servers set up on the daemon (empty until it says). */
+  readonly mcpServers: readonly McpServerView[];
   /** Set once the first roster arrived; the UI can render from cache before that. */
   readonly ready: boolean;
 };
@@ -52,7 +70,7 @@ export class TopClient {
 
   constructor(options: TopClientOptions) {
     this.clientId = options.clientId ?? `client-${Math.random().toString(36).slice(2, 10)}`;
-    this.#snapshot = { connection: "connecting", rttMs: undefined, attempt: 0, serverId: options.serverId, bots: [], ready: false };
+    this.#snapshot = { connection: "connecting", rttMs: undefined, attempt: 0, serverId: options.serverId, bots: [], mcpServers: [], ready: false };
     this.#connection = new Connection({
       url: options.url,
       clientId: this.clientId,
@@ -110,6 +128,41 @@ export class TopClient {
     await this.#connection.request({ t: "deleteBot", bot: id });
   }
 
+  /**
+   * Add an MCP server (no `id`) or change one. A secret without a `value` keeps the stored one.
+   * Rejects with a message for the user when the daemon refuses it (a taken name, a bad URL).
+   */
+  async saveMcpServer(id: McpServerId | undefined, name: string, config: McpServerConfig): Promise<McpServerId> {
+    const result = await this.#connection.request<SaveMcpServerResult>({ t: "saveMcpServer", ...(id === undefined ? {} : { id }), name, config });
+    return result.id;
+  }
+
+  /** Remove an MCP server; its bots lose its tools and its credentials are erased. */
+  async deleteMcpServer(id: McpServerId): Promise<void> {
+    await this.#connection.request({ t: "deleteMcpServer", id });
+  }
+
+  /** Give a bot an MCP server's tools, or take them away. */
+  async assignMcp(server: McpServerId, bot: BotId, on: boolean): Promise<void> {
+    await this.#connection.request({ t: "assignMcp", server, bot, on });
+  }
+
+  /** Start signing in to an MCP server: resolves with the page to open (in a browser on the daemon's computer). */
+  async mcpSignIn(id: McpServerId): Promise<string> {
+    const { url } = await this.#connection.request<McpSignInResult>({ t: "mcpSignIn", id });
+    return url;
+  }
+
+  /** Forget an MCP server's credentials, to sign in as someone else. */
+  async mcpSignOut(id: McpServerId): Promise<void> {
+    await this.#connection.request({ t: "mcpSignOut", id });
+  }
+
+  /** Reconnect to an MCP server now. */
+  async mcpRetry(id: McpServerId): Promise<void> {
+    await this.#connection.request({ t: "mcpRetry", id });
+  }
+
   conversation(id: BotId): ConversationSync {
     let conversation = this.#conversations.get(id);
     if (!conversation) {
@@ -152,6 +205,18 @@ export class TopClient {
         this.#publish({ bots: i < 0 ? [...bots, frame.bot] : bots.map((b, j) => (j === i ? frame.bot : b)) });
         return;
       }
+      case "mcpServers":
+        this.#publish({ mcpServers: frame.servers });
+        return;
+      case "mcpServer": {
+        const servers = this.#snapshot.mcpServers;
+        const i = servers.findIndex((s) => s.id === frame.server.id);
+        this.#publish({ mcpServers: i < 0 ? [...servers, frame.server] : servers.map((s, j) => (j === i ? frame.server : s)) });
+        return;
+      }
+      case "mcpServerRemoved":
+        this.#publish({ mcpServers: this.#snapshot.mcpServers.filter((s) => s.id !== frame.id) });
+        return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);
         return;

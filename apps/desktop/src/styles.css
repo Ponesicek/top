@@ -581,3 +581,16 @@
     color: var(--color-destructive-foreground);
   }
 }
+
+/*
+ * Windows and Linux draw the window buttons over the top-right corner (see electron/main.js).
+ * `--titlebar-inset` is their width (0 in a browser and on macOS). A header with this class keeps
+ * its content clear of them: its own 2rem of side padding, or more when its centered column (as wide
+ * as `--column`) reaches under the buttons.
+ */
+:root {
+  --titlebar-inset: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+}
+.clear-window-controls {
+  padding-right: max(2rem, calc(var(--titlebar-inset) + 0.5rem - max(0px, (100% - var(--column)) / 2)));
+}

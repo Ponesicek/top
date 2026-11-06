@@ -56,7 +56,9 @@ export class BotRunner {
   readonly id: number;
   readonly name: string;
   readonly #store: Store;
-  readonly #tools: Map<string, TopTool>;
+  /** The bot's tools now: its own, plus those of the MCP servers it's been given that are connected. */
+  readonly #toolSource: () => readonly TopTool[];
+  #tools = new Map<string, TopTool>();
   readonly #events: RunnerEvents;
   readonly #agent: Agent;
 
@@ -76,32 +78,26 @@ export class BotRunner {
   /** Prompt sections that changed since the transcript last said; saved with the next message taken. */
   #systemUpdate: SystemMessage | undefined;
 
-  constructor(bot: BotRow, store: Store, models: Models, tools: readonly TopTool[], events: RunnerEvents, options: RunnerOptions = {}) {
+  /**
+   * `tools` is asked again at the start of every run, so tools that come and go (an MCP server given
+   * to the bot, or one that connected) reach the model from its next message. The Agent declares the
+   * difference in a system message, which is saved like any other.
+   */
+  constructor(bot: BotRow, store: Store, models: Models, tools: () => readonly TopTool[], events: RunnerEvents, options: RunnerOptions = {}) {
     const thinkingLevel = options.thinkingLevel ?? "off";
     this.id = bot.id;
     this.name = bot.name;
     this.#store = store;
     this.#events = events;
-    this.#tools = new Map(tools.map((tool) => [tool.name, tool]));
+    this.#toolSource = tools;
     // Split at the first slash only: model ids can contain one too (OpenRouter's "anthropic/claude-…").
     const slash = bot.model.indexOf("/");
     const model = models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
     if (!model) throw new Error(`Bot ${bot.name}: unknown model ${bot.model}`);
 
-    const agentTools: AgentTool<any>[] = tools.map((tool) => ({
-      name: tool.name,
-      label: tool.label,
-      description: tool.description,
-      parameters: tool.parameters,
-      replay: tool.replay ?? "never",
-      ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
-      ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
-      execute: (toolCallId, params, signal) => tool.run(params as Record<string, unknown>, { key: this.#key(this.#assistantSeq, toolCallId), bot: this.id, signal }),
-    }));
-
     this.#agent = new Agent({
       // The stored transcript starts with the bot's system message, so the Agent adds none of its own.
-      initialState: { model, thinkingLevel, tools: agentTools, messages: store.context(bot.id).map((e) => e.message as AgentMessage) },
+      initialState: { model, thinkingLevel, tools: [], messages: store.context(bot.id).map((e) => e.message as AgentMessage) },
       streamFn: models.streamSimple.bind(models),
       identity: { attribution: null },
       beforeToolCall: async ({ toolCall, args }) => {
@@ -115,6 +111,7 @@ export class BotRunner {
       finishTurn: async () => (this.#abortRequested ? { action: "end" } : undefined),
     });
     this.#agent.subscribe((event) => this.#onEvent(event));
+    this.#refreshTools();
 
     const current = getCurrentSystemMessage(this.#agent.state.messages as never)?.sections ?? {};
     const changed = Object.entries(options.sections ?? {}).filter(([name, text]) => current[name] !== text);
@@ -270,8 +267,27 @@ export class BotRunner {
     }
   }
 
+  /** Take the bot's tools as they are now. Between runs only: a run keeps the tools it started with. */
+  #refreshTools() {
+    const tools = this.#toolSource();
+    this.#tools = new Map(tools.map((tool) => [tool.name, tool]));
+    this.#agent.state.tools = tools.map(
+      (tool): AgentTool<any> => ({
+        name: tool.name,
+        label: tool.label,
+        description: tool.description,
+        parameters: tool.parameters,
+        replay: tool.replay ?? "never",
+        ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
+        ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
+        execute: (toolCallId, params, signal) => tool.run(params as Record<string, unknown>, { key: this.#key(this.#assistantSeq, toolCallId), bot: this.id, signal }),
+      }),
+    );
+  }
+
   /** One run of the agent loop, with retries. False if something unexpected broke and driving should stop. */
   async #run(start: () => Promise<void>, queued: readonly InboxRow[]): Promise<boolean> {
+    this.#refreshTools();
     this.#agent.clearAllQueues();
     this.#delivered.clear();
     for (const row of queued) this.#deliver(row);

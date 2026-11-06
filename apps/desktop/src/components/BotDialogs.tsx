@@ -6,7 +6,7 @@ import { AlertDialog, AlertDialogClose, AlertDialogPopup, Dialog, DialogBody, Di
 import { Field, FieldHint, FieldLabel, Input, Textarea } from "./ui/field.tsx";
 
 /** What went wrong, in words for the user. The daemon's own refusals already are ("There's already a bot named Atlas."). */
-function messageOf(error: unknown): string {
+export function messageOf(error: unknown): string {
   if (error instanceof OfflineError) return "Not connected to the Top daemon. Try again once it's back.";
   if (error instanceof TimeoutError) return "The daemon didn't answer. Try again.";
   const message = error instanceof Error ? error.message : String(error);

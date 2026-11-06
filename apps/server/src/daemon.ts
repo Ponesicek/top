@@ -7,6 +7,7 @@ import { createInitialSystemMessage, toToolDeclaration, type Models } from "@ear
 import { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type BotSummary, type WhenBusy } from "@top/protocol";
 import { BotRunner, type RunnerOptions } from "./runner.ts";
 import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
+import type { McpManager } from "./mcp.ts";
 import type { TopTool } from "./tools.ts";
 import { textOf } from "./wire.ts";
 
@@ -81,7 +82,13 @@ export function ensureBots(store: Store, names: readonly string[], newBot: NewBo
 }
 
 type Tools = readonly TopTool[] | ((bot: BotRow) => readonly TopTool[]);
-type DaemonOptions = { thinking?: ThinkingLevel; sections?: (bot: BotRow) => RunnerOptions["sections"]; newBot?: NewBot };
+type DaemonOptions = {
+  thinking?: ThinkingLevel;
+  sections?: (bot: BotRow) => RunnerOptions["sections"];
+  newBot?: NewBot;
+  /** MCP servers set up in the app; a bot gets the tools of those it has been given. */
+  mcp?: McpManager;
+};
 
 export class Daemon {
   readonly store: Store;
@@ -112,7 +119,11 @@ export class Daemon {
     const { thinking, sections } = this.#options;
     // A deleted bot may still be finishing a step; nothing it does after that is announced.
     const live = () => this.runners.get(bot.id) === runner;
-    const runner: BotRunner = new BotRunner(bot, this.store, this.#models, typeof this.#tools === "function" ? this.#tools(bot) : this.#tools, {
+    // The bot's own tools are fixed; MCP tools are asked for again at each run.
+    const own = typeof this.#tools === "function" ? this.#tools(bot) : this.#tools;
+    const mcp = this.#options.mcp;
+    const tools = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
+    const runner: BotRunner = new BotRunner(bot, this.store, this.#models, tools, {
       entry: (entry) => {
         if (!live()) return;
         for (const listener of this.#entryListeners) listener(entry);
@@ -160,6 +171,7 @@ export class Daemon {
     this.#dirty.delete(id);
     this.store.markDeleted(id);
     for (const listener of this.#removedListeners) listener(id);
+    this.#options.mcp?.botRemoved(id);
     runner.abort();
     void runner
       .waitForIdle()
@@ -174,6 +186,11 @@ export class Daemon {
       if (report) console.log(`[top] ${runner.name}: ${report}`);
     }
     for (const runner of this.runners.values()) runner.start();
+  }
+
+  /** The MCP servers set up in the app, when this daemon has them. */
+  get mcp(): McpManager | undefined {
+    return this.#options.mcp;
   }
 
   get bots(): BotSummary[] {

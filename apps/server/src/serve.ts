@@ -46,6 +46,8 @@ class ClientConnection {
     socket.on("close", () => this.close());
     send(socket, { t: "welcome", serverId: daemon.store.id, protocol: PROTOCOL_VERSION });
     send(socket, { t: "bots", bots: daemon.bots });
+    const mcp = daemon.mcp;
+    if (mcp) send(socket, { t: "mcpServers", servers: mcp.views() });
     this.#unsubscribe = [
       daemon.onBot((bot) => send(socket, { t: "bot", bot })),
       daemon.onBotRemoved((bot) => {
@@ -57,6 +59,9 @@ class ClientConnection {
         const entry = toWire(stored);
         if (entry) send(socket, { t: "entry", entry });
       }),
+      ...(mcp
+        ? [mcp.onChange((server) => send(socket, { t: "mcpServer", server })), mcp.onRemoved((id) => send(socket, { t: "mcpServerRemoved", id }))]
+        : []),
       daemon.onInbox((bot) => {
         if (this.#watching.has(bot)) send(socket, { t: "inbox", bot, items: inboxOf(daemon, bot) });
       }),
@@ -134,14 +139,50 @@ class ClientConnection {
           this.#daemon.deleteBot(frame.bot);
           return null;
         });
+      case "saveMcpServer":
+        return this.#answer(frame.req, () => ({ id: this.#mcp().save(frame.id, frame.name, frame.config) }));
+      case "deleteMcpServer":
+        return this.#answer(frame.req, () => {
+          this.#mcp().delete(frame.id);
+          return null;
+        });
+      case "assignMcp":
+        return this.#answer(frame.req, () => {
+          if (!this.#daemon.runners.has(frame.bot)) throw new Error(`Unknown bot ${frame.bot}`);
+          this.#mcp().assign(frame.server, frame.bot, frame.on === true);
+          return null;
+        });
+      case "mcpSignIn":
+        return this.#answer(frame.req, async () => ({ url: await this.#mcp().signIn(frame.id) }));
+      case "mcpSignOut":
+        return this.#answer(frame.req, () => {
+          this.#mcp().signOut(frame.id);
+          return null;
+        });
+      case "mcpRetry":
+        return this.#answer(frame.req, () => {
+          this.#mcp().retry(frame.id);
+          return null;
+        });
     }
   }
 
+  #mcp() {
+    const mcp = this.#daemon.mcp;
+    if (!mcp) throw new Error("This daemon has no MCP servers.");
+    return mcp;
+  }
+
+  /** A synchronous answer goes out in the same tick, before anything the request set off. */
   #answer(req: number, run: () => unknown) {
-    try {
-      send(this.socket, { t: "result", req, ok: true, value: run() });
-    } catch (error) {
+    const fail = (error: unknown) =>
       send(this.socket, { t: "result", req, ok: false, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+    try {
+      const value = run();
+      if (value instanceof Promise) value.then((v) => send(this.socket, { t: "result", req, ok: true, value: v }), fail);
+      else send(this.socket, { t: "result", req, ok: true, value });
+    } catch (error) {
+      fail(error);
     }
   }
 

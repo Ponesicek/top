@@ -436,3 +436,49 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   cleanup.push(() => d.close());
   assert.equal((await until(d.subscribe, d.getSnapshot, (s) => s.ready, "the empty roster")).bots.length, 0);
 });
+
+test("MCP servers set up from the app: every client sees them, bots get them only when assigned", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const a = await connect(daemon, 0);
+  const b = await connect(daemon, 0);
+  const echo = resolve(import.meta.dirname, "../../../apps/server/test/fixtures/echo-mcp.mjs");
+  const config = { transport: "stdio" as const, command: process.execPath, args: [echo], env: [{ name: "TOKEN", value: "s3cret" }] };
+
+  const id = await a.top.saveMcpServer(undefined, "Echo", config);
+  await assert.rejects(a.top.saveMcpServer(undefined, "echo", config), /already a server named Echo/);
+  const ready = (top: TopClient) =>
+    until(top.subscribe, () => top.getSnapshot().mcpServers.find((s) => s.id === id), (s) => s?.state === "ready", "the server connected");
+  const seen = await ready(b.top);
+  assert.deepEqual(seen!.tools, ["echo", "env", "fail"]);
+  assert.deepEqual(seen!.bots, [], "no bot has it until it's given one");
+  assert.deepEqual(seen!.config, { ...config, env: [{ name: "TOKEN" }] }, "the secret stays on the daemon");
+
+  // Before it's assigned, the bot can't call it.
+  a.bot.send('call echo__echo {"text": "before"}');
+  let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "assistant").length >= 2, "the unassigned call");
+  assert.match(ofKind(s, "tool").at(-1)!.text, /not found/i);
+
+  await a.top.assignMcp(id, a.id, true);
+  await until(b.top.subscribe, () => b.top.getSnapshot().mcpServers.find((s) => s.id === id)?.bots, (bots) => bots?.[0] === a.id, "the assignment on the other client");
+  await assert.rejects(a.top.assignMcp(id, 9_999, true), /Unknown bot/);
+
+  // From its next message, it can: the call goes through the agent loop to the server and back.
+  a.bot.send('call echo__echo {"text": "after"}');
+  s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "assistant").length >= 4, "the assigned call");
+  const result = ofKind(s, "tool").at(-1)!;
+  assert.equal(result.name, "echo__echo");
+  assert.equal(result.text, "echo: after");
+  assert.equal(result.isError, undefined);
+
+  // Assignments are kept across a restart, and the server reconnects by itself.
+  await daemon.kill();
+  await daemon.start();
+  const c = new TopClient({ url: daemon.url });
+  cleanup.push(() => c.close());
+  const after = await ready(c);
+  assert.deepEqual(after!.bots, [a.id]);
+
+  await c.deleteMcpServer(id);
+  await until(c.subscribe, c.getSnapshot, (s) => s.mcpServers.length === 0, "the server gone");
+});
