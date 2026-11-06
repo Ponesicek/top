@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils.ts";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full font-semibold text-small leading-none outline-none transition-[background-color,color,opacity,box-shadow,scale] duration-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-default [&_svg]:pointer-events-none [&_svg]:shrink-0 [-webkit-app-region:no-drag]",
+  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full font-semibold text-small leading-none outline-none transition duration-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-default [&_svg]:pointer-events-none [&_svg]:shrink-0 [-webkit-app-region:no-drag]",
   {
     defaultVariants: { size: "default", variant: "default" },
     variants: {
@@ -12,19 +12,19 @@ const buttonVariants = cva(
         default: "bg-primary text-primary-foreground not-disabled:hover:bg-primary-hover disabled:bg-secondary disabled:text-muted-foreground",
         destructive: "bg-destructive text-white not-disabled:hover:bg-destructive-foreground disabled:bg-secondary disabled:text-muted-foreground",
         outline:
-          "text-foreground shadow-[inset_0_0_0_1px_var(--color-input)] not-disabled:hover:bg-secondary disabled:bg-secondary disabled:text-muted-foreground disabled:shadow-none",
+          "text-foreground inset-ring inset-ring-input not-disabled:hover:bg-secondary disabled:bg-secondary disabled:text-muted-foreground disabled:shadow-none",
         ghost: "text-muted-foreground hover:bg-foreground/7 hover:text-foreground",
         "ghost-destructive": "text-muted-foreground hover:bg-destructive-surface hover:text-destructive-foreground",
         stop: "bg-destructive-surface text-destructive-foreground hover:bg-destructive hover:text-white",
-        link: "rounded-none font-[550] text-meta leading-[1.4] text-link not-disabled:hover:underline underline-offset-2 disabled:text-muted-foreground",
+        link: "rounded-none font-label text-meta leading-snug text-link not-disabled:hover:underline underline-offset-2 disabled:text-muted-foreground",
       },
       size: {
         default: "h-9 pr-3.5 pl-3",
         wide: "h-9 px-4",
-        xs: "h-6.5 gap-[5px] px-1.5 text-micro",
+        xs: "h-6.5 gap-1.25 px-1.5 text-micro",
         icon: "size-9 active:not-disabled:scale-94",
         "icon-xs": "size-6.5",
-        "icon-row": "h-5.5 w-6 rounded-[7px]",
+        "icon-row": "h-5.5 w-6 rounded-md",
         link: "h-auto p-0",
       },
     },

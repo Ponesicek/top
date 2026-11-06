@@ -26,8 +26,8 @@ export function botHue(name: string): keyof typeof HUES {
 }
 
 const SIZES = {
-  sm: "size-7 text-[12.5px]",
-  md: "size-9 text-[15px]",
+  sm: "size-7 text-meta",
+  md: "size-9 text-body",
   lg: "size-14 text-[22px]",
 } as const;
 
@@ -39,7 +39,7 @@ export const Avatar = memo(function Avatar({ name, status, size = "md", title, c
   return (
     <span
       className={cn(
-        "relative grid flex-none place-items-center rounded-full bg-linear-145/srgb from-(--h1) to-(--h2) leading-none font-[650] tracking-[-0.01em] text-white text-shadow-[0_1px_1px_rgba(0,0,0,0.18)] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14),inset_0_1px_0_rgba(255,255,255,0.2)] select-none [filter:var(--avatar-filter)]",
+        "relative grid flex-none place-items-center rounded-full bg-linear-145/srgb from-(--h1) to-(--h2) leading-none font-heading tracking-name text-white text-shadow-[0_1px_1px_rgba(0,0,0,0.18)] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14),inset_0_1px_0_rgba(255,255,255,0.2)] select-none [filter:var(--avatar-filter)]",
         SIZES[size],
         HUES[botHue(name)],
         className,

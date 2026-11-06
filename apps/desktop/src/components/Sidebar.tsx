@@ -53,7 +53,7 @@ const BotItem = memo(function BotItem({
     <div className="group/bot relative flex flex-col">
       <button
         className={cn(
-          "flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-[9px] text-left transition-[background-color,box-shadow] duration-90 hover:bg-foreground/5 narrow:justify-center",
+          "flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-2.25 text-left transition duration-90 hover:bg-foreground/5 narrow:justify-center",
           selected ? "bg-sidebar-row-selected shadow-row-selected [--avatar-ring:var(--color-sidebar-row-selected)] hover:bg-sidebar-row-selected" : "[--avatar-ring:var(--color-sidebar)]",
         )}
         onClick={() => onSelect(bot.id)}
@@ -63,11 +63,11 @@ const BotItem = memo(function BotItem({
         <Avatar name={bot.name} status={bot.status} />
         <span className="flex min-w-0 flex-1 flex-col gap-px narrow:hidden">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={cn("min-w-0 flex-1 truncate text-[15px] leading-[1.35] tracking-[-0.005em]", fresh ? "font-[650]" : "font-[550]")}>{bot.name}</span>
+            <span className={cn("min-w-0 flex-1 truncate text-body leading-snug tracking-name", fresh ? "font-heading" : "font-label")}>{bot.name}</span>
             <span
               className={cn(
-                "inline-flex flex-none items-center gap-1.5 text-meta leading-none font-[550] group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible",
-                failed ? "rounded-full bg-destructive-surface py-[3px] pr-[7px] pl-1.5 text-destructive-foreground" : "text-muted-foreground",
+                "inline-flex flex-none items-center gap-1.5 text-meta leading-none font-label group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible",
+                failed ? "rounded-full bg-destructive-surface py-0.75 pr-1.75 pl-1.5 text-destructive-foreground" : "text-muted-foreground",
               )}
               title={fresh ? "Idle · new messages" : statusLabel(bot)}
             >
@@ -80,7 +80,7 @@ const BotItem = memo(function BotItem({
               </Badge>
             )}
           </span>
-          <span className={cn("truncate text-small leading-[1.4]", fresh && bot.preview ? "text-secondary-foreground" : "text-muted-foreground")}>{bot.preview || "No messages yet"}</span>
+          <span className={cn("truncate text-small leading-snug", fresh && bot.preview ? "text-secondary-foreground" : "text-muted-foreground")}>{bot.preview || "No messages yet"}</span>
         </span>
       </button>
       <Tooltip content={`Delete ${bot.name}`} side="right">
@@ -88,7 +88,7 @@ const BotItem = memo(function BotItem({
           data-delete
           variant="ghost-destructive"
           size="icon-row"
-          className="absolute top-[9px] right-2 opacity-0 group-hover/bot:opacity-100 focus-visible:opacity-100 narrow:hidden"
+          className="absolute top-2.25 right-2 opacity-0 group-hover/bot:opacity-100 focus-visible:opacity-100 narrow:hidden"
           onClick={() => onDelete(bot)}
           aria-label={`Delete ${bot.name}`}
         >
@@ -129,7 +129,7 @@ export function Sidebar({
   return (
     <aside className="flex min-w-0 flex-col border-r bg-sidebar [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
       <div className="flex h-15 flex-none items-center justify-between pr-4 pl-4.5 narrow:justify-center narrow:p-0">
-        <span className="inline-flex items-center gap-[9px] text-[17px] leading-none font-semibold tracking-[-0.03em] narrow:gap-0 narrow:text-[0px]" aria-label="Top">
+        <span className="inline-flex items-center gap-2.25 text-[17px] leading-none font-semibold tracking-[-0.03em] narrow:gap-0 narrow:text-[0px]" aria-label="Top">
           {/* The mark is a shell prompt, "›_": the app is named after the Unix `top`. */}
           <span className="relative size-6 rounded-md bg-linear-145/srgb from-[#ff9a5c] to-[#ec4d16] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.2)]" aria-hidden>
             <svg className="block" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">

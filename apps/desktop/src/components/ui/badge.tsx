@@ -14,10 +14,10 @@ const badgeVariants = cva("inline-flex shrink-0 items-center whitespace-nowrap r
       destructive: "bg-destructive-surface text-destructive-foreground",
     },
     size: {
-      default: "gap-1 px-[7px] py-[3px] text-micro",
+      default: "gap-1 px-1.75 py-0.75 text-micro",
       md: "gap-1 px-2 py-1 text-micro",
-      lg: "gap-1.5 py-[5px] pr-[9px] pl-2 text-micro",
-      xl: "gap-1.5 px-2.5 py-1.5 font-[550] text-meta leading-none",
+      lg: "gap-1.5 py-1.25 pr-2.25 pl-2 text-micro",
+      xl: "gap-1.5 px-2.5 py-1.5 font-label text-meta leading-none",
     },
   },
 });

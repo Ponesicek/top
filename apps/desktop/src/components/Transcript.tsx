@@ -80,9 +80,9 @@ function lastTime(rows: readonly Row[], index: number): number | undefined {
 const USER_STATE: Record<NonNullable<Extract<Row, { kind: "user" }>["state"]>, { label: string; bubble?: string }> = {
   sending: { label: "Sending…", bubble: "opacity-65" },
   accepted: { label: "Sent" },
-  queued: { label: "Queued", bubble: "bg-transparent text-foreground shadow-[inset_0_0_0_1.5px_var(--color-input)]" },
-  steer: { label: "Steering", bubble: "shadow-[inset_0_0_0_1.5px_var(--color-primary)]" },
-  failed: { label: "Not sent", bubble: "shadow-[inset_0_0_0_1.5px_var(--color-destructive)]" },
+  queued: { label: "Queued", bubble: "bg-transparent text-foreground inset-ring-[1.5px] inset-ring-input" },
+  steer: { label: "Steering", bubble: "inset-ring-[1.5px] inset-ring-primary" },
+  failed: { label: "Not sent", bubble: "inset-ring-[1.5px] inset-ring-destructive" },
 };
 
 const UserRow = memo(function UserRow({ row, sync, divided }: { row: Extract<Row, { kind: "user" }>; sync: ConversationSync; divided: boolean }) {
@@ -92,12 +92,12 @@ const UserRow = memo(function UserRow({ row, sync, divided }: { row: Extract<Row
     <div className="group/msg flex flex-col items-end pt-4 pb-0.5">
       <div className="flex w-full items-center justify-end gap-2.5">
         {!divided && <MessageTime at={row.at} hover />}
-        <div className={cn("max-w-[min(78%,600px)] rounded-[18px_18px_6px_18px] bg-message px-4 py-2.5 whitespace-pre-wrap text-message-foreground shadow-message [overflow-wrap:anywhere]", state?.bubble)}>
+        <div className={cn("max-w-[min(78%,600px)] rounded-bubble rounded-br-md bg-message px-4 py-2.5 whitespace-pre-wrap text-message-foreground shadow-message [overflow-wrap:anywhere]", state?.bubble)}>
           {row.text}
         </div>
       </div>
       {state && (
-        <div className={cn("mt-[5px] inline-flex items-center gap-1 text-meta leading-[1.3] tabular-nums", failed ? "text-destructive-foreground" : "text-muted-foreground")}>
+        <div className={cn("mt-1.25 inline-flex items-center gap-1 text-meta leading-tight tabular-nums", failed ? "text-destructive-foreground" : "text-muted-foreground")}>
           {failed && <AlertTriangle size={12} strokeWidth={2.4} />}
           {state.label}
           {failed && row.requestId && (
@@ -119,11 +119,11 @@ const UserRow = memo(function UserRow({ row, sync, divided }: { row: Extract<Row
 });
 
 function ErrorNote({ children }: { children: React.ReactNode }) {
-  return <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-destructive-surface px-2.5 py-[5px] text-meta leading-[1.4] font-[550] text-destructive-foreground">{children}</div>;
+  return <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-destructive-surface px-2.5 py-1.25 text-meta leading-snug font-label text-destructive-foreground">{children}</div>;
 }
 
 /** The chevron of a disclosure: points right, turns down while its panel is open. */
-const chevron = "transition-transform duration-120 group-data-[panel-open]/disclosure:rotate-90";
+const chevron = "transition-transform duration-120 group-data-panel-open/disclosure:rotate-90";
 
 /** An answer right after another answer or a tool step continues the same turn: no second avatar or name. */
 const AssistantRow = memo(function AssistantRow({ row, name, sync, cont, divided }: { row: Extract<Row, { kind: "assistant" }>; name: string; sync: ConversationSync; cont: boolean; divided: boolean }) {
@@ -131,14 +131,14 @@ const AssistantRow = memo(function AssistantRow({ row, name, sync, cont, divided
   const [thinking, setThinking] = useState<string | undefined>();
   return (
     <div
-      className={cn("relative flex gap-3 pb-1", cont ? "pt-1.5" : "pt-[9px]")}
+      className={cn("relative flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}
       style={divided || !row.at ? undefined : ({ "--t": JSON.stringify(time(row.at)) } as React.CSSProperties)}
     >
       {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" title={`${name} · ${time(row.at)}`} />}
       {/* Pointer: the time appears beside the paragraph or block under it (styles.css, from --t). Keyboard:
           this focusable time shows at the top of the answer, in the margin left of the avatars. */}
       {!divided && (
-        <span className={cn("absolute right-[calc(100%+12px)] no-margin:hidden", cont ? "top-1.5" : "top-[11px]")}>
+        <span className={cn("absolute right-full mr-3 no-margin:hidden", cont ? "top-1.5" : "top-2.75")}>
           <MessageTime at={row.at} />
         </span>
       )}
@@ -151,7 +151,7 @@ const AssistantRow = memo(function AssistantRow({ row, name, sync, cont, divided
                 void sync.detail(row.seq).then((entry) => setThinking(entry.kind === "assistant" ? (entry.thinking ?? "") : ""), () => setThinking("Couldn't load."));
             }}
           >
-            <CollapsibleTrigger className="group/disclosure inline-flex items-center gap-1 rounded-md font-[550] text-muted-foreground hover:text-secondary-foreground">
+            <CollapsibleTrigger className="group/disclosure inline-flex items-center gap-1 rounded-md font-label text-muted-foreground hover:text-secondary-foreground">
               <ChevronRight size={13} strokeWidth={2.2} className={chevron} /> Thought process
             </CollapsibleTrigger>
             <CollapsiblePanel>
@@ -190,7 +190,7 @@ const OUTCOME_LABEL: Record<ToolOutcome, string> = {
 /** The 18px circle every step starts with: green done, red failed, amber or blue while live. */
 function StepIcon({ className, children }: { className: string; children: React.ReactNode }) {
   return (
-    <span className={cn("grid size-[18px] flex-none place-items-center rounded-full", className)} aria-hidden>
+    <span className={cn("grid size-4.5 flex-none place-items-center rounded-full", className)} aria-hidden>
       {children}
     </span>
   );
@@ -207,24 +207,24 @@ const ToolRow = memo(function ToolRow({ entry, sync }: { entry: ToolEntry; sync:
         if (open && full === undefined) void sync.detail(entry.seq).then((e) => setFull(e.kind === "tool" ? e.text : ""), () => setFull("Couldn't load."));
       }}
     >
-      <div className="flex min-w-0 items-center gap-[9px]">
+      <div className="flex min-w-0 items-center gap-2.25">
         <StepIcon className={failed ? "bg-destructive-surface text-destructive" : "bg-success-surface text-success-foreground"}>
           {failed ? <AlertTriangle size={12} strokeWidth={2.4} /> : <Check size={12} strokeWidth={2.4} />}
         </StepIcon>
-        <span className="flex-none font-mono text-[13px] leading-[1.4] font-medium text-foreground [font-variant-ligatures:none]">{entry.name}</span>
+        <span className="flex-none font-mono text-code font-medium text-foreground [font-variant-ligatures:none]">{entry.name}</span>
         <span className="min-w-0 flex-1 truncate text-secondary-foreground">{entry.text}</span>
         {entry.outcome && <Outcome outcome={entry.outcome} failed={failed} />}
         {entry.truncated && (
           <CollapsibleTrigger render={<Button variant="link" size="link" className="group/disclosure flex-none gap-0.5" />}>
-            <span className="group-data-[panel-open]/disclosure:hidden">Full output</span>
-            <span className="hidden group-data-[panel-open]/disclosure:inline">Hide</span>
+            <span className="group-data-panel-open/disclosure:hidden">Full output</span>
+            <span className="hidden group-data-panel-open/disclosure:inline">Hide</span>
             <ChevronRight size={12} strokeWidth={2.4} className={chevron} />
           </CollapsibleTrigger>
         )}
       </div>
       <CollapsiblePanel
         render={<pre />}
-        className="mt-1.5 mb-0.5 ml-[27px] max-h-80 overflow-auto rounded-xl border bg-code px-3 py-2.5 font-mono text-[13px] leading-[1.55] whitespace-pre-wrap text-code-foreground [font-variant-ligatures:none]"
+        className="mt-1.5 mb-0.5 ml-6.75 max-h-80 overflow-auto rounded-xl border bg-code px-3 py-2.5 font-mono text-code leading-5 whitespace-pre-wrap text-code-foreground [font-variant-ligatures:none]"
       >
         {full ?? "Loading…"}
       </CollapsiblePanel>
@@ -252,19 +252,19 @@ function WorkingRow({ bot, name, cont }: { bot: BotSummary | undefined; name: st
   const seconds = bot ? Math.max(0, Math.floor((Date.now() - bot.since) / 1000)) : 0;
   const tool = bot?.status === "tool";
   return (
-    <div className={cn("relative flex gap-3 pb-1", cont ? "pt-1.5" : "pt-[9px]")}>
+    <div className={cn("relative flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
       {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" />}
       <div className="min-w-0 flex-1">
-        <div className={cn("inline-flex items-center gap-[9px] text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
+        <div className={cn("inline-flex items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
           {/* The live step uses the same circle as finished steps: amber while thinking, blue while a tool runs. */}
           <StepIcon className={tool ? "bg-tool-surface text-tool" : "bg-warning-surface text-warning"}>
             {tool ? (
               <Loader2 size={12} strokeWidth={2.4} className="animate-spin motion-reduce:animate-none" />
             ) : (
               <span className="inline-flex gap-0.5">
-                <i className="size-[3px] animate-bounce-dot rounded-full bg-current" />
-                <i className="size-[3px] animate-bounce-dot rounded-full bg-current [animation-delay:0.15s]" />
-                <i className="size-[3px] animate-bounce-dot rounded-full bg-current [animation-delay:0.3s]" />
+                <i className="size-0.75 animate-bounce-dot rounded-full bg-current" />
+                <i className="size-0.75 animate-bounce-dot rounded-full bg-current [animation-delay:0.15s]" />
+                <i className="size-0.75 animate-bounce-dot rounded-full bg-current [animation-delay:0.3s]" />
               </span>
             )}
           </StepIcon>
@@ -283,7 +283,7 @@ function WorkingRow({ bot, name, cont }: { bot: BotSummary | undefined; name: st
 
 /** A rule across the column with a short line in the middle: "Load earlier messages", notices. */
 const DIVIDER =
-  "flex items-center gap-3 py-4 text-meta leading-[1.4] font-medium text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
+  "flex items-center gap-3 py-4 text-meta leading-snug font-medium text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
 
 function AutoLoad({ onVisible, label }: { onVisible: () => Promise<void>; label: string }) {
   const [busy, setBusy] = useState(false);

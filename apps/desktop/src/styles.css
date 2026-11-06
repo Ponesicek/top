@@ -130,6 +130,21 @@
   --text-small: 13.5px;
   --text-body: 15px;
   --text-body--line-height: 1.6;
+  /* Monospace UI text: tool names, tool output, field labels. */
+  --text-code: 13px;
+  --text-code--line-height: 1.4;
+
+  /* Inter's in-between weights: 450 for quiet notes, 550 for labels, 650 for names and titles. */
+  --font-weight-book: 450;
+  --font-weight-label: 550;
+  --font-weight-heading: 650;
+
+  --tracking-title: -0.02em;
+  --tracking-name: -0.01em;
+
+  /* The composer and message bubbles share one soft corner; fields are a step tighter. */
+  --radius-bubble: 18px;
+  --radius-field: 10px;
 
   --animate-ring: ring 1.6s ease-out infinite;
   --animate-blink: blink 1s ease-in-out infinite;
@@ -204,6 +219,9 @@
   --shadow-message: var(--shadow-message-value);
   --shadow-popover: var(--shadow-popover-value);
   --shadow-composer: 0 4px 18px -8px rgba(30, 24, 18, 0.12);
+  --shadow-composer-focus: 0 4px 18px -8px rgba(30, 24, 18, 0.12), var(--shadow-focus-value);
+  --shadow-dialog: var(--shadow-popover-value), 0 24px 64px -16px rgba(20, 14, 8, 0.28);
+  --color-overlay: rgba(20, 16, 12, 0.32);
 }
 
 /* ── base ────────────────────────────────────────────────────────────────── */

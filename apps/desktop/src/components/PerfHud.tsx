@@ -25,7 +25,7 @@ export function PerfHud() {
   const longTasks = perf.longTasks.recent().length;
   const { rttMs, connection } = top.getSnapshot();
   return (
-    <div className="pointer-events-none fixed top-18 right-4 z-10 min-w-[190px] rounded-xl bg-popover/90 px-3.5 py-2.5 font-mono text-micro leading-[1.7] text-secondary-foreground shadow-popover backdrop-blur-[10px]">
+    <div className="pointer-events-none fixed top-18 right-4 z-10 min-w-47.5 rounded-xl bg-popover/90 px-3.5 py-2.5 font-mono text-micro leading-relaxed text-secondary-foreground shadow-popover backdrop-blur-md">
       <div>
         <Value ok={fps >= 55}>{fps.toFixed(0)}</Value> fps
       </div>

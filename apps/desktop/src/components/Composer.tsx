@@ -88,7 +88,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
     <div className="flex-none overflow-hidden [scrollbar-gutter:stable]">
       <div className="mx-auto max-w-220 px-8 pt-1 pb-3 narrow:px-4 narrow:pb-2">
         <div
-          className="composer flex cursor-text items-end gap-2 rounded-[18px] border border-input bg-popover p-[7px] shadow-composer transition-[border-color,box-shadow] duration-120 focus-within:shadow-[var(--shadow-composer),var(--shadow-focus-value)]"
+          className="composer flex cursor-text items-end gap-2 rounded-bubble border border-input bg-popover p-1.75 shadow-composer transition duration-120 focus-within:shadow-composer-focus"
           onMouseDown={(e) => e.target === e.currentTarget && (e.preventDefault(), ref.current?.focus())}
         >
           {/* A typed shell prompt, the same "›" as the logo's "›_": decoration, not a control. The avatar
@@ -101,7 +101,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
             value={text}
             rows={1}
             placeholder={`Message ${name}…`}
-            className="max-h-60 min-w-0 flex-1 resize-none overflow-y-hidden bg-transparent py-[7px] text-[15px] leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground"
+            className="max-h-60 min-w-0 flex-1 resize-none overflow-y-hidden bg-transparent py-1.75 text-body leading-6 text-foreground outline-none placeholder:text-muted-foreground"
             onChange={(e) => {
               setText(e.target.value);
               drafts.set(key, e.target.value);
@@ -120,7 +120,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
         </div>
         {/* Only the working state's keys need explaining (idle is the usual Enter / Shift+Enter). The line
             keeps its height either way, so the transcript doesn't jump when a bot starts or stops. */}
-        <div className="h-[23px] truncate pt-[7px] pl-10 text-meta leading-4 text-muted-foreground">{running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}</div>
+        <div className="h-5.75 truncate pt-1.75 pl-10 text-meta leading-4 text-muted-foreground">{running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}</div>
       </div>
     </div>
   );

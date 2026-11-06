@@ -5,19 +5,19 @@ import type { ComponentProps } from "react";
 import { cn } from "../../lib/utils.ts";
 
 const CONTROL_CLASS =
-  "w-full rounded-[10px] bg-background px-3 py-[9px] text-[14.5px] leading-normal text-foreground shadow-[inset_0_0_0_1px_var(--color-input)] outline-none transition-shadow duration-90 placeholder:text-muted-foreground focus:shadow-[inset_0_0_0_1px_var(--color-primary),var(--shadow-focus-value)]";
+  "w-full rounded-field bg-background px-3 py-2.25 text-[14.5px] leading-normal text-foreground inset-ring inset-ring-input outline-none transition-shadow duration-90 placeholder:text-muted-foreground focus:inset-ring-primary focus:shadow-focus";
 
 function Field({ className, ...props }: FieldPrimitive.Root.Props) {
   return <FieldPrimitive.Root className={cn("flex flex-col gap-1.5", className)} data-slot="field" {...props} />;
 }
 
 function FieldLabel({ className, ...props }: FieldPrimitive.Label.Props) {
-  return <FieldPrimitive.Label className={cn("text-[13px] leading-[1.2] font-semibold text-secondary-foreground", className)} data-slot="field-label" {...props} />;
+  return <FieldPrimitive.Label className={cn("text-code leading-tight font-semibold text-secondary-foreground", className)} data-slot="field-label" {...props} />;
 }
 
 /** A quiet note beside a label ("optional"). */
 function FieldHint({ className, ...props }: ComponentProps<"span">) {
-  return <span className={cn("font-[450] text-muted-foreground", className)} data-slot="field-hint" {...props} />;
+  return <span className={cn("font-book text-muted-foreground", className)} data-slot="field-hint" {...props} />;
 }
 
 function Input({ className, ...props }: InputPrimitive.Props) {
