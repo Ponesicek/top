@@ -30,6 +30,8 @@ export type BotStatus =
 export type BotSummary = {
   readonly id: BotId;
   readonly name: string;
+  /** What the bot is for, as given when it was made. Empty when none was given. */
+  readonly description: string;
   readonly status: BotStatus;
   /** The running tool's name while `status` is `tool`. */
   readonly tool?: string;
@@ -128,10 +130,19 @@ export type ClientFrame =
       readonly clientId: string;
     }
   | { readonly t: "abort"; readonly req: number; readonly bot: BotId }
+  /** Make a bot. Answers with its id; every client gets its summary in a `bot` frame first. */
+  | { readonly t: "createBot"; readonly req: number; readonly name: string; readonly description: string }
+  /** Delete a bot and its whole transcript. Every client gets `botRemoved`. */
+  | { readonly t: "deleteBot"; readonly req: number; readonly bot: BotId }
   | { readonly t: "ping"; readonly at: number };
 
 export type HistoryResult = { readonly entries: readonly Entry[]; /** More entries remain in the asked range. */ readonly more: boolean };
 export type SubmitResult = { readonly duplicate: boolean };
+export type CreateBotResult = { readonly id: BotId };
+
+/** The longest bot name and description `createBot` accepts. */
+export const MAX_BOT_NAME = 40;
+export const MAX_BOT_DESCRIPTION = 2_000;
 
 // ── daemon → client ──────────────────────────────────────────────────────────────
 
@@ -140,8 +151,10 @@ export type ServerFrame =
   | { readonly t: "welcome"; readonly serverId: string; readonly protocol: typeof PROTOCOL_VERSION }
   /** Every bot, once per connection. */
   | { readonly t: "bots"; readonly bots: readonly BotSummary[] }
-  /** One bot's summary changed. */
+  /** One bot's summary changed, or a new bot was made. */
   | { readonly t: "bot"; readonly bot: BotSummary }
+  /** A bot was deleted, with its transcript. */
+  | { readonly t: "botRemoved"; readonly bot: BotId }
   /**
    * The answer to `watch`: the entries the client is missing (ascending). When more were missing than
    * fit, the newest ones and a `gap`. `earlier`: older entries exist before the first one sent (only

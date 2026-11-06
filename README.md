@@ -55,6 +55,10 @@ Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`
 `--data`, `--reset`, `--no-compress`; fake only: `--load`, `--tools` (load includes tool calls),
 `--seed N`, `--tps N`.
 
+Real mode starts with one bot, Atlas. Make more with the **+** beside "Bots" (a name, and a
+description the bot reads as part of its instructions); hover over a bot to delete it. Deleting
+erases its conversation everywhere; files in its folder stay.
+
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
 `Esc` stops, `Ctrl+Shift+P` toggles the performance overlay.
 
@@ -143,6 +147,5 @@ Reconnect time depends mostly on where the client's retry backoff is when the da
   needs writing (or borrowing from pi's coding agent).
 - Push notifications when an answer lands, so the phone needn't stay connected.
 - The React Native app; a bigger local cache (IndexedDB / SQLite) there.
-- MCP tools, choosing a model per bot, adding and renaming bots from the app
-  (real mode starts with one bot until then).
+- MCP tools, choosing a model per bot, renaming bots and editing their descriptions.
 - Login and device pairing for the daemon itself.

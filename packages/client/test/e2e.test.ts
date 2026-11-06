@@ -387,3 +387,52 @@ test("a different daemon on the same address: the old one's transcript is droppe
   assert.deepEqual(entries(fresh).map((e) => e.kind), entries(bot.getSnapshot()).map((e) => e.kind));
   assert.ok(!entries(fresh).some((e) => e.kind === "user" && e.text.includes("(#")), "no seeded history");
 });
+
+test("bots made and deleted from the app: every client sees it, and a restart keeps it so", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const a = await connect(daemon, 0);
+  const b = await connect(daemon, 0);
+  const seeded = a.top.getSnapshot().bots.length;
+
+  const id = await a.top.createBot("  Scout  ", "Watches the build and reports breakages.");
+  const made = a.top.getSnapshot().bots.find((bot) => bot.id === id);
+  assert.equal(made?.name, "Scout", "in the roster by the time createBot resolves, name trimmed");
+  assert.equal(made?.description, "Watches the build and reports breakages.");
+  await untilSummary(b.top, id, () => true, "the new bot on the other client");
+  await assert.rejects(a.top.createBot("scout", ""), /already a bot named scout/);
+  await assert.rejects(a.top.createBot("   ", ""), /Give the bot a name/);
+
+  // The new bot works like the first ones.
+  const scout = a.top.conversation(id);
+  scout.retain();
+  await untilBot(scout, (s) => s.status === "live", "the new bot's first sync");
+  scout.send("hello");
+  await untilBot(scout, (s) => settled(s) && ofKind(s, "assistant").length === 1, "the new bot's answer");
+
+  // Deleting a bot mid-task stops it and removes it everywhere.
+  a.bot.send("deploy web 5s");
+  await untilSummary(a.top, a.id, (bot) => bot.status === "tool", "the first bot running a tool");
+  await a.top.deleteBot(a.id);
+  assert.equal(a.top.getSnapshot().bots.some((bot) => bot.id === a.id), false);
+  await until(b.top.subscribe, b.top.getSnapshot, (s) => !s.bots.some((bot) => bot.id === a.id), "the deleted bot gone on the other client");
+  await assert.rejects(a.top.deleteBot(a.id), /Unknown bot/);
+
+  // After a restart: the new bot is still there, the deleted one isn't.
+  await daemon.kill();
+  await daemon.start();
+  const c = new TopClient({ url: daemon.url });
+  cleanup.push(() => c.close());
+  const roster = (await until(c.subscribe, c.getSnapshot, (s) => s.ready, "the roster after restart")).bots;
+  assert.equal(roster.length, seeded);
+  assert.ok(roster.some((bot) => bot.id === id && bot.name === "Scout"));
+  assert.ok(!roster.some((bot) => bot.id === a.id));
+
+  // Deleting every bot doesn't bring the first ones back on the next start.
+  for (const bot of roster) await c.deleteBot(bot.id);
+  await daemon.kill();
+  await daemon.start();
+  const d = new TopClient({ url: daemon.url });
+  cleanup.push(() => d.close());
+  assert.equal((await until(d.subscribe, d.getSnapshot, (s) => s.ready, "the empty roster")).bots.length, 0);
+});

@@ -4,7 +4,7 @@
  */
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, toToolDeclaration, type Models } from "@earendil-works/pi-ai";
-import type { BotSummary, WhenBusy } from "@top/protocol";
+import { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type BotSummary, type WhenBusy } from "@top/protocol";
 import { BotRunner, type RunnerOptions } from "./runner.ts";
 import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
 import type { TopTool } from "./tools.ts";
@@ -42,54 +42,129 @@ export function lastLine(text: string): string {
   return "";
 }
 
-/** Create the bots on first start. Each bot's transcript begins with its system message. */
-export function ensureBots(
-  store: Store,
-  names: readonly string[],
-  model: string,
-  tools: readonly TopTool[],
-  instructionsFor: (name: string) => string = (name) => `You are ${name}, one of the user's bots.`,
-) {
-  if (store.bots().length > 0) return;
-  for (const name of names) {
-    const instructions = instructionsFor(name);
-    const id = store.createBot(name, instructions, model);
-    store.append(id, "system", createInitialSystemMessage(instructions, tools.map(toToolDeclaration)));
-  }
+/** How new bots are made: the same for the first ones and for those made from the app. */
+export type NewBot = {
+  /** `provider/model-id`. */
+  readonly model: string;
+  /** The instructions that open the bot's first system message. */
+  readonly instructions: (name: string, description: string) => string;
+  /** Tools declared in that message. Real bots declare theirs on their first request instead. */
+  readonly declare: readonly TopTool[];
+};
+
+export const defaultInstructions = (name: string, description: string) =>
+  [`You are ${name}, one of the user's bots.`, ...(description ? [purpose(description)] : [])].join("\n");
+
+/** The line of a bot's instructions that carries the description it was made with. */
+export const purpose = (description: string) => `What the user made you for: ${description}`;
+
+/** A bot was refused (empty or taken name, too long): the message is meant for the user. */
+export class BotError extends Error {
+  override name = "BotError";
 }
+
+/** Add a bot to the store. Its transcript begins with its system message. */
+function addBot(store: Store, name: string, description: string, newBot: NewBot): number {
+  const instructions = newBot.instructions(name, description);
+  return store.transaction(() => {
+    const id = store.createBot(name, instructions, newBot.model, description);
+    store.append(id, "system", createInitialSystemMessage(instructions, newBot.declare.map(toToolDeclaration)));
+    return id;
+  });
+}
+
+/** Create the first bots, once: a user who deletes them all doesn't get them back on the next start. */
+export function ensureBots(store: Store, names: readonly string[], newBot: NewBot) {
+  if (store.flag("seeded")) return;
+  if (store.bots().length === 0) for (const name of names) addBot(store, name, "", newBot);
+  store.setFlag("seeded");
+}
+
+type Tools = readonly TopTool[] | ((bot: BotRow) => readonly TopTool[]);
+type DaemonOptions = { thinking?: ThinkingLevel; sections?: (bot: BotRow) => RunnerOptions["sections"]; newBot?: NewBot };
 
 export class Daemon {
   readonly store: Store;
   readonly runners = new Map<number, BotRunner>();
+  readonly #models: Models;
+  readonly #tools: Tools;
+  readonly #options: DaemonOptions;
   readonly #summaries = new Map<number, BotSummary>();
   readonly #dirty = new Map<number, ReturnType<typeof setTimeout>>();
   readonly #entryListeners = new Set<(entry: StoredEntry) => void>();
   readonly #inboxListeners = new Set<(bot: number) => void>();
   readonly #botListeners = new Set<(summary: BotSummary) => void>();
+  readonly #removedListeners = new Set<(bot: number) => void>();
 
-  /** `tools` and `sections` may differ per bot (each real bot works in its own folder). */
-  constructor(
-    store: Store,
-    models: Models,
-    tools: readonly TopTool[] | ((bot: BotRow) => readonly TopTool[]),
-    options: { thinking?: ThinkingLevel; sections?: (bot: BotRow) => RunnerOptions["sections"] } = {},
-  ) {
+  /**
+   * `tools` and `sections` may differ per bot (each real bot works in its own folder). Without
+   * `newBot`, bots can't be made from the app.
+   */
+  constructor(store: Store, models: Models, tools: Tools, options: DaemonOptions = {}) {
     this.store = store;
-    for (const bot of store.bots()) {
-      const runner = new BotRunner(bot, store, models, typeof tools === "function" ? tools(bot) : tools, {
-        entry: (entry) => {
-          for (const listener of this.#entryListeners) listener(entry);
-          if (entry.kind !== "system") this.#touch(bot.id);
-        },
-        inbox: (id) => {
-          for (const listener of this.#inboxListeners) listener(id);
-          this.#touch(id);
-        },
-        status: (id) => this.#touch(id),
-      }, { thinkingLevel: options.thinking ?? "off", ...(options.sections ? { sections: options.sections(bot) } : {}) });
-      this.runners.set(bot.id, runner);
-      this.#summaries.set(bot.id, this.#summarize(bot.id));
-    }
+    this.#models = models;
+    this.#tools = tools;
+    this.#options = options;
+    for (const bot of store.bots()) this.#add(bot);
+  }
+
+  #add(bot: BotRow): BotRunner {
+    const { thinking, sections } = this.#options;
+    // A deleted bot may still be finishing a step; nothing it does after that is announced.
+    const live = () => this.runners.get(bot.id) === runner;
+    const runner: BotRunner = new BotRunner(bot, this.store, this.#models, typeof this.#tools === "function" ? this.#tools(bot) : this.#tools, {
+      entry: (entry) => {
+        if (!live()) return;
+        for (const listener of this.#entryListeners) listener(entry);
+        if (entry.kind !== "system") this.#touch(bot.id);
+      },
+      inbox: (id) => {
+        if (!live()) return;
+        for (const listener of this.#inboxListeners) listener(id);
+        this.#touch(id);
+      },
+      status: (id) => live() && this.#touch(id),
+    }, { thinkingLevel: thinking ?? "off", ...(sections ? { sections: sections(bot) } : {}) });
+    this.runners.set(bot.id, runner);
+    this.#summaries.set(bot.id, this.#summarize(bot.id));
+    return runner;
+  }
+
+  /** Make a bot and announce it. Throws a `BotError` the user can read when the name is empty or taken. */
+  createBot(name: string, description: string): number {
+    if (!this.#options.newBot) throw new BotError("This daemon can't make bots.");
+    name = name.trim().replace(/\s+/g, " ");
+    description = description.trim();
+    if (!name) throw new BotError("Give the bot a name.");
+    if (name.length > MAX_BOT_NAME) throw new BotError(`Keep the name under ${MAX_BOT_NAME + 1} characters.`);
+    if (description.length > MAX_BOT_DESCRIPTION) throw new BotError(`Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.`);
+    // Case-insensitive: a real bot's folder is named after it, and Windows and macOS folders ignore case.
+    const taken = [...this.runners.values()].some((runner) => runner.name.toLowerCase() === name.toLowerCase());
+    if (taken) throw new BotError(`There's already a bot named ${name}.`);
+    const id = addBot(this.store, name, description, this.#options.newBot);
+    this.#add(this.store.bot(id)!);
+    const summary = this.#summaries.get(id)!;
+    for (const listener of this.#botListeners) listener(summary);
+    return id;
+  }
+
+  /**
+   * Delete a bot and its transcript. It leaves the roster at once; whatever it was doing is stopped,
+   * and its rows are removed once it has. Files it made in its folder stay.
+   */
+  deleteBot(id: number) {
+    const runner = this.runner(id);
+    this.runners.delete(id);
+    this.#summaries.delete(id);
+    clearTimeout(this.#dirty.get(id));
+    this.#dirty.delete(id);
+    this.store.markDeleted(id);
+    for (const listener of this.#removedListeners) listener(id);
+    runner.abort();
+    void runner
+      .waitForIdle()
+      .then(() => this.store.purgeBot(id))
+      .catch((error) => console.error(`[top] deleting ${runner.name}:`, error));
   }
 
   /** Settle whatever the last process left unfinished, then start every bot. */
@@ -135,6 +210,10 @@ export class Daemon {
     this.#botListeners.add(listener);
     return () => this.#botListeners.delete(listener);
   }
+  onBotRemoved(listener: (bot: number) => void) {
+    this.#removedListeners.add(listener);
+    return () => this.#removedListeners.delete(listener);
+  }
 
   /** Recompute one bot's summary soon, and announce it only if it changed. */
   #touch(bot: number) {
@@ -143,6 +222,7 @@ export class Daemon {
       bot,
       setTimeout(() => {
         this.#dirty.delete(bot);
+        if (!this.runners.has(bot)) return;
         const next = this.#summarize(bot);
         const previous = this.#summaries.get(bot);
         if (previous && JSON.stringify(previous) === JSON.stringify(next)) return;
@@ -160,6 +240,7 @@ export class Daemon {
     return {
       id: bot,
       name: row.name,
+      description: row.description,
       status: status.status,
       ...(status.tool ? { tool: status.tool } : {}),
       ...(status.error ? { error: status.error } : {}),

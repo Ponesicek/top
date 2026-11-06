@@ -21,7 +21,7 @@ import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { DEFAULT_PORT } from "@top/protocol";
 import { PiAuthFile } from "./auth.ts";
-import { Daemon, ensureBots } from "./daemon.ts";
+import { Daemon, defaultInstructions, ensureBots, purpose, type NewBot } from "./daemon.ts";
 import { BOT_NAMES, createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "./fake-bots.ts";
 import { startLoad } from "./load.ts";
 import { seedHistory } from "./seed.ts";
@@ -74,7 +74,7 @@ let models: MutableModels;
 let model: string;
 let tools: TopTool[] | ((bot: BotRow) => TopTool[]);
 let sections: ((bot: BotRow) => Record<string, string>) | undefined;
-let instructionsFor: ((name: string) => string) | undefined;
+let instructionsFor: (name: string, description: string) => string = defaultInstructions;
 let botNames: readonly string[];
 
 if (real) {
@@ -92,7 +92,7 @@ if (real) {
     if (!models.getModel(providerId, model.slice(slash + 1))) fail(`${providerId} has no model "${model.slice(slash + 1)}".`);
   }
   console.log(`[top] model ${model} (${auth.source ?? auth.type}), thinking ${thinking}`);
-  // One bot to start with; adding more comes with a way to make them from the app.
+  // One bot to start with; the app makes more.
   botNames = ["Atlas"];
   // Each bot works in a folder it owns, with pi's tools over the whole computer. The tools are
   // declared to the model on its next request, and the workspace section with its next message.
@@ -102,9 +102,10 @@ if (real) {
     const prompt = getCurrentSystemPrompt(store.context(bot.id).map((e) => e.message) as never);
     return { workspace: workspaceSection(folderOf(bot), prompt.includes("You have no tools yet")) };
   };
-  instructionsFor = (name) =>
+  instructionsFor = (name, description) =>
     [
       `You are ${name}, one of the user's bots, running in Top: a daemon that keeps you running 24/7 while the user's desktop and phone apps attach and detach.`,
+      ...(description ? [purpose(description)] : []),
       "Your answers arrive whole, not streamed, often on a phone, so lead with the answer and keep it tight. Use Markdown where it helps.",
     ].join("\n");
 } else {
@@ -117,14 +118,14 @@ if (real) {
 
 const store = new Store(resolve(dataDir, "top.sqlite"));
 // Real bots' tools are declared on their first request, so their first system message holds only instructions.
-ensureBots(store, botNames, model, typeof tools === "function" ? [] : tools, instructionsFor);
-// The previous version made five real bots; drop the extra ones if they were never used.
-if (real) for (const bot of store.bots()) if (!botNames.includes(bot.name) && store.removeUnusedBot(bot.id)) console.log(`[top] removed unused bot ${bot.name}`);
+const newBot: NewBot = { model, instructions: instructionsFor, declare: typeof tools === "function" ? [] : tools };
+ensureBots(store, botNames, newBot);
 // One model for every bot for now; switching `--model` moves the existing bots over.
 for (const bot of store.bots()) if (bot.model !== model) store.setModel(bot.id, model);
-if (Number(args.seed) > 0) seedHistory(store, store.bots()[0]!.id, Number(args.seed));
+const seeded = store.bots()[0];
+if (Number(args.seed) > 0 && seeded) seedHistory(store, seeded.id, Number(args.seed));
 
-const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", ...(sections ? { sections } : {}) });
+const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", newBot, ...(sections ? { sections } : {}) });
 // Settle what the last process left unfinished (interrupted tool calls, half-done tasks), then run.
 await daemon.start();
 

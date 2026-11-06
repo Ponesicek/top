@@ -61,10 +61,23 @@ if (cachedBots) {
 
 const retained = new Set<BotId>();
 function retainAll() {
-  for (const bot of top.getSnapshot().bots) {
+  const { bots, ready } = top.getSnapshot();
+  for (const bot of bots) {
     if (retained.has(bot.id)) continue;
     retained.add(bot.id);
     top.conversation(bot.id).retain();
+  }
+  // A deleted bot: the client has dropped its conversation; drop its cached transcript too.
+  if (!ready) return;
+  const live = new Set(bots.map((b) => b.id));
+  for (const id of retained) {
+    if (live.has(id)) continue;
+    retained.delete(id);
+    try {
+      localStorage.removeItem(cacheKey(`bot:${id}`));
+    } catch {
+      // disabled storage: nothing cached
+    }
   }
 }
 retainAll();

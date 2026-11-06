@@ -48,6 +48,10 @@ class ClientConnection {
     send(socket, { t: "bots", bots: daemon.bots });
     this.#unsubscribe = [
       daemon.onBot((bot) => send(socket, { t: "bot", bot })),
+      daemon.onBotRemoved((bot) => {
+        this.#watching.delete(bot);
+        send(socket, { t: "botRemoved", bot });
+      }),
       daemon.onEntry((stored) => {
         if (!this.#watching.has(stored.bot)) return;
         const entry = toWire(stored);
@@ -121,6 +125,13 @@ class ClientConnection {
       case "abort":
         return this.#answer(frame.req, () => {
           this.#daemon.runner(frame.bot).abort();
+          return null;
+        });
+      case "createBot":
+        return this.#answer(frame.req, () => ({ id: this.#daemon.createBot(String(frame.name ?? ""), String(frame.description ?? "")) }));
+      case "deleteBot":
+        return this.#answer(frame.req, () => {
+          this.#daemon.deleteBot(frame.bot);
           return null;
         });
     }

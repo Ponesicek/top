@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { BotId } from "@top/client";
+import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
@@ -24,8 +25,11 @@ export function App() {
     return saved === undefined ? undefined : Number(saved);
   });
   const [hud, setHud] = useState(() => new URLSearchParams(location.search).has("perf"));
+  const [creating, setCreating] = useState(false);
+  const ready = useSyncExternalStore(top.subscribe, () => top.getSnapshot().ready);
 
   const togglePerf = useCallback(() => setHud((h) => !h), []);
+  const openNewBot = useCallback(() => setCreating(true), []);
   const bot = bots.find((b) => String(b.id) === String(selected)) ?? bots[0];
 
   const select = useCallback((id: BotId) => {
@@ -80,7 +84,7 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar selected={bot?.id} onSelect={select} onTogglePerf={togglePerf} />
+      <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} onTogglePerf={togglePerf} />
       <main className="main">
         {bot && sync ? (
           <>
@@ -89,10 +93,29 @@ export function App() {
             <Transcript key={String(bot.id)} sync={sync} name={bot.name} />
             <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
           </>
+        ) : ready ? (
+          <div className="empty">
+            <div className="empty-card">
+              <h2>No bots yet</h2>
+              <p className="empty-sub">Make one to start a conversation.</p>
+              <button className="primary empty-action" onClick={openNewBot}>
+                New bot
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="empty">Waiting for the Top daemon…</div>
         )}
       </main>
+      {creating && (
+        <NewBotDialog
+          onClose={() => setCreating(false)}
+          onCreated={(id) => {
+            setCreating(false);
+            select(id);
+          }}
+        />
+      )}
       {hud && <PerfHud />}
     </div>
   );

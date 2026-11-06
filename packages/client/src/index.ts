@@ -9,12 +9,13 @@
  * Retain only the bots on screen when data is metered (a phone on cellular): the sidebar summaries
  * cover the rest, and a retained bot catches up from what it holds when it is opened.
  */
-import type { BotId, BotSummary, ServerFrame } from "@top/protocol";
+import type { BotId, BotSummary, CreateBotResult, ServerFrame } from "@top/protocol";
 import { Connection, type ConnectionStatus } from "./connection.ts";
 import { ConversationSync } from "./conversation.ts";
 
 export * from "./conversation.ts";
 export { Connection, OfflineError, TimeoutError, type ConnectionStatus } from "./connection.ts";
+export { MAX_BOT_DESCRIPTION, MAX_BOT_NAME } from "@top/protocol";
 export type { BotId, BotStatus, BotSummary, Entry, Gap, QueuedMessage, Seq, ToolCallView, ToolOutcome, WhenBusy } from "@top/protocol";
 
 export type TopClientOptions = {
@@ -95,6 +96,20 @@ export class TopClient {
     this.#connection.kick();
   }
 
+  /**
+   * Make a bot. Resolves with its id once it is in the roster; rejects with a message for the user when
+   * the daemon refuses it (an empty or taken name) or isn't reachable.
+   */
+  async createBot(name: string, description: string): Promise<BotId> {
+    const { id } = await this.#connection.request<CreateBotResult>({ t: "createBot", name, description });
+    return id;
+  }
+
+  /** Delete a bot and its whole transcript, on the daemon and for every client. */
+  async deleteBot(id: BotId): Promise<void> {
+    await this.#connection.request({ t: "deleteBot", bot: id });
+  }
+
   conversation(id: BotId): ConversationSync {
     let conversation = this.#conversations.get(id);
     if (!conversation) {
@@ -120,8 +135,16 @@ export class TopClient {
         this.#publish({ serverId: frame.serverId });
         return;
       }
-      case "bots":
+      case "bots": {
+        // Bots deleted while this client was away.
+        const live = new Set(frame.bots.map((b) => b.id));
+        for (const id of this.#conversations.keys()) if (!live.has(id)) this.#conversations.delete(id);
         this.#publish({ bots: frame.bots, ready: true });
+        return;
+      }
+      case "botRemoved":
+        this.#conversations.delete(frame.bot);
+        this.#publish({ bots: this.#snapshot.bots.filter((b) => b.id !== frame.bot) });
         return;
       case "bot": {
         const bots = this.#snapshot.bots;

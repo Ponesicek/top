@@ -9,6 +9,8 @@
  * - `tool_calls`: written right before a tool runs, so after a crash the daemon knows whether a tool
  *   call without a result had started (it may have taken effect) or not.
  * - `bots`: the roster, plus whether a task was running and how often the daemon restarted during it.
+ *   A deleted bot is first marked `deleted` (it may still be winding down a step), then purged with
+ *   everything it wrote; a restart purges any that were only marked.
  */
 import { randomUUID } from "node:crypto";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -30,6 +32,7 @@ export type StoredEntry = {
 export type BotRow = {
   readonly id: number;
   readonly name: string;
+  readonly description: string;
   readonly instructions: string;
   readonly model: string;
   readonly runActive: boolean;
@@ -56,10 +59,12 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS bots (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
   instructions TEXT NOT NULL,
   model TEXT NOT NULL,
   run_active INTEGER NOT NULL DEFAULT 0,
-  restarts INTEGER NOT NULL DEFAULT 0
+  restarts INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS entries (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,13 +138,17 @@ export class Store {
     this.#db = new DatabaseSync(path);
     this.#db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     this.#db.exec(SCHEMA);
+    // Columns added after the first release.
+    const columns = new Set(this.#db.prepare("PRAGMA table_info(bots)").all().map((row) => String(row.name)));
+    if (!columns.has("description")) this.#db.exec("ALTER TABLE bots ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+    if (!columns.has("deleted")) this.#db.exec("ALTER TABLE bots ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
     this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('id', ?)").run(randomUUID());
     this.id = String((this.#db.prepare("SELECT value FROM meta WHERE key = 'id'").get() as { value: string }).value);
     const p = (sql: string) => this.#db.prepare(sql);
     this.#q = {
-      bots: p("SELECT * FROM bots ORDER BY id"),
+      bots: p("SELECT * FROM bots WHERE deleted = 0 ORDER BY id"),
       bot: p("SELECT * FROM bots WHERE id = ?"),
-      insertBot: p("INSERT INTO bots (name, instructions, model) VALUES (?, ?, ?)"),
+      insertBot: p("INSERT INTO bots (name, description, instructions, model) VALUES (?, ?, ?, ?)"),
       append: p("INSERT INTO entries (bot, kind, message, request_id, tool_call_id, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
       entry: p("SELECT * FROM entries WHERE seq = ?"),
       context: p("SELECT kind, message FROM entries WHERE bot = ? AND kind != 'notice' ORDER BY seq"),
@@ -165,6 +174,8 @@ export class Store {
       setRestarts: p("UPDATE bots SET restarts = ? WHERE id = ?"),
       setModel: p("UPDATE bots SET model = ? WHERE id = ?"),
     };
+    // Bots deleted just before a crash or a stop: finish the job.
+    for (const row of this.#db.prepare("SELECT id FROM bots WHERE deleted = 1").all()) this.purgeBot(Number(row.id));
   }
 
   /** Run `fn` as one transaction. */
@@ -186,17 +197,47 @@ export class Store {
 
   // ── bots ─────────────────────────────────────────────────────────────────────
 
+  /** The bots that aren't deleted. */
   bots(): BotRow[] {
     return this.#q.bots!.all().map((row) => this.#botOf(row));
   }
 
+  /** One bot, also while it is being deleted. */
   bot(id: number): BotRow | undefined {
     const row = this.#q.bot!.get(id);
     return row ? this.#botOf(row) : undefined;
   }
 
-  createBot(name: string, instructions: string, model: string): number {
-    return Number(this.#q.insertBot!.run(name, instructions, model).lastInsertRowid);
+  createBot(name: string, instructions: string, model: string, description = ""): number {
+    return Number(this.#q.insertBot!.run(name, description, instructions, model).lastInsertRowid);
+  }
+
+  /**
+   * First half of deleting a bot: it leaves the roster, its queue is dropped and its name is free for a
+   * new bot, but its rows stay so a step it is finishing can still be written. `purgeBot` removes them.
+   */
+  markDeleted(bot: number) {
+    this.transaction(() => {
+      this.#db.prepare("UPDATE bots SET deleted = 1, run_active = 0, name = ? WHERE id = ?").run(`deleted:${bot}:${randomUUID()}`, bot);
+      this.#db.prepare("DELETE FROM inbox WHERE bot = ?").run(bot);
+    });
+  }
+
+  /** Remove a bot and everything it wrote. */
+  purgeBot(bot: number) {
+    this.transaction(() => {
+      for (const table of ["entries", "inbox", "tool_calls"]) this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
+      this.#db.prepare("DELETE FROM bots WHERE id = ?").run(bot);
+    });
+  }
+
+  /** A flag kept in the meta table (e.g. that the first bots were made, so deleting them all doesn't bring them back). */
+  flag(key: string): boolean {
+    return this.#db.prepare("SELECT 1 FROM meta WHERE key = ?").get(`flag:${key}`) !== undefined;
+  }
+
+  setFlag(key: string) {
+    this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')").run(`flag:${key}`);
   }
 
   setRunActive(bot: number, active: boolean) {
@@ -205,17 +246,6 @@ export class Store {
 
   setRestarts(bot: number, restarts: number) {
     this.#q.setRestarts!.run(restarts, bot);
-  }
-
-  /** Delete a bot that was never used: no messages, nothing queued. False (and nothing changed) otherwise. */
-  removeUnusedBot(bot: number): boolean {
-    return this.transaction(() => {
-      if (this.lastSeq(bot) > 0 || this.inbox(bot).length > 0) return false;
-      this.#db.prepare("DELETE FROM entries WHERE bot = ?").run(bot);
-      this.#db.prepare("DELETE FROM tool_calls WHERE bot = ?").run(bot);
-      this.#db.prepare("DELETE FROM bots WHERE id = ?").run(bot);
-      return true;
-    });
   }
 
   /** `provider/model-id`. Takes effect when the daemon next starts. */
@@ -227,6 +257,7 @@ export class Store {
     return {
       id: Number(row.id),
       name: String(row.name),
+      description: String(row.description ?? ""),
       instructions: String(row.instructions),
       model: String(row.model),
       runActive: Number(row.run_active) === 1,

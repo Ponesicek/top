@@ -1,8 +1,9 @@
-import { memo, useSyncExternalStore } from "react";
-import { Activity } from "lucide-react";
+import { memo, useState, useSyncExternalStore } from "react";
+import { Activity, Plus, Trash2 } from "lucide-react";
 import type { BotId, BotSummary } from "@top/client";
 import { serverUrl, top, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
+import { DeleteBotDialog } from "./BotDialogs.tsx";
 
 /** The sidebar's short status, beside the name; the header spells out the tool. */
 const SHORT: Record<BotSummary["status"], string> = { idle: "", thinking: "Thinking", tool: "Running", retrying: "Retrying", failed: "Failed" };
@@ -22,29 +23,54 @@ export function statusLabel(bot: BotSummary): string {
   }
 }
 
-const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect }: { bot: BotSummary; selected: boolean; unread: boolean; index: number; onSelect: (id: BotId) => void }) {
+const BotItem = memo(function BotItem({
+  bot,
+  selected,
+  unread,
+  index,
+  onSelect,
+  onDelete,
+}: {
+  bot: BotSummary;
+  selected: boolean;
+  unread: boolean;
+  index: number;
+  onSelect: (id: BotId) => void;
+  onDelete: (bot: BotSummary) => void;
+}) {
   const busy = bot.status !== "idle";
   // A working bot shows its work, not "unread"; an idle bot with something new swaps its gray ring for blue.
   const fresh = unread && !busy;
+  const shortcut = index < 9 ? ` (Ctrl+${index + 1})` : "";
   return (
-    <button className={`bot${selected ? " selected" : ""}${fresh ? " unread" : ""}`} onClick={() => onSelect(bot.id)} title={`${bot.name} (Ctrl+${index + 1})`} aria-current={selected || undefined}>
-      <Avatar name={bot.name} status={bot.status} />
-      <span className="bot-text">
-        <span className="bot-line">
-          <span className="bot-name">{bot.name}</span>
-          <span className={`state st-${bot.status}${fresh ? " fresh" : ""}`} title={fresh ? "Idle · new messages" : statusLabel(bot)}>
-            <i />
-            {busy ? SHORT[bot.status] : "Idle"}
-          </span>
-          {bot.queued > 0 && (
-            <span className="badge" title={`${bot.queued} queued`}>
-              {bot.queued} queued
+    <div className="bot-row">
+      <button
+        className={`bot${selected ? " selected" : ""}${fresh ? " unread" : ""}`}
+        onClick={() => onSelect(bot.id)}
+        title={bot.description ? `${bot.name}${shortcut}\n${bot.description}` : `${bot.name}${shortcut}`}
+        aria-current={selected || undefined}
+      >
+        <Avatar name={bot.name} status={bot.status} />
+        <span className="bot-text">
+          <span className="bot-line">
+            <span className="bot-name">{bot.name}</span>
+            <span className={`state st-${bot.status}${fresh ? " fresh" : ""}`} title={fresh ? "Idle · new messages" : statusLabel(bot)}>
+              <i />
+              {busy ? SHORT[bot.status] : "Idle"}
             </span>
-          )}
+            {bot.queued > 0 && (
+              <span className="badge" title={`${bot.queued} queued`}>
+                {bot.queued} queued
+              </span>
+            )}
+          </span>
+          {bot.preview ? <span className="bot-preview">{bot.preview}</span> : <span className="bot-preview empty-preview">No messages yet</span>}
         </span>
-        {bot.preview ? <span className="bot-preview">{bot.preview}</span> : <span className="bot-preview empty-preview">No messages yet</span>}
-      </span>
-    </button>
+      </button>
+      <button className="bot-delete" onClick={() => onDelete(bot)} title={`Delete ${bot.name}`} aria-label={`Delete ${bot.name}`}>
+        <Trash2 size={14} strokeWidth={1.9} />
+      </button>
+    </div>
   );
 });
 
@@ -56,9 +82,20 @@ function host(url: string): string {
   }
 }
 
-export function Sidebar({ selected, onSelect, onTogglePerf }: { selected: BotId | undefined; onSelect: (id: BotId) => void; onTogglePerf: () => void }) {
+export function Sidebar({
+  selected,
+  onSelect,
+  onNewBot,
+  onTogglePerf,
+}: {
+  selected: BotId | undefined;
+  onSelect: (id: BotId) => void;
+  onNewBot: () => void;
+  onTogglePerf: () => void;
+}) {
   const { bots, connection } = useSyncExternalStore(top.subscribe, top.getSnapshot);
   const seen = useSeen();
+  const [deleting, setDeleting] = useState<BotSummary>();
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -82,13 +119,27 @@ export function Sidebar({ selected, onSelect, onTogglePerf }: { selected: BotId 
       </div>
       <div className="section-label">
         <span className="section-title">Bots</span>
+        <button className="icon-btn add-bot" onClick={onNewBot} title="New bot" aria-label="New bot">
+          <Plus size={16} strokeWidth={2} />
+        </button>
       </div>
       <nav className="bots">
         {bots.map((bot, i) => {
           const isSelected = bot.id === selected;
-          return <BotItem key={bot.id} bot={bot} index={i} selected={isSelected} unread={!isSelected && bot.lastSeq > (seen[bot.id] ?? 0)} onSelect={onSelect} />;
+          return (
+            <BotItem
+              key={bot.id}
+              bot={bot}
+              index={i}
+              selected={isSelected}
+              unread={!isSelected && bot.lastSeq > (seen[bot.id] ?? 0)}
+              onSelect={onSelect}
+              onDelete={setDeleting}
+            />
+          );
         })}
       </nav>
+      {deleting && <DeleteBotDialog bot={deleting} onClose={() => setDeleting(undefined)} />}
       <div className="sidebar-foot">
         <button className="icon-btn" onClick={onTogglePerf} title="Performance overlay (Ctrl+Shift+P)" aria-label="Performance overlay">
           <Activity size={16} strokeWidth={1.8} />
