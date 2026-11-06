@@ -13,6 +13,7 @@ import type {
   BotId,
   BotSummary,
   CreateBotResult,
+  FileView,
   McpServerConfig,
   McpServerId,
   McpServerView,
@@ -28,6 +29,8 @@ export type {
   BotStatus,
   BotSummary,
   Entry,
+  FileChange,
+  FileView,
   Gap,
   McpSecret,
   McpServerConfig,
@@ -54,6 +57,15 @@ export type TopClientOptions = {
   readonly deadAfterMs?: number;
 };
 
+/** A bot's files folder (see the protocol's FileView). */
+export type BotFiles = {
+  /** The folder's absolute path on the daemon's computer. */
+  readonly folder: string;
+  readonly files: readonly FileView[];
+  /** The folder holds more files than were sent. */
+  readonly more: boolean;
+};
+
 export type TopSnapshot = {
   readonly connection: ConnectionStatus;
   readonly rttMs: number | undefined;
@@ -66,6 +78,8 @@ export type TopSnapshot = {
   readonly bots: readonly BotSummary[];
   /** The MCP servers set up on the daemon (empty until it says). */
   readonly mcpServers: readonly McpServerView[];
+  /** The files folders of the bots being watched, once the daemon has listed them. */
+  readonly files: Readonly<Record<BotId, BotFiles>>;
   /** Set once the first roster arrived; the UI can render from cache before that. */
   readonly ready: boolean;
 };
@@ -76,11 +90,15 @@ export class TopClient {
   readonly #conversations = new Map<BotId, ConversationSync>();
   readonly #listeners = new Set<() => void>();
   readonly #rttTimer: ReturnType<typeof setInterval>;
+  readonly #url: string;
+  /** Where the daemon serves files, from `welcome` (see the protocol's FileView). */
+  #filesPath: string | undefined;
   #snapshot: TopSnapshot;
 
   constructor(options: TopClientOptions) {
     this.clientId = options.clientId ?? `client-${Math.random().toString(36).slice(2, 10)}`;
-    this.#snapshot = { connection: "connecting", rttMs: undefined, attempt: 0, serverId: options.serverId, bots: [], mcpServers: [], ready: false };
+    this.#url = options.url;
+    this.#snapshot = { connection: "connecting", rttMs: undefined, attempt: 0, serverId: options.serverId, bots: [], mcpServers: [], files: {}, ready: false };
     this.#connection = new Connection({
       url: options.url,
       clientId: this.clientId,
@@ -173,6 +191,18 @@ export class TopClient {
     await this.#connection.request({ t: "mcpRetry", id });
   }
 
+  /**
+   * The link to one of a bot's files, on the address this client reaches the daemon at (so it works
+   * over Tailscale or a tunnel too). `undefined` until the daemon said where files are, or if it has none.
+   */
+  fileUrl(bot: BotId, path: string): string | undefined {
+    if (this.#filesPath === undefined) return undefined;
+    const base = new URL(this.#url);
+    base.protocol = base.protocol === "wss:" ? "https:" : "http:";
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    return `${base.origin}${this.#filesPath}/${bot}/${encoded}`;
+  }
+
   conversation(id: BotId): ConversationSync {
     let conversation = this.#conversations.get(id);
     if (!conversation) {
@@ -190,6 +220,7 @@ export class TopClient {
   #receive(frame: ServerFrame) {
     switch (frame.t) {
       case "welcome": {
+        this.#filesPath = frame.filesPath;
         if (frame.serverId === this.#snapshot.serverId) return;
         // Another daemon's data: what we hold is not its history. Its watches already ignore our
         // `after` (we said where our entries came from in `hello`), so the syncs that follow are fresh.
@@ -205,9 +236,14 @@ export class TopClient {
         this.#publish({ bots: frame.bots, ready: true });
         return;
       }
-      case "botRemoved":
+      case "botRemoved": {
         this.#conversations.delete(frame.bot);
-        this.#publish({ bots: this.#snapshot.bots.filter((b) => b.id !== frame.bot) });
+        const { [frame.bot]: _gone, ...files } = this.#snapshot.files;
+        this.#publish({ bots: this.#snapshot.bots.filter((b) => b.id !== frame.bot), files });
+        return;
+      }
+      case "files":
+        this.#publish({ files: { ...this.#snapshot.files, [frame.bot]: { folder: frame.folder, files: frame.files, more: !!frame.more } } });
         return;
       case "bot": {
         const bots = this.#snapshot.bots;

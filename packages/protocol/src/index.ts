@@ -14,7 +14,7 @@
 import Type, { type Static, type TAddReadonly, type TObject, type TProperties, type TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const DEFAULT_PORT = 7357;
 
 // ── schema helpers ───────────────────────────────────────────────────────────────
@@ -120,8 +120,11 @@ export const Entry = Type.Union([
     outcome: Optional(ToolOutcome),
   }),
   Struct({ ...entryBase, kind: Type.Literal("notice"), text: Type.String() }),
+  /** Files in the bot's files folder were added, changed or removed (by the bot or anyone else). Not part of the model's context. */
+  Struct({ ...entryBase, kind: Type.Literal("files"), files: List(Struct({ path: Type.String(), change: Type.Enum(["added", "changed", "removed"]) })) }),
 ]);
 export type Entry = Static<typeof Entry>;
+export type FileChange = Extract<Entry, { kind: "files" }>["files"][number];
 
 export const WhenBusy = Type.Enum(["steer", "followUp", "reject"]);
 export type WhenBusy = Static<typeof WhenBusy>;
@@ -137,6 +140,20 @@ export type QueuedMessage = Static<typeof QueuedMessage>;
 /** Entries strictly between `after` and `before` exist on the daemon but were not sent. */
 export const Gap = Struct({ after: Seq, before: Seq });
 export type Gap = Static<typeof Gap>;
+
+// ── files ────────────────────────────────────────────────────────────────────────
+//
+// Each bot has a files folder: what it makes for the user (pages, reports, images). The daemon watches
+// it, sends its listing to the clients watching the bot, and serves the files over HTTP on its own
+// port at `<filesPath>/<bot>/<path>` (`filesPath` is in `welcome`; it holds a secret, so a web page
+// can't guess it). Clients render them or hand the link or the path to other tools.
+
+/** One file in a bot's files folder. `path` is relative to the folder, with `/` between parts. */
+export const FileView = Struct({ path: Type.String(), size: Type.Integer(), mtime: Type.Number() });
+export type FileView = Static<typeof FileView>;
+
+/** The most files a listing holds; a folder with more says `more`. */
+export const MAX_FILES = 1_000;
 
 // ── MCP servers ──────────────────────────────────────────────────────────────────
 //
@@ -270,7 +287,13 @@ export const MAX_BOT_DESCRIPTION = 2_000;
 
 export const ServerFrame = Type.Union([
   /** `serverId` names this daemon's data and survives restarts. A different one means the client's entries are from elsewhere. */
-  Struct({ t: Type.Literal("welcome"), serverId: Type.String(), protocol: Type.Literal(PROTOCOL_VERSION) }),
+  Struct({
+    t: Type.Literal("welcome"),
+    serverId: Type.String(),
+    protocol: Type.Literal(PROTOCOL_VERSION),
+    /** Where the bots' files are served on this daemon's address, e.g. `/files/<secret>` (see FileView). */
+    filesPath: Optional(Type.String()),
+  }),
   /** Every bot, once per connection. */
   Struct({ t: Type.Literal("bots"), bots: List(BotSummary) }),
   /** One bot's summary changed, or a new bot was made. */
@@ -297,6 +320,11 @@ export const ServerFrame = Type.Union([
   }),
   /** A new entry of a watched bot. */
   Struct({ t: Type.Literal("entry"), entry: Entry }),
+  /**
+   * A watched bot's files: once after its `sync`, then whenever they change. `folder` is the folder's
+   * absolute path on the daemon's computer. `more`: there were more than `MAX_FILES`; the rest are left out.
+   */
+  Struct({ t: Type.Literal("files"), bot: BotId, folder: Type.String(), files: List(FileView), more: Optional(Type.Literal(true)) }),
   /** A watched bot's queue changed. */
   Struct({ t: Type.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
   Struct({ t: Type.Literal("result"), req, ok: Type.Literal(true), value: Type.Unknown() }),

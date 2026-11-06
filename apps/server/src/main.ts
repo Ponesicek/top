@@ -13,7 +13,7 @@
  */
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
@@ -29,7 +29,7 @@ import { seedHistory } from "./seed.ts";
 import { serve } from "./serve.ts";
 import { type BotRow, Store } from "./store.ts";
 import { createFakeTools, type TopTool } from "./tools.ts";
-import { botFolder, computerTools, ensureFolder, workspaceSection } from "./workspace.ts";
+import { botFolder, computerTools, ensureFolder, FILES_FOLDER, workspaceSection } from "./workspace.ts";
 
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -77,6 +77,8 @@ let tools: TopTool[] | ((bot: BotRow) => TopTool[]);
 let sections: ((bot: BotRow) => Record<string, string>) | undefined;
 let instructionsFor: (name: string, description: string) => string = defaultInstructions;
 let botNames: readonly string[];
+/** Each bot's files folder: inside its working folder for real bots, in the data folder for fake ones. */
+let filesOf: (bot: BotRow) => string;
 
 if (real) {
   model = args.model!;
@@ -107,6 +109,7 @@ if (real) {
   // Each bot works in a folder it owns, with pi's tools over the whole computer. The tools are
   // declared to the model on its next request, and the workspace section with its next message.
   const folderOf = (bot: BotRow) => ensureFolder(botFolder(workspace, bot.name));
+  filesOf = (bot) => join(botFolder(workspace, bot.name), FILES_FOLDER);
   tools = (bot) => computerTools(folderOf(bot));
   sections = (bot) => {
     const prompt = getCurrentSystemPrompt(store.context(bot.id).map((e) => e.message) as never);
@@ -122,7 +125,11 @@ if (real) {
   model = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
   models = createModels();
   models.setProvider(createFakeModelProvider(Number(args.tps)).provider);
-  tools = createFakeTools(resolve(dataDir, "effects.jsonl"));
+  filesOf = (bot) => join(botFolder(dataDir, bot.name), FILES_FOLDER);
+  tools = createFakeTools(resolve(dataDir, "effects.jsonl"), (id) => {
+    const bot = store.bot(id);
+    return bot && filesOf(bot);
+  });
   botNames = BOT_NAMES;
 }
 
@@ -138,11 +145,12 @@ if (Number(args.seed) > 0 && seeded) seedHistory(store, seeded.id, Number(args.s
 // MCP servers set up in the app. Signing in to one redirects to the port after the daemon's.
 const mcp = new McpManager(store, { oauthPort: Number(args.port) + 1, clientInfo: { name: "Top", version: "0.0.0" } });
 mcp.start();
-const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", newBot, mcp, ...(sections ? { sections } : {}) });
+const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", newBot, mcp, files: filesOf, ...(sections ? { sections } : {}) });
 // Settle what the last process left unfinished (interrupted tool calls, half-done tasks), then run.
 await daemon.start();
 
 const server = serve(daemon, { host: args.host, port: Number(args.port), compress: !args["no-compress"], allowOrigins: args["allow-origin"] ?? [] });
+await server.listening.catch((error: Error) => fail(`can't listen on ${args.host}:${args.port}: ${error.message}`));
 const stopLoad = args.load ? startLoad(daemon, { tools: args.tools }) : () => {};
 
 console.log(
@@ -155,6 +163,7 @@ async function shutdown() {
   await server.close();
   // Stops the MCP servers' programs too.
   await mcp.close();
+  daemon.closeFiles();
   store.close();
   process.exit(0);
 }

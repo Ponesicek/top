@@ -45,6 +45,8 @@ export async function runBench(win) {
   const result = { coldStartMs: firstContentAt - t0 };
 
   if (process.env.TOP_BENCH === "screenshot") {
+    // TOP_SHOT_CONSOLE=1 passes the page's console on to stderr.
+    if (process.env.TOP_SHOT_CONSOLE) wc.on("console-message", (event) => process.stderr.write(`[page] ${event.message}\n`));
     // Wait for every bot to be live and a couple of them working, then capture the window.
     await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);

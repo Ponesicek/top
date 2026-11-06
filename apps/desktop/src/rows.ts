@@ -1,5 +1,5 @@
 /** Transcript items → the rows the transcript renders. Row objects are stable per entry, so rows memoize. */
-import type { BotSummary, ConversationSnapshot, Entry, Gap, PendingMessage, QueuedMessage, ToolCallView, TranscriptItem } from "@top/client";
+import type { BotSummary, ConversationSnapshot, Entry, FileChange, Gap, PendingMessage, QueuedMessage, ToolCallView, TranscriptItem } from "@top/client";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -27,6 +27,8 @@ export type Row =
     }
   | { readonly kind: "tool"; readonly key: string; readonly entry: ToolEntry }
   | { readonly kind: "notice"; readonly key: string; readonly text: string }
+  /** Files in the bot's folder changed. */
+  | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
 
 const entryRows = new WeakMap<Entry, Row>();
@@ -56,6 +58,9 @@ function rowForEntry(entry: Entry): Row {
       break;
     case "notice":
       row = { kind: "notice", key, text: entry.text };
+      break;
+    case "files":
+      row = { kind: "files", key, seq: entry.seq, files: entry.files };
       break;
   }
   entryRows.set(entry, row);
@@ -126,6 +131,7 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
 /** A run of consecutive tool steps, shown as one collapsed line. */
 export type ToolGroupRow = { readonly kind: "toolgroup"; readonly key: string; readonly entries: readonly ToolEntry[]; readonly at: number };
 export type DisplayRow = Exclude<Row, { kind: "tool" }> | ToolGroupRow;
+export type FilesRow = Extract<Row, { kind: "files" }>;
 
 /** Who a row speaks for, in the styles that group messages by author. */
 export function author(row: DisplayRow): "user" | "bot" | undefined {
@@ -141,15 +147,54 @@ export function rowTime(row: DisplayRow | undefined): number | undefined {
 }
 
 const groupCache = new Map<string, ToolGroupRow>();
+const filesCache = new Map<string, { parts: readonly FilesRow[]; row: FilesRow }>();
+
+/** What a file went through, as one change: made then edited is "added", made then removed is nothing. */
+const CHANGE: Record<string, Record<string, FileChange["change"] | null>> = {
+  added: { added: "added", changed: "added", removed: null },
+  changed: { added: "changed", changed: "changed", removed: "removed" },
+  removed: { added: "changed", changed: "changed", removed: "removed" },
+};
+
+/** Several files rows as one, keeping its identity while its parts are the same. */
+function mergeFiles(parts: readonly FilesRow[]): FilesRow {
+  if (parts.length === 1) return parts[0]!;
+  const key = parts[0]!.key;
+  const prev = filesCache.get(key);
+  if (prev && prev.parts.length === parts.length && prev.parts.every((p, i) => p === parts[i])) return prev.row;
+  const changes = new Map<string, FileChange["change"]>();
+  for (const part of parts) {
+    for (const { path, change } of part.files) {
+      const before = changes.get(path);
+      const next = before ? CHANGE[before]![change]! : change;
+      if (next) changes.set(path, next);
+      else changes.delete(path);
+    }
+  }
+  const files = [...changes].map(([path, change]) => ({ path, change }));
+  const row: FilesRow = { kind: "files", key, seq: parts.at(-1)!.seq, files };
+  filesCache.set(key, { parts, row });
+  return row;
+}
 
 /**
  * Rows as the transcript shows them: reasoning-only and tool-call-only answers disappear (their
  * tool steps follow), and consecutive tool steps fold into one row. Group rows keep their identity
  * while their steps are unchanged, so memoized rows don't re-render.
+ *
+ * File changes wait for the end of the bot's turn (or its "working" row) and show there as one line,
+ * so a turn that wrote a report says so once, under the answer, instead of splitting its steps.
  */
 export function displayRows(rows: readonly Row[]): DisplayRow[] {
   const out: DisplayRow[] = [];
   let run: ToolEntry[] | null = null;
+  let files: FilesRow[] = [];
+  const flushFiles = () => {
+    if (!files.length) return;
+    const row = mergeFiles(files);
+    if (row.files.length) out.push(row);
+    files = [];
+  };
   const flush = () => {
     if (!run) return;
     const key = `g${run[0]!.seq}`;
@@ -162,6 +207,10 @@ export function displayRows(rows: readonly Row[]): DisplayRow[] {
     run = null;
   };
   for (const row of rows) {
+    if (row.kind === "files") {
+      files.push(row);
+      continue;
+    }
     if (row.kind === "tool") {
       run ??= [];
       run.push(row.entry);
@@ -170,9 +219,12 @@ export function displayRows(rows: readonly Row[]): DisplayRow[] {
     // A tool-call-only answer sits between tool steps; skipping it keeps the run together.
     if (row.kind === "assistant" && !row.text && !row.error) continue;
     flush();
+    if (row.kind === "working" || author(row) !== "bot") flushFiles();
     out.push(row);
   }
   flush();
+  flushFiles();
   if (groupCache.size > 5_000) groupCache.clear();
+  if (filesCache.size > 2_000) filesCache.clear();
   return out;
 }

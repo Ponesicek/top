@@ -1,7 +1,7 @@
 /**
  * Fake bots for development, tests and benchmarks: Pi AI's faux provider, scripted to answer in
  * markdown (prose, lists, code blocks, tables) at a fixed token rate, and to call tools when a message
- * asks for one ("deploy web", "email the team", "check status", "crash", or an MCP tool by name:
+ * asks for one ("deploy web", "email the team", "check status", "write a report", "crash", or an MCP tool by name:
  * `call echo__echo {"text": "hi"}`). Everything above the model is
  * the real daemon: storage, the agent loop, tools, recovery.
  */
@@ -93,7 +93,7 @@ let callCounter = 0;
 type JsonObject = Parameters<typeof fauxToolCall>[1];
 const call = (name: string, args: JsonObject) => fauxToolCall(name, args, { id: `call_${Date.now().toString(36)}_${++callCounter}` });
 
-/** The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "crash", "call server__tool {…}". */
+/** The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "write a report", "crash", "call server__tool {…}". */
 export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
   // An MCP tool by its full name, with JSON arguments.
   const named = /\bcall ([A-Za-z0-9-]+__[A-Za-z0-9_-]+)(?:\s+(\{.*\}))?/s.exec(prompt);
@@ -112,6 +112,7 @@ export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
   if (/\bcrash\b/.test(text)) return call("crash_daemon", {});
   if (/\bdeploy\b/.test(text)) return call("deploy", { service: /deploy (?:the )?([a-z-]+)/.exec(text)?.[1] ?? "web", ...seconds });
   if (/\bemail\b/.test(text)) return call("send_email", { to: "team@example.com", subject: "Status update", ...seconds });
+  if (/\breport\b/.test(text)) return call("write_report", {});
   if (/\bstatus\b/.test(text)) return call("check_status", { target: "The build", ...seconds });
   return undefined;
 }

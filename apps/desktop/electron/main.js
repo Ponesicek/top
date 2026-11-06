@@ -39,6 +39,8 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
+      // Chromium's PDF viewer, for PDFs in the Files panel.
+      plugins: true,
       // Screenshots render in a window that is never shown, so it must keep painting while hidden.
       ...(headless ? { backgroundThrottling: false } : {}),
     },

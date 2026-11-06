@@ -53,7 +53,7 @@ pnpm server:load     # 5 fake bots under load, one with a 10,000-message history
 pnpm server:fake     # fake bots that answer only when you message them
 ```
 
-The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "crash",
+The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "write a report", "crash",
 or any MCP tool by its full name: `call github_work__search {"query": "top"}`.
 Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`, `--workspace`, `--allow-origin`, `--port`, `--host`,
 `--data`, `--reset`, `--no-compress`; fake only: `--load`, `--tools` (load includes tool calls),
@@ -64,8 +64,30 @@ description the bot reads as part of its instructions); hover over a bot to dele
 erases its conversation everywhere; files in its folder stay.
 
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
-`Esc` stops, `Ctrl+,` opens settings, `Ctrl+=` / `Ctrl+-` / `Ctrl+0` change the interface size (also in
-settings), `Ctrl+Shift+P` toggles the performance overlay.
+`Esc` stops, `Ctrl+Shift+E` shows the bot's files, `Ctrl+,` opens settings, `Ctrl+=` / `Ctrl+-` / `Ctrl+0`
+change the interface size (also in settings), `Ctrl+Shift+P` toggles the performance overlay.
+
+### Files
+
+Each bot has a files folder, `~/bots/<name>/files` (fake bots: in the data folder), for what it makes
+for you: pages, reports, charts, images, notes. The bot is told about it. The **Files** button in the
+header opens it beside the conversation: newest first, and the file you pick rendered.
+
+- **What renders.** HTML pages (their scripts run, and they may load libraries from a CDN), Markdown
+  with Mermaid diagrams, images, PDFs, audio, video, CSV/TSV as tables, and code and text with
+  highlighting. A folder with an `index.html` is a site: its pages link to each other.
+- **Hand it on.** Each file has **Copy path** (on the daemon's computer, for an agent there, which can
+  read and edit it) and **Copy link** / **Open in browser**. The link uses the address the app reaches
+  the daemon at, so it works over Tailscale or a tunnel too: the daemon serves files on its own port,
+  at `/files/<secret>/<bot>/<path>`.
+- **Changes show in the conversation.** Anything that changes the folder (the bot's tools, a script it
+  runs, you in your editor) adds a line under the bot's turn naming the files, each a click away. The
+  model never sees these lines. Changes made while the daemon was down show when it starts.
+- **Safety.** Browsers let any web page reach localhost, so links carry a secret no page can guess
+  (made once per data folder, so links keep working across restarts), and pages never pass it on as a
+  referrer. A bot's page runs with the daemon's address as its origin, which the WebSocket refuses, so
+  it can't reach the daemon's controls; in the app it runs in a sandboxed frame that can't touch the
+  app or navigate the window. Hidden files (`.env`, `.git`) aren't listed or served.
 
 ### MCP servers
 

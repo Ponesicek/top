@@ -11,19 +11,24 @@
  * - `bots`: the roster, plus whether a task was running and how often the daemon restarted during it.
  *   A deleted bot is first marked `deleted` (it may still be winding down a step), then purged with
  *   everything it wrote; a restart purges any that were only marked.
+ * - `files`: the last listing of each bot's files folder, so changes made while the daemon was down are
+ *   still reported when it starts. A `files` entry and the listing it reports change together.
  * - `mcp_servers`: MCP connections set up in the app, with their secrets and OAuth credentials, and
  *   `bot_mcp`: which bots use which. A bot has none until it is given one.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
-export type EntryKind = "system" | "user" | "assistant" | "tool" | "notice";
+export type EntryKind = "system" | "user" | "assistant" | "tool" | "notice" | "files";
+
+/** A file in a bot's files folder, as last seen. */
+export type FileStat = { readonly size: number; readonly mtime: number };
 
 export type StoredEntry = {
   readonly seq: number;
   readonly bot: number;
   readonly kind: EntryKind;
-  /** JSON: an agent message (system/user/assistant/toolResult), or `{ text }` for a notice. */
+  /** JSON: an agent message (system/user/assistant/toolResult), `{ text }` for a notice, `{ files }` for files. */
   readonly message: string;
   readonly requestId: string | null;
   readonly toolCallId: string | null;
@@ -108,6 +113,13 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   finished_at INTEGER,
   PRIMARY KEY (assistant_seq, tool_call_id)
 );
+CREATE TABLE IF NOT EXISTS files (
+  bot INTEGER NOT NULL REFERENCES bots(id),
+  path TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  mtime REAL NOT NULL,
+  PRIMARY KEY (bot, path)
+);
 CREATE TABLE IF NOT EXISTS mcp_servers (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -153,10 +165,14 @@ function mcpServerOf(row: Row): McpServerRow {
 }
 
 const VISIBLE = "kind != 'system'";
+/** Entries the model sees: not the ones only clients show. */
+const CONTEXT = "kind NOT IN ('notice', 'files')";
 
 export class Store {
   /** Names this data, for clients: made once, kept across restarts. */
   readonly id: string;
+  /** Part of every file link (see the protocol's FileView): made once, so links keep working across restarts. */
+  readonly filesSecret: string;
   readonly #db: DatabaseSync;
   readonly #q: Record<string, StatementSync>;
 
@@ -173,8 +189,11 @@ export class Store {
     );
     if (!columns.has("description")) this.#db.exec("ALTER TABLE bots ADD COLUMN description TEXT NOT NULL DEFAULT ''");
     if (!columns.has("deleted")) this.#db.exec("ALTER TABLE bots ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
+    if (!columns.has("files_scanned")) this.#db.exec("ALTER TABLE bots ADD COLUMN files_scanned INTEGER NOT NULL DEFAULT 0");
     this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('id', ?)").run(randomUUID());
     this.id = String((this.#db.prepare("SELECT value FROM meta WHERE key = 'id'").get() as { value: string }).value);
+    this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('files_secret', ?)").run(randomBytes(18).toString("base64url"));
+    this.filesSecret = String((this.#db.prepare("SELECT value FROM meta WHERE key = 'files_secret'").get() as { value: string }).value);
     const p = (sql: string) => this.#db.prepare(sql);
     this.#q = {
       bots: p("SELECT * FROM bots WHERE deleted = 0 ORDER BY id"),
@@ -182,8 +201,8 @@ export class Store {
       insertBot: p("INSERT INTO bots (name, description, instructions, model) VALUES (?, ?, ?, ?)"),
       append: p("INSERT INTO entries (bot, kind, message, request_id, tool_call_id, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
       entry: p("SELECT * FROM entries WHERE seq = ?"),
-      context: p("SELECT kind, message FROM entries WHERE bot = ? AND kind != 'notice' ORDER BY seq"),
-      last: p("SELECT * FROM entries WHERE bot = ? AND kind != 'notice' ORDER BY seq DESC LIMIT 1"),
+      context: p(`SELECT kind, message FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq`),
+      last: p(`SELECT * FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq DESC LIMIT 1`),
       lastSeq: p(`SELECT MAX(seq) AS seq FROM entries WHERE bot = ? AND ${VISIBLE}`),
       lastAssistantSeq: p("SELECT MAX(seq) AS seq FROM entries WHERE bot = ? AND kind = 'assistant'"),
       lastAnswer: p("SELECT message FROM entries WHERE bot = ? AND kind = 'assistant' ORDER BY seq DESC LIMIT 1"),
@@ -258,7 +277,7 @@ export class Store {
   /** Remove a bot and everything it wrote. */
   purgeBot(bot: number) {
     this.transaction(() => {
-      for (const table of ["entries", "inbox", "tool_calls", "bot_mcp"]) this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
+      for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files"]) this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
       this.#db.prepare("DELETE FROM bots WHERE id = ?").run(bot);
     });
   }
@@ -295,6 +314,30 @@ export class Store {
       runActive: Number(row.run_active) === 1,
       restarts: Number(row.restarts),
     };
+  }
+
+  // ── files ────────────────────────────────────────────────────────────────────
+
+  /** The bot's files as last recorded; `undefined` before its folder was first looked at. */
+  files(bot: number): Map<string, FileStat> | undefined {
+    const scanned = this.#db.prepare("SELECT files_scanned FROM bots WHERE id = ?").get(bot);
+    if (!scanned || Number(scanned.files_scanned) !== 1) return undefined;
+    const rows = this.#db.prepare("SELECT path, size, mtime FROM files WHERE bot = ?").all(bot);
+    return new Map(rows.map((row) => [String(row.path), { size: Number(row.size), mtime: Number(row.mtime) }]));
+  }
+
+  /**
+   * Record the bot's files as they are now and, when `changes` has any, the `files` entry that reports
+   * them, in one transaction: a crash can't report a change twice or lose one.
+   */
+  recordFiles(bot: number, listing: ReadonlyMap<string, FileStat>, changes: readonly { path: string; change: string }[]): StoredEntry | undefined {
+    return this.transaction(() => {
+      this.#db.prepare("DELETE FROM files WHERE bot = ?").run(bot);
+      const insert = this.#db.prepare("INSERT INTO files (bot, path, size, mtime) VALUES (?, ?, ?, ?)");
+      for (const [path, stat] of listing) insert.run(bot, path, stat.size, stat.mtime);
+      this.#db.prepare("UPDATE bots SET files_scanned = 1 WHERE id = ?").run(bot);
+      return changes.length ? this.append(bot, "files", { files: changes }) : undefined;
+    });
   }
 
   // ── MCP servers ──────────────────────────────────────────────────────────────

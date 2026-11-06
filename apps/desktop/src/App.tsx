@@ -4,6 +4,7 @@ import { type ChatStyle, readChatStyle, saveChatStyle } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
+import { FilesPanel } from "./components/files/FilesPanel.tsx";
 import { Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
 import { Settings } from "./components/Settings.tsx";
@@ -11,6 +12,8 @@ import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
+import { togglePanel, useBotFiles, usePanel } from "./files.ts";
+import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
 import { conversation, markSeen, top, useBot, useRoster } from "./top.ts";
 
@@ -93,6 +96,9 @@ export function App() {
         // Interface size, as in a browser (the window menu that did this is gone on Windows/Linux).
         e.preventDefault();
         setScale(e.key === "0" ? 1 : stepScale(scale, e.key === "-" ? -1 : 1));
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        togglePanel();
       } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === ",") {
         e.preventDefault();
         setSettingsOpen(true);
@@ -128,6 +134,10 @@ export function App() {
   }, [select]);
 
   const sync = bot ? conversation(bot.id) : undefined;
+  const panel = usePanel();
+  // The panel is there when it's open, a bot is open, and the daemon gives bots files.
+  const hasFiles = useBotFiles(bot?.id) !== undefined;
+  const filesOpen = panel.open && !settingsOpen && !!bot && hasFiles;
 
   // The open bot's newest entry counts as read; with settings open, no bot is open.
   const summary = useBot(bot?.id);
@@ -139,7 +149,7 @@ export function App() {
 
   return (
     <TooltipProvider delay={500}>
-      <div className="grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]">
+      <div className={cn("grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]", filesOpen && "grid-cols-[280px_1fr_auto]")}>
         <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
         <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
           {settingsOpen ? (
@@ -153,7 +163,7 @@ export function App() {
             />
           ) : bot && sync ? (
             <>
-              <Header sync={sync} name={bot.name} />
+              <Header sync={sync} name={bot.name} filesOpen={filesOpen} />
               {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}
               <div
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
@@ -172,6 +182,7 @@ export function App() {
             <Empty>Waiting for the Top daemon…</Empty>
           )}
         </main>
+        {filesOpen && bot && <FilesPanel bot={bot.id} name={bot.name} />}
         <NewBotDialog
           open={creating}
           onOpenChange={setCreating}

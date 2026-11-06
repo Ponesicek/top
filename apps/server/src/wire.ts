@@ -3,7 +3,7 @@
  * no usage counters, provider metadata or tool arguments, and tool output cut to a preview. `detail`
  * fetches one entry in full when someone opens it.
  */
-import type { Entry, ToolCallView } from "@top/protocol";
+import type { Entry, FileChange, ToolCallView } from "@top/protocol";
 import type { StoredEntry } from "./store.ts";
 
 const TOOL_PREVIEW_CHARS = 280;
@@ -35,6 +35,8 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       return undefined;
     case "notice":
       return { ...base, kind: "notice", text: String(message.text ?? "") };
+    case "files":
+      return { ...base, kind: "files", files: (message as { files?: FileChange[] }).files ?? [] };
     case "user":
       return { ...base, kind: "user", text: textOf(message.content), ...(stored.requestId ? { requestId: stored.requestId } : {}) };
     case "assistant": {

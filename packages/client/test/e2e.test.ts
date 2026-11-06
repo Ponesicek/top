@@ -187,7 +187,7 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
     const s = bot.getSnapshot();
     const b = top.getSnapshot().bots.find((x) => x.id === id);
     throw new Error(
-      `${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`,
+      `${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "files" ? e.files.length : e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`,
     );
   });
   assert.deepEqual(

@@ -11,7 +11,8 @@
  *
  * `ctx.key` is stable for one call across restarts; pass it to outside services as an idempotency key.
  */
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import Type, { type TProperties } from "typebox";
 
@@ -58,8 +59,47 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 // ── fake tools with real side effects, for development and the crash tests ───────
 
-/** Side effects of the fake tools, one JSON line each, so tests can count what really happened. */
-export function createFakeTools(effectsPath: string): TopTool[] {
+/** A page and a note with a diagram, for trying the Files panel without a real model. */
+const REPORT_HTML = `<!doctype html>
+<meta charset="utf-8">
+<title>Weekly status</title>
+<style>
+  :root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; }
+  body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  .bar { height: 1.4rem; border-radius: 4px; background: #d97757; color: white; padding: 0 .5rem; font-size: 12px; line-height: 1.4rem; }
+  td { padding: .25rem .75rem .25rem 0; }
+</style>
+<h1>Weekly status</h1>
+<p>Deploys this week, by service. <a href="notes.md">Notes</a></p>
+<table>
+  <tr><td>web</td><td><div class="bar" style="width: 18rem">12</div></td></tr>
+  <tr><td>api</td><td><div class="bar" style="width: 9rem">6</div></td></tr>
+  <tr><td>jobs</td><td><div class="bar" style="width: 3rem">2</div></td></tr>
+</table>
+<p id="clock"></p>
+<script>document.getElementById("clock").textContent = "Rendered at " + new Date().toLocaleTimeString();</script>
+`;
+const REPORT_NOTES = `# Notes
+
+The pipeline, as it stands:
+
+\`\`\`mermaid
+flowchart LR
+  push[Push] --> ci[CI] --> stage[Staging] --> prod[Production]
+  ci -- fails --> fix[Fix]
+\`\`\`
+
+| Service | Deploys | p99 |
+|---|---|---|
+| web | 12 | 41 ms |
+| api | 6 | 88 ms |
+`;
+
+/**
+ * Side effects of the fake tools, one JSON line each, so tests can count what really happened.
+ * `filesOf` gives a bot's files folder, for `write_report`.
+ */
+export function createFakeTools(effectsPath: string, filesOf: (bot: number) => string | undefined = () => undefined): TopTool[] {
   const record = (tool: string, phase: string, key: string, detail?: unknown) =>
     appendFileSync(effectsPath, `${JSON.stringify({ tool, phase, key, detail, at: Date.now() })}\n`);
   const recorded = (tool: string, phase: string, key: string) => {
@@ -122,6 +162,28 @@ export function createFakeTools(effectsPath: string): TopTool[] {
         record("check_status", "start", ctx.key, args.target);
         await sleep(seconds(args, 1), ctx.signal);
         return text(`${String(args.target ?? "Everything")} is healthy. Queue depth 0, p99 41 ms.`);
+      },
+    },
+    {
+      // Writes the same files again, so a restart may run it again.
+      name: "write_report",
+      label: "Write report",
+      description: "Write a status report (a page and a note) to the bot's files folder.",
+      parameters: schema({}),
+      replay: "safe",
+      async run(_args, ctx) {
+        const folder = filesOf(ctx.bot);
+        if (!folder) return text("This bot has no files folder.");
+        for (const [name, content] of [
+          ["report.html", REPORT_HTML],
+          ["notes.md", REPORT_NOTES],
+        ] as const) {
+          const path = join(folder, name);
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, content);
+        }
+        record("write_report", "effect", ctx.key);
+        return text("Wrote files/report.html and files/notes.md.");
       },
     },
     {

@@ -6,6 +6,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, type Models, toToolDeclaration } from "@earendil-works/pi-ai";
 import { type BotSummary, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type WhenBusy } from "@top/protocol";
 import { collarTools } from "./collar/index.ts";
+import { FilesFolder, type Listing } from "./files.ts";
 import type { McpManager } from "./mcp.ts";
 import { BotRunner, type RunnerOptions } from "./runner.ts";
 import type { BotRow, InboxRow, Store, StoredEntry } from "./store.ts";
@@ -88,6 +89,8 @@ type DaemonOptions = {
   newBot?: NewBot;
   /** MCP servers set up in the app; a bot gets the tools of those it has been given. */
   mcp?: McpManager;
+  /** Each bot's files folder (see files.ts). Without it, bots have none. */
+  files?: (bot: BotRow) => string;
 };
 
 export class Daemon {
@@ -102,6 +105,8 @@ export class Daemon {
   readonly #inboxListeners = new Set<(bot: number) => void>();
   readonly #botListeners = new Set<(summary: BotSummary) => void>();
   readonly #removedListeners = new Set<(bot: number) => void>();
+  readonly #filesListeners = new Set<(bot: number, folder: FilesFolder) => void>();
+  readonly #folders = new Map<number, FilesFolder>();
   /** Top's own tools, which every bot has (see collar/index.ts). */
   readonly #collar = collarTools(this);
 
@@ -147,6 +152,18 @@ export class Daemon {
     );
     this.runners.set(bot.id, runner);
     this.#summaries.set(bot.id, this.#summarize(bot.id));
+    if (this.#options.files) {
+      const folder = new FilesFolder(bot.id, this.#options.files(bot), this.store, (_listing: Listing, entry) => {
+        if (!live()) return;
+        if (entry) {
+          for (const listener of this.#entryListeners) listener(entry);
+          this.#touch(bot.id);
+        }
+        for (const listener of this.#filesListeners) listener(bot.id, folder);
+      });
+      this.#folders.set(bot.id, folder);
+      void folder.start();
+    }
     return runner;
   }
 
@@ -178,6 +195,8 @@ export class Daemon {
     this.#summaries.delete(id);
     clearTimeout(this.#dirty.get(id));
     this.#dirty.delete(id);
+    this.#folders.get(id)?.close();
+    this.#folders.delete(id);
     this.store.markDeleted(id);
     for (const listener of this.#removedListeners) listener(id);
     this.#options.mcp?.botRemoved(id);
@@ -200,6 +219,21 @@ export class Daemon {
   /** The MCP servers set up in the app, when this daemon has them. */
   get mcp(): McpManager | undefined {
     return this.#options.mcp;
+  }
+
+  /** Whether bots have files folders here. */
+  get hasFiles(): boolean {
+    return this.#options.files !== undefined;
+  }
+
+  /** A bot's files folder, when this daemon gives bots one. */
+  files(bot: number): FilesFolder | undefined {
+    return this.#folders.get(bot);
+  }
+
+  /** Stop watching the files folders (the daemon is shutting down). */
+  closeFiles() {
+    for (const folder of this.#folders.values()) folder.close();
   }
 
   get bots(): BotSummary[] {
@@ -235,6 +269,11 @@ export class Daemon {
   onBot(listener: (summary: BotSummary) => void) {
     this.#botListeners.add(listener);
     return () => this.#botListeners.delete(listener);
+  }
+  /** A bot's files changed (or were listed for the first time). */
+  onFiles(listener: (bot: number, folder: FilesFolder) => void) {
+    this.#filesListeners.add(listener);
+    return () => this.#filesListeners.delete(listener);
   }
   onBotRemoved(listener: (bot: number) => void) {
     this.#removedListeners.add(listener);

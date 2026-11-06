@@ -29,7 +29,7 @@ hljs.registerAliases(["html", "svg"], { languageName: "xml" });
 hljs.registerAliases(["yml"], { languageName: "yaml" });
 
 /** Highlighted HTML (hljs escapes the text), or escaped plain text for unknown languages. */
-function highlight(code: string, lang: string): string {
+export function highlight(code: string, lang: string): string {
   if (lang && hljs.getLanguage(lang)) {
     try {
       return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;

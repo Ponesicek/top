@@ -10,12 +10,14 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ConversationSnapshot, ConversationSync } from "@top/client";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { ChatStyle } from "../chatStyle.ts";
+import { copyCode } from "../lib/copyCode.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows } from "../rows.ts";
 import { useBot } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
+import { FilesLine } from "./files/FilesLine.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
 import { AutoLoad, DIVIDER, type RowContext, type RowRenderer } from "./transcript/parts.tsx";
@@ -28,15 +30,16 @@ function estimate(row: DisplayRow | undefined): number {
   if (!row) return 80;
   if (row.kind === "user") return 64 + Math.ceil(row.text.length / 90) * 22;
   if (row.kind === "assistant") return 80 + Math.ceil(row.text.length / 110) * 24;
-  if (row.kind === "toolgroup") return 34;
+  if (row.kind === "toolgroup" || row.kind === "files") return 34;
   return 48;
 }
 
 /** Each style: how it renders a row, and how the column around the rows is laid out. */
-const STYLES: Record<ChatStyle, { render: RowRenderer; scroll?: string; inner: string; row: string }> = {
-  default: { render: renderDefaultRow, inner: "max-w-220", row: "px-8 narrow:px-4" },
-  team: { render: renderTeamRow, inner: "max-w-none", row: "px-0" },
-  chat: { render: renderChatRow, inner: "max-w-240", row: "px-[5%] narrow:px-2" },
+const STYLES: Record<ChatStyle, { render: RowRenderer; scroll?: string; inner: string; row: string; files: string }> = {
+  // `files`: where the line saying which files changed starts, under the style's answers.
+  default: { render: renderDefaultRow, inner: "max-w-220", row: "px-8 narrow:px-4", files: "pl-10" },
+  team: { render: renderTeamRow, inner: "max-w-none", row: "px-0", files: "pr-4 pl-18" },
+  chat: { render: renderChatRow, inner: "max-w-240", row: "px-[5%] narrow:px-2", files: "pl-2" },
 };
 
 /** Committed rows plus tail rows, as one array that keeps its identity while nothing structural changes. */
@@ -132,21 +135,7 @@ export const Transcript = memo(function Transcript({ sync, name, style = "defaul
   }, [shown]);
 
   // Copy buttons inside rendered markdown (one delegated listener).
-  const onClick = useCallback((event: React.MouseEvent) => {
-    const button = (event.target as HTMLElement).closest(".copy");
-    if (!button) return;
-    const code = button.closest(".code")?.querySelector("code")?.textContent ?? "";
-    void navigator.clipboard.writeText(code).then(() => {
-      const label = button.querySelector("span");
-      if (!label) return;
-      label.textContent = "Copied";
-      button.classList.add("copied");
-      setTimeout(() => {
-        label.textContent = "Copy";
-        button.classList.remove("copied");
-      }, 1200);
-    });
-  }, []);
+  const onClick = useCallback((event: React.MouseEvent) => void copyCode(event), []);
 
   const loadEarlier = useCallback(() => sync.loadEarlier(), [sync]);
   const ctx = useMemo<RowContext>(() => ({ sync, name }), [sync, name]);
@@ -196,6 +185,8 @@ export const Transcript = memo(function Transcript({ sync, name, style = "defaul
                 <AutoLoad onVisible={() => sync.fillGap(row.gap)} label="Load missed messages" />
               ) : row.kind === "notice" ? (
                 <div className={DIVIDER}>{row.text}</div>
+              ) : row.kind === "files" ? (
+                <FilesLine row={row} bot={sync.id} className={look.files} />
               ) : (
                 look.render(rows, item.index, ctx, bot)
               )}
