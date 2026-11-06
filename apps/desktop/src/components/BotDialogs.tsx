@@ -125,12 +125,10 @@ function DeleteBotBody({ bot, onDone }: { bot: BotSummary; onDone: () => void })
 }
 
 /** Focus starts on Cancel (the first control): Enter right after opening must not delete. */
-export function DeleteBotDialog({ bot, open, onOpenChange, onClosed }: { bot: BotSummary; open: boolean; onOpenChange: (open: boolean) => void; onClosed: () => void }) {
+export function DeleteBotDialog({ bot, open, onOpenChange, onClosed }: { bot: BotSummary | undefined; open: boolean; onOpenChange: (open: boolean) => void; onClosed: () => void }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={(o) => !o && onClosed()}>
-      <AlertDialogPopup>
-        <DeleteBotBody bot={bot} onDone={() => onOpenChange(false)} />
-      </AlertDialogPopup>
+      <AlertDialogPopup>{bot && <DeleteBotBody key={bot.id} bot={bot} onDone={() => onOpenChange(false)} />}</AlertDialogPopup>
     </AlertDialog>
   );
 }

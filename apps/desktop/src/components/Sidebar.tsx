@@ -156,7 +156,7 @@ export function Sidebar({
           </Button>
         </Tooltip>
       </div>
-      <nav className="bots flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pt-0.5 pb-2.5">
+      <nav className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-0.5 pb-2.5">
         {bots.map((bot, i) => {
           // While settings fill the main area, no bot is open.
           const isSelected = !settingsOpen && bot.id === selected;
@@ -173,7 +173,8 @@ export function Sidebar({
           );
         })}
       </nav>
-      {deleting && <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />}
+      {/* Always mounted: a dialog that mounts already open has no closed state to animate in from. */}
+      <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />
       <div className="flex-none px-3 pt-2 pb-3">
         <Tooltip content="Settings (Ctrl+,)" side="right">
           <Button
