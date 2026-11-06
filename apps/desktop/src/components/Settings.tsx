@@ -1,4 +1,6 @@
 import { useId, type ReactNode } from "react";
+import { CHAT_STYLES, type ChatStyle } from "../chatStyle.ts";
+import { cn } from "../lib/utils.ts";
 import { Switch } from "./ui/switch.tsx";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -36,7 +38,40 @@ function Kbd({ children }: { children: ReactNode }) {
 }
 
 /** The settings page fills the main area, in place of a conversation. */
-export function Settings({ perfHud, onPerfHudChange }: { perfHud: boolean; onPerfHudChange: (on: boolean) => void }) {
+/** A few buttons in a track, the chosen one raised. */
+function Segmented<T extends string>({ value, options, onChange, labelledBy }: { value: T; options: readonly { value: T; label: string }[]; onChange: (v: T) => void; labelledBy: string }) {
+  return (
+    <div role="radiogroup" aria-labelledby={labelledBy} className="flex flex-none gap-0.5 rounded-field bg-secondary p-0.75">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={o.value === value}
+          onClick={() => onChange(o.value)}
+          className={cn(
+            "rounded-[7px] px-3 py-1 text-meta font-label text-secondary-foreground transition-colors duration-120 hover:text-foreground",
+            o.value === value && "bg-popover text-foreground shadow-row-selected",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function Settings({
+  perfHud,
+  onPerfHudChange,
+  chatStyle,
+  onChatStyleChange,
+}: {
+  perfHud: boolean;
+  onPerfHudChange: (on: boolean) => void;
+  chatStyle: ChatStyle;
+  onChatStyleChange: (style: ChatStyle) => void;
+}) {
   return (
     <>
       <header className="h-15 flex-none border-b [scrollbar-gutter:stable] [-webkit-app-region:drag]">
@@ -46,6 +81,13 @@ export function Settings({ perfHud, onPerfHudChange }: { perfHud: boolean; onPer
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         <div className="mx-auto flex max-w-170 flex-col gap-8 px-8 py-7">
+          <Section title="Appearance">
+            <Row
+              label="Conversation style"
+              description={CHAT_STYLES.find((s) => s.value === chatStyle)?.description}
+              control={({ labelId }) => <Segmented value={chatStyle} options={CHAT_STYLES} onChange={onChatStyleChange} labelledBy={labelId} />}
+            />
+          </Section>
           <Section title="Performance">
             <Row
               label="Performance overlay"

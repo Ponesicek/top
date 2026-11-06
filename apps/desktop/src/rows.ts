@@ -94,3 +94,56 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
   }
   return rows;
 }
+
+/** A run of consecutive tool steps, shown as one collapsed line. */
+export type ToolGroupRow = { readonly kind: "toolgroup"; readonly key: string; readonly entries: readonly ToolEntry[]; readonly at: number };
+export type DisplayRow = Exclude<Row, { kind: "tool" }> | ToolGroupRow;
+
+/** Who a row speaks for, in the styles that group messages by author. */
+export function author(row: DisplayRow): "user" | "bot" | undefined {
+  if (row.kind === "user") return "user";
+  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working") return "bot";
+  return undefined;
+}
+
+export function rowTime(row: DisplayRow | undefined): number | undefined {
+  if (!row) return undefined;
+  if (row.kind === "user" || row.kind === "assistant" || row.kind === "toolgroup") return row.at;
+  return undefined;
+}
+
+const groupCache = new Map<string, ToolGroupRow>();
+
+/**
+ * Rows as the transcript shows them: reasoning-only and tool-call-only answers disappear (their
+ * tool steps follow), and consecutive tool steps fold into one row. Group rows keep their identity
+ * while their steps are unchanged, so memoized rows don't re-render.
+ */
+export function displayRows(rows: readonly Row[]): DisplayRow[] {
+  const out: DisplayRow[] = [];
+  let run: ToolEntry[] | null = null;
+  const flush = () => {
+    if (!run) return;
+    const key = `g${run[0]!.seq}`;
+    const prev = groupCache.get(key);
+    const entries = run;
+    const same = prev && prev.entries.length === entries.length && prev.entries.every((e, i) => e === entries[i]);
+    const group: ToolGroupRow = same ? prev : { kind: "toolgroup", key, entries, at: entries[entries.length - 1]!.at };
+    if (!same) groupCache.set(key, group);
+    out.push(group);
+    run = null;
+  };
+  for (const row of rows) {
+    if (row.kind === "tool") {
+      (run ??= []).push(row.entry);
+      continue;
+    }
+    // A tool-call-only answer sits between tool steps; skipping it keeps the run together.
+    if (row.kind === "assistant" && !row.text && !row.error) continue;
+    flush();
+    out.push(row);
+  }
+  flush();
+  if (groupCache.size > 5_000) groupCache.clear();
+  return out;
+}

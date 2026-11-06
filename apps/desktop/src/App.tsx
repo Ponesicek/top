@@ -11,6 +11,7 @@ import { Transcript } from "./components/Transcript.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { conversation, markSeen, top, useBot } from "./top.ts";
+import { readChatStyle, saveChatStyle, type ChatStyle } from "./chatStyle.ts";
 
 function readSelected(): string | undefined {
   try {
@@ -48,6 +49,11 @@ export function App() {
   });
   const [hud, setHudState] = useState(readPerfHud);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chatStyle, setChatStyleState] = useState<ChatStyle>(readChatStyle);
+  const setChatStyle = useCallback((style: ChatStyle) => {
+    setChatStyleState(style);
+    saveChatStyle(style);
+  }, []);
   const [creating, setCreating] = useState(false);
   const ready = useSyncExternalStore(top.subscribe, () => top.getSnapshot().ready);
 
@@ -126,13 +132,13 @@ export function App() {
       <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
       <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
         {settingsOpen ? (
-          <Settings perfHud={hud} onPerfHudChange={setPerfHud} />
+          <Settings perfHud={hud} onPerfHudChange={setPerfHud} chatStyle={chatStyle} onChatStyleChange={setChatStyle} />
         ) : bot && sync ? (
           <>
             <Header sync={sync} name={bot.name} />
             {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}
             <div className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent" aria-hidden />
-            <Transcript key={String(bot.id)} sync={sync} name={bot.name} />
+            <Transcript key={String(bot.id)} sync={sync} name={bot.name} style={chatStyle} />
             <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
           </>
         ) : ready ? (

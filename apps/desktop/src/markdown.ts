@@ -98,3 +98,36 @@ export function renderCached(key: string, text: string): string {
   }
   return html;
 }
+
+export type Segment = { readonly kind: "prose" | "block"; readonly html: string };
+const segmentCache = new Map<string, Segment[]>();
+
+/**
+ * A rendered answer cut into runs of prose and the tables and code blocks between them, for styles
+ * that put prose in bubbles and let wide blocks stand on their own.
+ */
+export function renderSegments(key: string, text: string): Segment[] {
+  let segments = segmentCache.get(key);
+  if (segments) return segments;
+  const template = document.createElement("template");
+  template.innerHTML = renderCached(key, text);
+  segments = [];
+  let prose = "";
+  const flush = () => {
+    if (prose.trim()) segments!.push({ kind: "prose", html: prose });
+    prose = "";
+  };
+  for (const node of Array.from(template.content.childNodes)) {
+    const el = node instanceof Element ? node : null;
+    if (el && (el.tagName === "TABLE" || el.classList.contains("code"))) {
+      flush();
+      segments.push({ kind: "block", html: el.outerHTML });
+    } else {
+      prose += el ? el.outerHTML : md.utils.escapeHtml(node.textContent ?? "");
+    }
+  }
+  flush();
+  segmentCache.set(key, segments);
+  if (segmentCache.size > 2_000) segmentCache.delete(segmentCache.keys().next().value!);
+  return segments;
+}

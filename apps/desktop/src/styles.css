@@ -55,6 +55,11 @@
   --syn-type: #0f7a85;
   --syn-comment: #706d65;
   --syn-punct: #69665f;
+  /* The chat style: warm grey bubbles from the bot, peach ones from you, flat on the page. */
+  --chat-in: #f0eeea;
+  --chat-out: #ffe4d4;
+  --chat-out-foreground: #2a1a12;
+  --shadow-bubble-value: 0 0 #0000;
   color-scheme: light;
 }
 
@@ -108,14 +113,16 @@
     --syn-type: #5fd0d8;
     --syn-comment: #8f8c84;
     --syn-punct: #a5a7b4;
+    --chat-in: #252422;
+    --chat-out: #4a2718;
+    --chat-out-foreground: #f6ece6;
+    --shadow-bubble-value: 0 0 #0000;
     color-scheme: dark;
   }
 }
 
 /* Windows under 720px collapse the sidebar to avatars. */
 @custom-variant narrow (@media (max-width: 720px));
-/* Message times sit in the margin left of the avatars; narrower windows have no margin for them. */
-@custom-variant no-margin (@media (max-width: 1240px));
 
 @theme {
   --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -213,6 +220,10 @@
   --color-destructive-surface: var(--destructive-surface);
   --color-code: var(--code);
   --color-code-foreground: var(--code-foreground);
+  --color-chat-in: var(--chat-in);
+  --color-chat-out: var(--chat-out);
+  --color-chat-out-foreground: var(--chat-out-foreground);
+  --shadow-bubble: var(--shadow-bubble-value);
 
   --shadow-focus: var(--shadow-focus-value);
   --shadow-row-selected: var(--shadow-row-selected-value);
@@ -480,24 +491,50 @@
     font-variant-ligatures: none;
   }
 
-  /* A bot message's time, beside the paragraph or block you're pointing at, so a long answer's time is
-     always in view. Out of flow (absolute, vertical position left where the block starts), so nothing
-     moves. The message sets --t. */
-  .md > :hover::before {
-    content: var(--t, none);
-    position: absolute;
-    right: calc(100% + 12px);
-    font: 400 12px/24px var(--font-sans);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0;
-    color: var(--color-muted-foreground);
-    white-space: nowrap;
-    pointer-events: none;
+  /* The chat style's tables and code blocks, standing between the bubbles. */
+  .chat-block .md > :is(table, .code) {
+    margin: 0;
+    border-radius: 12px;
   }
-  @media (max-width: 1240px) {
-    .md > :hover::before {
-      display: none;
-    }
+  .chat-block .md table {
+    min-width: 280px;
+  }
+
+  /* Text in a bubble: a messenger's size and rhythm, not a document's. */
+  .chat-bubble {
+    font-size: 14.5px;
+    line-height: 1.42;
+  }
+  .chat-bubble .md > :is(p, ul, ol, blockquote, h1, h2, h3, h4) {
+    max-width: none;
+  }
+  .chat-bubble .md :is(p, ul, ol) {
+    margin: 0.45em 0;
+  }
+  .chat-bubble .md li {
+    margin: 2px 0;
+  }
+  .chat-bubble .md :is(h1, h2, h3, h4) {
+    margin: 0.6em 0 0.2em;
+  }
+  .chat-bubble .md > :first-child {
+    margin-top: 0;
+  }
+  .chat-bubble .md > :last-child {
+    margin-bottom: 0;
+  }
+  .chat-bubble .md code {
+    font-size: 0.84em;
+    padding: 1px 4px;
+    background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+  }
+  /* Keeps room at the end of the last line for the time, which sits over it at the bubble's corner. */
+  .stamp-space {
+    display: inline-block;
+    visibility: hidden;
+    padding-left: 12px;
+    font-size: 11px;
+    line-height: 1;
   }
 
   /* syntax colors (highlight.js classes) */
