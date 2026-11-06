@@ -28,3 +28,20 @@ export function saveChatStyle(style: ChatStyle) {
     // ignore
   }
 }
+
+/** Whether the transcript shows the bot's tool calls. Off by default; saved across restarts. */
+export function readShowTools(): boolean {
+  try {
+    return localStorage.getItem("top.showTools") === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveShowTools(on: boolean) {
+  try {
+    localStorage.setItem("top.showTools", on ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}

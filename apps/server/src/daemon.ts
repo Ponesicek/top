@@ -7,10 +7,12 @@ import { createInitialSystemMessage, type Models, toToolDeclaration } from "@ear
 import { type BotSummary, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type WhenBusy } from "@top/protocol";
 import { collarTools } from "./collar/index.ts";
 import { FilesFolder, type Listing } from "./files.ts";
+import { Jobs } from "./jobs.ts";
 import type { McpManager } from "./mcp.ts";
 import { BotRunner, type RunnerOptions } from "./runner.ts";
 import type { BotRow, InboxRow, Store, StoredEntry } from "./store.ts";
 import type { TopTool } from "./tools.ts";
+import { WakeClock } from "./wakes.ts";
 import { textOf } from "./wire.ts";
 
 const SUMMARY_DELAY_MS = 100;
@@ -91,6 +93,8 @@ type DaemonOptions = {
   mcp?: McpManager;
   /** Each bot's files folder (see files.ts). Without it, bots have none. */
   files?: (bot: BotRow) => string;
+  /** How long a tool call may run before it moves to the background (see jobs.ts). */
+  foregroundMs?: number;
 };
 
 export class Daemon {
@@ -107,6 +111,12 @@ export class Daemon {
   readonly #removedListeners = new Set<(bot: number) => void>();
   readonly #filesListeners = new Set<(bot: number, folder: FilesFolder) => void>();
   readonly #folders = new Map<number, FilesFolder>();
+  /** Tool calls that outran the time limit and run on in the background (see jobs.ts). */
+  readonly jobs: Jobs;
+  /** Wake-ups the bots set for themselves (see wakes.ts). */
+  readonly wakes: WakeClock;
+  /** Each bot's tools as they are now, without the time limit (see `toolsOf`). */
+  readonly #toolSources = new Map<number, () => readonly TopTool[]>();
   /** Top's own tools, which every bot has (see collar/index.ts). */
   readonly #collar = collarTools(this);
 
@@ -119,6 +129,8 @@ export class Daemon {
     this.#models = models;
     this.#tools = tools;
     this.#options = options;
+    this.jobs = new Jobs(store, { deliver: (row) => this.#queued(row), changed: (bot) => this.#touch(bot) }, options.foregroundMs);
+    this.wakes = new WakeClock(store, (row) => this.#queued(row));
     for (const bot of store.bots()) this.#add(bot);
   }
 
@@ -126,10 +138,14 @@ export class Daemon {
     const { thinking, sections } = this.#options;
     // A deleted bot may still be finishing a step; nothing it does after that is announced.
     const live = () => this.runners.get(bot.id) === runner;
-    // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run.
+    // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run. Any of
+    // them that runs too long moves to the background.
     const own = [...(typeof this.#tools === "function" ? this.#tools(bot) : this.#tools), ...this.#collar];
     const mcp = this.#options.mcp;
-    const tools = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
+    const plain = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
+    this.#toolSources.set(bot.id, plain);
+    const wrapped = own.map((tool) => this.jobs.wrap(tool));
+    const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map((tool) => this.jobs.wrap(tool))] : () => wrapped;
     const runner: BotRunner = new BotRunner(
       bot,
       this.store,
@@ -192,28 +208,58 @@ export class Daemon {
   deleteBot(id: number) {
     const runner = this.runner(id);
     this.runners.delete(id);
+    this.#toolSources.delete(id);
     this.#summaries.delete(id);
     clearTimeout(this.#dirty.get(id));
     this.#dirty.delete(id);
     this.#folders.get(id)?.close();
     this.#folders.delete(id);
     this.store.markDeleted(id);
+    this.wakes.changed();
     for (const listener of this.#removedListeners) listener(id);
     this.#options.mcp?.botRemoved(id);
     runner.abort();
+    this.jobs.stopAll(id);
     void runner
       .waitForIdle()
       .then(() => this.store.purgeBot(id))
       .catch((error) => console.error(`[top] deleting ${runner.name}:`, error));
   }
 
-  /** Settle whatever the last process left unfinished, then start every bot. */
+  /** Settle whatever the last process left unfinished, then start every bot, then the wake-up clock. */
   async start() {
+    const lost = this.jobs.recover();
+    if (lost) console.log(`[top] ${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
     for (const runner of this.runners.values()) {
       const report = await runner.recover();
       if (report) console.log(`[top] ${runner.name}: ${report}`);
     }
     for (const runner of this.runners.values()) runner.start();
+    this.wakes.start();
+  }
+
+  /** The user's Stop: the bot's task ends, and so do its background jobs. Its wake-ups stay. */
+  stop(bot: number) {
+    this.runner(bot).abort();
+    this.jobs.stopAll(bot);
+  }
+
+  /** Stop the clocks (the daemon is shutting down). */
+  close() {
+    this.wakes.close();
+    for (const timer of this.#dirty.values()) clearTimeout(timer);
+    this.#dirty.clear();
+    this.closeFiles();
+  }
+
+  /** Something about a bot changed that its summary shows (wake-ups, jobs). */
+  changed(bot: number) {
+    if (this.runners.has(bot)) this.#touch(bot);
+  }
+
+  /** A bot's tools as they are now (its own, Collar's, its MCP servers'), as written: no time limit. */
+  toolsOf(bot: number): readonly TopTool[] {
+    return this.#toolSources.get(bot)?.() ?? [];
   }
 
   /** The MCP servers set up in the app, when this daemon has them. */
@@ -252,10 +298,17 @@ export class Daemon {
     if (whenBusy === "reject" && (runner.busy || this.store.inbox(bot).length > 0)) throw new BusyError(`${runner.name} is busy`);
     const result = this.store.submit(bot, requestId, text, whenBusy === "steer" ? "steer" : "followUp", clientId);
     if (result === "duplicate") return { duplicate: true };
-    for (const listener of this.#inboxListeners) listener(bot);
-    this.#touch(bot);
-    runner.submitted(this.store.inboxRow(requestId) as InboxRow);
+    this.#queued(this.store.inboxRow(requestId) as InboxRow);
     return { duplicate: false };
+  }
+
+  /** A message is in a bot's inbox (from the user, a wake-up or a job): announce it and hand it to the bot. */
+  #queued(row: InboxRow) {
+    const runner = this.runners.get(row.bot);
+    if (!runner) return;
+    for (const listener of this.#inboxListeners) listener(row.bot);
+    this.#touch(row.bot);
+    runner.submitted(row);
   }
 
   onEntry(listener: (entry: StoredEntry) => void) {
@@ -297,6 +350,13 @@ export class Daemon {
     );
   }
 
+  /** What the bot is waiting on: jobs in the background, its next wake-up. */
+  #waiting(bot: number): { background?: number; wakeAt?: number } {
+    const background = this.jobs.count(bot);
+    const wakeAt = this.store.wakes(bot)[0]?.dueAt;
+    return { ...(background ? { background } : {}), ...(wakeAt !== undefined ? { wakeAt } : {}) };
+  }
+
   #summarize(bot: number): BotSummary {
     const row = this.store.bot(bot)!;
     const runner = this.runners.get(bot);
@@ -312,6 +372,7 @@ export class Daemon {
       since: status.since,
       preview: lastLine(textOf(answer?.content)),
       queued: this.store.inbox(bot).length,
+      ...this.#waiting(bot),
       lastSeq: this.store.lastSeq(bot),
     };
   }

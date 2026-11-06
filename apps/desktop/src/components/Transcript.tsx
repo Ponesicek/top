@@ -43,24 +43,34 @@ const STYLES: Record<ChatStyle, { render: RowRenderer; scroll?: string; inner: s
 };
 
 /** Committed rows plus tail rows, as one array that keeps its identity while nothing structural changes. */
-function useRows(snapshot: ConversationSnapshot, working: boolean): DisplayRow[] {
+function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: boolean): DisplayRow[] {
   const committed = committedRows(snapshot.items);
   const tail = tailRows(snapshot, working);
-  const last = useRef<{ committed: Row[]; tail: Row[]; rows: DisplayRow[] } | null>(null);
+  const last = useRef<{ committed: Row[]; tail: Row[]; showTools: boolean; rows: DisplayRow[] } | null>(null);
   const prev = last.current;
-  if (prev && prev.committed === committed && prev.tail.length === tail.length && prev.tail.every((r, i) => r === tail[i])) {
+  if (prev && prev.committed === committed && prev.showTools === showTools && prev.tail.length === tail.length && prev.tail.every((r, i) => r === tail[i])) {
     return prev.rows;
   }
-  const rows = displayRows(tail.length ? committed.concat(tail) : committed);
-  last.current = { committed, tail, rows };
+  const rows = displayRows(tail.length ? committed.concat(tail) : committed, showTools);
+  last.current = { committed, tail, showTools, rows };
   return rows;
 }
 
-export const Transcript = memo(function Transcript({ sync, name, style = "default" }: { sync: ConversationSync; name: string; style?: ChatStyle }) {
+export const Transcript = memo(function Transcript({
+  sync,
+  name,
+  style = "default",
+  showTools = false,
+}: {
+  sync: ConversationSync;
+  name: string;
+  style?: ChatStyle;
+  showTools?: boolean;
+}) {
   const look = STYLES[style];
   const snapshot = useSyncExternalStore(sync.subscribe, sync.getSnapshot);
   const bot = useBot(sync.id);
-  const rows = useRows(snapshot, isWorking(bot?.status));
+  const rows = useRows(snapshot, isWorking(bot?.status), showTools);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);

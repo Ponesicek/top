@@ -82,6 +82,8 @@ export function Settings({
   onPerfHudChange,
   chatStyle,
   onChatStyleChange,
+  showTools,
+  onShowToolsChange,
   scale,
   onScaleChange,
 }: {
@@ -89,6 +91,8 @@ export function Settings({
   onPerfHudChange: (on: boolean) => void;
   chatStyle: ChatStyle;
   onChatStyleChange: (style: ChatStyle) => void;
+  showTools: boolean;
+  onShowToolsChange: (on: boolean) => void;
   scale: Scale;
   onScaleChange: (scale: Scale) => void;
 }) {
@@ -106,6 +110,13 @@ export function Settings({
               label="Conversation style"
               description={CHAT_STYLES.find((s) => s.value === chatStyle)?.description}
               control={({ labelId }) => <Segmented value={chatStyle} options={CHAT_STYLES} onChange={onChatStyleChange} labelledBy={labelId} />}
+            />
+            <Row
+              label="Show tool calls"
+              description="The steps a bot takes while it works, as a line you can open."
+              control={({ labelId, descriptionId }) => (
+                <Switch checked={showTools} onCheckedChange={onShowToolsChange} aria-labelledby={labelId} aria-describedby={descriptionId} />
+              )}
             />
             {canScale && (
               <Row

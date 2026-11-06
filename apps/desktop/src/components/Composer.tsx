@@ -1,6 +1,6 @@
 /**
  * The composer is isolated from the transcript: it subscribes only to "is the bot working", so typing
- * never waits on a transcript render. Its buttons are a memoized child that re-renders only when
+ * never waits on a transcript render. Its button is a memoized child that re-renders only when
  * "empty" or "working" flips, not on every keystroke.
  */
 
@@ -26,22 +26,8 @@ const Actions = memo(function Actions({
   onSend: (steer: boolean) => void;
   onStop: () => void;
 }) {
-  // Steer and Queue appear once there is something to send; empty, the composer stays calm.
-  if (running && !empty)
-    return (
-      <div className="flex flex-none gap-1.5">
-        <Tooltip content="Steer: interrupt with this message (Ctrl+Enter)">
-          <Button variant="outline" onClick={() => onSend(true)}>
-            Steer
-          </Button>
-        </Tooltip>
-        <Tooltip content="Queue after the current task (Enter)">
-          <Button onClick={() => onSend(false)}>Queue</Button>
-        </Tooltip>
-      </div>
-    );
-  // While a bot works, the send button is Stop.
-  if (running)
+  // While a bot works and there is nothing to send, the send button is Stop.
+  if (running && empty)
     return (
       <Tooltip content="Stop (Esc)">
         <Button variant="stop" size="icon" onClick={onStop} aria-label="Stop">
@@ -50,8 +36,9 @@ const Actions = memo(function Actions({
       </Tooltip>
     );
   return (
-    <Tooltip content="Send (Enter) · Shift+Enter for a new line">
-      <Button size="icon" className="disabled:bg-foreground/8" disabled={empty} onClick={() => onSend(false)} aria-label="Send">
+    // Steering is keyboard-only (Ctrl+Enter); the button sends, or queues while the bot works.
+    <Tooltip content={running ? "Queue after the current task (Enter) · Ctrl+Enter steers" : "Send (Enter) · Shift+Enter for a new line"}>
+      <Button size="icon" className="disabled:bg-foreground/8" disabled={empty} onClick={() => onSend(false)} aria-label={running ? "Queue" : "Send"}>
         <ArrowUp size={17} strokeWidth={1.7} />
       </Button>
     </Tooltip>

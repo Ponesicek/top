@@ -135,6 +135,9 @@ export function respond(context: Context) {
     return fauxAssistantMessage(`Done. Here is what happened:\n\n${lines}\n\n${sentence()}`);
   }
   const prompt = lastUserText(context);
+  // Top's own messages (a wake-up, a background job's result) are answered, never acted on: their text
+  // quotes the tool call that started them ("deploy …"), which would otherwise start it again.
+  if (/^\[(Wake-up|Background job)/.test(prompt)) return fauxAssistantMessage(`Noted: ${prompt.split("\n")[0]}`);
   const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider overloaded (test)" });
   if (/\bfail always\b/i.test(prompt)) return failure();
   if (/\bfail once\b/i.test(prompt) && !failedOnce.has(prompt)) {

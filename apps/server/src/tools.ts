@@ -21,6 +21,8 @@ export type ToolContext = {
   readonly key: string;
   readonly bot: number;
   readonly signal?: AbortSignal;
+  /** Output so far, for a tool that reports progress (bash does). Shown when someone asks a background job for it. */
+  readonly onUpdate?: (partial: ToolResult) => void;
 };
 
 export type ToolResult = AgentToolResult<unknown>;
@@ -35,6 +37,11 @@ export type TopTool = {
   /** Normalizes raw arguments before schema validation (pi's tools accept older argument shapes). */
   readonly prepareArguments?: (args: unknown) => Record<string, unknown>;
   readonly executionMode?: "sequential" | "parallel";
+  /**
+   * `false`: never moved to the background, however long it takes (see jobs.ts). For tools that
+   * wait on purpose, like Collar's `jobs` waiting for a job.
+   */
+  readonly background?: false;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
   /** After a restart cut this call off: its result if it took effect, `false` if it surely did not, `undefined` if unknown. */
   recover?(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult | false | undefined>;

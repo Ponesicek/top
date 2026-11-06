@@ -68,6 +68,10 @@ export const BotSummary = Struct({
   preview: Type.String(),
   /** Messages waiting behind the running task. */
   queued: Type.Integer(),
+  /** Tool calls that outran the time limit and are still running in the background. */
+  background: Optional(Type.Integer()),
+  /** When the bot's next wake-up is due (ms since epoch), if it set one. */
+  wakeAt: Optional(Type.Number()),
   /** Newest entry of this bot, so a client can show "unread" without loading it. */
   lastSeq: Seq,
 });
@@ -94,8 +98,17 @@ export type ToolOutcome = Static<typeof ToolOutcome>;
 
 const entryBase = { seq: Seq, bot: BotId, at: Type.Number() };
 
+/**
+ * Who a message in the bot's inbox comes from, when it isn't the user:
+ * - `wake`: a wake-up the bot set for itself came due;
+ * - `job`: a tool call that ran on in the background finished (or was cut off).
+ * The model reads it like any message; clients show it as an event, not as something the user said.
+ */
+export const MessageSource = Type.Enum(["wake", "job"]);
+export type MessageSource = Static<typeof MessageSource>;
+
 export const Entry = Type.Union([
-  Struct({ ...entryBase, kind: Type.Literal("user"), text: Type.String(), requestId: Optional(Type.String()) }),
+  Struct({ ...entryBase, kind: Type.Literal("user"), text: Type.String(), requestId: Optional(Type.String()), source: Optional(MessageSource) }),
   Struct({
     ...entryBase,
     kind: Type.Literal("assistant"),
@@ -134,6 +147,7 @@ export const QueuedMessage = Struct({
   text: Type.String(),
   mode: Type.Enum(["steer", "followUp"]),
   at: Type.Number(),
+  source: Optional(MessageSource),
 });
 export type QueuedMessage = Static<typeof QueuedMessage>;
 

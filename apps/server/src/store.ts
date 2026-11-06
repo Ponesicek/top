@@ -15,9 +15,16 @@
  *   still reported when it starts. A `files` entry and the listing it reports change together.
  * - `mcp_servers`: MCP connections set up in the app, with their secrets and OAuth credentials, and
  *   `bot_mcp`: which bots use which. A bot has none until it is given one.
+ * - `wakes`: wake-ups a bot set for itself (see wakes.ts). Firing one puts its message in the inbox in
+ *   the same transaction, so a wake-up arrives once, also across restarts.
+ * - `jobs`: tool calls that outran the time limit and went on in the background (see jobs.ts). Ending
+ *   one puts its result in the inbox in the same transaction.
+ *
+ * Inbox rows and the entries they become carry a `source` when they don't come from the user.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
+import type { MessageSource } from "@top/protocol";
 
 export type EntryKind = "system" | "user" | "assistant" | "tool" | "notice" | "files";
 
@@ -33,6 +40,7 @@ export type StoredEntry = {
   readonly requestId: string | null;
   readonly toolCallId: string | null;
   readonly outcome: string | null;
+  readonly source: MessageSource | null;
   readonly at: number;
 };
 
@@ -53,7 +61,23 @@ export type InboxRow = {
   readonly text: string;
   readonly mode: "steer" | "followUp";
   readonly clientId: string | null;
+  readonly source: MessageSource | null;
   readonly at: number;
+};
+
+export type WakeRow = { readonly id: number; readonly bot: number; readonly dueAt: number; readonly note: string; readonly createdAt: number };
+
+export type JobState = "running" | "finished" | "stopped" | "lost";
+export type JobRow = {
+  readonly id: number;
+  readonly bot: number;
+  readonly tool: string;
+  /** The arguments, shortened to one line. */
+  readonly summary: string;
+  /** What it's for, in the bot's words; may be empty. */
+  readonly note: string;
+  readonly startedAt: number;
+  readonly state: JobState;
 };
 
 export type McpServerRow = {
@@ -131,6 +155,27 @@ CREATE TABLE IF NOT EXISTS bot_mcp (
   server INTEGER NOT NULL REFERENCES mcp_servers(id),
   PRIMARY KEY (bot, server)
 );
+CREATE TABLE IF NOT EXISTS wakes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot INTEGER NOT NULL REFERENCES bots(id),
+  key TEXT NOT NULL UNIQUE,
+  due_at INTEGER NOT NULL,
+  note TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE INDEX IF NOT EXISTS wakes_due ON wakes(state, due_at);
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot INTEGER NOT NULL REFERENCES bots(id),
+  key TEXT NOT NULL UNIQUE,
+  tool TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'running',
+  finished_at INTEGER
+);
 `;
 
 type Row = Record<string, unknown>;
@@ -144,6 +189,7 @@ function entryOf(row: Row): StoredEntry {
     requestId: (row.request_id as string | null) ?? null,
     toolCallId: (row.tool_call_id as string | null) ?? null,
     outcome: (row.outcome as string | null) ?? null,
+    source: (row.source as MessageSource | null) ?? null,
     at: Number(row.at),
   };
 }
@@ -156,7 +202,24 @@ function inboxOf(row: Row): InboxRow {
     text: String(row.text),
     mode: row.mode === "steer" ? "steer" : "followUp",
     clientId: (row.client_id as string | null) ?? null,
+    source: (row.source as MessageSource | null) ?? null,
     at: Number(row.at),
+  };
+}
+
+function wakeOf(row: Row): WakeRow {
+  return { id: Number(row.id), bot: Number(row.bot), dueAt: Number(row.due_at), note: String(row.note), createdAt: Number(row.created_at) };
+}
+
+function jobOf(row: Row): JobRow {
+  return {
+    id: Number(row.id),
+    bot: Number(row.bot),
+    tool: String(row.tool),
+    summary: String(row.summary),
+    note: String(row.note ?? ""),
+    startedAt: Number(row.started_at),
+    state: row.state as JobState,
   };
 }
 
@@ -190,6 +253,21 @@ export class Store {
     if (!columns.has("description")) this.#db.exec("ALTER TABLE bots ADD COLUMN description TEXT NOT NULL DEFAULT ''");
     if (!columns.has("deleted")) this.#db.exec("ALTER TABLE bots ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
     if (!columns.has("files_scanned")) this.#db.exec("ALTER TABLE bots ADD COLUMN files_scanned INTEGER NOT NULL DEFAULT 0");
+    for (const table of ["inbox", "entries"]) {
+      const has = this.#db
+        .prepare(`PRAGMA table_info(${table})`)
+        .all()
+        .some((row) => row.name === "source");
+      if (!has) this.#db.exec(`ALTER TABLE ${table} ADD COLUMN source TEXT`);
+    }
+    if (
+      !this.#db
+        .prepare("PRAGMA table_info(jobs)")
+        .all()
+        .some((row) => row.name === "note")
+    ) {
+      this.#db.exec("ALTER TABLE jobs ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+    }
     this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('id', ?)").run(randomUUID());
     this.id = String((this.#db.prepare("SELECT value FROM meta WHERE key = 'id'").get() as { value: string }).value);
     this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('files_secret', ?)").run(randomBytes(18).toString("base64url"));
@@ -199,7 +277,7 @@ export class Store {
       bots: p("SELECT * FROM bots WHERE deleted = 0 ORDER BY id"),
       bot: p("SELECT * FROM bots WHERE id = ?"),
       insertBot: p("INSERT INTO bots (name, description, instructions, model) VALUES (?, ?, ?, ?)"),
-      append: p("INSERT INTO entries (bot, kind, message, request_id, tool_call_id, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+      append: p("INSERT INTO entries (bot, kind, message, request_id, tool_call_id, outcome, source, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
       entry: p("SELECT * FROM entries WHERE seq = ?"),
       context: p(`SELECT kind, message FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq`),
       last: p(`SELECT * FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq DESC LIMIT 1`),
@@ -213,7 +291,7 @@ export class Store {
       resultsAfter: p("SELECT tool_call_id FROM entries WHERE bot = ? AND kind = 'tool' AND seq > ?"),
       requestInEntries: p("SELECT 1 FROM entries WHERE request_id = ?"),
       requestInInbox: p("SELECT 1 FROM inbox WHERE request_id = ?"),
-      insertInbox: p("INSERT INTO inbox (bot, request_id, text, mode, client_id, at) VALUES (?, ?, ?, ?, ?, ?)"),
+      insertInbox: p("INSERT INTO inbox (bot, request_id, text, mode, client_id, source, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
       inbox: p("SELECT * FROM inbox WHERE bot = ? ORDER BY id"),
       inboxRow: p("SELECT * FROM inbox WHERE request_id = ?"),
       deleteInbox: p("DELETE FROM inbox WHERE request_id = ?"),
@@ -271,13 +349,16 @@ export class Store {
       this.#db.prepare("UPDATE bots SET deleted = 1, run_active = 0, name = ? WHERE id = ?").run(`deleted:${bot}:${randomUUID()}`, bot);
       this.#db.prepare("DELETE FROM inbox WHERE bot = ?").run(bot);
       this.#db.prepare("DELETE FROM bot_mcp WHERE bot = ?").run(bot);
+      this.#db.prepare("UPDATE wakes SET state = 'cancelled' WHERE bot = ? AND state = 'pending'").run(bot);
+      this.#db.prepare("UPDATE jobs SET state = 'stopped' WHERE bot = ? AND state = 'running'").run(bot);
     });
   }
 
   /** Remove a bot and everything it wrote. */
   purgeBot(bot: number) {
     this.transaction(() => {
-      for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files"]) this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
+      for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files", "wakes", "jobs"])
+        this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
       this.#db.prepare("DELETE FROM bots WHERE id = ?").run(bot);
     });
   }
@@ -389,10 +470,16 @@ export class Store {
 
   // ── entries ──────────────────────────────────────────────────────────────────
 
-  append(bot: number, kind: EntryKind, message: unknown, extra: { requestId?: string; toolCallId?: string; outcome?: string; at?: number } = {}): StoredEntry {
+  append(
+    bot: number,
+    kind: EntryKind,
+    message: unknown,
+    extra: { requestId?: string; toolCallId?: string; outcome?: string; source?: MessageSource | null; at?: number } = {},
+  ): StoredEntry {
     const at = extra.at ?? Date.now();
     const json = JSON.stringify(message);
-    const result = this.#q.append!.run(bot, kind, json, extra.requestId ?? null, extra.toolCallId ?? null, extra.outcome ?? null, at);
+    const source = extra.source ?? null;
+    const result = this.#q.append!.run(bot, kind, json, extra.requestId ?? null, extra.toolCallId ?? null, extra.outcome ?? null, source, at);
     return {
       seq: Number(result.lastInsertRowid),
       bot,
@@ -401,6 +488,7 @@ export class Store {
       requestId: extra.requestId ?? null,
       toolCallId: extra.toolCallId ?? null,
       outcome: extra.outcome ?? null,
+      source,
       at,
     };
   }
@@ -466,7 +554,7 @@ export class Store {
   submit(bot: number, requestId: string, text: string, mode: "steer" | "followUp", clientId: string | null): "queued" | "duplicate" {
     return this.transaction(() => {
       if (this.#q.requestInEntries!.get(requestId) || this.#q.requestInInbox!.get(requestId)) return "duplicate";
-      this.#q.insertInbox!.run(bot, requestId, text, mode, clientId, Date.now());
+      this.#q.insertInbox!.run(bot, requestId, text, mode, clientId, null, Date.now());
       return "queued";
     });
   }
@@ -483,8 +571,87 @@ export class Store {
   /** The model took a queued message: it becomes an entry and leaves the inbox, atomically. */
   place(bot: number, requestId: string, message: unknown): StoredEntry {
     return this.transaction(() => {
+      const source = this.inboxRow(requestId)?.source ?? null;
       this.#q.deleteInbox!.run(requestId);
-      return this.append(bot, "user", message, { requestId });
+      return this.append(bot, "user", message, { requestId, source });
+    });
+  }
+
+  /** A message from Top itself (not the user), queued as a follow-up. Call inside a transaction. */
+  #queueEvent(bot: number, requestId: string, text: string, source: MessageSource): InboxRow {
+    this.#q.insertInbox!.run(bot, requestId, text, "followUp", null, source, Date.now());
+    return this.inboxRow(requestId)!;
+  }
+
+  // ── wake-ups ─────────────────────────────────────────────────────────────────
+
+  /** Set a wake-up. `key` names the tool call that set it: setting it again returns the same one. */
+  addWake(bot: number, key: string, dueAt: number, note: string): WakeRow {
+    this.#db.prepare("INSERT OR IGNORE INTO wakes (bot, key, due_at, note, created_at) VALUES (?, ?, ?, ?, ?)").run(bot, key, dueAt, note, Date.now());
+    return wakeOf(this.#db.prepare("SELECT * FROM wakes WHERE key = ?").get(key)!);
+  }
+
+  /** A bot's wake-ups that haven't gone off, soonest first. */
+  wakes(bot: number): WakeRow[] {
+    return this.#db.prepare("SELECT * FROM wakes WHERE bot = ? AND state = 'pending' ORDER BY due_at, id").all(bot).map(wakeOf);
+  }
+
+  /** False if the bot has no such wake-up waiting. */
+  cancelWake(bot: number, id: number): boolean {
+    return Number(this.#db.prepare("UPDATE wakes SET state = 'cancelled' WHERE id = ? AND bot = ? AND state = 'pending'").run(id, bot).changes) > 0;
+  }
+
+  /** When the next wake-up of any bot is due. */
+  nextWakeAt(): number | undefined {
+    const due = this.#db.prepare("SELECT MIN(due_at) AS due FROM wakes WHERE state = 'pending'").get()?.due;
+    return due === null || due === undefined ? undefined : Number(due);
+  }
+
+  dueWakes(now: number): WakeRow[] {
+    return this.#db.prepare("SELECT * FROM wakes WHERE state = 'pending' AND due_at <= ? ORDER BY due_at, id").all(now).map(wakeOf);
+  }
+
+  /** Mark a wake-up as gone off and queue its message, atomically; `undefined` if it already went off or was cancelled. */
+  fireWake(wake: WakeRow, text: string): InboxRow | undefined {
+    return this.transaction(() => {
+      const changed = this.#db.prepare("UPDATE wakes SET state = 'fired' WHERE id = ? AND state = 'pending'").run(wake.id).changes;
+      return Number(changed) > 0 ? this.#queueEvent(wake.bot, `wake:${wake.id}`, text, "wake") : undefined;
+    });
+  }
+
+  // ── background jobs ──────────────────────────────────────────────────────────
+
+  /** Record a tool call that went on in the background. `key` is the call's: the same call twice is one job. */
+  startJob(bot: number, key: string, tool: string, summary: string, note: string, startedAt: number): number {
+    const row = this.#db
+      .prepare(
+        `INSERT INTO jobs (bot, key, tool, summary, note, started_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET state = 'running', started_at = excluded.started_at, finished_at = NULL
+         RETURNING id`,
+      )
+      .get(bot, key, tool, summary, note, startedAt);
+    return Number(row!.id);
+  }
+
+  job(id: number): JobRow | undefined {
+    const row = this.#db.prepare("SELECT * FROM jobs WHERE id = ?").get(id);
+    return row ? jobOf(row) : undefined;
+  }
+
+  /** Jobs still marked running: at startup, the ones the last process was running when it stopped. */
+  runningJobs(): JobRow[] {
+    return this.#db.prepare("SELECT * FROM jobs WHERE state = 'running' ORDER BY id").all().map(jobOf);
+  }
+
+  /**
+   * End a running job and, with `text`, queue the message that reports it, atomically. `undefined`
+   * (and nothing queued) if it wasn't running: already ended, or its bot was deleted.
+   */
+  endJob(id: number, state: Exclude<JobState, "running">, text?: string): InboxRow | undefined {
+    return this.transaction(() => {
+      const row = this.#db.prepare("UPDATE jobs SET state = ?, finished_at = ? WHERE id = ? AND state = 'running' RETURNING bot").get(state, Date.now(), id);
+      if (!row || text === undefined) return undefined;
+      return this.#queueEvent(Number(row.bot), `job:${id}:${Date.now()}`, text, "job");
     });
   }
 

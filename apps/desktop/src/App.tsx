@@ -1,6 +1,6 @@
 import type { BotId } from "@top/client";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { type ChatStyle, readChatStyle, saveChatStyle } from "./chatStyle.ts";
+import { type ChatStyle, readChatStyle, readShowTools, saveChatStyle, saveShowTools } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
@@ -56,6 +56,11 @@ export function App() {
   const setChatStyle = useCallback((style: ChatStyle) => {
     setChatStyleState(style);
     saveChatStyle(style);
+  }, []);
+  const [showTools, setShowToolsState] = useState(readShowTools);
+  const setShowTools = useCallback((on: boolean) => {
+    setShowToolsState(on);
+    saveShowTools(on);
   }, []);
   const [scale, setScaleState] = useState<Scale>(readScale);
   const setScale = useCallback((next: Scale) => {
@@ -158,6 +163,8 @@ export function App() {
               onPerfHudChange={setPerfHud}
               chatStyle={chatStyle}
               onChatStyleChange={setChatStyle}
+              showTools={showTools}
+              onShowToolsChange={setShowTools}
               scale={scale}
               onScaleChange={setScale}
             />
@@ -169,7 +176,7 @@ export function App() {
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
                 aria-hidden
               />
-              <Transcript key={String(bot.id)} sync={sync} name={bot.name} style={chatStyle} />
+              <Transcript key={String(bot.id)} sync={sync} name={bot.name} style={chatStyle} showTools={showTools} />
               <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
             </>
           ) : ready ? (

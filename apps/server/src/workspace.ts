@@ -48,7 +48,7 @@ function adapt(tool: AnyAgentTool): TopTool {
     ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
     ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
     replay: REPLAY_SAFE.has(tool.name) ? "safe" : "never",
-    run: (args, ctx) => tool.execute(ctx.key, args as never, ctx.signal),
+    run: (args, ctx) => tool.execute(ctx.key, args as never, ctx.signal, ctx.onUpdate as never),
   };
 }
 

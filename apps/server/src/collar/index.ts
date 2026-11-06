@@ -14,13 +14,16 @@
  */
 import type { Daemon } from "../daemon.ts";
 import type { TopTool } from "../tools.ts";
+import { backgroundGroup } from "./background.ts";
+import { jobsGroup } from "./jobs.ts";
+import { wakeGroup } from "./wake.ts";
 
 export const COLLAR = "collar";
 
 /** One part of the app's tools. Called once when the daemon starts; tools reach the daemon when they run. */
 export type CollarGroup = (daemon: Daemon) => readonly TopTool[];
 
-const GROUPS: readonly CollarGroup[] = [];
+const GROUPS: readonly CollarGroup[] = [wakeGroup, backgroundGroup, jobsGroup];
 
 export function collarTools(daemon: Daemon): TopTool[] {
   const tools = GROUPS.flatMap((group) => group(daemon)).map((tool): TopTool => ({ ...tool, name: `${COLLAR}__${tool.name}` }));

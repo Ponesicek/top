@@ -17,7 +17,8 @@ export function textOf(content: Message["content"]): string {
   return (content ?? []).map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
 }
 
-function summarize(args: unknown): string {
+/** Tool arguments on one short line. */
+export function summarize(args: unknown): string {
   if (!args || typeof args !== "object") return "";
   const text = Object.entries(args as Record<string, unknown>)
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
@@ -38,7 +39,13 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
     case "files":
       return { ...base, kind: "files", files: (message as { files?: FileChange[] }).files ?? [] };
     case "user":
-      return { ...base, kind: "user", text: textOf(message.content), ...(stored.requestId ? { requestId: stored.requestId } : {}) };
+      return {
+        ...base,
+        kind: "user",
+        text: textOf(message.content),
+        ...(stored.requestId ? { requestId: stored.requestId } : {}),
+        ...(stored.source ? { source: stored.source } : {}),
+      };
     case "assistant": {
       const parts = typeof message.content === "string" ? [] : (message.content ?? []);
       const thinking = parts

@@ -28,6 +28,16 @@ export function statusLabel(bot: BotSummary): string {
   }
 }
 
+/** "Wakes 14:32" today, "Wakes Fri 09:00" this week, else the date. */
+function wakeLabel(at: number): string {
+  const when = new Date(at);
+  const now = new Date();
+  const time = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (when.toDateString() === now.toDateString()) return `Wakes ${time}`;
+  if (at - now.getTime() < 6 * 24 * 60 * 60 * 1000) return `Wakes ${when.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  return `Wakes ${when.toLocaleDateString([], { month: "short", day: "numeric" })}`;
+}
+
 const BotItem = memo(function BotItem({
   bot,
   selected,
@@ -80,6 +90,22 @@ const BotItem = memo(function BotItem({
             {bot.queued > 0 && (
               <Badge className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible" title={`${bot.queued} queued`}>
                 {bot.queued} queued
+              </Badge>
+            )}
+            {!!bot.background && (
+              <Badge
+                className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible"
+                title={`${bot.background} tool call${bot.background === 1 ? "" : "s"} still running in the background`}
+              >
+                {bot.background} running
+              </Badge>
+            )}
+            {bot.wakeAt !== undefined && (
+              <Badge
+                className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible"
+                title={`Wakes up ${new Date(bot.wakeAt).toLocaleString()}`}
+              >
+                {wakeLabel(bot.wakeAt)}
               </Badge>
             )}
           </span>

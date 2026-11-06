@@ -163,7 +163,7 @@ async function shutdown() {
   await server.close();
   // Stops the MCP servers' programs too.
   await mcp.close();
-  daemon.closeFiles();
+  daemon.close();
   store.close();
   process.exit(0);
 }

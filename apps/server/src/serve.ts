@@ -41,7 +41,9 @@ function filesFrame(folder: FilesFolder): ServerFrame {
 }
 
 function inboxOf(daemon: Daemon, bot: number): QueuedMessage[] {
-  return daemon.store.inbox(bot).map((row) => ({ requestId: row.requestId, text: row.text, mode: row.mode, at: row.at }));
+  return daemon.store
+    .inbox(bot)
+    .map((row) => ({ requestId: row.requestId, text: row.text, mode: row.mode, at: row.at, ...(row.source ? { source: row.source } : {}) }));
 }
 
 class ClientConnection {
@@ -155,7 +157,7 @@ class ClientConnection {
         return this.#answer(frame.req, () => this.#daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId));
       case "abort":
         return this.#answer(frame.req, () => {
-          this.#daemon.runner(frame.bot).abort();
+          this.#daemon.stop(frame.bot);
           return null;
         });
       case "createBot":

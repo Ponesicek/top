@@ -33,13 +33,22 @@ export type Row =
 
 const entryRows = new WeakMap<Entry, Row>();
 
+/**
+ * A message from Top rather than the user (a wake-up, a background job's result) shows as one line:
+ * its first, "[Wake-up] check the deploy" → "Wake-up: check the deploy".
+ */
+export function eventLine(text: string): string {
+  const first = text.split("\n", 1)[0]!.replace(/^\[([^\]]+)\]\s*/, "$1: ");
+  return first.length > 160 ? `${first.slice(0, 159)}…` : first;
+}
+
 function rowForEntry(entry: Entry): Row {
   let row = entryRows.get(entry);
   if (row) return row;
   const key = `e${entry.seq}`;
   switch (entry.kind) {
     case "user":
-      row = { kind: "user", key, text: entry.text, at: entry.at };
+      row = entry.source ? { kind: "notice", key, text: eventLine(entry.text) } : { kind: "user", key, text: entry.text, at: entry.at };
       break;
     case "assistant":
       row = {
@@ -103,13 +112,17 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
   if (working) rows.push(WORKING);
   for (const item of snapshot.inbox) {
     rows.push(
-      stable<QueuedMessage>(item, () => ({
-        kind: "user",
-        key: `m${item.requestId}`,
-        text: item.text,
-        at: item.at,
-        state: item.mode === "steer" ? "steer" : "queued",
-      })),
+      stable<QueuedMessage>(item, () =>
+        item.source
+          ? { kind: "notice", key: `m${item.requestId}`, text: eventLine(item.text) }
+          : {
+              kind: "user",
+              key: `m${item.requestId}`,
+              text: item.text,
+              at: item.at,
+              state: item.mode === "steer" ? "steer" : "queued",
+            },
+      ),
     );
   }
   for (const pending of snapshot.pending) {
@@ -184,8 +197,10 @@ function mergeFiles(parts: readonly FilesRow[]): FilesRow {
  *
  * File changes wait for the end of the bot's turn (or its "working" row) and show there as one line,
  * so a turn that wrote a report says so once, under the answer, instead of splitting its steps.
+ *
+ * With `showTools` off, tool steps are left out altogether.
  */
-export function displayRows(rows: readonly Row[]): DisplayRow[] {
+export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[] {
   const out: DisplayRow[] = [];
   let run: ToolEntry[] | null = null;
   let files: FilesRow[] = [];
@@ -212,6 +227,7 @@ export function displayRows(rows: readonly Row[]): DisplayRow[] {
       continue;
     }
     if (row.kind === "tool") {
+      if (!showTools) continue;
       run ??= [];
       run.push(row.entry);
       continue;
