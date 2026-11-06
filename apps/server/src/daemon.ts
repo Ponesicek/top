@@ -5,6 +5,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, toToolDeclaration, type Models } from "@earendil-works/pi-ai";
 import { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type BotSummary, type WhenBusy } from "@top/protocol";
+import { collarTools } from "./collar/index.ts";
 import { BotRunner, type RunnerOptions } from "./runner.ts";
 import type { BotRow, InboxRow, StoredEntry, Store } from "./store.ts";
 import type { McpManager } from "./mcp.ts";
@@ -102,6 +103,8 @@ export class Daemon {
   readonly #inboxListeners = new Set<(bot: number) => void>();
   readonly #botListeners = new Set<(summary: BotSummary) => void>();
   readonly #removedListeners = new Set<(bot: number) => void>();
+  /** Top's own tools, which every bot has (see collar/index.ts). */
+  readonly #collar = collarTools(this);
 
   /**
    * `tools` and `sections` may differ per bot (each real bot works in its own folder). Without
@@ -119,8 +122,8 @@ export class Daemon {
     const { thinking, sections } = this.#options;
     // A deleted bot may still be finishing a step; nothing it does after that is announced.
     const live = () => this.runners.get(bot.id) === runner;
-    // The bot's own tools are fixed; MCP tools are asked for again at each run.
-    const own = typeof this.#tools === "function" ? this.#tools(bot) : this.#tools;
+    // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run.
+    const own = [...(typeof this.#tools === "function" ? this.#tools(bot) : this.#tools), ...this.#collar];
     const mcp = this.#options.mcp;
     const tools = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
     const runner: BotRunner = new BotRunner(bot, this.store, this.#models, tools, {

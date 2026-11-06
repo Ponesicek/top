@@ -482,3 +482,11 @@ test("MCP servers set up from the app: every client sees them, bots get them onl
   await c.deleteMcpServer(id);
   await until(c.subscribe, c.getSnapshot, (s) => s.mcpServers.length === 0, "the server gone");
 });
+
+test("no MCP server may take the name of Top's own tools (Collar)", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const a = await connect(daemon, 0);
+  const echo = resolve(import.meta.dirname, "../../../apps/server/test/fixtures/echo-mcp.mjs");
+  await assert.rejects(a.top.saveMcpServer(undefined, " Collar! ", { transport: "stdio", command: process.execPath, args: [echo], env: [] }), /name of Top's own tools/);
+});

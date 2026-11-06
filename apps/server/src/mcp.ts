@@ -35,6 +35,7 @@ import {
   type McpOAuthState,
 } from "@earendil-works/pi-mcp/oauth";
 import { MAX_MCP_NAME, type McpSecret, type McpServerConfig, type McpServerState, type McpServerView } from "@top/protocol";
+import { COLLAR } from "./collar/index.ts";
 import type { McpServerRow, Store } from "./store.ts";
 import type { ToolResult, TopTool } from "./tools.ts";
 
@@ -172,6 +173,8 @@ export class McpManager {
     if (!name) throw new McpServerError("Give the server a name.");
     if (name.length > MAX_MCP_NAME) throw new McpServerError(`Keep the name under ${MAX_MCP_NAME + 1} characters.`);
     if (!slug(name)) throw new McpServerError("Use some letters or digits in the name.");
+    // Its tools would clash with Top's own (collar/index.ts).
+    if (slug(name) === COLLAR) throw new McpServerError(`${name} is the name of Top's own tools. Pick another.`);
     for (const other of this.#servers.values()) {
       if (other.id === id) continue;
       if (other.name.toLowerCase() === name.toLowerCase()) throw new McpServerError(`There's already a server named ${other.name}.`);

@@ -86,6 +86,10 @@ headers or environment variables for keys. Their values stay on the daemon: the 
   any other is reported as interrupted, like `bash`. So is one whose server hasn't reconnected yet when
   the daemon restarts.
 
+**Collar** is Top's own set of tools for managing the app. Every bot always has it, it isn't
+listed among the servers, and no server may be named "Collar". Its tools are named like a server's
+(`collar__<tool>`) but run inside the daemon. It has no tools yet.
+
 ## Crash safety
 
 The bots' tools do real things, so a restart must never run one twice by accident. Every step is
