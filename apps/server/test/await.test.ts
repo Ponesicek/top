@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { createModels } from "@earendil-works/pi-ai/models";
 import Type from "typebox";
-import { backgroundGroup } from "../src/collar/background.ts";
+import { backgroundGroup, findTool } from "../src/collar/background.ts";
 import { wakeGroup } from "../src/collar/wake.ts";
 import { Daemon } from "../src/daemon.ts";
 import { createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "../src/fake-bots.ts";
@@ -355,6 +355,8 @@ test("background checks the tool and its arguments before starting anything", as
   const invalid = await run({ tool: "strict__tool", arguments: { n: "not a number" } });
   assert.equal(invalid.isError, true);
   assert.match(resultText(invalid), /Validation failed/);
+  const near = await run({ tool: "strict" });
+  assert.match(resultText(near), /Did you mean "strict__tool"\?/);
   const waiting = await run({ tool: "collar__jobs", arguments: { action: "list" } });
   assert.match(resultText(waiting), /can't run in the background/);
   assert.match(resultText(await run({ tool: "strict__tool", arguments: { n: "3" }, wait_seconds: 1 })), /^ran$/, "coerced like a direct call");
@@ -408,4 +410,19 @@ test("a job that ends while the bot is busy reaches it at its next step, not whe
   const held = kinds.indexOf("tool");
   assert.deepEqual(kinds.slice(held, held + 3), ["tool", "job", "assistant"], "the job's message right after the tool result, in the same task");
   assert.equal(kinds.filter((k) => k === "assistant").length, 2, "one answer after the message, not a second task");
+});
+
+test("background finds the tool a bot means, even named the way its model sees it", () => {
+  const tools = [{ name: "bash" }, { name: "t3code__t3_thread_wait" }, { name: "github__create_issue" }, { name: "gitlab__create_issue" }];
+  const found = (name: string) => {
+    const result = findTool(tools, name);
+    return "tool" in result ? result.tool.name : result.error;
+  };
+  assert.equal(found("functions.t3code__t3_thread_wait"), "t3code__t3_thread_wait", "a namespace in front");
+  assert.equal(found("multi_tool_use.bash"), "bash");
+  assert.equal(found("T3code__T3_Thread_Wait"), "t3code__t3_thread_wait", "the wrong case");
+  assert.equal(found("t3_thread_wait"), "t3code__t3_thread_wait", "without its server");
+  assert.match(found("create_issue"), /could be "github__create_issue" or "gitlab__create_issue"/, "never a guess between two");
+  assert.match(found("thread_wait"), /no tool named "thread_wait"\. Did you mean "t3code__t3_thread_wait"\?/);
+  assert.match(found("deploy"), /no tool named "deploy"\. Use a name exactly/);
 });

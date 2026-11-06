@@ -15,7 +15,10 @@ const MAX_STOP_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 const parameters = Type.Object(
   {
-    tool: Type.String({ description: "The tool to run, by its full name (e.g. an MCP tool such as github__create_issue, or bash)." }),
+    tool: Type.String({
+      description:
+        "The tool to run, named as in your tool list, such as bash or an MCP tool like github__create_issue (no namespace in front: not functions.bash).",
+    }),
     arguments: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Its arguments, as you'd pass them calling it directly." })),
     wait_seconds: Type.Optional(
       Type.Number({
@@ -36,6 +39,41 @@ const parameters = Type.Object(
 
 const failed = (value: string): ToolResult => ({ ...text(value), isError: true });
 
+/**
+ * The tool a bot means by `name`, forgiving what models get wrong when they name a tool as text: a
+ * namespace in front ("functions.bash", as OpenAI models see their tools), the wrong case, or an MCP
+ * tool without its server ("create_issue" for github__create_issue). Only an unambiguous match counts;
+ * otherwise the error names the likely ones.
+ */
+export function findTool<T extends { readonly name: string }>(tools: readonly T[], name: string): { tool: T } | { error: string } {
+  const trimmed = name.trim();
+  // Tool names never contain a dot, so anything up to the last one is a namespace.
+  const bare = trimmed.slice(trimmed.lastIndexOf(".") + 1);
+  const lower = bare.toLowerCase();
+  const tiers: ((tool: T) => boolean)[] = [
+    (t) => t.name === trimmed,
+    (t) => t.name === bare,
+    (t) => t.name.toLowerCase() === lower,
+    (t) => t.name.toLowerCase().endsWith(`__${lower}`),
+  ];
+  for (const matches of tiers) {
+    const found = tools.filter(matches);
+    if (found.length === 1) return { tool: found[0]! };
+    if (found.length > 1) return { error: `"${name}" could be ${list(found.map((t) => t.name))}. Name the one you mean.` };
+  }
+  const near = tools.filter((t) => lower && (t.name.toLowerCase().includes(lower) || lower.includes(t.name.toLowerCase()))).slice(0, 5);
+  const hint = near.length ? ` Did you mean ${list(near.map((t) => t.name))}?` : " Use a name exactly as it is in your tool list.";
+  return { error: `You have no tool named "${name}".${hint}` };
+}
+
+const list = (names: string[]) =>
+  names.length === 1
+    ? `"${names[0]}"`
+    : `${names
+        .slice(0, -1)
+        .map((n) => `"${n}"`)
+        .join(", ")} or "${names.at(-1)}"`;
+
 export const backgroundGroup: CollarGroup = (daemon) => [
   {
     name: "background",
@@ -50,9 +88,10 @@ export const backgroundGroup: CollarGroup = (daemon) => [
     // It only starts the call; whether that one may run again is its own tool's business, so never replay.
     background: false,
     async run(args, ctx) {
-      const name = String(args.tool ?? "");
-      const tool = daemon.toolsOf(ctx.bot).find((t) => t.name === name);
-      if (!tool) return failed(`You have no tool named "${name}".`);
+      const found = findTool(daemon.toolsOf(ctx.bot), String(args.tool ?? ""));
+      if ("error" in found) return failed(found.error);
+      const { tool } = found;
+      const name = tool.name;
       if (tool.background === false) return failed(`${name} can't run in the background.`);
 
       let callArgs: Record<string, unknown>;
