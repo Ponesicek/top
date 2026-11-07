@@ -170,7 +170,7 @@ export const Transcript = memo(function Transcript({
     // too), and hover only reveals turn times, which keyboard users reach by focusing them.
     // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents lint/a11y/useKeyWithMouseEvents: delegation, see above
     <div
-      className={cn("transcript relative flex-1 overflow-y-auto [contain:strict] [overflow-anchor:none] [scrollbar-gutter:stable]", look.scroll)}
+      className={cn("transcript relative flex-1 overflow-y-auto bg-background [contain:strict] [overflow-anchor:none] [scrollbar-gutter:stable]", look.scroll)}
       ref={scrollRef}
       onScroll={onScroll}
       onClick={onClick}
@@ -186,8 +186,11 @@ export const Transcript = memo(function Transcript({
               key={item.key}
               data-index={item.index}
               ref={virtualizer.measureElement}
-              className={cn("row absolute top-0 left-0 w-full will-change-transform", look.row)}
-              style={{ transform: `translateY(${item.start}px)` }}
+              // Placed with `top`, not a transform: a transformed row (worse, one promoted with
+              // will-change) gets its own GPU layer, where Chromium drops ClearType for grayscale text
+              // and can land glyphs between pixels, so the conversation reads blurry beside the sidebar.
+              className={cn("row absolute left-0 w-full", look.row)}
+              style={{ top: item.start }}
             >
               {row.kind === "earlier" ? (
                 <AutoLoad onVisible={loadEarlier} label="Load earlier messages" />
