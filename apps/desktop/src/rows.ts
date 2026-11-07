@@ -34,7 +34,13 @@ export type Row =
 const entryRows = new WeakMap<Entry, Row>();
 
 /**
- * A message from Top rather than the user (a wake-up, a background job's result) shows as one line:
+ * A background job's result shows no row: the bot's reply that follows says what came of it.
+ * (The bot still gets the message; only the transcript leaves it out.)
+ */
+const hidden = (source: string | undefined) => source === "job";
+
+/**
+ * Any other message from Top rather than the user (a wake-up) shows as one line:
  * its first, "[Wake-up] check the deploy" → "Wake-up: check the deploy".
  */
 export function eventLine(text: string): string {
@@ -86,7 +92,7 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
   for (const item of items) {
     if (item.kind === "earlier") rows.push({ kind: "earlier", key: "earlier" });
     else if (item.kind === "gap") rows.push({ kind: "gap", key: `gap${item.gap.after}`, gap: item.gap });
-    else rows.push(rowForEntry(item.entry));
+    else if (!(item.entry.kind === "user" && hidden(item.entry.source))) rows.push(rowForEntry(item.entry));
   }
   itemRowsCache.set(items, rows);
   return rows;
@@ -111,6 +117,7 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
   const rows: Row[] = [];
   if (working) rows.push(WORKING);
   for (const item of snapshot.inbox) {
+    if (hidden(item.source)) continue;
     rows.push(
       stable<QueuedMessage>(item, () =>
         item.source
