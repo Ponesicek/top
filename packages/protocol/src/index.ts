@@ -169,6 +169,21 @@ export type FileView = Static<typeof FileView>;
 /** The most files a listing holds; a folder with more says `more`. */
 export const MAX_FILES = 1_000;
 
+// ── Tailscale ────────────────────────────────────────────────────────────────────
+//
+// With `--tailscale`, the daemon is also on the user's tailnet (`tailnetUrl` in `welcome`), and lets in
+// its devices (or only those `--tailscale-allow` names). A client that came in that way is told who
+// Tailscale says it is.
+
+/** Who a client is, by Tailscale: its device, and the person who owns it (a tagged device has tags instead). */
+export const Viewer = Struct({
+  device: Type.String(),
+  login: Optional(Type.String()),
+  name: Optional(Type.String()),
+  tags: Optional(List(Type.String())),
+});
+export type Viewer = Static<typeof Viewer>;
+
 // ── MCP servers ──────────────────────────────────────────────────────────────────
 //
 // MCP servers are set up once on the daemon and then assigned to bots; a bot has none until it is
@@ -274,7 +289,10 @@ export const ClientFrame = Type.Union([
   Struct({ t: Type.Literal("deleteMcpServer"), req, id: McpServerId }),
   /** Give a bot an MCP server's tools (`on`), or take them away. They change from the bot's next message. */
   Struct({ t: Type.Literal("assignMcp"), req, server: McpServerId, bot: BotId, on: Type.Boolean() }),
-  /** Start signing in to an MCP server. Answers with the page to open in a browser on the daemon's computer. */
+  /**
+   * Start signing in to an MCP server. Answers with the page to open in a browser: on the daemon's
+   * computer, or (when the daemon has a `tailnetUrl`) on any device it lets in.
+   */
   Struct({ t: Type.Literal("mcpSignIn"), req, id: McpServerId }),
   /** Forget an MCP server's credentials, to sign in again (as another account). */
   Struct({ t: Type.Literal("mcpSignOut"), req, id: McpServerId }),
@@ -307,6 +325,10 @@ export const ServerFrame = Type.Union([
     protocol: Type.Literal(PROTOCOL_VERSION),
     /** Where the bots' files are served on this daemon's address, e.g. `/files/<secret>` (see FileView). */
     filesPath: Optional(Type.String()),
+    /** Where the daemon is on the user's tailnet, e.g. `wss://box.tail1234.ts.net:7357` (with `--tailscale`). */
+    tailnetUrl: Optional(Type.String()),
+    /** Who this client is, when it connected over the tailnet. */
+    viewer: Optional(Viewer),
   }),
   /** Every bot, once per connection. */
   Struct({ t: Type.Literal("bots"), bots: List(BotSummary) }),

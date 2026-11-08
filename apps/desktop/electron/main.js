@@ -1,9 +1,10 @@
 // Electron main process. Deliberately thin: the renderer owns the socket and all state, so the
 // same UI runs in a browser (pnpm web) and the main process never sits on the hot path.
 
+import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
 
 const here = dirname(fileURLToPath(import.meta.url));
 if (process.env.TOP_USER_DATA) app.setPath("userData", process.env.TOP_USER_DATA);
@@ -82,6 +83,64 @@ function createWindow() {
   else void win.loadFile(join(here, "../dist/index.html"), { search: query.replace(/^\?/, "") });
   return win;
 }
+
+// ── Top on the tailnet ──────────────────────────────────────────────────────────
+// The page can't run programs, so finding daemons on the user's tailnet happens here: ask the local
+// Tailscale which devices are online, then ask each for `/.well-known/top` on Top's tailnet port
+// (TAILNET_PORT in apps/server/src/tailscale.ts). A daemon answers only devices it lets in; one that
+// refuses this device still says it's there.
+
+const TAILNET_PORT = 7357;
+const TAILSCALE = {
+  darwin: ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"],
+  win32: ["tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe"],
+};
+
+function tailscaleStatus() {
+  const candidates = TAILSCALE[process.platform] ?? ["tailscale"];
+  const attempt = (i) =>
+    new Promise((resolve, reject) => {
+      execFile(candidates[i], ["status", "--json"], { timeout: 5_000, maxBuffer: 16 << 20, windowsHide: true }, (error, stdout, stderr) => {
+        if (!error) return resolve(JSON.parse(stdout));
+        if (error.code === "ENOENT" && i + 1 < candidates.length) return resolve(attempt(i + 1));
+        reject(new Error(error.code === "ENOENT" ? "Tailscale isn't installed on this computer." : String(stderr).trim() || error.message));
+      });
+    });
+  return attempt(0);
+}
+
+async function probe(dnsName, self) {
+  const url = `wss://${dnsName}:${TAILNET_PORT}`;
+  try {
+    const response = await fetch(`https://${dnsName}:${TAILNET_PORT}/.well-known/top`, { signal: AbortSignal.timeout(4_000) });
+    const body = await response.json();
+    if (body?.top !== true) return undefined;
+    const device = typeof body.device === "string" ? body.device : dnsName.split(".")[0];
+    if (response.ok) return { device, url: typeof body.url === "string" ? body.url : url, self, serverId: body.serverId, state: "ok" };
+    return { device, url, self, state: "refused", error: typeof body.error === "string" ? body.error : undefined };
+  } catch {
+    return undefined; // no Top there, or the device didn't answer
+  }
+}
+
+ipcMain.handle("top:tailnet", async () => {
+  let status;
+  try {
+    status = await tailscaleStatus();
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+  if (status.BackendState !== "Running")
+    return { ok: false, error: `Tailscale is ${status.BackendState === "NeedsLogin" ? "signed out" : "not running"} on this computer.` };
+  const devices = [
+    ...(status.Self?.DNSName ? [{ dnsName: status.Self.DNSName.replace(/\.$/, ""), self: true }] : []),
+    ...Object.values(status.Peer ?? {})
+      .filter((peer) => peer.Online && peer.DNSName)
+      .map((peer) => ({ dnsName: peer.DNSName.replace(/\.$/, ""), self: false })),
+  ];
+  const found = await Promise.all(devices.map((d) => probe(d.dnsName, d.self)));
+  return { ok: true, daemons: found.filter(Boolean) };
+});
 
 app.whenReady().then(async () => {
   const win = createWindow();

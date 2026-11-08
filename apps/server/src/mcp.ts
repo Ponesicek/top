@@ -8,7 +8,8 @@
  *
  * A server that fails is retried with backoff; one that wants the user to sign in waits for them.
  * Signing in is OAuth with a redirect to a small server on the daemon's computer (127.0.0.1), so the
- * browser has to run there too.
+ * browser has to run there too. With `--tailscale`, the redirect goes to the daemon's tailnet address
+ * instead, which passes it to that server (serve.ts), so any device the daemon lets in can finish it.
  *
  * What a daemon restart does to a cut-off MCP call (see tools.ts): a tool the server marks read-only
  * or idempotent runs again; any other is reported as interrupted. A server that isn't connected yet
@@ -46,7 +47,7 @@ const CONNECT_TIMEOUT_MS = 60_000;
 /** A tool call may run long; servers that report progress extend it. */
 const CALL_TIMEOUT_MS = 10 * 60_000;
 const SIGN_IN_TIMEOUT_MS = 10 * 60_000;
-const CALLBACK_PATH = "/mcp/callback";
+export const CALLBACK_PATH = "/mcp/callback";
 /** Providers allow tool names of at most 64 characters of [A-Za-z0-9_-]. */
 const MAX_TOOL_NAME = 64;
 
@@ -93,6 +94,8 @@ type Connection = {
 export type McpManagerOptions = {
   /** The port of the OAuth redirect (only open while someone signs in). */
   readonly oauthPort: number;
+  /** Where the redirect lands instead of `http://127.0.0.1:<oauthPort>`, e.g. the daemon's tailnet address. */
+  readonly redirectOrigin?: string;
   readonly clientInfo?: { readonly name: string; readonly version: string };
 };
 
@@ -129,7 +132,7 @@ export class McpManager {
   }
 
   get #redirectUrl() {
-    return `http://127.0.0.1:${this.#options.oauthPort}${CALLBACK_PATH}`;
+    return `${this.#options.redirectOrigin ?? `http://127.0.0.1:${this.#options.oauthPort}`}${CALLBACK_PATH}`;
   }
 
   /** Connect to every server. Doesn't wait: a slow server mustn't hold up the bots. */

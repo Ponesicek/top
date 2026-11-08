@@ -2,6 +2,7 @@ import { type ReactNode, useId } from "react";
 import { CHAT_STYLES, type ChatStyle } from "../chatStyle.ts";
 import { cn } from "../lib/utils.ts";
 import { canScale, SCALES, type Scale } from "../scale.ts";
+import { DaemonSettings } from "./DaemonSettings.tsx";
 import { McpServers } from "./McpServers.tsx";
 
 const SCALE_OPTIONS = SCALES.map((s) => ({ value: String(s), label: `${Math.round(s * 100)}%` }));
@@ -133,6 +134,7 @@ export function Settings({
             )}
           </Section>
           <McpServers />
+          <DaemonSettings />
           <Section title="Performance">
             <Row
               label="Performance overlay"

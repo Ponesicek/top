@@ -20,6 +20,7 @@ import type {
   McpSignInResult,
   SaveMcpServerResult,
   ServerFrame,
+  Viewer,
 } from "@top/protocol";
 import { Connection, type ConnectionStatus } from "./connection.ts";
 import { ConversationSync } from "./conversation.ts";
@@ -41,6 +42,7 @@ export type {
   Seq,
   ToolCallView,
   ToolOutcome,
+  Viewer,
   WhenBusy,
 } from "@top/protocol";
 export { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, MAX_MCP_NAME } from "@top/protocol";
@@ -82,6 +84,10 @@ export type TopSnapshot = {
   readonly files: Readonly<Record<BotId, BotFiles>>;
   /** Set once the first roster arrived; the UI can render from cache before that. */
   readonly ready: boolean;
+  /** Where the daemon is on the user's tailnet, if it's there (`--tailscale`). */
+  readonly tailnetUrl: string | undefined;
+  /** Who Tailscale says this client is, when it connected over the tailnet. */
+  readonly viewer: Viewer | undefined;
 };
 
 export class TopClient {
@@ -98,7 +104,18 @@ export class TopClient {
   constructor(options: TopClientOptions) {
     this.clientId = options.clientId ?? `client-${Math.random().toString(36).slice(2, 10)}`;
     this.#url = options.url;
-    this.#snapshot = { connection: "connecting", rttMs: undefined, attempt: 0, serverId: options.serverId, bots: [], mcpServers: [], files: {}, ready: false };
+    this.#snapshot = {
+      connection: "connecting",
+      rttMs: undefined,
+      attempt: 0,
+      serverId: options.serverId,
+      bots: [],
+      mcpServers: [],
+      files: {},
+      ready: false,
+      tailnetUrl: undefined,
+      viewer: undefined,
+    };
     this.#connection = new Connection({
       url: options.url,
       clientId: this.clientId,
@@ -221,6 +238,8 @@ export class TopClient {
     switch (frame.t) {
       case "welcome": {
         this.#filesPath = frame.filesPath;
+        if (frame.tailnetUrl !== this.#snapshot.tailnetUrl || JSON.stringify(frame.viewer) !== JSON.stringify(this.#snapshot.viewer))
+          this.#publish({ tailnetUrl: frame.tailnetUrl, viewer: frame.viewer });
         if (frame.serverId === this.#snapshot.serverId) return;
         // Another daemon's data: what we hold is not its history. Its watches already ignore our
         // `after` (we said where our entries came from in `hello`), so the syncs that follow are fresh.
