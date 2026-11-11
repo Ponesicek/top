@@ -274,6 +274,15 @@
     background: var(--color-ring);
   }
 
+  /* Text being quoted (Quotes.tsx) still looks selected while its comment box has the focus. */
+  ::highlight(quote) {
+    background: var(--color-ring);
+  }
+  /* The passage a sent quote jumped to. */
+  ::highlight(quote-found) {
+    background: color-mix(in srgb, var(--color-warning) 34%, transparent);
+  }
+
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -646,5 +655,69 @@
     padding: 4px 12px;
     white-space: pre-wrap;
     vertical-align: top;
+  }
+}
+
+/* ── quote chips in the composer ─────────────────────────────────────────────
+   Built as plain DOM inside the editable field (composerEditor.ts), so styled here. */
+
+@layer components {
+  .quote-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    height: 22px;
+    margin: 0 1px;
+    padding: 0 2px 0 6px;
+    /* Centered on the line's text (measured: its middle sits on the text's middle), and within the line,
+       so a chip doesn't make its line taller. */
+    vertical-align: -1px;
+    border-radius: 7px;
+    background: var(--color-secondary);
+    color: var(--color-secondary-foreground);
+    font-size: 12.5px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition: color 90ms;
+  }
+  .quote-chip:hover {
+    color: var(--color-foreground);
+  }
+  .quote-chip-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--color-link);
+  }
+  .quote-chip-text,
+  .quote-chip-comment {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .quote-chip-text {
+    max-width: 14rem;
+  }
+  .quote-chip-comment {
+    max-width: 10rem;
+    color: var(--color-muted-foreground);
+  }
+  .quote-chip-comment::before {
+    content: "· ";
+  }
+  .quote-chip-remove {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    color: var(--color-muted-foreground);
+  }
+  .quote-chip-remove:hover {
+    background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+    color: var(--color-foreground);
   }
 }

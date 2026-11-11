@@ -1,19 +1,22 @@
 /**
  * The composer is isolated from the transcript: it subscribes only to "is the bot working", so typing
- * never waits on a transcript render. Its button is a memoized child that re-renders only when
- * "empty" or "working" flips, not on every keystroke.
+ * never waits on a transcript render. Its field is uncontrolled (composerEditor.ts), and the component
+ * re-renders only when "empty" or "working" flips, not on every keystroke.
  */
 
 import type { ConversationSync } from "@top/client";
 import { ArrowUp, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { perf } from "../perf.ts";
+import { clearQuotes, onQuoteAdded, type Quote, quotesOf } from "../quotes.ts";
 import { isWorking } from "../rows.ts";
 import { top } from "../top.ts";
+import { focusEnd, insertChip, isEmpty, makeChip, readSegments, type Segment, toMessage, writeSegments } from "./composerEditor.ts";
+import { CommentPopover } from "./Quotes.tsx";
 import { Button } from "./ui/button.tsx";
 import { Tooltip } from "./ui/tooltip.tsx";
 
-const drafts = new Map<string, string>();
+const drafts = new Map<string, Segment[]>();
 
 const Actions = memo(function Actions({
   empty,
@@ -47,54 +50,99 @@ const Actions = memo(function Actions({
 
 export const Composer = memo(function Composer({ sync, name }: { sync: ConversationSync; name: string }) {
   const key = String(sync.id);
-  const [text, setText] = useState(() => drafts.get(key) ?? "");
-  const ref = useRef<HTMLTextAreaElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const [empty, setEmpty] = useState(() => isEmpty(drafts.get(key) ?? []));
   const running = useSyncExternalStore(top.subscribe, () => isWorking(top.getSnapshot().bots.find((b) => b.id === sync.id)?.status));
+  // The chip whose comment is open, and where the caret last was in the field (a quote goes there).
+  const [editing, setEditing] = useState<{ quote: Quote; chip: HTMLElement } | null>(null);
+  const caret = useRef<Range | null>(null);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: focus again whenever another bot opens
-  useEffect(() => {
-    ref.current?.focus();
+  /** After any change: remember the draft, and say whether there's anything to send. */
+  const changed = useCallback(() => {
+    const segments = readSegments(ref.current!);
+    if (isEmpty(segments)) drafts.delete(key);
+    else drafts.set(key, segments);
+    setEmpty(isEmpty(segments));
   }, [key]);
 
-  // Grow with the text, up to a cap.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: measures the textarea, which changes with `text`
+  // The draft this bot had, chips and all; and the focus, whenever another bot opens.
   useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
-    el.style.overflowY = el.scrollHeight > 240 ? "auto" : "hidden";
-  }, [text]);
+    writeSegments(ref.current!, drafts.get(key) ?? [], quotesOf(key));
+    focusEnd(ref.current!);
+  }, [key]);
+
+  useEffect(() => {
+    const onSelection = () => {
+      const selection = getSelection();
+      if (selection?.rangeCount && ref.current?.contains(selection.anchorNode)) caret.current = selection.getRangeAt(0).cloneRange();
+    };
+    document.addEventListener("selectionchange", onSelection);
+    return () => document.removeEventListener("selectionchange", onSelection);
+  }, []);
+
+  // A quote from the transcript lands where the caret was.
+  useEffect(
+    () =>
+      onQuoteAdded(key, (quote) => {
+        insertChip(ref.current!, makeChip(quote), caret.current);
+        changed();
+      }),
+    [key, changed],
+  );
 
   const send = useCallback(
     (steer: boolean) => {
-      const value = text.trim();
-      if (!value) return;
-      sync.send(value, running ? (steer ? "steer" : "followUp") : "followUp");
-      setText("");
+      const field = ref.current!;
+      const message = toMessage(readSegments(field), quotesOf(key));
+      if (!message) return;
+      sync.send(message, running ? (steer ? "steer" : "followUp") : "followUp");
+      field.replaceChildren();
       drafts.delete(key);
+      clearQuotes(key);
+      setEmpty(true);
     },
-    [text, running, sync, key],
+    [running, sync, key],
   );
-  // The buttons get stable callbacks that always see the latest text.
+  // The buttons get stable callbacks that always see the latest state.
   const latestSend = useRef(send);
   latestSend.current = send;
   const onSend = useCallback((steer: boolean) => latestSend.current(steer), []);
   const onStop = useCallback(() => void sync.abort().catch(() => {}), [sync]);
+
+  /** A chip's ×, or the chip itself (to comment on it). */
+  const onFieldClick = useCallback(
+    (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const chip = target.closest<HTMLElement>(".quote-chip");
+      if (!chip) return;
+      e.preventDefault();
+      if (target.closest(".quote-chip-remove")) {
+        // Its trailing space goes with it.
+        if (chip.nextSibling?.nodeType === Node.TEXT_NODE && (chip.nextSibling as Text).data.startsWith(" ")) (chip.nextSibling as Text).deleteData(0, 1);
+        chip.remove();
+        changed();
+        ref.current!.focus({ preventScroll: true });
+        return;
+      }
+      const quote = quotesOf(key).get(Number(chip.dataset.quote));
+      if (quote) setEditing({ quote, chip });
+    },
+    [key, changed],
+  );
 
   return (
     // The composer shares the transcript column: its text starts where answers start. The dock reserves
     // the same scrollbar gutter as the transcript, so both center on the same axis.
     <div className="flex-none overflow-hidden [scrollbar-gutter:stable]">
       <div className="mx-auto max-w-220 px-8 pt-1 pb-3 narrow:px-4 narrow:pb-2">
-        {/* Clicking the padding focuses the textarea, a pointer convenience; the textarea itself takes focus from the keyboard. */}
+        {/* Clicking the padding focuses the field, a pointer convenience; the field itself takes focus from the keyboard. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: see above */}
         <div
           className="composer flex cursor-text items-end gap-2 rounded-bubble border border-input bg-popover p-1.75 shadow-composer transition duration-120 focus-within:shadow-composer-focus"
           onMouseDown={(e) => {
             if (e.target !== e.currentTarget) return;
             e.preventDefault();
-            ref.current?.focus();
+            focusEnd(ref.current!);
           }}
         >
           {/* A typed shell prompt, the same "›" as the logo's "›_": decoration, not a control. The avatar
@@ -105,19 +153,27 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
           >
             ›
           </span>
-          <textarea
+          {/* The field's children are its own (composerEditor.ts): React renders none, so it never resets them. */}
+          {/* biome-ignore lint/a11y/useSemanticElements: a textarea can't hold quote chips */}
+          <div
             ref={ref}
-            value={text}
-            rows={1}
-            placeholder={`Message ${name}…`}
-            className="max-h-60 min-w-0 flex-1 resize-none overflow-y-hidden bg-transparent py-1.75 text-body leading-6 text-foreground outline-none placeholder:text-muted-foreground"
-            onChange={(e) => {
-              setText(e.target.value);
-              drafts.set(key, e.target.value);
+            role="textbox"
+            aria-multiline
+            aria-label={`Message ${name}`}
+            tabIndex={0}
+            contentEditable="plaintext-only"
+            data-placeholder={`Message ${name}…`}
+            data-empty={empty ? "" : undefined}
+            className="composer-input relative max-h-60 min-w-0 flex-1 overflow-y-auto bg-transparent py-1.75 text-body leading-6 whitespace-pre-wrap text-foreground outline-none [overflow-wrap:anywhere] data-empty:before:pointer-events-none data-empty:before:absolute data-empty:before:text-muted-foreground data-empty:before:content-[attr(data-placeholder)]"
+            onInput={changed}
+            onMouseDown={(e) => {
+              // A chip is one thing: pressing it neither moves the caret into it nor starts a selection.
+              if ((e.target as HTMLElement).closest(".quote-chip")) e.preventDefault();
             }}
+            onClick={onFieldClick}
             onKeyDown={(e) => {
               perf.trackInput(e.nativeEvent);
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 send(e.ctrlKey || e.metaKey);
               } else if (e.key === "Escape" && running) {
@@ -125,7 +181,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
               }
             }}
           />
-          <Actions empty={!text.trim()} running={running} onSend={onSend} onStop={onStop} />
+          <Actions empty={empty} running={running} onSend={onSend} onStop={onStop} />
         </div>
         {/* Only the working state's keys need explaining (idle is the usual Enter / Shift+Enter). The line
             keeps its height either way, so the transcript doesn't jump when a bot starts or stops. */}
@@ -133,6 +189,25 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
           {running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}
         </div>
       </div>
+      {editing && (
+        <CommentPopover
+          anchor={editing.chip}
+          quote={editing.quote.text}
+          initial={editing.quote.comment}
+          onClose={() => {
+            setEditing(null);
+            ref.current?.focus({ preventScroll: true });
+          }}
+          onSave={(comment) => {
+            const quote = { ...editing.quote, comment: comment.trim() };
+            quotesOf(key).set(quote.id, quote);
+            editing.chip.replaceWith(makeChip(quote));
+            setEditing(null);
+            changed();
+            ref.current?.focus({ preventScroll: true });
+          }}
+        />
+      )}
     </div>
   );
 });

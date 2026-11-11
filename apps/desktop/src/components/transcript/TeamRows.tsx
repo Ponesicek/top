@@ -23,6 +23,7 @@ import {
   ToolGroup,
   time,
   UserState,
+  UserText,
   useElapsed,
 } from "./parts.tsx";
 
@@ -109,7 +110,7 @@ const UserMessage = memo(function UserMessage({ row, ctx, head }: { row: Extract
           row.state === "failed" && "text-destructive-foreground",
         )}
       >
-        {row.text}
+        <UserText text={row.text} bot={String(ctx.sync.id)} />
       </div>
       <UserState row={row} sync={ctx.sync} className="mt-0.5" />
     </Shell>
@@ -120,7 +121,7 @@ const BotMessage = memo(function BotMessage({ row, ctx, head }: { row: Extract<D
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
     <Shell head={head} who="bot" name={ctx.name} at={row.at}>
-      {row.text && <Markdown html={html} />}
+      {row.text && <Markdown html={html} answer={row.seq} />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
   );

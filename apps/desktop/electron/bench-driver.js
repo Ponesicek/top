@@ -87,7 +87,7 @@ export async function runBench(win) {
   // ── 1. typing while 5 bots stream ─────────────────────────────────────────
   await js("window.__topSelect(1)");
   await sleep(500);
-  await js("document.querySelector('.composer textarea').focus()");
+  await js("document.querySelector('.composer-input').focus()");
   await js("window.__topPerf.reset()");
   const streaming = await js("window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length");
   const typeEnd = Date.now() + 8_000;
@@ -101,9 +101,7 @@ export async function runBench(win) {
   }
   await sleep(200);
   result.typing = { ...(await js("window.__topPerf.report()")), botsBusyAtStart: streaming, keys: typed };
-  await js(
-    `(() => { const t = document.querySelector('.composer textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true })); })()`,
-  );
+  await js(`(() => { const t = document.querySelector('.composer-input'); t.replaceChildren(); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 
   // ── 2. scrolling a 10,000-message transcript ──────────────────────────────
   await js("window.__topSelect(0)");

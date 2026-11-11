@@ -24,6 +24,7 @@ import {
   time,
   USER_BUBBLE_STATE,
   UserState,
+  UserText,
   useElapsed,
 } from "./parts.tsx";
 
@@ -80,7 +81,7 @@ const UserBubble = memo(function UserBubble({ row, ctx, first }: { row: Extract<
       <div className={cn(BUBBLE, "bg-chat-out text-chat-out-foreground", first && "rounded-tr-none", row.state && USER_BUBBLE_STATE[row.state])}>
         {first && <Tail side="out" />}
         <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">
-          {row.text}
+          <UserText text={row.text} bot={String(ctx.sync.id)} />
           <span className="stamp-space" aria-hidden>
             {time(row.at)}
           </span>
@@ -97,7 +98,7 @@ const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<Displ
   const segments = useMemo(() => (row.text ? renderSegments(row.key, row.text) : []), [row]);
   const last = segments.length - 1;
   return (
-    <div className={cn("flex flex-col items-start gap-0.75 pl-2", first ? "pt-2.5" : "pt-0.5")}>
+    <div className={cn("flex flex-col items-start gap-0.75 pl-2", first ? "pt-2.5" : "pt-0.5")} data-answer={row.seq}>
       {/* An entry never changes, so neither do its segments: their index is a stable key. */}
       {segments.map((segment, i) =>
         segment.kind === "prose" ? (

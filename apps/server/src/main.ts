@@ -83,6 +83,14 @@ const dataDir = resolve(args.data ?? (real ? ".data/bots" : ".data/fake"));
 if (args.reset) rmSync(dataDir, { recursive: true, force: true });
 mkdirSync(dataDir, { recursive: true });
 
+/** How the user's quotes of earlier answers reach a bot (the desktop app's quotes.ts makes them). */
+const QUOTES_SECTION = [
+  "<quotes>",
+  "The user can quote passages of your earlier answers. A quote appears in their message as a link: [Quote](top-quote://v1/<seq>?text=<passage>&comment=<comment>), URL-encoded (+ is a space).",
+  "`text` is the passage they quoted from your answer, `seq` that answer's entry number, and `comment`, when present, what they say about that passage specifically. The text around the links is the rest of their message; where they put each quote in it matters.",
+  "</quotes>",
+].join("\n");
+
 let models: MutableModels;
 let model: string;
 let tools: TopTool[] | ((bot: BotRow) => TopTool[]);
@@ -125,7 +133,7 @@ if (real) {
   tools = (bot) => computerTools(folderOf(bot));
   sections = (bot) => {
     const prompt = getCurrentSystemPrompt(store.context(bot.id).map((e) => e.message) as never);
-    return { workspace: workspaceSection(folderOf(bot), prompt.includes("You have no tools yet")) };
+    return { workspace: workspaceSection(folderOf(bot), prompt.includes("You have no tools yet")), quotes: QUOTES_SECTION };
   };
   instructionsFor = (name, description) =>
     [

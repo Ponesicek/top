@@ -27,6 +27,7 @@ import {
   USER_BUBBLE_STATE,
   type UserRowData,
   UserState,
+  UserText,
   useElapsed,
 } from "./parts.tsx";
 
@@ -80,7 +81,7 @@ const UserRow = memo(function UserRow({ row, ctx }: { row: UserRowData; ctx: Row
           row.state && USER_BUBBLE_STATE[row.state],
         )}
       >
-        {row.text}
+        <UserText text={row.text} bot={String(ctx.sync.id)} />
       </div>
       {row.state ? <UserState row={row} sync={ctx.sync} className="mt-1.25 mb-1" /> : <TurnTime at={row.at} turn={row.key} align="end" />}
     </div>
@@ -107,7 +108,7 @@ const AssistantRow = memo(function AssistantRow({
       <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
         {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" title={name} />}
         <div className="min-w-0 flex-1">
-          {row.text && <Markdown html={html} />}
+          {row.text && <Markdown html={html} answer={row.seq} />}
           {row.error && <AnswerError error={row.error} />}
         </div>
       </div>

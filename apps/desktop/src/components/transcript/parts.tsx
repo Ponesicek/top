@@ -2,8 +2,9 @@
 
 import type { BotSummary, ConversationSync, ToolOutcome } from "@top/client";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { cn } from "../../lib/utils.ts";
+import { jumpTo, messageParts } from "../../quotes.ts";
 import type { DisplayRow, Row, ToolEntry, ToolGroupRow } from "../../rows.ts";
 import { Badge } from "../ui/badge.tsx";
 import { Button } from "../ui/button.tsx";
@@ -271,11 +272,42 @@ export function RetryNote({ bot }: { bot: BotSummary | undefined }) {
 
 /**
  * HTML from markdown.ts: model text rendered with raw HTML off, so it is escaped; the one place it
- * enters the DOM.
+ * enters the DOM. `answer` is the seq of the bot's answer it shows, which makes its text quotable (Quotes.tsx).
  */
-export function Markdown({ html }: { html: string }) {
+export function Markdown({ html, answer }: { html: string; answer?: number }) {
   // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown.ts escapes the text (markdown-it with html: false, hljs)
-  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div className="md" data-answer={answer} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+/**
+ * What you sent. Passages you quoted (quotes.ts) show where you put them, each with your comment on
+ * it, and take you back to the answer they came from. Its parent keeps line breaks.
+ */
+export function UserText({ text, bot }: { text: string; bot: string }) {
+  const parts = useMemo(() => messageParts(text), [text]);
+  if (!parts) return text;
+  return parts.map((part, i) =>
+    part.kind === "text" ? (
+      part.text.trim() && (
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of an immutable message
+        <span key={i} className="my-1 block first:mt-0 last:mb-0">
+          {part.text.trim()}
+        </span>
+      )
+    ) : (
+      <button
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of an immutable message
+        key={i}
+        type="button"
+        title="Show in the answer"
+        className="my-1.5 block w-full cursor-pointer rounded-lg bg-current/6 px-2.5 py-1.5 text-left transition-colors duration-90 first:mt-0.5 last:mb-0.5 hover:bg-current/10"
+        onClick={() => jumpTo(bot, part)}
+      >
+        <span className="line-clamp-4 border-l-2 border-current/30 pl-2 text-[0.93em] opacity-75">{part.text}</span>
+        {part.comment && <span className="mt-1 block">{part.comment}</span>}
+      </button>
+    ),
+  );
 }
 
 /** A rule across the column with a short line in the middle: "Load earlier messages", notices. */

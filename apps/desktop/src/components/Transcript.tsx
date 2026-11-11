@@ -13,11 +13,13 @@ import type { ChatStyle } from "../chatStyle.ts";
 import { copyCode } from "../lib/copyCode.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
+import { findPassage, onJump } from "../quotes.ts";
 import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows } from "../rows.ts";
 import { useBot } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
 import { FilesLine } from "./files/FilesLine.tsx";
+import { highlight, QuoteMenu } from "./Quotes.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
 import { AutoLoad, DIVIDER, type RowContext, type RowRenderer } from "./transcript/parts.tsx";
@@ -138,6 +140,42 @@ export const Transcript = memo(function Transcript({
   }, [firstKey]);
   const items = virtualizer.getVirtualItems();
 
+  // A sent quote was clicked: show the passage in its answer, paging back through history if the answer
+  // isn't loaded, then center the passage itself (the row is measured by then) and light it up.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  useEffect(() => {
+    const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let fade: ReturnType<typeof setTimeout> | undefined;
+    const off = onJump(String(sync.id), async (citation) => {
+      const key = `e${citation.seq}`;
+      for (let page = 0; page < 100 && !rowsRef.current.some((r) => r.key === key) && rowsRef.current[0]?.kind === "earlier"; page++) {
+        await sync.loadEarlier().catch(() => {});
+        await settle(30);
+      }
+      const index = rowsRef.current.findIndex((r) => r.key === key);
+      const el = scrollRef.current;
+      if (index < 0 || !el) return;
+      atBottom.current = false;
+      virtualizer.scrollToIndex(index, { align: "center" });
+      await settle(80);
+      const answer = el.querySelector(`[data-answer="${citation.seq}"]`);
+      const range = answer && findPassage(answer, citation.text);
+      if (!range) return;
+      const box = el.getBoundingClientRect();
+      const rect = range.getBoundingClientRect();
+      el.scrollTop += rect.top + rect.height / 2 - (box.top + box.height / 2);
+      highlight("quote-found", range);
+      clearTimeout(fade);
+      fade = setTimeout(() => highlight("quote-found", null), 2500);
+    });
+    return () => {
+      off();
+      clearTimeout(fade);
+      highlight("quote-found", null);
+    };
+  }, [sync, virtualizer]);
+
   // A new bot's "No messages yet" is its content too.
   const shown = snapshot.items.length > 0 || snapshot.status !== "loading";
   useEffect(() => {
@@ -178,6 +216,7 @@ export const Transcript = memo(function Transcript({
       onMouseLeave={style === "default" ? onMouseLeave : undefined}
     >
       <style ref={turnStyle} />
+      <QuoteMenu bot={String(sync.id)} container={scrollRef} />
       <div ref={innerRef} className={cn("relative mx-auto w-full", look.inner)} style={{ height: virtualizer.getTotalSize() }}>
         {items.map((item) => {
           const row = rows[item.index]!;
