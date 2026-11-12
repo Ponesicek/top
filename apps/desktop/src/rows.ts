@@ -1,5 +1,16 @@
 /** Transcript items → the rows the transcript renders. Row objects are stable per entry, so rows memoize. */
-import type { BotSummary, ConversationSnapshot, Entry, FileChange, Gap, PendingMessage, QueuedMessage, ToolCallView, TranscriptItem } from "@top/client";
+import type {
+  Attachment,
+  BotSummary,
+  ConversationSnapshot,
+  Entry,
+  FileChange,
+  Gap,
+  PendingMessage,
+  QueuedMessage,
+  ToolCallView,
+  TranscriptItem,
+} from "@top/client";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -10,6 +21,7 @@ export type Row =
       readonly kind: "user";
       readonly key: string;
       readonly text: string;
+      readonly attachments?: readonly Attachment[];
       readonly at?: number;
       readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer";
       readonly requestId?: string;
@@ -54,7 +66,9 @@ function rowForEntry(entry: Entry): Row {
   const key = `e${entry.seq}`;
   switch (entry.kind) {
     case "user":
-      row = entry.source ? { kind: "notice", key, text: eventLine(entry.text) } : { kind: "user", key, text: entry.text, at: entry.at };
+      row = entry.source
+        ? { kind: "notice", key, text: eventLine(entry.text) }
+        : { kind: "user", key, text: entry.text, at: entry.at, ...(entry.attachments ? { attachments: entry.attachments } : {}) };
       break;
     case "assistant":
       row = {
@@ -126,6 +140,7 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
               kind: "user",
               key: `m${item.requestId}`,
               text: item.text,
+              ...(item.attachments ? { attachments: item.attachments } : {}),
               at: item.at,
               state: item.mode === "steer" ? "steer" : "queued",
             },
@@ -138,6 +153,7 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
         kind: "user",
         key: `m${pending.requestId}`,
         text: pending.text,
+        ...(pending.attachments ? { attachments: pending.attachments } : {}),
         at: pending.createdAt,
         state: pending.state,
         requestId: pending.requestId,

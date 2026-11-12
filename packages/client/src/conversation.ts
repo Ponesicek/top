@@ -9,12 +9,14 @@
  * Messages the user sends show up instantly as pending, survive a dropped connection, and are resent
  * with the same `requestId` (applied once by the daemon) until the daemon has them.
  */
-import type { BotId, Entry, Gap, HistoryResult, QueuedMessage, Seq, SubmitResult, WhenBusy } from "@top/protocol";
+import type { Attachment, BotId, Entry, Gap, HistoryResult, QueuedMessage, Seq, SubmitResult, WhenBusy } from "@top/protocol";
 import type { Connection } from "./connection.ts";
 
 export type PendingMessage = {
   readonly requestId: string;
   readonly text: string;
+  /** Uploaded already (`TopClient.upload`); the message names them by id. */
+  readonly attachments?: readonly Attachment[];
   readonly createdAt: number;
   /** `sending`: not acknowledged yet (or offline). `accepted`: the daemon has it durably. */
   readonly state: "sending" | "accepted" | "failed";
@@ -223,8 +225,15 @@ export class ConversationSync {
 
   // ── actions ───────────────────────────────────────────────────────────────────
 
-  send(text: string, whenBusy: WhenBusy = "followUp"): PendingMessage {
-    const message: PendingMessage = { requestId: newRequestId(), text, createdAt: Date.now(), state: "sending", whenBusy };
+  send(text: string, whenBusy: WhenBusy = "followUp", attachments: readonly Attachment[] = []): PendingMessage {
+    const message: PendingMessage = {
+      requestId: newRequestId(),
+      text,
+      ...(attachments.length ? { attachments } : {}),
+      createdAt: Date.now(),
+      state: "sending",
+      whenBusy,
+    };
     this.#pending = [...this.#pending, message];
     this.#publish();
     this.#submit(message);
@@ -322,6 +331,7 @@ export class ConversationSync {
         bot: this.id,
         requestId: message.requestId,
         text: message.text,
+        ...(message.attachments?.length ? { attachments: message.attachments.map((a) => a.id) } : {}),
         whenBusy: message.whenBusy,
         clientId: this.#clientId,
       })

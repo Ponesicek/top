@@ -20,11 +20,15 @@
  * - `jobs`: tool calls that outran the time limit and went on in the background (see jobs.ts). Ending
  *   one puts its result in the inbox in the same transaction.
  *
- * Inbox rows and the entries they become carry a `source` when they don't come from the user.
+ * - `attachments`: files the user uploaded (see attachments.ts, which keeps the bytes on disk). One with
+ *   no `bot` is waiting for a message to claim it; claiming it is part of accepting the message.
+ *
+ * Inbox rows and the entries they become carry a `source` when they don't come from the user, and the
+ * user's attachments.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import type { MessageSource } from "@top/protocol";
+import type { Attachment, MessageSource } from "@top/protocol";
 
 export type EntryKind = "system" | "user" | "assistant" | "tool" | "notice" | "files";
 
@@ -62,8 +66,12 @@ export type InboxRow = {
   readonly mode: "steer" | "followUp";
   readonly clientId: string | null;
   readonly source: MessageSource | null;
+  readonly attachments: readonly Attachment[];
   readonly at: number;
 };
+
+/** An uploaded file: `bot` is null until a message claims it. */
+export type AttachmentRow = Attachment & { readonly bot: number | null; readonly at: number };
 
 export type WakeRow = { readonly id: number; readonly bot: number; readonly dueAt: number; readonly note: string; readonly createdAt: number };
 
@@ -127,6 +135,15 @@ CREATE TABLE IF NOT EXISTS inbox (
   client_id TEXT,
   at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  bot INTEGER,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attachments_by_bot ON attachments(bot);
 CREATE TABLE IF NOT EXISTS tool_calls (
   assistant_seq INTEGER NOT NULL,
   tool_call_id TEXT NOT NULL,
@@ -203,6 +220,18 @@ function inboxOf(row: Row): InboxRow {
     mode: row.mode === "steer" ? "steer" : "followUp",
     clientId: (row.client_id as string | null) ?? null,
     source: (row.source as MessageSource | null) ?? null,
+    attachments: row.attachments ? (JSON.parse(String(row.attachments)) as Attachment[]) : [],
+    at: Number(row.at),
+  };
+}
+
+function attachmentOf(row: Row): AttachmentRow {
+  return {
+    id: String(row.id),
+    bot: row.bot === null ? null : Number(row.bot),
+    name: String(row.name),
+    mimeType: String(row.mime),
+    size: Number(row.size),
     at: Number(row.at),
   };
 }
@@ -262,6 +291,14 @@ export class Store {
     }
     if (
       !this.#db
+        .prepare("PRAGMA table_info(inbox)")
+        .all()
+        .some((row) => row.name === "attachments")
+    ) {
+      this.#db.exec("ALTER TABLE inbox ADD COLUMN attachments TEXT");
+    }
+    if (
+      !this.#db
         .prepare("PRAGMA table_info(jobs)")
         .all()
         .some((row) => row.name === "note")
@@ -291,7 +328,7 @@ export class Store {
       resultsAfter: p("SELECT tool_call_id FROM entries WHERE bot = ? AND kind = 'tool' AND seq > ?"),
       requestInEntries: p("SELECT 1 FROM entries WHERE request_id = ?"),
       requestInInbox: p("SELECT 1 FROM inbox WHERE request_id = ?"),
-      insertInbox: p("INSERT INTO inbox (bot, request_id, text, mode, client_id, source, at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+      insertInbox: p("INSERT INTO inbox (bot, request_id, text, mode, client_id, source, attachments, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
       inbox: p("SELECT * FROM inbox WHERE bot = ? ORDER BY id"),
       inboxRow: p("SELECT * FROM inbox WHERE request_id = ?"),
       deleteInbox: p("DELETE FROM inbox WHERE request_id = ?"),
@@ -357,7 +394,7 @@ export class Store {
   /** Remove a bot and everything it wrote. */
   purgeBot(bot: number) {
     this.transaction(() => {
-      for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files", "wakes", "jobs"])
+      for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files", "wakes", "jobs", "attachments"])
         this.#db.prepare(`DELETE FROM ${table} WHERE bot = ?`).run(bot);
       this.#db.prepare("DELETE FROM bots WHERE id = ?").run(bot);
     });
@@ -551,12 +588,49 @@ export class Store {
   // ── inbox ────────────────────────────────────────────────────────────────────
 
   /** Accept a message. A `requestId` seen before (queued or already placed) is a duplicate and changes nothing. */
-  submit(bot: number, requestId: string, text: string, mode: "steer" | "followUp", clientId: string | null): "queued" | "duplicate" {
+  /** Queue a message from a client. Its attachments become the bot's in the same transaction. */
+  submit(
+    bot: number,
+    requestId: string,
+    text: string,
+    mode: "steer" | "followUp",
+    clientId: string | null,
+    attachments: readonly Attachment[] = [],
+  ): "queued" | "duplicate" {
     return this.transaction(() => {
       if (this.#q.requestInEntries!.get(requestId) || this.#q.requestInInbox!.get(requestId)) return "duplicate";
-      this.#q.insertInbox!.run(bot, requestId, text, mode, clientId, null, Date.now());
+      const json = attachments.length ? JSON.stringify(attachments) : null;
+      this.#q.insertInbox!.run(bot, requestId, text, mode, clientId, null, json, Date.now());
+      for (const attachment of attachments) this.#db.prepare("UPDATE attachments SET bot = ? WHERE id = ?").run(bot, attachment.id);
       return "queued";
     });
+  }
+
+  // ── attachments ──────────────────────────────────────────────────────────────
+
+  addAttachment(attachment: Attachment) {
+    this.#db
+      .prepare("INSERT INTO attachments (id, bot, name, mime, size, at) VALUES (?, NULL, ?, ?, ?, ?)")
+      .run(attachment.id, attachment.name, attachment.mimeType, attachment.size, Date.now());
+  }
+
+  attachment(id: string): AttachmentRow | undefined {
+    const row = this.#db.prepare("SELECT * FROM attachments WHERE id = ?").get(id);
+    return row ? attachmentOf(row) : undefined;
+  }
+
+  /** Uploads no message claimed, made before `before`. */
+  unclaimedAttachments(before: number): AttachmentRow[] {
+    return this.#db.prepare("SELECT * FROM attachments WHERE bot IS NULL AND at < ?").all(before).map(attachmentOf);
+  }
+
+  /** A bot's attachments (to delete their files with the bot). */
+  botAttachments(bot: number): AttachmentRow[] {
+    return this.#db.prepare("SELECT * FROM attachments WHERE bot = ?").all(bot).map(attachmentOf);
+  }
+
+  deleteAttachment(id: string) {
+    this.#db.prepare("DELETE FROM attachments WHERE id = ?").run(id);
   }
 
   inbox(bot: number): InboxRow[] {
@@ -580,7 +654,7 @@ export class Store {
   /** A message from Top itself (not the user), queued for the bot. Call inside a transaction. */
   #queueEvent(bot: number, requestId: string, text: string, source: MessageSource): InboxRow {
     // Steered: mid-task it reaches the bot at its next step, not only when the task would end.
-    this.#q.insertInbox!.run(bot, requestId, text, "steer", null, source, Date.now());
+    this.#q.insertInbox!.run(bot, requestId, text, "steer", null, source, null, Date.now());
     return this.inboxRow(requestId)!;
   }
 

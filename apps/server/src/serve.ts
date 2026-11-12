@@ -14,7 +14,6 @@
  * tailscale.ts). The local port keeps working as before.
  */
 import { timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
@@ -23,6 +22,7 @@ import { type Entry, type Gap, PROTOCOL_VERSION, parseClientFrame, type QueuedMe
 import { type WebSocket, WebSocketServer } from "ws";
 import type { Daemon } from "./daemon.ts";
 import { type FilesFolder, fileViews } from "./files.ts";
+import { sendFile } from "./sendFile.ts";
 import type { StoredEntry } from "./store.ts";
 import type { Tailnet } from "./tailscale.ts";
 import { toWire } from "./wire.ts";
@@ -47,9 +47,14 @@ function filesFrame(folder: FilesFolder): ServerFrame {
 }
 
 function inboxOf(daemon: Daemon, bot: number): QueuedMessage[] {
-  return daemon.store
-    .inbox(bot)
-    .map((row) => ({ requestId: row.requestId, text: row.text, mode: row.mode, at: row.at, ...(row.source ? { source: row.source } : {}) }));
+  return daemon.store.inbox(bot).map((row) => ({
+    requestId: row.requestId,
+    text: row.text,
+    mode: row.mode,
+    at: row.at,
+    ...(row.source ? { source: row.source } : {}),
+    ...(row.attachments.length ? { attachments: row.attachments } : {}),
+  }));
 }
 
 class ClientConnection {
@@ -72,6 +77,7 @@ class ClientConnection {
       serverId: daemon.store.id,
       protocol: PROTOCOL_VERSION,
       ...(daemon.hasFiles ? { filesPath: `${FILES_PREFIX}${daemon.store.filesSecret}` } : {}),
+      ...(daemon.attachments ? { attachmentsPath: `${ATTACHMENTS_PREFIX}${daemon.store.filesSecret}` } : {}),
       ...(where.tailnetUrl ? { tailnetUrl: where.tailnetUrl } : {}),
       ...(where.viewer ? { viewer: where.viewer } : {}),
     });
@@ -162,7 +168,9 @@ class ClientConnection {
           return toWire(stored, true) ?? null;
         });
       case "submit":
-        return this.#answer(frame.req, () => this.#daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId));
+        return this.#answer(frame.req, () =>
+          this.#daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId, frame.attachments ?? []),
+        );
       case "abort":
         return this.#answer(frame.req, () => {
           this.#daemon.stop(frame.bot);
@@ -247,6 +255,7 @@ export const APP_ORIGINS = ["file://", "http://localhost:5199", "http://127.0.0.
 
 /** Files are at `/files/<secret>/<bot id>/<path>`. */
 const FILES_PREFIX = "/files/";
+const ATTACHMENTS_PREFIX = "/attachments/";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -352,42 +361,26 @@ async function serveFile(daemon: Daemon, request: IncomingMessage, response: Ser
     info = await stat(path).catch(() => undefined);
   }
   if (!info?.isFile()) return fail(404, "Not found");
-  const etag = `"${info.size.toString(36)}-${Math.round(info.mtimeMs).toString(36)}"`;
-  const headers: Record<string, string> = {
+  sendFile(request, response, path, info, {
     "Content-Type": typeOf(path),
-    ETag: etag,
     // The file may change at any moment: always check, but a 304 costs nothing.
     "Cache-Control": "no-cache",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
-    "Accept-Ranges": "bytes",
-    "Access-Control-Expose-Headers": "ETag, Content-Length, Content-Range",
-  };
-  if (request.headers["if-none-match"] === etag) {
-    response.writeHead(304, headers);
-    return response.end();
+  });
+}
+
+const isAttachment = (request: IncomingMessage) => (request.url ?? "").startsWith(ATTACHMENTS_PREFIX);
+
+/** Uploads and attachments: `<attachmentsPath>/upload` and `<attachmentsPath>/<id>`, behind the files secret (see serveFile). */
+async function serveAttachment(daemon: Daemon, request: IncomingMessage, response: ServerResponse) {
+  const url = new URL(request.url ?? "/", "http://top");
+  const [secret = "", rest = "", ...more] = url.pathname.slice(ATTACHMENTS_PREFIX.length).split("/");
+  if (!daemon.attachments || !sameSecret(secret, daemon.store.filesSecret) || more.length) {
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+    return response.end("Not found");
   }
-  // One byte range, for seeking in video and audio.
-  const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range ?? ""));
-  let start = 0;
-  let end = info.size - 1;
-  let status = 200;
-  if (range && (range[1] || range[2])) {
-    start = range[1] ? Number(range[1]) : Math.max(0, info.size - Number(range[2]));
-    end = range[1] && range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
-    if (start > end || start >= info.size) {
-      response.writeHead(416, { ...headers, "Content-Range": `bytes */${info.size}` });
-      return response.end();
-    }
-    status = 206;
-    headers["Content-Range"] = `bytes ${start}-${end}/${info.size}`;
-  }
-  headers["Content-Length"] = String(info.size === 0 ? 0 : end - start + 1);
-  response.writeHead(status, headers);
-  if (request.method === "HEAD" || info.size === 0) return response.end();
-  const stream = createReadStream(path, { start, end });
-  stream.on("error", () => response.destroy());
-  stream.pipe(response);
+  return daemon.attachments.handle(request, response, rest, url.searchParams);
 }
 
 export type ServeOptions = {
@@ -437,7 +430,7 @@ export function serve(daemon: Daemon, options: ServeOptions) {
     );
   };
   const handleFile = (request: IncomingMessage, response: ServerResponse) =>
-    serveFile(daemon, request, response).catch((error) => {
+    (isAttachment(request) ? serveAttachment(daemon, request, response) : serveFile(daemon, request, response)).catch((error) => {
       console.error("[top] serving a file:", error);
       if (!response.headersSent) response.writeHead(500);
       response.end();

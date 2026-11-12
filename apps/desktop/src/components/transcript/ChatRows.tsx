@@ -10,6 +10,7 @@ import { cn } from "../../lib/utils.ts";
 import { renderSegments } from "../../markdown.ts";
 import { author, type DisplayRow, rowTime, type ToolGroupRow } from "../../rows.ts";
 import { statusLabel } from "../Sidebar.tsx";
+import { MessageAttachments } from "./MessageAttachments.tsx";
 import {
   AnswerError,
   Dots,
@@ -78,16 +79,32 @@ function DayChip({ at }: { at: number }) {
 const UserBubble = memo(function UserBubble({ row, ctx, first }: { row: Extract<DisplayRow, { kind: "user" }>; ctx: RowContext; first: boolean }) {
   return (
     <div className={cn("flex flex-col items-end pr-2", first ? "pt-2.5" : "pt-0.5")}>
-      <div className={cn(BUBBLE, "bg-chat-out text-chat-out-foreground", first && "rounded-tr-none", row.state && USER_BUBBLE_STATE[row.state])}>
-        {first && <Tail side="out" />}
-        <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">
-          <UserText text={row.text} bot={String(ctx.sync.id)} />
-          <span className="stamp-space" aria-hidden>
-            {time(row.at)}
-          </span>
+      {row.attachments && (
+        <MessageAttachments
+          attachments={row.attachments}
+          align="end"
+          className={cn("max-w-[min(75%,540px)]", row.text && "mb-0.75", row.state === "sending" && "opacity-65")}
+        />
+      )}
+      {(row.text || !row.attachments) && (
+        <div
+          className={cn(
+            BUBBLE,
+            "bg-chat-out text-chat-out-foreground",
+            first && !row.attachments && "rounded-tr-none",
+            row.state && USER_BUBBLE_STATE[row.state],
+          )}
+        >
+          {first && !row.attachments && <Tail side="out" />}
+          <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">
+            <UserText text={row.text} bot={String(ctx.sync.id)} />
+            <span className="stamp-space" aria-hidden>
+              {time(row.at)}
+            </span>
+          </div>
+          <Stamp at={row.at} />
         </div>
-        <Stamp at={row.at} />
-      </div>
+      )}
       <UserState row={row} sync={ctx.sync} className="mt-1" />
     </div>
   );

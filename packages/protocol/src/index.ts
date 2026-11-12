@@ -96,6 +96,39 @@ export type ToolCallView = Static<typeof ToolCallView>;
 export const ToolOutcome = Type.Enum(["interrupted", "not_run", "recovered", "replayed", "stopped"]);
 export type ToolOutcome = Static<typeof ToolOutcome>;
 
+// ── attachments ──────────────────────────────────────────────────────────────────
+//
+// Files the user sends with a message. A client uploads each one over HTTP as soon as it's attached
+// (`POST <attachmentsPath>/upload?name=<name>`, the raw bytes as the body, `Content-Type` its type) and
+// gets its `Attachment` back; `submit` then names the attachments by id. They are served at
+// `<attachmentsPath>/<id>` (`attachmentsPath` is in `welcome`, and holds a secret like `filesPath`).
+// An upload no message claims is deleted after a day; a sent one lives as long as its bot.
+//
+// The bot gets every attachment's path on the daemon's computer, to open with its tools, and images it
+// can see (`isModelImage`) as images too.
+
+/** `mimeType` is what the daemon decided the file is: an image whose bytes aren't that image is `application/octet-stream`. */
+export const Attachment = Struct({ id: Type.String(), name: Type.String(), mimeType: Type.String(), size: Type.Integer() });
+export type Attachment = Static<typeof Attachment>;
+
+/** The most attachments one message takes. */
+export const MAX_ATTACHMENTS = 20;
+/** The largest file the daemon accepts. */
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+/** The largest image a model is given as an image; a larger one goes as a file (its path only). */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/**
+ * Images are shrunk to this many pixels on their long side before upload. Anthropic refuses larger
+ * ones once a request holds more than 20 images, which would break every later request of the bot.
+ */
+export const MAX_IMAGE_EDGE = 2000;
+/** The image types models take as images. Others (SVG, HEIC, BMP, …) are files. */
+export const MODEL_IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** Whether the bot sees an attachment as an image (besides getting its path). */
+export const isModelImage = (attachment: Pick<Attachment, "mimeType" | "size">) =>
+  MODEL_IMAGE_TYPES.includes(attachment.mimeType) && attachment.size <= MAX_IMAGE_BYTES;
+
 const entryBase = { seq: Seq, bot: BotId, at: Type.Number() };
 
 /**
@@ -108,7 +141,14 @@ export const MessageSource = Type.Enum(["wake", "job"]);
 export type MessageSource = Static<typeof MessageSource>;
 
 export const Entry = Type.Union([
-  Struct({ ...entryBase, kind: Type.Literal("user"), text: Type.String(), requestId: Optional(Type.String()), source: Optional(MessageSource) }),
+  Struct({
+    ...entryBase,
+    kind: Type.Literal("user"),
+    text: Type.String(),
+    attachments: Optional(List(Attachment)),
+    requestId: Optional(Type.String()),
+    source: Optional(MessageSource),
+  }),
   Struct({
     ...entryBase,
     kind: Type.Literal("assistant"),
@@ -145,6 +185,7 @@ export type WhenBusy = Static<typeof WhenBusy>;
 export const QueuedMessage = Struct({
   requestId: Type.String(),
   text: Type.String(),
+  attachments: Optional(List(Attachment)),
   mode: Type.Enum(["steer", "followUp"]),
   at: Type.Number(),
   source: Optional(MessageSource),
@@ -269,6 +310,8 @@ export const ClientFrame = Type.Union([
     /** Idempotency key: a resend after a drop is applied once. */
     requestId: Type.String(),
     text: Type.String(),
+    /** Uploaded attachments, by id (see Attachment). The text may be empty when there are some. */
+    attachments: Optional(List(Type.String())),
     whenBusy: WhenBusy,
     clientId: Type.String(),
   }),
@@ -325,6 +368,8 @@ export const ServerFrame = Type.Union([
     protocol: Type.Literal(PROTOCOL_VERSION),
     /** Where the bots' files are served on this daemon's address, e.g. `/files/<secret>` (see FileView). */
     filesPath: Optional(Type.String()),
+    /** Where attachments are uploaded and served on this daemon's address, e.g. `/attachments/<secret>` (see Attachment). */
+    attachmentsPath: Optional(Type.String()),
     /** Where the daemon is on the user's tailnet, e.g. `wss://box.tail1234.ts.net:7357` (with `--tailscale`). */
     tailnetUrl: Optional(Type.String()),
     /** Who this client is, when it connected over the tailnet. */

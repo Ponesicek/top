@@ -25,6 +25,7 @@ import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { DEFAULT_PORT } from "@top/protocol";
+import { Attachments } from "./attachments.ts";
 import { PiAuthFile } from "./auth.ts";
 import { Daemon, defaultInstructions, ensureBots, type NewBot, purpose } from "./daemon.ts";
 import { BOT_NAMES, createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "./fake-bots.ts";
@@ -177,7 +178,15 @@ if (args.tailscale) {
 const oauthPort = Number(args.port) + 1;
 const mcp = new McpManager(store, { oauthPort, ...(tailnet ? { redirectOrigin: tailnet.origin } : {}), clientInfo: { name: "Top", version: "0.0.0" } });
 mcp.start();
-const daemon = new Daemon(store, models, tools, { thinking: real ? thinking : "off", newBot, mcp, files: filesOf, ...(sections ? { sections } : {}) });
+const attachments = new Attachments(dataDir, store);
+const daemon = new Daemon(store, models, tools, {
+  thinking: real ? thinking : "off",
+  newBot,
+  mcp,
+  files: filesOf,
+  attachments,
+  ...(sections ? { sections } : {}),
+});
 // Settle what the last process left unfinished (interrupted tool calls, half-done tasks), then run.
 await daemon.start();
 
@@ -210,6 +219,7 @@ async function shutdown() {
   // Stops the MCP servers' programs too.
   await mcp.close();
   daemon.close();
+  attachments.close();
   store.close();
   process.exit(0);
 }

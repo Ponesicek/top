@@ -4,7 +4,8 @@
  */
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, type Models, toToolDeclaration } from "@earendil-works/pi-ai";
-import { type BotSummary, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type WhenBusy } from "@top/protocol";
+import { type Attachment, type BotSummary, MAX_ATTACHMENTS, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type WhenBusy } from "@top/protocol";
+import type { Attachments } from "./attachments.ts";
 import { collarTools } from "./collar/index.ts";
 import { FilesFolder, type Listing } from "./files.ts";
 import { Jobs } from "./jobs.ts";
@@ -67,6 +68,11 @@ export class BotError extends Error {
   override name = "BotError";
 }
 
+/** A message's attachments were refused: the message is meant for the user. */
+export class AttachmentError extends Error {
+  override name = "AttachmentError";
+}
+
 /** Add a bot to the store. Its transcript begins with its system message. */
 function addBot(store: Store, name: string, description: string, newBot: NewBot): number {
   const instructions = newBot.instructions(name, description);
@@ -97,6 +103,8 @@ type DaemonOptions = {
   foregroundMs?: number;
   /** How long Top's own messages to an idle bot wait for others before starting a task (see runner.ts). */
   gatherMs?: number;
+  /** Where the user's attachments are kept. Without it, messages can't have any. */
+  attachments?: Attachments;
 };
 
 export class Daemon {
@@ -166,7 +174,12 @@ export class Daemon {
         },
         status: (id) => live() && this.#touch(id),
       },
-      { thinkingLevel: thinking ?? "off", ...(sections ? { sections: sections(bot) } : {}), ...(gatherMs !== undefined ? { gatherMs } : {}) },
+      {
+        thinkingLevel: thinking ?? "off",
+        ...(sections ? { sections: sections(bot) } : {}),
+        ...(gatherMs !== undefined ? { gatherMs } : {}),
+        ...(this.#options.attachments ? { attachments: this.#options.attachments } : {}),
+      },
     );
     this.runners.set(bot.id, runner);
     this.#summaries.set(bot.id, this.#summarize(bot.id));
@@ -225,6 +238,7 @@ export class Daemon {
     this.jobs.stopAll(id);
     void runner
       .waitForIdle()
+      .then(() => this.#options.attachments?.removeBot(id))
       .then(() => this.store.purgeBot(id))
       .catch((error) => console.error(`[top] deleting ${runner.name}:`, error));
   }
@@ -296,11 +310,34 @@ export class Daemon {
     return runner;
   }
 
-  /** Accept a message. Durable when this returns; a repeated `requestId` changes nothing. */
-  submit(bot: number, requestId: string, text: string, whenBusy: WhenBusy, clientId: string | null): { duplicate: boolean } {
+  get attachments(): Attachments | undefined {
+    return this.#options.attachments;
+  }
+
+  /**
+   * Accept a message, with the attachments it names (uploaded already). Durable when this returns; a
+   * repeated `requestId` changes nothing.
+   */
+  submit(
+    bot: number,
+    requestId: string,
+    text: string,
+    whenBusy: WhenBusy,
+    clientId: string | null,
+    attachmentIds: readonly string[] = [],
+  ): { duplicate: boolean } {
     const runner = this.runner(bot);
     if (whenBusy === "reject" && (runner.busy || this.store.inbox(bot).length > 0)) throw new BusyError(`${runner.name} is busy`);
-    const result = this.store.submit(bot, requestId, text, whenBusy === "steer" ? "steer" : "followUp", clientId);
+    if (attachmentIds.length && !this.#options.attachments) throw new AttachmentError("This daemon doesn't take attachments.");
+    if (attachmentIds.length > MAX_ATTACHMENTS) throw new AttachmentError(`A message can have up to ${MAX_ATTACHMENTS} attachments.`);
+    if (!text.trim() && !attachmentIds.length) throw new AttachmentError("The message is empty.");
+    let attachments: Attachment[] = [];
+    try {
+      attachments = this.#options.attachments?.lookup(bot, attachmentIds) ?? [];
+    } catch (error) {
+      throw new AttachmentError((error as Error).message);
+    }
+    const result = this.store.submit(bot, requestId, text, whenBusy === "steer" ? "steer" : "followUp", clientId, attachments);
     if (result === "duplicate") return { duplicate: true };
     this.#queued(this.store.inboxRow(requestId) as InboxRow);
     return { duplicate: false };

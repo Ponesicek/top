@@ -65,6 +65,12 @@ Real mode starts with one bot, Atlas. Make more with the **+** beside "Bots" (a 
 description the bot reads as part of its instructions); hover over a bot to delete it. Deleting
 erases its conversation everywhere; files in its folder stay.
 
+Attach files with the paperclip, by pasting, or by dropping them on the conversation. They upload as
+soon as they're added. Images are shrunk to 2000 px on their long side first, and a paste over 32 KB
+becomes a text file (`Ctrl+Shift+V` pastes it inline). The bot gets each file's path to open with its
+tools, and PNG, JPEG, GIF and WebP images as images too. They're kept in `<data>/attachments`: an
+upload no message used goes after a day, the rest go with their bot.
+
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
 `Esc` stops, `Ctrl+Shift+E` shows the bot's files, `Ctrl+,` opens settings, `Ctrl+=` / `Ctrl+-` / `Ctrl+0`
 change the interface size (also in settings), `Ctrl+Shift+P` toggles the performance overlay.

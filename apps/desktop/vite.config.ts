@@ -14,7 +14,7 @@ function csp(): Plugin {
     transformIndexHtml: (html) =>
       html.replace(
         "<!--csp-->",
-        `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; media-src http: https:; frame-src http: https:; connect-src ws: wss: http: https:">`,
+        `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; media-src http: https:; frame-src http: https:; connect-src ws: wss: http: https:">`,
       ),
   };
 }

@@ -10,6 +10,7 @@
  * cover the rest, and a retained bot catches up from what it holds when it is opened.
  */
 import type {
+  Attachment,
   BotId,
   BotSummary,
   CreateBotResult,
@@ -26,6 +27,7 @@ import { Connection, type ConnectionStatus } from "./connection.ts";
 import { ConversationSync } from "./conversation.ts";
 
 export type {
+  Attachment,
   BotId,
   BotStatus,
   BotSummary,
@@ -45,7 +47,17 @@ export type {
   Viewer,
   WhenBusy,
 } from "@top/protocol";
-export { MAX_BOT_DESCRIPTION, MAX_BOT_NAME, MAX_MCP_NAME } from "@top/protocol";
+export {
+  isModelImage,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  MAX_BOT_DESCRIPTION,
+  MAX_BOT_NAME,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_EDGE,
+  MAX_MCP_NAME,
+  MODEL_IMAGE_TYPES,
+} from "@top/protocol";
 export { Connection, type ConnectionStatus, OfflineError, TimeoutError } from "./connection.ts";
 export * from "./conversation.ts";
 
@@ -99,6 +111,8 @@ export class TopClient {
   readonly #url: string;
   /** Where the daemon serves files, from `welcome` (see the protocol's FileView). */
   #filesPath: string | undefined;
+  /** Where the daemon takes and serves attachments, from `welcome` (see the protocol's Attachment). */
+  #attachmentsPath: string | undefined;
   #snapshot: TopSnapshot;
 
   constructor(options: TopClientOptions) {
@@ -220,6 +234,51 @@ export class TopClient {
     return `${base.origin}${this.#filesPath}/${bot}/${encoded}`;
   }
 
+  /** The daemon's HTTP origin, on the address this client reaches it at. */
+  #httpOrigin(): string {
+    const base = new URL(this.#url);
+    base.protocol = base.protocol === "wss:" ? "https:" : "http:";
+    return base.origin;
+  }
+
+  /** Whether the daemon takes attachments (known once connected). */
+  get canAttach(): boolean {
+    return this.#attachmentsPath !== undefined;
+  }
+
+  /** The link to an attachment, or `undefined` before the daemon said where they are. */
+  attachmentUrl(id: string): string | undefined {
+    return this.#attachmentsPath === undefined ? undefined : `${this.#httpOrigin()}${this.#attachmentsPath}/${encodeURIComponent(id)}`;
+  }
+
+  /**
+   * Upload a file to attach to a message; send its id with the message (`ConversationSync.send`).
+   * `onProgress` gets the fraction sent. Rejects with the daemon's reason (a sentence for the user).
+   */
+  upload(file: Blob, name: string, options: { onProgress?: (fraction: number) => void; signal?: AbortSignal } = {}): Promise<Attachment> {
+    return new Promise((resolve, reject) => {
+      if (this.#attachmentsPath === undefined) return reject(new Error("Not connected to the daemon."));
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${this.#httpOrigin()}${this.#attachmentsPath}/upload?name=${encodeURIComponent(name)}`);
+      if (file.type) xhr.setRequestHeader("Content-Type", file.type);
+      xhr.upload.onprogress = (event) => event.lengthComputable && options.onProgress?.(event.loaded / event.total);
+      xhr.onload = () => {
+        if (xhr.status !== 200) return reject(new Error(xhr.responseText.trim() || `Upload failed (${xhr.status}).`));
+        try {
+          resolve(JSON.parse(xhr.responseText) as Attachment);
+        } catch {
+          reject(new Error("Upload failed: the daemon's answer wasn't readable."));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload failed: couldn't reach the daemon."));
+      xhr.ontimeout = () => reject(new Error("Upload timed out."));
+      xhr.onabort = () => reject(new DOMException("Upload cancelled.", "AbortError"));
+      xhr.timeout = 5 * 60_000;
+      options.signal?.addEventListener("abort", () => xhr.abort());
+      xhr.send(file);
+    });
+  }
+
   conversation(id: BotId): ConversationSync {
     let conversation = this.#conversations.get(id);
     if (!conversation) {
@@ -238,6 +297,7 @@ export class TopClient {
     switch (frame.t) {
       case "welcome": {
         this.#filesPath = frame.filesPath;
+        this.#attachmentsPath = frame.attachmentsPath;
         if (frame.tailnetUrl !== this.#snapshot.tailnetUrl || JSON.stringify(frame.viewer) !== JSON.stringify(this.#snapshot.viewer))
           this.#publish({ tailnetUrl: frame.tailnetUrl, viewer: frame.viewer });
         if (frame.serverId === this.#snapshot.serverId) return;

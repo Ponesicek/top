@@ -5,12 +5,15 @@
  */
 
 import type { ConversationSync } from "@top/client";
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { addAttachments, clearAttachments, LARGE_PASTE_BYTES, pastedTextName, readyAttachments, sizeLabel, useAttachments } from "../attachments.ts";
+import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { clearQuotes, onQuoteAdded, type Quote, quotesOf } from "../quotes.ts";
 import { isWorking } from "../rows.ts";
 import { top } from "../top.ts";
+import { AttachmentStrip } from "./AttachmentStrip.tsx";
 import { focusEnd, insertChip, isEmpty, makeChip, readSegments, type Segment, toMessage, writeSegments } from "./composerEditor.ts";
 import { CommentPopover } from "./Quotes.tsx";
 import { Button } from "./ui/button.tsx";
@@ -20,11 +23,14 @@ const drafts = new Map<string, Segment[]>();
 
 const Actions = memo(function Actions({
   empty,
+  uploading,
   running,
   onSend,
   onStop,
 }: {
   empty: boolean;
+  /** Attachments are still uploading: the message can't go yet. */
+  uploading: boolean;
   running: boolean;
   onSend: (steer: boolean) => void;
   onStop: () => void;
@@ -38,6 +44,14 @@ const Actions = memo(function Actions({
         </Button>
       </Tooltip>
     );
+  if (uploading)
+    return (
+      <Tooltip content="Uploading attachments…">
+        <Button size="icon" className="disabled:bg-foreground/8" disabled aria-label="Uploading attachments">
+          <Loader2 size={16} strokeWidth={2} className="animate-spin motion-reduce:animate-none" />
+        </Button>
+      </Tooltip>
+    );
   return (
     // Steering is keyboard-only (Ctrl+Enter); the button sends, or queues while the bot works.
     <Tooltip content={running ? "Queue after the current task (Enter) · Ctrl+Enter steers" : "Send (Enter) · Shift+Enter for a new line"}>
@@ -45,6 +59,31 @@ const Actions = memo(function Actions({
         <ArrowUp size={17} strokeWidth={1.7} />
       </Button>
     </Tooltip>
+  );
+});
+
+/** The paperclip: pick files to attach. It keeps the field's focus, so you can type straight on. */
+const AttachButton = memo(function AttachButton({ onFiles }: { onFiles: (files: File[]) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <Tooltip content="Attach files (or paste or drop them)">
+        <Button variant="ghost" size="icon" aria-label="Attach files" onPointerDown={(e) => e.preventDefault()} onClick={() => input.current?.click()}>
+          <Paperclip size={17} strokeWidth={1.8} />
+        </Button>
+      </Tooltip>
+      <input
+        ref={input}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          onFiles([...(e.currentTarget.files ?? [])]);
+          // The same file can be picked again.
+          e.currentTarget.value = "";
+        }}
+      />
+    </>
   );
 });
 
@@ -56,6 +95,67 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
   // The chip whose comment is open, and where the caret last was in the field (a quote goes there).
   const [editing, setEditing] = useState<{ quote: Quote; chip: HTMLElement } | null>(null);
   const caret = useRef<Range | null>(null);
+  const files = useAttachments(key);
+  const uploading = files.some((d) => d.state === "preparing" || d.state === "uploading");
+  // A line under the composer: why something wasn't attached or sent, or what a large paste became.
+  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const say = useCallback((text: string, error = true) => {
+    clearTimeout(noticeTimer.current);
+    setNotice({ text, error });
+    noticeTimer.current = setTimeout(() => setNotice(null), 7_000);
+  }, []);
+  useEffect(() => () => clearTimeout(noticeTimer.current), []);
+  // Files dragged over the conversation.
+  const [dropping, setDropping] = useState(false);
+  // Ctrl+Shift+V pastes a large text as it is, instead of as a file.
+  const pasteInline = useRef(false);
+
+  const attach = useCallback(
+    (list: File[]) => {
+      if (!list.length) return;
+      if (!top.canAttach) return say("This daemon doesn't take attachments.");
+      const problem = addAttachments(key, list);
+      if (problem) say(problem);
+      ref.current?.focus({ preventScroll: true });
+    },
+    [key, say],
+  );
+
+  // Dropping files anywhere on the conversation attaches them.
+  useEffect(() => {
+    const main = ref.current?.closest("main");
+    if (!main) return;
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+    const over = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = "copy";
+      setDropping(true);
+    };
+    const leave = (e: DragEvent) => {
+      if (!main.contains(e.relatedTarget as Node | null)) setDropping(false);
+    };
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      setDropping(false);
+      attach([...(e.dataTransfer?.files ?? [])]);
+    };
+    const end = () => setDropping(false);
+    main.addEventListener("dragenter", over);
+    main.addEventListener("dragover", over);
+    main.addEventListener("dragleave", leave);
+    main.addEventListener("drop", drop);
+    window.addEventListener("dragend", end);
+    return () => {
+      main.removeEventListener("dragenter", over);
+      main.removeEventListener("dragover", over);
+      main.removeEventListener("dragleave", leave);
+      main.removeEventListener("drop", drop);
+      window.removeEventListener("dragend", end);
+    };
+  }, [attach]);
 
   /** After any change: remember the draft, and say whether there's anything to send. */
   const changed = useCallback(() => {
@@ -94,14 +194,18 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
     (steer: boolean) => {
       const field = ref.current!;
       const message = toMessage(readSegments(field), quotesOf(key));
-      if (!message) return;
-      sync.send(message, running ? (steer ? "steer" : "followUp") : "followUp");
+      const attached = readyAttachments(key);
+      if ("wait" in attached) return say(attached.wait);
+      if (!message && !attached.ready.length) return;
+      sync.send(message, running ? (steer ? "steer" : "followUp") : "followUp", attached.ready);
       field.replaceChildren();
       drafts.delete(key);
       clearQuotes(key);
+      clearAttachments(key);
       setEmpty(true);
+      setNotice(null);
     },
-    [running, sync, key],
+    [running, sync, key, say],
   );
   // The buttons get stable callbacks that always see the latest state.
   const latestSend = useRef(send);
@@ -138,57 +242,94 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
         {/* Clicking the padding focuses the field, a pointer convenience; the field itself takes focus from the keyboard. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: see above */}
         <div
-          className="composer flex cursor-text items-end gap-2 rounded-bubble border border-input bg-popover p-1.75 shadow-composer transition duration-120 focus-within:shadow-composer-focus"
+          className="composer flex cursor-text flex-col rounded-bubble border border-input bg-popover p-1.75 shadow-composer transition duration-120 focus-within:shadow-composer-focus"
           onMouseDown={(e) => {
-            if (e.target !== e.currentTarget) return;
+            if (e.target !== e.currentTarget && !(e.target as HTMLElement).hasAttribute("data-pad")) return;
             e.preventDefault();
             focusEnd(ref.current!);
           }}
         >
-          {/* A typed shell prompt, the same "›" as the logo's "›_": decoration, not a control. The avatar
+          {files.length > 0 && <AttachmentStrip bot={key} drafts={files} />}
+          <div className="flex items-end gap-2" data-pad>
+            {/* A typed shell prompt, the same "›" as the logo's "›_": decoration, not a control. The avatar
               column stays empty otherwise: it is you writing, not the bot. */}
-          <span
-            className="pointer-events-none grid h-9 w-6 flex-none place-items-center font-mono text-[17px] leading-none font-semibold text-link/70 select-none narrow:hidden"
-            aria-hidden
-          >
-            ›
-          </span>
-          {/* The field's children are its own (composerEditor.ts): React renders none, so it never resets them. */}
-          {/* biome-ignore lint/a11y/useSemanticElements: a textarea can't hold quote chips */}
-          <div
-            ref={ref}
-            role="textbox"
-            aria-multiline
-            aria-label={`Message ${name}`}
-            tabIndex={0}
-            contentEditable="plaintext-only"
-            data-placeholder={`Message ${name}…`}
-            data-empty={empty ? "" : undefined}
-            className="composer-input relative max-h-60 min-w-0 flex-1 overflow-y-auto bg-transparent py-1.75 text-body leading-6 whitespace-pre-wrap text-foreground outline-none [overflow-wrap:anywhere] data-empty:before:pointer-events-none data-empty:before:absolute data-empty:before:text-muted-foreground data-empty:before:content-[attr(data-placeholder)]"
-            onInput={changed}
-            onMouseDown={(e) => {
-              // A chip is one thing: pressing it neither moves the caret into it nor starts a selection.
-              if ((e.target as HTMLElement).closest(".quote-chip")) e.preventDefault();
-            }}
-            onClick={onFieldClick}
-            onKeyDown={(e) => {
-              perf.trackInput(e.nativeEvent);
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                send(e.ctrlKey || e.metaKey);
-              } else if (e.key === "Escape" && running) {
-                onStop();
-              }
-            }}
-          />
-          <Actions empty={empty} running={running} onSend={onSend} onStop={onStop} />
+            <span
+              className="pointer-events-none grid h-9 w-6 flex-none place-items-center font-mono text-[17px] leading-none font-semibold text-link/70 select-none narrow:hidden"
+              aria-hidden
+            >
+              ›
+            </span>
+            {/* The field's children are its own (composerEditor.ts): React renders none, so it never resets them. */}
+            {/* biome-ignore lint/a11y/useSemanticElements: a textarea can't hold quote chips */}
+            <div
+              ref={ref}
+              role="textbox"
+              aria-multiline
+              aria-label={`Message ${name}`}
+              tabIndex={0}
+              contentEditable="plaintext-only"
+              data-placeholder={`Message ${name}…`}
+              data-empty={empty ? "" : undefined}
+              className="composer-input relative max-h-60 min-w-0 flex-1 overflow-y-auto bg-transparent py-1.75 text-body leading-6 whitespace-pre-wrap text-foreground outline-none [overflow-wrap:anywhere] data-empty:before:pointer-events-none data-empty:before:absolute data-empty:before:text-muted-foreground data-empty:before:content-[attr(data-placeholder)]"
+              onInput={changed}
+              onMouseDown={(e) => {
+                // A chip is one thing: pressing it neither moves the caret into it nor starts a selection.
+                if ((e.target as HTMLElement).closest(".quote-chip")) e.preventDefault();
+              }}
+              onClick={onFieldClick}
+              onPaste={(e) => {
+                const inline = pasteInline.current;
+                pasteInline.current = false;
+                const pasted = [...e.clipboardData.files];
+                const text = e.clipboardData.getData("text/plain");
+                // Files copied in a file manager come with their names as text: those attach only when they're images.
+                if (pasted.length && (!text || pasted.some((f) => f.type.startsWith("image/")))) {
+                  e.preventDefault();
+                  return attach(pasted);
+                }
+                const bytes = new Blob([text]).size;
+                if (!inline && bytes > LARGE_PASTE_BYTES && top.canAttach) {
+                  e.preventDefault();
+                  const name = pastedTextName(key);
+                  attach([new File([text], name, { type: "text/plain" })]);
+                  say(`Large paste attached as ${name} (${sizeLabel(bytes)}) · Ctrl+Shift+V pastes it inline`, false);
+                }
+              }}
+              onKeyDown={(e) => {
+                perf.trackInput(e.nativeEvent);
+                if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "v") pasteInline.current = true;
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  send(e.ctrlKey || e.metaKey);
+                } else if (e.key === "Escape" && running) {
+                  onStop();
+                }
+              }}
+            />
+            <AttachButton onFiles={attach} />
+            <Actions empty={empty && !files.length} uploading={uploading} running={running} onSend={onSend} onStop={onStop} />
+          </div>
         </div>
         {/* Only the working state's keys need explaining (idle is the usual Enter / Shift+Enter). The line
             keeps its height either way, so the transcript doesn't jump when a bot starts or stops. */}
-        <div className="h-5.75 truncate pt-1.75 pl-10 text-meta leading-4 text-muted-foreground">
-          {running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}
+        <div
+          className={cn("h-5.75 truncate pt-1.75 pl-10 text-meta leading-4", notice?.error ? "text-destructive-foreground" : "text-muted-foreground")}
+          aria-live="polite"
+        >
+          {notice ? notice.text : running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}
         </div>
       </div>
+      {dropping && (
+        // Over the whole conversation, whose element (`main`) is the nearest positioned one.
+        <div
+          className="pointer-events-none absolute inset-2 z-30 grid place-items-center rounded-2xl border-2 border-dashed border-primary/60 bg-background/70"
+          role="status"
+        >
+          <span className="inline-flex items-center gap-2 rounded-full bg-popover px-4 py-2 text-small font-label text-foreground shadow-popover">
+            <Paperclip size={15} strokeWidth={2} /> Drop files to attach
+          </span>
+        </div>
+      )}
       {editing && (
         <CommentPopover
           anchor={editing.chip}
