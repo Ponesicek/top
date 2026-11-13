@@ -3,14 +3,23 @@
  * no usage counters, provider metadata or tool arguments, and tool output cut to a preview. `detail`
  * fetches one entry in full when someone opens it.
  */
-import type { Entry, FileChange, ToolCallView } from "@top/protocol";
+import type { Attachment, Entry, FileChange, ToolCallView } from "@top/protocol";
 import type { StoredEntry } from "./store.ts";
 
 const TOOL_PREVIEW_CHARS = 280;
 const ARGS_SUMMARY_CHARS = 100;
 
-type Part = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown };
-type Message = { role?: string; content?: string | Part[]; stopReason?: string; errorMessage?: string; isError?: boolean; toolName?: string; text?: string };
+type Part = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown; attachmentNote?: true };
+type Message = {
+  role?: string;
+  content?: string | Part[];
+  stopReason?: string;
+  errorMessage?: string;
+  isError?: boolean;
+  toolName?: string;
+  text?: string;
+  attachments?: Attachment[];
+};
 
 export function textOf(content: Message["content"]): string {
   if (typeof content === "string") return content;
@@ -42,7 +51,9 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       return {
         ...base,
         kind: "user",
-        text: textOf(message.content),
+        // What the user wrote: not the note telling the bot where their attachments are saved.
+        text: textOf(typeof message.content === "string" ? message.content : message.content?.filter((p) => !p.attachmentNote)),
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(stored.requestId ? { requestId: stored.requestId } : {}),
         ...(stored.source ? { source: stored.source } : {}),
       };

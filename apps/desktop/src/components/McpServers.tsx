@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { joinCommand } from "../command.ts";
 import { cn } from "../lib/utils.ts";
-import { serverUrl, top, useRoster } from "../top.ts";
+import { serverUrl, top, useRoster, useTailnet } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
 import { McpServerDialog } from "./McpServerDialog.tsx";
 import { Section } from "./SettingsSection.tsx";
@@ -16,7 +16,7 @@ const STATE_DOT: Record<McpServerView["state"], string> = {
   failed: "bg-destructive",
 };
 
-/** The daemon runs elsewhere: a sign-in redirect lands on its computer, not this one. */
+/** The daemon runs elsewhere: a sign-in redirect lands on its computer, not this one (unless it's on the tailnet). */
 const remoteDaemon = (() => {
   try {
     return !["127.0.0.1", "localhost", "[::1]"].includes(new URL(serverUrl).hostname);
@@ -83,6 +83,8 @@ function BotToggle({ server, bot, name }: { server: McpServerView; bot: BotId; n
 function ServerRow({ server, bots, onEdit }: { server: McpServerView; bots: readonly { id: BotId; name: string }[]; onEdit: () => void }) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  // On the tailnet, the sign-in redirect comes back through the daemon's tailnet address instead.
+  const { tailnetUrl } = useTailnet();
   const act = async (run: () => Promise<void>) => {
     setBusy(true);
     setError(undefined);
@@ -132,7 +134,7 @@ function ServerRow({ server, bots, onEdit }: { server: McpServerView; bots: read
           {problem}
         </p>
       )}
-      {server.state === "signin" && remoteDaemon && (
+      {server.state === "signin" && remoteDaemon && !tailnetUrl && (
         <p className="m-0 pl-3.75 text-meta text-muted-foreground">Signing in finishes in a browser on the daemon's computer, so start it from there.</p>
       )}
       <div className="flex flex-wrap items-center gap-1.5 pl-3.75">

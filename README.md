@@ -43,8 +43,10 @@ or `edit` is reported as interrupted, never re-run. Conversations live in `apps/
 
 Because the bots can run commands, the daemon refuses browser connections from anything but the app
 (`file://` and the dev UI on :5199): browsers let any web page open a WebSocket to localhost.
-`--allow-origin URL` adds one. There's no login yet, so keep `--host` on 127.0.0.1 or a private
-network (Tailscale, an SSH tunnel): whoever reaches the port can run commands as you.
+`--allow-origin URL` adds one. There's no login on the daemon's own port, so keep `--host` on
+127.0.0.1: whoever reaches that port can run commands as you. To use Top from your phone or another
+computer, put it on your tailnet with `--tailscale` (below), which checks who each caller is, or use
+an SSH tunnel.
 
 Fake bots, for development and the tests, need no sign-in:
 
@@ -56,16 +58,50 @@ pnpm server:fake     # fake bots that answer only when you message them
 The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "write a report", "crash",
 or any MCP tool by its full name: `call github_work__search {"query": "top"}`.
 Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`, `--workspace`, `--allow-origin`, `--port`, `--host`,
-`--data`, `--reset`, `--no-compress`; fake only: `--load`, `--tools` (load includes tool calls),
+`--data`, `--reset`, `--no-compress`, `--tailscale`, `--tailscale-allow`, `--tailscale-port`; fake only: `--load`, `--tools` (load includes tool calls),
 `--seed N`, `--tps N`.
 
 Real mode starts with one bot, Atlas. Make more with the **+** beside "Bots" (a name, and a
 description the bot reads as part of its instructions); hover over a bot to delete it. Deleting
 erases its conversation everywhere; files in its folder stay.
 
+Attach files with the paperclip, by pasting, or by dropping them on the conversation. They upload as
+soon as they're added. Images are shrunk to 2000 px on their long side first, and a paste over 32 KB
+becomes a text file (`Ctrl+Shift+V` pastes it inline). The bot gets each file's path to open with its
+tools, and PNG, JPEG, GIF and WebP images as images too. They're kept in `<data>/attachments`: an
+upload no message used goes after a day, the rest go with their bot.
+
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
 `Esc` stops, `Ctrl+Shift+E` shows the bot's files, `Ctrl+,` opens settings, `Ctrl+=` / `Ctrl+-` / `Ctrl+0`
 change the interface size (also in settings), `Ctrl+Shift+P` toggles the performance overlay.
+
+### Tailscale
+
+`pnpm server --tailscale` also puts the daemon on your tailnet, through the Tailscale already running
+on its computer, at `wss://<device>.<tailnet>.ts.net:7357`, with a real HTTPS certificate:
+
+```bash
+pnpm server --tailscale                                  # every device on your tailnet
+pnpm server --tailscale --tailscale-allow tag:laptops    # only you, this computer, and devices with that tag
+```
+
+- **Who gets in.** Tailscale Serve forwards to a second listener on 127.0.0.1 (`--port` + 2), and
+  every connection, file and sign-in redirect there is looked up with `tailscale whois`. Without
+  `--tailscale-allow`, every device on the tailnet gets in (so do devices shared into it: anyone who
+  reaches it can run commands as you). With it, only the device's owner, this computer, and what it
+  names: a login (`you@example.com`), a tag (`tag:laptops`), or a device (`phone`); the daemon logs
+  who it refused and how to let them in. Funnel's public traffic, and anything that didn't come
+  through Serve, is always refused.
+- **Setting up.** Top runs `tailscale serve --bg --https=7357` itself and turns it off when it stops.
+  It won't take over a port that serves something else (`--tailscale-port N` picks another) or one
+  with Funnel on. It needs HTTPS certificates on for the tailnet (admin console → DNS) and, on Linux,
+  permission to change Serve: `sudo tailscale set --operator=$USER` once. It says so when it can't.
+- **In the app.** Settings → **Daemon** shows which daemon the app is connected to, lets you change
+  it, and lists the Top daemons on your tailnet's online devices (the desktop app asks the local
+  Tailscale). Connected over the tailnet, it says who Tailscale says you are. Connected locally, it
+  shows the tailnet address to give your phone.
+- **MCP sign-in** redirects to the daemon's tailnet address, which passes it to the daemon, so you
+  can finish signing in from any device it lets in, not only its own computer.
 
 ### Files
 
@@ -101,7 +137,7 @@ headers or environment variables for keys. Their values stay on the daemon: the 
   (`github_work__create_issue`), so a bot with both never mixes them up.
 - **Sign-in.** A URL without an `Authorization` header signs in with OAuth when the server asks: press
   **Sign in**, and the browser comes back to the daemon on port `--port` + 1 (7358). That redirect goes
-  to 127.0.0.1, so finish it on the daemon's computer. To switch accounts, Edit → **Sign out**. With
+  to 127.0.0.1, so finish it on the daemon's computer (or, with `--tailscale`, on any device it lets in). To switch accounts, Edit → **Sign out**. With
   two connections to one service, the browser may pick the account it's already signed in to; switch it
   in the browser first.
 - **When tools change.** A bot picks up servers given to it, removed, or newly connected from its next

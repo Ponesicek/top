@@ -1,10 +1,44 @@
 /** The app's one TopClient, plus the local cache that makes cold start instant and reconnects cheap. */
 
-import { type BotId, type BotSummary, type ConversationCache, type ConversationSync, TopClient } from "@top/client";
+import { type BotId, type BotSummary, type ConversationCache, type ConversationSync, TopClient, type Viewer } from "@top/client";
 import { useSyncExternalStore } from "react";
 
 const params = new URLSearchParams(location.search);
-export const serverUrl = params.get("server") ?? safeGet("top.server") ?? "ws://127.0.0.1:7357";
+export const DEFAULT_SERVER = "ws://127.0.0.1:7357";
+export const serverUrl = params.get("server") ?? safeGet("top.server") ?? DEFAULT_SERVER;
+
+/**
+ * What someone typed as a daemon's address, as a WebSocket URL: `box.tail1234.ts.net:7357` and
+ * `https://…` mean `wss://…`; this computer (`localhost:7357`) means plain `ws://`.
+ */
+export function daemonUrl(input: string): string | undefined {
+  let text = input.trim();
+  if (!text) return undefined;
+  text = text.replace(/^http(s?):\/\//i, "ws$1://");
+  if (!/^wss?:\/\//i.test(text)) {
+    const local = /^(localhost|127\.[\d.]+|\[::1\])(:|$)/i.test(text);
+    text = `${local ? "ws" : "wss"}://${text}`;
+  }
+  try {
+    const url = new URL(text);
+    if (!url.hostname || (url.pathname !== "/" && url.pathname !== "")) return undefined;
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Use another daemon. The page starts over: what it holds (and caches) belongs to the old one. */
+export function connectTo(url: string) {
+  safeSet("top.server", url);
+  // `?server=` would win over the saved address; drop it without navigating (the desktop app blocks that).
+  const here = new URL(location.href);
+  if (here.searchParams.has("server")) {
+    here.searchParams.delete("server");
+    history.replaceState(history.state, "", here);
+  }
+  location.reload();
+}
 
 function safeGet(key: string): string | null {
   try {
@@ -106,6 +140,21 @@ document.addEventListener("visibilitychange", () => document.visibilityState ===
 
 export function conversation(id: BotId): ConversationSync {
   return top.conversation(id);
+}
+
+// ── the daemon on the tailnet ──────────────────────────────────────────────────
+
+export type TailnetInfo = { readonly tailnetUrl: string | undefined; readonly viewer: Viewer | undefined };
+let tailnetInfo: TailnetInfo = { tailnetUrl: undefined, viewer: undefined };
+function tailnetSnapshot(): TailnetInfo {
+  const { tailnetUrl, viewer } = top.getSnapshot();
+  if (tailnetUrl !== tailnetInfo.tailnetUrl || viewer !== tailnetInfo.viewer) tailnetInfo = { tailnetUrl, viewer };
+  return tailnetInfo;
+}
+
+/** Where the daemon is on the tailnet, and who it says this app is (when it came in that way). */
+export function useTailnet(): TailnetInfo {
+  return useSyncExternalStore(top.subscribe, tailnetSnapshot);
 }
 
 export type RosterBot = { readonly id: BotId; readonly name: string };

@@ -8,17 +8,23 @@
  *
  * The same port serves the bots' files over plain HTTP (see serveFile), so one address, tunnel or
  * Tailscale name reaches both.
+ *
+ * With `--tailscale`, a second listener on 127.0.0.1 is the daemon on the tailnet: Tailscale Serve
+ * forwards to it, and every request there must come from a person or device the user allowed (see
+ * tailscale.ts). The local port keeps working as before.
  */
 import { timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
-import { type Entry, type Gap, PROTOCOL_VERSION, parseClientFrame, type QueuedMessage, type ServerFrame } from "@top/protocol";
+import type { Duplex } from "node:stream";
+import { type Entry, type Gap, PROTOCOL_VERSION, parseClientFrame, type QueuedMessage, type ServerFrame, type Viewer } from "@top/protocol";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { Daemon } from "./daemon.ts";
 import { type FilesFolder, fileViews } from "./files.ts";
+import { sendFile } from "./sendFile.ts";
 import type { StoredEntry } from "./store.ts";
+import type { Tailnet } from "./tailscale.ts";
 import { toWire } from "./wire.ts";
 
 const HEARTBEAT_MS = 30_000;
@@ -41,9 +47,14 @@ function filesFrame(folder: FilesFolder): ServerFrame {
 }
 
 function inboxOf(daemon: Daemon, bot: number): QueuedMessage[] {
-  return daemon.store
-    .inbox(bot)
-    .map((row) => ({ requestId: row.requestId, text: row.text, mode: row.mode, at: row.at, ...(row.source ? { source: row.source } : {}) }));
+  return daemon.store.inbox(bot).map((row) => ({
+    requestId: row.requestId,
+    text: row.text,
+    mode: row.mode,
+    at: row.at,
+    ...(row.source ? { source: row.source } : {}),
+    ...(row.attachments.length ? { attachments: row.attachments } : {}),
+  }));
 }
 
 class ClientConnection {
@@ -55,7 +66,7 @@ class ClientConnection {
   #foreign = false;
   alive = true;
 
-  constructor(socket: WebSocket, daemon: Daemon) {
+  constructor(socket: WebSocket, daemon: Daemon, where: { tailnetUrl?: string | undefined; viewer?: Viewer | undefined }) {
     this.socket = socket;
     this.#daemon = daemon;
     socket.on("message", (data) => this.#receive(String(data)));
@@ -66,6 +77,9 @@ class ClientConnection {
       serverId: daemon.store.id,
       protocol: PROTOCOL_VERSION,
       ...(daemon.hasFiles ? { filesPath: `${FILES_PREFIX}${daemon.store.filesSecret}` } : {}),
+      ...(daemon.attachments ? { attachmentsPath: `${ATTACHMENTS_PREFIX}${daemon.store.filesSecret}` } : {}),
+      ...(where.tailnetUrl ? { tailnetUrl: where.tailnetUrl } : {}),
+      ...(where.viewer ? { viewer: where.viewer } : {}),
     });
     send(socket, { t: "bots", bots: daemon.bots });
     const mcp = daemon.mcp;
@@ -154,7 +168,9 @@ class ClientConnection {
           return toWire(stored, true) ?? null;
         });
       case "submit":
-        return this.#answer(frame.req, () => this.#daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId));
+        return this.#answer(frame.req, () =>
+          this.#daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId, frame.attachments ?? []),
+        );
       case "abort":
         return this.#answer(frame.req, () => {
           this.#daemon.stop(frame.bot);
@@ -239,6 +255,7 @@ export const APP_ORIGINS = ["file://", "http://localhost:5199", "http://127.0.0.
 
 /** Files are at `/files/<secret>/<bot id>/<path>`. */
 const FILES_PREFIX = "/files/";
+const ATTACHMENTS_PREFIX = "/attachments/";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -344,70 +361,134 @@ async function serveFile(daemon: Daemon, request: IncomingMessage, response: Ser
     info = await stat(path).catch(() => undefined);
   }
   if (!info?.isFile()) return fail(404, "Not found");
-  const etag = `"${info.size.toString(36)}-${Math.round(info.mtimeMs).toString(36)}"`;
-  const headers: Record<string, string> = {
+  sendFile(request, response, path, info, {
     "Content-Type": typeOf(path),
-    ETag: etag,
     // The file may change at any moment: always check, but a 304 costs nothing.
     "Cache-Control": "no-cache",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
-    "Accept-Ranges": "bytes",
-    "Access-Control-Expose-Headers": "ETag, Content-Length, Content-Range",
-  };
-  if (request.headers["if-none-match"] === etag) {
-    response.writeHead(304, headers);
-    return response.end();
-  }
-  // One byte range, for seeking in video and audio.
-  const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range ?? ""));
-  let start = 0;
-  let end = info.size - 1;
-  let status = 200;
-  if (range && (range[1] || range[2])) {
-    start = range[1] ? Number(range[1]) : Math.max(0, info.size - Number(range[2]));
-    end = range[1] && range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
-    if (start > end || start >= info.size) {
-      response.writeHead(416, { ...headers, "Content-Range": `bytes */${info.size}` });
-      return response.end();
-    }
-    status = 206;
-    headers["Content-Range"] = `bytes ${start}-${end}/${info.size}`;
-  }
-  headers["Content-Length"] = String(info.size === 0 ? 0 : end - start + 1);
-  response.writeHead(status, headers);
-  if (request.method === "HEAD" || info.size === 0) return response.end();
-  const stream = createReadStream(path, { start, end });
-  stream.on("error", () => response.destroy());
-  stream.pipe(response);
+  });
 }
 
-export function serve(daemon: Daemon, options: { host: string; port: number; compress: boolean; allowOrigins?: readonly string[] }) {
+const isAttachment = (request: IncomingMessage) => (request.url ?? "").startsWith(ATTACHMENTS_PREFIX);
+
+/** Uploads and attachments: `<attachmentsPath>/upload` and `<attachmentsPath>/<id>`, behind the files secret (see serveFile). */
+async function serveAttachment(daemon: Daemon, request: IncomingMessage, response: ServerResponse) {
+  const url = new URL(request.url ?? "/", "http://top");
+  const [secret = "", rest = "", ...more] = url.pathname.slice(ATTACHMENTS_PREFIX.length).split("/");
+  if (!daemon.attachments || !sameSecret(secret, daemon.store.filesSecret) || more.length) {
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+    return response.end("Not found");
+  }
+  return daemon.attachments.handle(request, response, rest, url.searchParams);
+}
+
+export type ServeOptions = {
+  host: string;
+  port: number;
+  compress: boolean;
+  allowOrigins?: readonly string[];
+  /** Also serve on the tailnet: a listener on 127.0.0.1 that Tailscale Serve forwards to. */
+  tailnet?: {
+    readonly gate: Pick<Tailnet, "admit" | "url" | "self">;
+    /** Its port on 127.0.0.1 (`0` picks a free one). */
+    readonly port: number;
+    /** MCP sign-in redirects arriving on the tailnet are passed to this port (see mcp.ts). */
+    readonly oauthPort?: number;
+    /** Their path. */
+    readonly oauthPath?: string;
+  };
+};
+
+/** Answers `/.well-known/top` on the tailnet, so the desktop app can find daemons there. */
+const WELL_KNOWN = "/.well-known/top";
+
+export function serve(daemon: Daemon, options: ServeOptions) {
   const allowed = new Set<string>([...APP_ORIGINS, ...(options.allowOrigins ?? [])]);
-  const http = createServer((request, response) => {
-    serveFile(daemon, request, response).catch((error) => {
-      console.error("[top] serving a file:", error);
-      if (!response.headersSent) response.writeHead(500);
-      response.end();
-    });
-  });
-  http.listen(options.port, options.host);
+  const tailnet = options.tailnet;
   const server = new WebSocketServer({
-    server: http,
-    verifyClient: ({ origin }: { origin?: string }) => {
-      if (origin === undefined || allowed.has(origin)) return true;
-      console.warn(`[top] refused a connection from ${origin} (pass --allow-origin ${origin} to allow it)`);
-      return false;
-    },
+    noServer: true,
     // Context takeover on both sides: repeated keys and names across frames cost almost nothing.
     perMessageDeflate: options.compress ? { threshold: 64, zlibDeflateOptions: { level: 6 } } : false,
   });
   const clients = new Set<ClientConnection>();
-  server.on("connection", (socket) => {
-    const client = new ClientConnection(socket, daemon);
+  const connect = (socket: WebSocket, viewer?: Viewer) => {
+    const client = new ClientConnection(socket, daemon, { tailnetUrl: tailnet?.gate.url, viewer });
     clients.add(client);
     socket.on("close", () => clients.delete(client));
+  };
+  const originOk = (request: IncomingMessage) => {
+    const origin = request.headers.origin;
+    if (origin === undefined || allowed.has(origin)) return true;
+    console.warn(`[top] refused a connection from ${origin} (pass --allow-origin ${origin} to allow it)`);
+    return false;
+  };
+  const refuseUpgrade = (socket: Duplex, status: number, reason: string) => {
+    const body = `${reason}\n`;
+    socket.end(
+      `HTTP/1.1 ${status} ${status === 403 ? "Forbidden" : "Bad Request"}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+    );
+  };
+  const handleFile = (request: IncomingMessage, response: ServerResponse) =>
+    (isAttachment(request) ? serveAttachment(daemon, request, response) : serveFile(daemon, request, response)).catch((error) => {
+      console.error("[top] serving a file:", error);
+      if (!response.headersSent) response.writeHead(500);
+      response.end();
+    });
+
+  // ── this computer ──
+  const http = createServer(handleFile);
+  http.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (!originOk(request)) return refuseUpgrade(socket, 403, "This origin may not connect.");
+    server.handleUpgrade(request, socket, head, (ws) => connect(ws));
   });
+  http.listen(options.port, options.host);
+
+  // ── the tailnet, through Tailscale Serve ──
+  let tailnetHttp: Server | undefined;
+  if (tailnet) {
+    const gate = tailnet.gate;
+    tailnetHttp = createServer((request, response) => {
+      void gate.admit(request).then(
+        (admission) => {
+          const path = new URL(request.url ?? "/", "http://top").pathname;
+          if (path === WELL_KNOWN) {
+            response.writeHead(admission.ok ? 200 : 403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+            return response.end(
+              JSON.stringify(
+                admission.ok
+                  ? { top: true, protocol: PROTOCOL_VERSION, serverId: daemon.store.id, device: gate.self.device, url: gate.url, viewer: admission.viewer }
+                  : { top: true, device: gate.self.device, error: admission.reason },
+              ),
+            );
+          }
+          if (!admission.ok) {
+            response.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+            return response.end(`${admission.reason}\n`);
+          }
+          if (tailnet.oauthPort !== undefined && path === tailnet.oauthPath) return passOAuth(request, response, tailnet.oauthPort);
+          return handleFile(request, response);
+        },
+        (error: unknown) => {
+          console.error("[top] checking a tailnet caller:", error);
+          if (!response.headersSent) response.writeHead(500);
+          response.end();
+        },
+      );
+    });
+    tailnetHttp.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+      if (!originOk(request)) return refuseUpgrade(socket, 403, "This origin may not connect.");
+      gate.admit(request).then(
+        (admission) => {
+          if (!admission.ok) return refuseUpgrade(socket, 403, admission.reason);
+          server.handleUpgrade(request, socket, head, (ws) => connect(ws, admission.viewer));
+        },
+        () => socket.destroy(),
+      );
+    });
+    tailnetHttp.listen(tailnet.port, "127.0.0.1");
+  }
+
   // Drop clients that stopped answering (a phone that lost its network without closing the socket).
   const heartbeat = setInterval(() => {
     for (const client of clients) {
@@ -420,18 +501,47 @@ export function serve(daemon: Daemon, options: { host: string; port: number; com
     }
   }, HEARTBEAT_MS);
   heartbeat.unref();
+  const listening = (server: Server) =>
+    new Promise<number>((resolve, reject) => {
+      server.once("listening", () => resolve((server.address() as { port: number }).port));
+      server.once("error", reject);
+    });
+  const closeHttp = (server: Server | undefined) =>
+    new Promise<void>((resolve) => {
+      if (!server?.listening) return resolve();
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
   return {
     /** Resolves with the port once listening (`port: 0` picks a free one). */
-    listening: new Promise<number>((resolve, reject) => {
-      http.once("listening", () => resolve((http.address() as { port: number }).port));
-      http.once("error", reject);
-    }),
-    close: () =>
-      new Promise<void>((resolve) => {
-        clearInterval(heartbeat);
-        for (const client of clients) client.socket.close(1001, "server shutting down");
-        server.close(() => http.close(() => resolve()));
-        http.closeAllConnections();
-      }),
+    listening: listening(http),
+    /** Resolves with the tailnet listener's port on 127.0.0.1, when there is one. */
+    tailnetListening: tailnetHttp ? listening(tailnetHttp) : undefined,
+    close: async () => {
+      clearInterval(heartbeat);
+      for (const client of clients) client.socket.close(1001, "server shutting down");
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await Promise.all([closeHttp(http), closeHttp(tailnetHttp)]);
+    },
   };
+}
+
+/**
+ * An MCP sign-in redirect that came over the tailnet: hand it to the callback server on this computer,
+ * which is open only while someone signs in.
+ */
+function passOAuth(request: IncomingMessage, response: ServerResponse, port: number) {
+  const upstream = httpRequest(
+    { host: "127.0.0.1", port, path: request.url, method: request.method, headers: { ...request.headers, host: `127.0.0.1:${port}` } },
+    (reply) => {
+      response.writeHead(reply.statusCode ?? 502, reply.headers);
+      reply.pipe(response);
+    },
+  );
+  upstream.on("error", () => {
+    if (response.headersSent) return response.destroy();
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end("No sign-in is waiting. Start it again from Top's settings.\n");
+  });
+  request.pipe(upstream);
 }

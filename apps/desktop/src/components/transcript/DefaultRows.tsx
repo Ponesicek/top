@@ -12,6 +12,7 @@ import { renderCached } from "../../markdown.ts";
 import { author, type DisplayRow, type ToolGroupRow } from "../../rows.ts";
 import { Avatar } from "../Avatar.tsx";
 import { statusLabel } from "../Sidebar.tsx";
+import { MessageAttachments } from "./MessageAttachments.tsx";
 import {
   AnswerError,
   type AssistantRowData,
@@ -27,6 +28,7 @@ import {
   USER_BUBBLE_STATE,
   type UserRowData,
   UserState,
+  UserText,
   useElapsed,
 } from "./parts.tsx";
 
@@ -74,14 +76,23 @@ function TurnTime({ at, turn, align }: { at: number | undefined; turn: string; a
 const UserRow = memo(function UserRow({ row, ctx }: { row: UserRowData; ctx: RowContext }) {
   return (
     <div className="flex flex-col items-end pt-3" data-turn={row.key}>
-      <div
-        className={cn(
-          "max-w-[min(78%,600px)] rounded-bubble rounded-br-md bg-message px-4 py-2.5 whitespace-pre-wrap text-message-foreground shadow-message [overflow-wrap:anywhere]",
-          row.state && USER_BUBBLE_STATE[row.state],
-        )}
-      >
-        {row.text}
-      </div>
+      {row.attachments && (
+        <MessageAttachments
+          attachments={row.attachments}
+          align="end"
+          className={cn("max-w-[min(78%,600px)]", row.text && "mb-1.5", row.state === "sending" && "opacity-65")}
+        />
+      )}
+      {(row.text || !row.attachments) && (
+        <div
+          className={cn(
+            "max-w-[min(78%,600px)] rounded-bubble rounded-br-md bg-message px-4 py-2.5 whitespace-pre-wrap text-message-foreground shadow-message [overflow-wrap:anywhere]",
+            row.state && USER_BUBBLE_STATE[row.state],
+          )}
+        >
+          <UserText text={row.text} bot={String(ctx.sync.id)} />
+        </div>
+      )}
       {row.state ? <UserState row={row} sync={ctx.sync} className="mt-1.25 mb-1" /> : <TurnTime at={row.at} turn={row.key} align="end" />}
     </div>
   );
@@ -107,7 +118,7 @@ const AssistantRow = memo(function AssistantRow({
       <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
         {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" title={name} />}
         <div className="min-w-0 flex-1">
-          {row.text && <Markdown html={html} />}
+          {row.text && <Markdown html={html} answer={row.seq} />}
           {row.error && <AnswerError error={row.error} />}
         </div>
       </div>

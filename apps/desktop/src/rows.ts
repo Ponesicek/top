@@ -1,5 +1,16 @@
 /** Transcript items → the rows the transcript renders. Row objects are stable per entry, so rows memoize. */
-import type { BotSummary, ConversationSnapshot, Entry, FileChange, Gap, PendingMessage, QueuedMessage, ToolCallView, TranscriptItem } from "@top/client";
+import type {
+  Attachment,
+  BotSummary,
+  ConversationSnapshot,
+  Entry,
+  FileChange,
+  Gap,
+  PendingMessage,
+  QueuedMessage,
+  ToolCallView,
+  TranscriptItem,
+} from "@top/client";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -10,6 +21,7 @@ export type Row =
       readonly kind: "user";
       readonly key: string;
       readonly text: string;
+      readonly attachments?: readonly Attachment[];
       readonly at?: number;
       readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer";
       readonly requestId?: string;
@@ -34,7 +46,13 @@ export type Row =
 const entryRows = new WeakMap<Entry, Row>();
 
 /**
- * A message from Top rather than the user (a wake-up, a background job's result) shows as one line:
+ * A background job's result shows no row: the bot's reply that follows says what came of it.
+ * (The bot still gets the message; only the transcript leaves it out.)
+ */
+const hidden = (source: string | undefined) => source === "job";
+
+/**
+ * Any other message from Top rather than the user (a wake-up) shows as one line:
  * its first, "[Wake-up] check the deploy" → "Wake-up: check the deploy".
  */
 export function eventLine(text: string): string {
@@ -48,7 +66,9 @@ function rowForEntry(entry: Entry): Row {
   const key = `e${entry.seq}`;
   switch (entry.kind) {
     case "user":
-      row = entry.source ? { kind: "notice", key, text: eventLine(entry.text) } : { kind: "user", key, text: entry.text, at: entry.at };
+      row = entry.source
+        ? { kind: "notice", key, text: eventLine(entry.text) }
+        : { kind: "user", key, text: entry.text, at: entry.at, ...(entry.attachments ? { attachments: entry.attachments } : {}) };
       break;
     case "assistant":
       row = {
@@ -86,7 +106,7 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
   for (const item of items) {
     if (item.kind === "earlier") rows.push({ kind: "earlier", key: "earlier" });
     else if (item.kind === "gap") rows.push({ kind: "gap", key: `gap${item.gap.after}`, gap: item.gap });
-    else rows.push(rowForEntry(item.entry));
+    else if (!(item.entry.kind === "user" && hidden(item.entry.source))) rows.push(rowForEntry(item.entry));
   }
   itemRowsCache.set(items, rows);
   return rows;
@@ -111,6 +131,7 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
   const rows: Row[] = [];
   if (working) rows.push(WORKING);
   for (const item of snapshot.inbox) {
+    if (hidden(item.source)) continue;
     rows.push(
       stable<QueuedMessage>(item, () =>
         item.source
@@ -119,6 +140,7 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
               kind: "user",
               key: `m${item.requestId}`,
               text: item.text,
+              ...(item.attachments ? { attachments: item.attachments } : {}),
               at: item.at,
               state: item.mode === "steer" ? "steer" : "queued",
             },
@@ -131,6 +153,7 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
         kind: "user",
         key: `m${pending.requestId}`,
         text: pending.text,
+        ...(pending.attachments ? { attachments: pending.attachments } : {}),
         at: pending.createdAt,
         state: pending.state,
         requestId: pending.requestId,

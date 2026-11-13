@@ -13,6 +13,7 @@
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, getCurrentSystemMessage, type Models, type SystemMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
 import type { BotStatus } from "@top/protocol";
+import { type Attachments, userContent, withImageData } from "./attachments.ts";
 import type { BotRow, InboxRow, Store, StoredEntry } from "./store.ts";
 import { type ToolResult, type TopTool, text } from "./tools.ts";
 
@@ -32,6 +33,8 @@ export type RunnerOptions = {
    * an idle bot, so ones that come close together start one task, not one each.
    */
   readonly gatherMs?: number;
+  /** Where the user's attachments are; without it, messages have none. */
+  readonly attachments?: Attachments;
 };
 
 /** See `RunnerOptions.gatherMs`. */
@@ -85,6 +88,7 @@ export class BotRunner {
   /** Prompt sections that changed since the transcript last said; saved with the next message taken. */
   #systemUpdate: SystemMessage | undefined;
   readonly #gatherMs: number;
+  readonly #attachments: Attachments | undefined;
   /** A task waiting to start on messages from Top, in case more come (see `RunnerOptions.gatherMs`). */
   #gatherTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -101,6 +105,8 @@ export class BotRunner {
     this.#events = events;
     this.#toolSource = tools;
     this.#gatherMs = options.gatherMs ?? GATHER_MS;
+    this.#attachments = options.attachments;
+    const attachments = options.attachments;
     // Split at the first slash only: model ids can contain one too (OpenRouter's "anthropic/claude-…").
     const slash = bot.model.indexOf("/");
     const model = models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
@@ -123,6 +129,8 @@ export class BotRunner {
       },
       // ...and no new model request starts after it either (tool results of the stopped turn are kept).
       finishTurn: async () => (this.#abortRequested ? { action: "end" } : undefined),
+      // Images are stored as their attachment's id; each request reads them in (attachments.ts).
+      ...(attachments ? { transformContext: (messages: AgentMessage[]) => withImageData(messages, attachments) } : {}),
     });
     this.#agent.subscribe((event) => this.#onEvent(event));
     this.#refreshTools();
@@ -444,7 +452,17 @@ export class BotRunner {
   }
 
   #userMessage(row: InboxRow): AgentMessage {
-    const message: AgentMessage = { role: "user", content: row.text, timestamp: row.at };
+    const attachments = this.#attachments;
+    const message = (
+      row.attachments.length && attachments
+        ? {
+            role: "user",
+            content: userContent(row.text, row.attachments, (a) => attachments.path(a)),
+            attachments: row.attachments,
+            timestamp: row.at,
+          }
+        : { role: "user", content: row.text, timestamp: row.at }
+    ) as AgentMessage;
     this.#requestIds.set(message, row.requestId);
     return message;
   }

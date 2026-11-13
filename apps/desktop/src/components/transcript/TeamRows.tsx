@@ -11,6 +11,7 @@ import { renderCached } from "../../markdown.ts";
 import { author, type DisplayRow, rowTime, type ToolGroupRow } from "../../rows.ts";
 import { Avatar } from "../Avatar.tsx";
 import { statusLabel } from "../Sidebar.tsx";
+import { MessageAttachments } from "./MessageAttachments.tsx";
 import {
   AnswerError,
   Dots,
@@ -23,6 +24,7 @@ import {
   ToolGroup,
   time,
   UserState,
+  UserText,
   useElapsed,
 } from "./parts.tsx";
 
@@ -102,15 +104,24 @@ function Shell({ head, who, name, at, children }: { head: boolean; who: "user" |
 const UserMessage = memo(function UserMessage({ row, ctx, head }: { row: Extract<DisplayRow, { kind: "user" }>; ctx: RowContext; head: boolean }) {
   return (
     <Shell head={head} who="user" name={ctx.name} at={row.at}>
-      <div
-        className={cn(
-          "whitespace-pre-wrap text-foreground [overflow-wrap:anywhere]",
-          row.state === "sending" && "opacity-60",
-          row.state === "failed" && "text-destructive-foreground",
-        )}
-      >
-        {row.text}
-      </div>
+      {row.text && (
+        <div
+          className={cn(
+            "whitespace-pre-wrap text-foreground [overflow-wrap:anywhere]",
+            row.state === "sending" && "opacity-60",
+            row.state === "failed" && "text-destructive-foreground",
+          )}
+        >
+          <UserText text={row.text} bot={String(ctx.sync.id)} />
+        </div>
+      )}
+      {row.attachments && (
+        <MessageAttachments
+          attachments={row.attachments}
+          align="start"
+          className={cn("my-1 max-w-[min(100%,600px)]", row.state === "sending" && "opacity-60")}
+        />
+      )}
       <UserState row={row} sync={ctx.sync} className="mt-0.5" />
     </Shell>
   );
@@ -120,7 +131,7 @@ const BotMessage = memo(function BotMessage({ row, ctx, head }: { row: Extract<D
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
     <Shell head={head} who="bot" name={ctx.name} at={row.at}>
-      {row.text && <Markdown html={html} />}
+      {row.text && <Markdown html={html} answer={row.seq} />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
   );
