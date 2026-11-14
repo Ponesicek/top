@@ -1,5 +1,5 @@
 /**
- * End to end against the real daemon (pi-agent-core, SQLite storage, fake model with real tools),
+ * End to end against the real daemon (Top's agent loop, SQLite storage, fake model with real tools),
  * killed with SIGKILL at the worst moments:
  *
  * - mid-answer, with a message sent while it was down: nothing lost, nothing doubled;

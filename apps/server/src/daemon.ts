@@ -3,7 +3,6 @@
  * jobs and wake-ups. The WebSocket layer (serve.ts) and the load driver go through this service and
  * listen to the event bus (events.ts).
  */
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, type Models, toToolDeclaration } from "@earendil-works/pi-ai";
 import {
   type Attachment,
@@ -32,6 +31,7 @@ import { collarTools } from "./collar/index.ts";
 import { Events } from "./events.ts";
 import { type FilesFolder, makeFilesFolder } from "./files.ts";
 import { type Jobs, makeJobs } from "./jobs.ts";
+import type { ThinkingLevel } from "./loop.ts";
 import { Mcp } from "./mcp.ts";
 import { type BotRunner, makeRunner } from "./runner.ts";
 import { seedHistory } from "./seed.ts";
