@@ -19,8 +19,9 @@
  * tailscale.ts). The local port keeps working as before.
  */
 import { timingSafeEqual } from "node:crypto";
-import { createServer, request as httpRequest } from "node:http";
+import { createServer } from "node:http";
 import { extname, join } from "node:path";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
   type ClientFrame,
@@ -42,6 +43,10 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as HttpBody from "effect/http/HttpBody";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import type * as HttpMethod from "effect/http/HttpMethod";
 import * as HttpServer from "effect/http/HttpServer";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
@@ -490,32 +495,33 @@ const serveAttachment = (request: HttpServerRequest.HttpServerRequest) =>
 const serveHttp = (request: HttpServerRequest.HttpServerRequest) =>
   request.url.startsWith(ATTACHMENTS_PREFIX) ? serveAttachment(request) : serveFile(request);
 
+/** Headers about one connection rather than the message (and Host, which names the hop): never passed along. */
+const HOP_BY_HOP = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade", "host", "content-length"]);
+const passable = (headers: Readonly<Record<string, string | undefined>>) =>
+  Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== undefined && !HOP_BY_HOP.has(entry[0])));
+
 /**
  * An MCP sign-in redirect that came over the tailnet: hand it to the callback server on this computer,
- * which is open only while someone signs in.
+ * which is open only while someone signs in, and send back what it answers, as it answers it.
  */
 const passOAuth = (request: HttpServerRequest.HttpServerRequest, port: number) =>
-  Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
-    const upstream = httpRequest(
-      { host: "127.0.0.1", port, path: request.url, method: request.method, headers: { ...request.headers, host: `127.0.0.1:${port}` } },
-      (reply) => {
-        const chunks: Buffer[] = [];
-        reply.on("data", (chunk: Buffer) => chunks.push(chunk));
-        reply.on("end", () =>
-          resume(
-            Effect.succeed(
-              HttpServerResponse.uint8Array(Buffer.concat(chunks), {
-                status: reply.statusCode ?? 502,
-                contentType: String(reply.headers["content-type"] ?? "text/html; charset=utf-8"),
-              }),
-            ),
-          ),
-        );
-      },
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const method = request.method as HttpMethod.HttpMethod;
+    const bodied = method !== "GET" && method !== "HEAD";
+    const reply = yield* client.execute(
+      HttpClientRequest.make(method)(`http://127.0.0.1:${port}${request.url}`, {
+        headers: passable(request.headers),
+        ...(bodied ? { body: HttpBody.stream(request.stream, request.headers["content-type"]) } : {}),
+      }),
     );
-    upstream.on("error", () => resume(Effect.succeed(plainText(request, 404, "No sign-in is waiting. Start it again from Top's settings.\n"))));
-    upstream.end();
-  });
+    const contentType = reply.headers["content-type"];
+    return HttpServerResponse.stream(reply.stream, {
+      status: reply.status,
+      headers: passable(reply.headers),
+      ...(contentType ? { contentType } : {}),
+    });
+  }).pipe(Effect.catch(() => Effect.succeed(plainText(request, 404, "No sign-in is waiting. Start it again from Top's settings.\n"))));
 
 /** Answers `/.well-known/top` on the tailnet, so the desktop app can find daemons there. */
 const WELL_KNOWN = "/.well-known/top";
@@ -611,6 +617,8 @@ export const serve = (options: ServeOptions) =>
     let tailnetPort: number | undefined;
     if (tailnet) {
       const gate = tailnet.gate;
+      // For passing sign-in redirects on (see passOAuth).
+      const httpClient = yield* Layer.build(NodeHttpClient.layerNodeHttp);
       const app = Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const admission = yield* gate.admit(request.headers);
@@ -628,7 +636,7 @@ export const serve = (options: ServeOptions) =>
         if (!admission.ok) return plainText(request, 403, `${admission.reason}\n`);
         if (tailnet.oauthPort !== undefined && path === tailnet.oauthPath) return yield* passOAuth(request, tailnet.oauthPort);
         return yield* serveHttp(request);
-      }).pipe(Effect.catchCause(failed("serving a tailnet request")), Effect.provideContext(services));
+      }).pipe(Effect.catchCause(failed("serving a tailnet request")), Effect.provideContext(Context.merge(services, httpClient)));
       tailnetPort = yield* listen("127.0.0.1", tailnet.port, options.compress, app);
     }
     return { port, tailnetPort };

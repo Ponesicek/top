@@ -179,7 +179,14 @@ async function setup(allow: readonly string[] = ["tag:laptops"]) {
       }),
   });
   // Stands in for MCP's sign-in redirect server.
-  const oauth = createServer((request, response) => response.end(`signed in: ${request.url}`));
+  const oauth = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk: Buffer) => (body += chunk));
+    request.on("end", () => {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Signed-In": "yes" });
+      response.end(`signed in: ${request.url}${body ? ` with ${body}` : ""}`);
+    });
+  });
   await new Promise<void>((resolve) => oauth.listen(0, "127.0.0.1", resolve));
   const oauthPort = (oauth.address() as { port: number }).port;
   cleanup.push(() => new Promise((resolve) => oauth.close(() => resolve())));
@@ -279,7 +286,12 @@ test("files, discovery and sign-in redirects on the tailnet are for allowed call
   assert.deepEqual(Object.keys((await hidden.json()) as object).sort(), ["device", "error", "top"]);
 
   const callback = `${base}${CALLBACK_PATH}?code=abc&state=xyz`;
-  assert.equal(await (await fetch(callback, { headers: from("100.64.0.1") })).text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz`);
+  const passed = await fetch(callback, { headers: from("100.64.0.1") });
+  assert.equal(await passed.text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz`);
+  assert.equal(passed.headers.get("content-type"), "text/html; charset=utf-8", "its own type");
+  assert.equal(passed.headers.get("x-signed-in"), "yes", "and its other headers");
+  const posted = await fetch(callback, { method: "POST", body: "code=abc", headers: { ...from("100.64.0.1"), "Content-Type": "application/x-www-form-urlencoded" } });
+  assert.equal(await posted.text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz with code=abc`, "a form post keeps its body");
   assert.equal((await fetch(callback, { headers: from("100.64.0.3") })).status, 403);
   await new Promise((resolve) => oauth.close(resolve));
   const nobody = await fetch(callback, { headers: from("100.64.0.1") });
