@@ -14,13 +14,13 @@ export type ConnectionOptions = {
   readonly url: string;
   readonly clientId: string;
   /** The WebSocket constructor; the global one by default (browsers, Electron, React Native, Node ≥ 22). */
-  readonly WebSocket?: typeof WebSocket;
-  readonly pingIntervalMs?: number;
+  readonly WebSocket?: typeof WebSocket | undefined;
+  readonly pingIntervalMs?: number | undefined;
   /** No pong for this long means the connection is dead even if the socket says it is open. */
-  readonly deadAfterMs?: number;
-  readonly requestTimeoutMs?: number;
+  readonly deadAfterMs?: number | undefined;
+  readonly requestTimeoutMs?: number | undefined;
   /** A handshake that hasn't opened by then is abandoned and retried. */
-  readonly connectTimeoutMs?: number;
+  readonly connectTimeoutMs?: number | undefined;
 };
 
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
@@ -39,7 +39,7 @@ export class TimeoutError extends Error {
 }
 
 export class Connection {
-  readonly #options: Required<Omit<ConnectionOptions, "WebSocket">> & { WebSocket: typeof WebSocket };
+  readonly #options: { [K in keyof Omit<ConnectionOptions, "WebSocket">]-?: Exclude<ConnectionOptions[K], undefined> } & { WebSocket: typeof WebSocket };
   #socket: WebSocket | undefined;
   #status: ConnectionStatus = "connecting";
   #attempt = 0;
@@ -62,11 +62,12 @@ export class Connection {
     const WebSocketImpl = options.WebSocket ?? globalThis.WebSocket;
     if (!WebSocketImpl) throw new Error("No WebSocket implementation available");
     this.#options = {
-      pingIntervalMs: 10_000,
-      connectTimeoutMs: 5_000,
-      deadAfterMs: 25_000,
-      requestTimeoutMs: 15_000,
-      ...options,
+      url: options.url,
+      clientId: options.clientId,
+      pingIntervalMs: options.pingIntervalMs ?? 10_000,
+      connectTimeoutMs: options.connectTimeoutMs ?? 5_000,
+      deadAfterMs: options.deadAfterMs ?? 25_000,
+      requestTimeoutMs: options.requestTimeoutMs ?? 15_000,
       WebSocket: WebSocketImpl,
     };
   }

@@ -20,7 +20,7 @@ export type PendingMessage = {
   readonly createdAt: number;
   /** `sending`: not acknowledged yet (or offline). `accepted`: the daemon has it durably. */
   readonly state: "sending" | "accepted" | "failed";
-  readonly error?: string;
+  readonly error?: string | undefined;
   readonly whenBusy: WhenBusy;
 };
 

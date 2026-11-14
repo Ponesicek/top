@@ -22,19 +22,19 @@ export const RESTART_LIMIT = 3;
 /** Backoff before each retry of a failed model request (`TOP_RETRY_DELAYS_MS=100,100,100` shortens it for tests). */
 const RETRY_DELAYS_MS = process.env.TOP_RETRY_DELAYS_MS?.split(",").map(Number) ?? [1_000, 4_000, 15_000];
 
-export type RunnerStatus = { readonly status: BotStatus; readonly tool?: string; readonly error?: string; readonly since: number };
+export type RunnerStatus = { readonly status: BotStatus; readonly tool?: string | undefined; readonly error?: string | undefined; readonly since: number };
 
 export type RunnerOptions = {
-  readonly thinkingLevel?: ThinkingLevel;
+  readonly thinkingLevel?: ThinkingLevel | undefined;
   /** Named system prompt sections the bot should have. A change is saved just before the next message the bot takes. */
-  readonly sections?: Readonly<Record<string, string>>;
+  readonly sections?: Readonly<Record<string, string>> | undefined;
   /**
    * How long a message from Top itself (a job's result, a wake-up) waits before it starts a task for
    * an idle bot, so ones that come close together start one task, not one each.
    */
-  readonly gatherMs?: number;
+  readonly gatherMs?: number | undefined;
   /** Where the user's attachments are; without it, messages have none. */
-  readonly attachments?: Attachments;
+  readonly attachments?: Attachments | undefined;
 };
 
 /** See `RunnerOptions.gatherMs`. */
@@ -471,7 +471,7 @@ export class BotRunner {
     return `${this.id}:${assistantSeq}:${toolCallId}`;
   }
 
-  #setStatus(status: BotStatus, extra: { tool?: string; error?: string } = {}) {
+  #setStatus(status: BotStatus, extra: { tool?: string | undefined; error?: string | undefined } = {}) {
     const current = this.#status;
     if (current.status === status && current.tool === extra.tool && current.error === extra.error) return;
     this.#status = { status, ...extra, since: Date.now() };

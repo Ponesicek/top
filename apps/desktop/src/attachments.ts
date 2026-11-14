@@ -19,7 +19,7 @@ export type Draft = {
   readonly state: "preparing" | "uploading" | "ready" | "failed";
   /** Fraction uploaded, while uploading. */
   readonly progress: number;
-  readonly error?: string;
+  readonly error?: string | undefined;
   readonly uploaded?: Attachment;
 };
 
@@ -109,7 +109,7 @@ async function prepareImage(file: File, type: string): Promise<File | undefined>
     };
     const fit = Math.min(1, MAX_IMAGE_EDGE / long);
     // The same type first; then WebP, smaller and smaller, until it fits.
-    const attempts: [number, string, number?][] = [
+    const attempts: [number, string, (number | undefined)?][] = [
       [fit, type === "image/png" ? "image/png" : type, type === "image/png" ? undefined : 0.9],
       [fit, "image/webp", 0.85],
       [fit, "image/webp", 0.7],

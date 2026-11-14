@@ -53,7 +53,7 @@ export function useElapsed(bot: BotSummary | undefined): number {
   return bot ? Math.max(0, Math.floor((Date.now() - bot.since) / 1000)) : 0;
 }
 
-export function ErrorNote({ children, className }: { children: React.ReactNode; className?: string }) {
+export function ErrorNote({ children, className }: { children: React.ReactNode; className?: string | undefined }) {
   return (
     <div
       className={cn(

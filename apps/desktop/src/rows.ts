@@ -25,7 +25,7 @@ export type Row =
       readonly at?: number;
       readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer";
       readonly requestId?: string;
-      readonly error?: string;
+      readonly error?: string | undefined;
     }
   | {
       readonly kind: "assistant";
@@ -35,7 +35,7 @@ export type Row =
       readonly tools: readonly ToolCallView[];
       readonly hasThinking: boolean;
       readonly at: number;
-      readonly error?: string;
+      readonly error?: string | undefined;
     }
   | { readonly kind: "tool"; readonly key: string; readonly entry: ToolEntry }
   | { readonly kind: "notice"; readonly key: string; readonly text: string }

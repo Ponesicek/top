@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
 import { createModels } from "@earendil-works/pi-ai/models";
 import type { Entry } from "@top/protocol";
+import { afterAll as after, test } from "vitest";
 import { WebSocket } from "ws";
 import { Daemon } from "../src/daemon.ts";
 import { createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "../src/fake-bots.ts";
@@ -48,7 +48,7 @@ test("changes to the folder are reported as entries, and the first listing isn't
   writeFileSync(join(folder, "old.md"), "# there before");
   const { files, entries } = watched(store, bot, folder);
   await files.start();
-  assert.deepEqual(entries, [], "what was there when the folder was first seen isn't news");
+  assert.equal(entries.length, 0, "what was there when the folder was first seen isn't news");
   assert.deepEqual([...files.listing.files.keys()], ["old.md"]);
 
   writeFileSync(join(folder, "report.html"), "<h1>hi</h1>");

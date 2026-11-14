@@ -20,9 +20,9 @@ export type ToolContext = {
   /** Stable for this one tool call, also across restarts. */
   readonly key: string;
   readonly bot: number;
-  readonly signal?: AbortSignal;
+  readonly signal?: AbortSignal | undefined;
   /** Output so far, for a tool that reports progress (bash does). Shown when someone asks a background job for it. */
-  readonly onUpdate?: (partial: ToolResult) => void;
+  readonly onUpdate?: ((partial: ToolResult) => void) | undefined;
 };
 
 export type ToolResult = AgentToolResult<unknown>;

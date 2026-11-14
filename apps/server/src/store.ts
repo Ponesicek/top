@@ -511,7 +511,13 @@ export class Store {
     bot: number,
     kind: EntryKind,
     message: unknown,
-    extra: { requestId?: string; toolCallId?: string; outcome?: string; source?: MessageSource | null; at?: number } = {},
+    extra: {
+      requestId?: string | undefined;
+      toolCallId?: string | undefined;
+      outcome?: string | undefined;
+      source?: MessageSource | null | undefined;
+      at?: number | undefined;
+    } = {},
   ): StoredEntry {
     const at = extra.at ?? Date.now();
     const json = JSON.stringify(message);

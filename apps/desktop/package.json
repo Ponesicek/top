@@ -11,15 +11,17 @@
     "start": "electron .",
     "bench": "node scripts/bench.js",
     "screenshot": "node scripts/screenshot.js",
-    "typecheck": "tsc -p ."
+    "typecheck": "effect-tsgo tsc -p ."
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
+    "@effect/atom-react": "4.1.4",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@tanstack/react-virtual": "^3.14.26",
     "@top/client": "workspace:*",
     "class-variance-authority": "^0.7.1",
+    "effect": "4.1.4",
     "highlight.js": "^11.12.0",
     "lucide-react": "^1.68.0",
     "markdown-it": "^15.0.3",
