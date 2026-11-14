@@ -12,7 +12,7 @@ import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
-import type { TopTool } from "./tools.ts";
+import { fromPromise, type TopTool } from "./tools.ts";
 
 const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
 
@@ -48,7 +48,7 @@ function adapt(tool: AnyAgentTool): TopTool {
     ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
     ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
     replay: REPLAY_SAFE.has(tool.name) ? "safe" : "never",
-    run: (args, ctx) => tool.execute(ctx.key, args as never, ctx.signal, ctx.onUpdate as never),
+    run: (args, ctx) => fromPromise(() => tool.execute(ctx.key, args as never, ctx.signal, ctx.onUpdate as never)),
   };
 }
 

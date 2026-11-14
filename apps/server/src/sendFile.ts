@@ -1,33 +1,58 @@
 /** Sending a file over HTTP, with one byte range (for seeking in video and audio) and ETag revalidation. */
-import type { Stats } from "node:fs";
-import { createReadStream } from "node:fs";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Etag from "effect/http/Etag";
+import type * as HttpPlatform from "effect/http/HttpPlatform";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
-export function sendFile(request: IncomingMessage, response: ServerResponse, path: string, info: Stats, headers: Record<string, string>) {
-  const etag = `"${info.size.toString(36)}-${Math.round(info.mtimeMs).toString(36)}"`;
-  headers = { ...headers, ETag: etag, "Accept-Ranges": "bytes", "Access-Control-Expose-Headers": "ETag, Content-Length, Content-Range" };
-  if (request.headers["if-none-match"] === etag) {
-    response.writeHead(304, headers);
-    return response.end();
-  }
-  const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range ?? ""));
-  let start = 0;
-  let end = info.size - 1;
-  let status = 200;
-  if (range && (range[1] || range[2])) {
-    start = range[1] ? Number(range[1]) : Math.max(0, info.size - Number(range[2]));
-    end = range[1] && range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
-    if (start > end || start >= info.size) {
-      response.writeHead(416, { ...headers, "Content-Range": `bytes */${info.size}` });
-      return response.end();
+/** What serving files needs from the HTTP server it runs in. */
+export type FileServing = FileSystem.FileSystem | Etag.Generator | HttpPlatform.HttpPlatform;
+
+/** There's no file at the path (or it's a folder). */
+export class NotFound extends Data.TaggedError("NotFound")<{ readonly path: string }> {}
+
+/** `If-None-Match` against the file's ETag, compared weakly (as RFC 9110 has it for this header). */
+const matches = (header: string | undefined, etag: string) => {
+  if (!header) return false;
+  const bare = (tag: string) => tag.trim().replace(/^W\//, "");
+  return header.split(",").some((tag) => tag.trim() === "*" || bare(tag) === bare(etag));
+};
+
+/** The file at `path`, or the byte range the request asks for; a `304` when the client's copy is current. */
+export const sendFile = (
+  request: HttpServerRequest.HttpServerRequest,
+  path: string,
+  extra: Record<string, string>,
+): Effect.Effect<HttpServerResponse.HttpServerResponse, NotFound, FileServing> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.stat(path).pipe(Effect.mapError(() => new NotFound({ path })));
+    if (info.type !== "File") return yield* new NotFound({ path });
+    const etag = Etag.toString(yield* (yield* Etag.Generator).fromFileInfo(info));
+    const size = Number(info.size);
+    // `file` sets the ETag itself (from the same generator); the answers without a body set it here.
+    const headers: Record<string, string> = {
+      ...extra,
+      "Accept-Ranges": "bytes",
+      "Access-Control-Expose-Headers": "ETag, Content-Length, Content-Range",
+    };
+    if (matches(request.headers["if-none-match"], etag)) return HttpServerResponse.empty({ status: 304, headers: { ...headers, ETag: etag } });
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range ?? ""));
+    let start = 0;
+    let end = size - 1;
+    let status = 200;
+    if (range && (range[1] || range[2])) {
+      start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+      end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      if (start > end || start >= size)
+        return HttpServerResponse.empty({ status: 416, headers: { ...headers, ETag: etag, "Content-Range": `bytes */${size}` } });
+      status = 206;
+      headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
     }
-    status = 206;
-    headers["Content-Range"] = `bytes ${start}-${end}/${info.size}`;
-  }
-  headers["Content-Length"] = String(info.size === 0 ? 0 : end - start + 1);
-  response.writeHead(status, headers);
-  if (request.method === "HEAD" || info.size === 0) return response.end();
-  const stream = createReadStream(path, { start, end });
-  stream.on("error", () => response.destroy());
-  stream.pipe(response);
-}
+    const length = size === 0 ? 0 : end - start + 1;
+    if (request.method === "HEAD" || size === 0)
+      return HttpServerResponse.empty({ status, headers: { ...headers, ETag: etag, "Content-Length": String(length) } });
+    return yield* HttpServerResponse.file(path, { status, headers, offset: start, bytesToRead: length }).pipe(Effect.mapError(() => new NotFound({ path })));
+  });

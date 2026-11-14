@@ -12,20 +12,35 @@
  * Every tool is sent with every request of every bot, so each one costs context and makes the others
  * harder to pick from: prefer one clear tool over several narrow ones, and describe when to use it.
  */
-import type { Daemon } from "../daemon.ts";
+import type * as Effect from "effect/Effect";
+import type { Jobs } from "../jobs.ts";
+import type { Store } from "../store.ts";
 import type { TopTool } from "../tools.ts";
+import type { WakeClock } from "../wakes.ts";
 import { backgroundGroup } from "./background.ts";
 import { jobsGroup } from "./jobs.ts";
+import { COLLAR } from "./names.ts";
 import { wakeGroup } from "./wake.ts";
 
-export const COLLAR = "collar";
+export { COLLAR };
+
+/** What Collar's tools reach in the daemon. */
+export type CollarDaemon = {
+  readonly store: Store["Service"];
+  readonly jobs: Jobs;
+  readonly wakes: WakeClock;
+  /** Something a bot's summary shows changed (its wake-ups, its jobs). */
+  readonly changed: (bot: number) => Effect.Effect<void>;
+  /** A bot's tools as they are now (its own, Collar's, its MCP servers'), as written: no time limit. */
+  readonly toolsOf: (bot: number) => readonly TopTool[];
+};
 
 /** One part of the app's tools. Called once when the daemon starts; tools reach the daemon when they run. */
-export type CollarGroup = (daemon: Daemon) => readonly TopTool[];
+export type CollarGroup = (daemon: CollarDaemon) => readonly TopTool[];
 
 const GROUPS: readonly CollarGroup[] = [wakeGroup, backgroundGroup, jobsGroup];
 
-export function collarTools(daemon: Daemon): TopTool[] {
+export function collarTools(daemon: CollarDaemon): TopTool[] {
   const tools = GROUPS.flatMap((group) => group(daemon)).map((tool): TopTool => ({ ...tool, name: `${COLLAR}__${tool.name}` }));
   const names = new Set<string>();
   for (const { name } of tools) {

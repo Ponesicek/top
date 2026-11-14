@@ -1,4 +1,6 @@
 /** `collar__jobs`: look at, wait for and stop tool calls that moved to the background (see jobs.ts). */
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { outcomeText } from "../jobs.ts";
 import { duration } from "../time.ts";
@@ -29,58 +31,59 @@ export const jobsGroup: CollarGroup = (daemon) => [
     replay: "safe",
     // Waiting is what it's for.
     background: false,
-    async run(args, ctx) {
-      const jobs = daemon.jobs;
-      const action = String(args.action);
-      const now = Date.now();
-      if (action === "list") {
-        const running = jobs.running(ctx.bot);
-        if (!running.length) return text("No background jobs are running.");
-        return text(
-          running
-            .map((j) => `- ${j.id}: ${j.note ? `${j.note}: ` : ""}${j.tool}${j.summary ? ` (${j.summary})` : ""}, running for ${duration(now - j.startedAt)}`)
-            .join("\n"),
-        );
-      }
-
-      const id = Number(args.id);
-      if (!Number.isInteger(id)) return failed('Say which job with `id` (see `action: "list"`).');
-      const found = jobs.find(ctx.bot, id);
-      if ("ended" in found) {
-        if (!found.ended) return failed(`You have no job ${id}.`);
-        const how = { finished: "finished; its result was sent to you as a message", stopped: "was stopped", lost: "was cut off by a daemon restart" }[
-          found.ended.state as "finished" | "stopped" | "lost"
-        ];
-        return text(`Job ${id} is no longer running: it ${how ?? "ended"}.`);
-      }
-
-      switch (action) {
-        case "output": {
-          const output = jobs.output(id);
+    run: (args, ctx) =>
+      Effect.gen(function* () {
+        const jobs = daemon.jobs;
+        const action = String(args.action);
+        const now = yield* Clock.currentTimeMillis;
+        if (action === "list") {
+          const running = jobs.running(ctx.bot);
+          if (!running.length) return text("No background jobs are running.");
           return text(
-            output === undefined
-              ? `Job ${id} has been running for ${duration(now - found.live.startedAt)}. Its tool doesn't report output while it runs.`
-              : `Job ${id}, running for ${duration(now - found.live.startedAt)}. Output so far:\n\n${output || "(none yet)"}`,
+            running
+              .map((j) => `- ${j.id}: ${j.note ? `${j.note}: ` : ""}${j.tool}${j.summary ? ` (${j.summary})` : ""}, running for ${duration(now - j.startedAt)}`)
+              .join("\n"),
           );
         }
-        case "wait": {
-          const limit = jobs.foregroundMs;
-          const ms = Math.min(Math.max(0, Number(args.seconds ?? limit / 1000) * 1000), limit);
-          const outcome = await jobs.wait(id, ms, ctx.signal);
-          if (!outcome)
+
+        const id = Number(args.id);
+        if (!Number.isInteger(id)) return failed('Say which job with `id` (see `action: "list"`).');
+        const found = yield* jobs.find(ctx.bot, id);
+        if ("ended" in found) {
+          if (!found.ended) return failed(`You have no job ${id}.`);
+          const how = { finished: "finished; its result was sent to you as a message", stopped: "was stopped", lost: "was cut off by a daemon restart" }[
+            found.ended.state as "finished" | "stopped" | "lost"
+          ];
+          return text(`Job ${id} is no longer running: it ${how ?? "ended"}.`);
+        }
+
+        switch (action) {
+          case "output": {
+            const output = jobs.output(id);
             return text(
-              `Job ${id} is still running after ${duration(Date.now() - found.live.startedAt)}. Its result will come to you as a message when it ends.`,
+              output === undefined
+                ? `Job ${id} has been running for ${duration(now - found.live.startedAt)}. Its tool doesn't report output while it runs.`
+                : `Job ${id}, running for ${duration(now - found.live.startedAt)}. Output so far:\n\n${output || "(none yet)"}`,
             );
-          const { text: body, failed: isError } = outcomeText(outcome);
-          return { ...text(`Job ${id} ${isError ? "failed" : "finished"}:\n\n${body}`), ...(isError ? { isError: true } : {}) };
+          }
+          case "wait": {
+            const limit = jobs.foregroundMs;
+            const ms = Math.min(Math.max(0, Number(args.seconds ?? limit / 1000) * 1000), limit);
+            const outcome = yield* jobs.wait(id, ms, ctx.signal);
+            if (!outcome)
+              return text(
+                `Job ${id} is still running after ${duration((yield* Clock.currentTimeMillis) - found.live.startedAt)}. Its result will come to you as a message when it ends.`,
+              );
+            const { text: body, failed: isError } = outcomeText(outcome);
+            return { ...text(`Job ${id} ${isError ? "failed" : "finished"}:\n\n${body}`), ...(isError ? { isError: true } : {}) };
+          }
+          case "stop": {
+            const outcome = yield* jobs.stop(id);
+            return text(outcome ? `Stopped job ${id}. What it came to:\n\n${outcomeText(outcome).text}` : `Stopped job ${id}.`);
+          }
+          default:
+            return failed(`Unknown action "${action}".`);
         }
-        case "stop": {
-          const outcome = await jobs.stop(id);
-          return text(outcome ? `Stopped job ${id}. What it came to:\n\n${outcomeText(outcome).text}` : `Stopped job ${id}.`);
-        }
-        default:
-          return failed(`Unknown action "${action}".`);
-      }
-    },
+      }),
   },
 ];

@@ -35,10 +35,20 @@ import {
   type McpOAuthState,
   OAuthCallbackServer,
 } from "@earendil-works/pi-mcp/oauth";
-import { check, MAX_MCP_NAME, type McpSecret, McpServerConfig, type McpServerState, type McpServerView } from "@top/protocol";
-import { COLLAR } from "./collar/index.ts";
-import type { Store } from "./store.ts";
-import type { ToolResult, TopTool } from "./tools.ts";
+import { check, MAX_MCP_NAME, type McpSecret, McpServerConfig, McpServerError, type McpServerState, type McpServerView } from "@top/protocol";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as FiberMap from "effect/FiberMap";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import { COLLAR } from "./collar/names.ts";
+import { Events } from "./events.ts";
+import { Store } from "./store.ts";
+import { ToolError, type ToolResult, type TopTool } from "./tools.ts";
 
 /** Wait before each reconnect of a failed server; the last one repeats. */
 const RETRY_DELAYS_MS = [2_000, 10_000, 30_000, 60_000, 300_000];
@@ -50,11 +60,6 @@ const SIGN_IN_TIMEOUT_MS = 10 * 60_000;
 export const CALLBACK_PATH = "/mcp/callback";
 /** Providers allow tool names of at most 64 characters of [A-Za-z0-9_-]. */
 const MAX_TOOL_NAME = 64;
-
-/** A server was refused (empty or taken name, bad URL): the message is meant for the user. */
-export class McpServerError extends Error {
-  override name = "McpServerError";
-}
 
 /** `GitHub (work)` → `github_work`: the prefix of the server's tool names. */
 export function slug(name: string): string {
@@ -75,6 +80,20 @@ export function toolName(server: string, tool: string): string {
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
+const isMcpServerError = Schema.is(McpServerError);
+/** A check below that throws an `McpServerError` (anything else it throws is a bug). */
+const attempt = <A>(f: () => A): Effect.Effect<A, McpServerError> =>
+  Effect.suspend(() => {
+    try {
+      return Effect.succeed(f());
+    } catch (error) {
+      return isMcpServerError(error) ? Effect.fail(error) : Effect.die(error);
+    }
+  });
+
+/** Why connecting failed, as pi-mcp threw it. */
+class ConnectFailure extends Data.TaggedError("ConnectFailure")<{ readonly cause: unknown }> {}
+
 type Connection = {
   readonly id: number;
   name: string;
@@ -85,476 +104,464 @@ type Connection = {
   error: string | undefined;
   tools: Tool[];
   client: McpClient | undefined;
-  /** Bumped by every (re)connect and by removal; a connection attempt that isn't the newest gives up. */
-  generation: number;
-  failures: number;
-  retryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** It holds OAuth credentials (an account is signed in). */
+  signedIn: boolean;
+  /** Counts connection attempts, so a sign-in that ends after a reconnect doesn't report on the new one. */
+  attempts: number;
 };
 
-export type McpManagerOptions = {
+export type McpOptions = {
   /** The port of the OAuth redirect (only open while someone signs in). */
   readonly oauthPort: number;
   /** Where the redirect lands instead of `http://127.0.0.1:<oauthPort>`, e.g. the daemon's tailnet address. */
-  readonly redirectOrigin?: string;
-  readonly clientInfo?: { readonly name: string; readonly version: string };
+  readonly redirectOrigin?: string | undefined;
+  readonly clientInfo?: { readonly name: string; readonly version: string } | undefined;
 };
 
-export class McpManager {
-  readonly #store: Store;
-  readonly #options: McpManagerOptions;
-  readonly #servers = new Map<number, Connection>();
-  readonly #changeListeners = new Set<(view: McpServerView) => void>();
-  readonly #removedListeners = new Set<(id: number) => void>();
-  #callback: Promise<OAuthCallbackServer> | undefined;
-  /** OAuth `state`s whose redirect the callback server is waiting for. */
-  readonly #waiting = new Set<string>();
-  #closed = false;
-
-  constructor(store: Store, options: McpManagerOptions) {
-    this.#store = store;
-    this.#options = options;
-    const assignments = store.mcpAssignments();
-    for (const row of store.mcpServers()) {
-      this.#servers.set(row.id, {
-        id: row.id,
-        name: row.name,
-        config: check(McpServerConfig, JSON.parse(row.config), `saved settings of MCP server ${row.name}`),
-        bots: new Set(assignments.get(row.id) ?? []),
-        state: "connecting",
-        error: undefined,
-        tools: [],
-        client: undefined,
-        generation: 0,
-        failures: 0,
-        retryTimer: undefined,
-      });
-    }
+export class Mcp extends Context.Service<
+  Mcp,
+  {
+    readonly views: Effect.Effect<McpServerView[]>;
+    /**
+     * Add a server (no `id`) or change one, then (re)connect it. Fails with an `McpServerError` the user
+     * can read when something's missing or wrong. A secret sent without a value keeps the stored one.
+     */
+    readonly save: (id: number | undefined, name: string, config: McpServerConfig) => Effect.Effect<number, McpServerError>;
+    readonly delete: (id: number) => Effect.Effect<void, McpServerError>;
+    /** Give a bot a server's tools, or take them away. They change from the bot's next run. */
+    readonly assign: (id: number, bot: number, on: boolean) => Effect.Effect<void, McpServerError>;
+    /** A bot was deleted (the store already dropped its assignments). */
+    readonly botRemoved: (bot: number) => Effect.Effect<void>;
+    readonly retry: (id: number) => Effect.Effect<void, McpServerError>;
+    /** Forget the server's OAuth credentials and reconnect, which asks for a new sign-in. */
+    readonly signOut: (id: number) => Effect.Effect<void, McpServerError>;
+    /**
+     * Start signing in: answers with the page to open in a browser. When the browser comes back with
+     * the grant, the server reconnects with it.
+     */
+    readonly signIn: (id: number) => Effect.Effect<string, McpServerError>;
+    /** The tools a bot gets from its connected servers, as they are now. */
+    readonly toolsFor: (bot: number) => TopTool[];
   }
+>()("top/Mcp") {}
 
-  get #redirectUrl() {
-    return `${this.#options.redirectOrigin ?? `http://127.0.0.1:${this.#options.oauthPort}`}${CALLBACK_PATH}`;
-  }
+/** The MCP servers set up in the app, each connected (and kept connected) while the layer lives. */
+export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Events> =>
+  Layer.effect(
+    Mcp,
+    Effect.gen(function* () {
+      const store = yield* Store;
+      const events = yield* Events;
+      const runPromise = Effect.runPromiseWith(yield* Effect.context<Store | Events>());
+      const runFork = Effect.runForkWith(yield* Effect.context<Store | Events>());
+      const scope = yield* Effect.scope;
+      const servers = new Map<number, Connection>();
+      const fibers = yield* FiberMap.make<number>();
+      const redirectUrl = `${options.redirectOrigin ?? `http://127.0.0.1:${options.oauthPort}`}${CALLBACK_PATH}`;
+      /** OAuth `state`s whose redirect the callback server is waiting for. */
+      const waiting = new Set<string>();
+      let callback: Promise<OAuthCallbackServer> | undefined;
 
-  /** Connect to every server. Doesn't wait: a slow server mustn't hold up the bots. */
-  start() {
-    for (const connection of this.#servers.values()) void this.#connect(connection);
-  }
+      const view = (connection: Connection): McpServerView => {
+        const config = connection.config;
+        const hide = (list: readonly McpSecret[]) => list.map((s) => ({ name: s.name }));
+        return {
+          id: connection.id,
+          name: connection.name,
+          config: config.transport === "stdio" ? { ...config, env: hide(config.env) } : { ...config, headers: hide(config.headers) },
+          bots: [...connection.bots].sort((a, b) => a - b),
+          state: connection.state,
+          ...(connection.error ? { error: connection.error } : {}),
+          tools: connection.tools.map((t) => t.name),
+          ...(connection.signedIn ? { signedIn: true as const } : {}),
+        };
+      };
 
-  /** Disconnect everything (stops the servers' programs). */
-  async close() {
-    this.#closed = true;
-    const closing = [...this.#servers.values()].map((connection) => this.#disconnect(connection));
-    await Promise.allSettled(closing);
-    const callback = this.#callback;
-    this.#callback = undefined;
-    await callback?.then((server) => server.close()).catch(() => {});
-  }
+      const changed = (connection: Connection) =>
+        Effect.suspend(() => (servers.get(connection.id) === connection ? events.publish({ _tag: "McpServer", view: view(connection) }) : Effect.void));
 
-  views(): McpServerView[] {
-    return [...this.#servers.values()].map((connection) => this.#view(connection));
-  }
-
-  onChange(listener: (view: McpServerView) => void) {
-    this.#changeListeners.add(listener);
-    return () => this.#changeListeners.delete(listener);
-  }
-
-  onRemoved(listener: (id: number) => void) {
-    this.#removedListeners.add(listener);
-    return () => this.#removedListeners.delete(listener);
-  }
-
-  // ── settings ─────────────────────────────────────────────────────────────────
-
-  /**
-   * Add a server (no `id`) or change one, then (re)connect it. Throws an `McpServerError` the user can
-   * read when something's missing or wrong. A secret sent without a value keeps the stored one.
-   */
-  save(id: number | undefined, name: string, config: McpServerConfig): number {
-    const existing = id === undefined ? undefined : this.#get(id);
-    name = name.trim().replace(/\s+/g, " ");
-    if (!name) throw new McpServerError("Give the server a name.");
-    if (name.length > MAX_MCP_NAME) throw new McpServerError(`Keep the name under ${MAX_MCP_NAME + 1} characters.`);
-    if (!slug(name)) throw new McpServerError("Use some letters or digits in the name.");
-    // Its tools would clash with Top's own (collar/index.ts).
-    if (slug(name) === COLLAR) throw new McpServerError(`${name} is the name of Top's own tools. Pick another.`);
-    for (const other of this.#servers.values()) {
-      if (other.id === id) continue;
-      if (other.name.toLowerCase() === name.toLowerCase()) throw new McpServerError(`There's already a server named ${other.name}.`);
-      // Their tools would get the same names.
-      if (slug(other.name) === slug(name)) throw new McpServerError(`That name is too close to ${other.name}. Pick one that differs in more than punctuation.`);
-    }
-    const clean = this.#validate(config, existing?.config);
-    // Credentials belong to one server: a new URL (or a switch to a program) signs in again.
-    const resetOAuth = existing !== undefined && (existing.config.transport !== "http" || clean.transport !== "http" || existing.config.url !== clean.url);
-
-    if (existing) {
-      this.#store.updateMcpServer(existing.id, name, JSON.stringify(clean), resetOAuth);
-      existing.name = name;
-      existing.config = clean;
-      void this.#connect(existing);
-      return existing.id;
-    }
-    const newId = this.#store.createMcpServer(name, JSON.stringify(clean));
-    const connection: Connection = {
-      id: newId,
-      name,
-      config: clean,
-      bots: new Set(),
-      state: "connecting",
-      error: undefined,
-      tools: [],
-      client: undefined,
-      generation: 0,
-      failures: 0,
-      retryTimer: undefined,
-    };
-    this.#servers.set(newId, connection);
-    void this.#connect(connection);
-    return newId;
-  }
-
-  delete(id: number) {
-    const connection = this.#get(id);
-    this.#servers.delete(id);
-    this.#store.deleteMcpServer(id);
-    void this.#disconnect(connection);
-    for (const listener of this.#removedListeners) listener(id);
-  }
-
-  /** Give a bot a server's tools, or take them away. They change from the bot's next run. */
-  assign(id: number, bot: number, on: boolean) {
-    const connection = this.#get(id);
-    if (connection.bots.has(bot) === on) return;
-    this.#store.assignMcp(id, bot, on);
-    if (on) connection.bots.add(bot);
-    else connection.bots.delete(bot);
-    this.#changed(connection);
-  }
-
-  /** A bot was deleted (the store already dropped its assignments). */
-  botRemoved(bot: number) {
-    for (const connection of this.#servers.values()) {
-      if (connection.bots.delete(bot)) this.#changed(connection);
-    }
-  }
-
-  retry(id: number) {
-    void this.#connect(this.#get(id));
-  }
-
-  /** Forget the server's OAuth credentials and reconnect, which asks for a new sign-in. */
-  signOut(id: number) {
-    const connection = this.#get(id);
-    this.#store.setMcpOAuth(id, null);
-    void this.#connect(connection);
-  }
-
-  /**
-   * Start signing in: answers with the page to open in a browser on this computer. When the browser
-   * comes back with the grant, the server reconnects with it.
-   */
-  async signIn(id: number): Promise<string> {
-    const connection = this.#get(id);
-    const config = connection.config;
-    if (config.transport !== "http") throw new McpServerError(`${connection.name} runs as a program; it has no sign-in.`);
-    if (hasAuthorization(config))
-      throw new McpServerError(`${connection.name} signs in with its Authorization header. Remove the header to sign in with OAuth instead.`);
-
-    let authorizationUrl: string | undefined;
-    const provider = this.#oauthProvider(connection, (url) => (authorizationUrl = url.href));
-    // Registered for another redirect (the daemon's port changed): register again.
-    const client = await provider.clientInformation();
-    if (client && "redirect_uris" in client && Array.isArray(client.redirect_uris) && !client.redirect_uris.includes(this.#redirectUrl)) {
-      await provider.invalidateCredentials("client");
-    }
-    const callback = await this.#callbackServer();
-    let result: Awaited<ReturnType<typeof authorizeMcp>>;
-    try {
-      result = await authorizeMcp(provider, { serverUrl: config.url, skipRefresh: true });
-    } catch (error) {
-      throw new McpServerError(`Couldn't start signing in to ${connection.name}: ${messageOf(error)}`);
-    }
-    if (result === "AUTHORIZED" || !authorizationUrl) {
-      void this.#connect(connection);
-      throw new McpServerError(`${connection.name} is already signed in.`);
-    }
-    const state = await provider.state();
-    if (!this.#waiting.has(state)) {
-      this.#waiting.add(state);
-      const generation = connection.generation;
-      void callback
-        .waitForCallback(state)
-        .then(async ({ code, iss }) => {
-          await authorizeMcp(provider, { serverUrl: config.url, authorizationCode: code, ...(iss ? { iss } : {}) });
-          if (this.#servers.get(id) === connection) void this.#connect(connection);
-        })
-        .catch((error) => {
-          if (this.#servers.get(id) !== connection || connection.generation !== generation) return;
-          connection.error = `Signing in didn't finish: ${messageOf(error)}`;
-          this.#changed(connection);
-        })
-        .finally(() => {
-          this.#waiting.delete(state);
-          if (this.#waiting.size === 0) void this.#closeCallbackServer();
+      const get = (id: number) =>
+        Effect.suspend(() => {
+          const connection = servers.get(id);
+          return connection ? Effect.succeed(connection) : Effect.fail(new McpServerError({ message: "That MCP server was removed." }));
         });
-    }
-    return authorizationUrl;
-  }
 
-  // ── tools ────────────────────────────────────────────────────────────────────
-
-  /** The tools a bot gets from its connected servers. */
-  toolsFor(bot: number): TopTool[] {
-    const tools: TopTool[] = [];
-    for (const connection of this.#servers.values()) {
-      if (!connection.bots.has(bot) || connection.state !== "ready") continue;
-      for (const tool of connection.tools) tools.push(this.#adapt(connection, tool));
-    }
-    return tools;
-  }
-
-  #adapt(connection: Connection, tool: Tool): TopTool {
-    const { id, name: server } = connection;
-    const hints = tool.annotations ?? {};
-    const description = tool.description?.trim() || tool.title || tool.name;
-    return {
-      name: toolName(server, tool.name),
-      label: `${tool.title ?? hints.title ?? tool.name} (${server})`,
-      // The server's name tells two accounts of one service apart.
-      description: `From the MCP server "${server}".\n\n${description}`,
-      // Providers want an object schema, and some reject one without `properties`.
-      parameters: { ...tool.inputSchema, type: "object", properties: tool.inputSchema.properties ?? {} },
-      replay: hints.readOnlyHint === true || hints.idempotentHint === true ? "safe" : "never",
-      run: async (args, ctx): Promise<ToolResult> => {
-        // Looked up per call: the server may have reconnected (a new client) or been removed since.
-        const current = this.#servers.get(id);
-        if (!current?.client || current.state !== "ready") {
-          throw new Error(`The MCP server "${server}" isn't connected${current?.error ? `: ${current.error}` : ""}.`);
-        }
-        const result = await current.client.callTool(tool.name, args, {
-          ...(ctx.signal ? { signal: ctx.signal } : {}),
-          timeoutMs: CALL_TIMEOUT_MS,
-        });
-        return { content: toLlmContent(result), details: {}, isError: result.isError === true } as ToolResult;
-      },
-    };
-  }
-
-  // ── connecting ───────────────────────────────────────────────────────────────
-
-  async #connect(connection: Connection) {
-    if (this.#closed) return;
-    const generation = ++connection.generation;
-    clearTimeout(connection.retryTimer);
-    connection.retryTimer = undefined;
-    const previous = connection.client;
-    connection.client = undefined;
-    connection.tools = [];
-    connection.state = "connecting";
-    connection.error = undefined;
-    this.#changed(connection);
-    await previous?.close().catch(() => {});
-
-    const client = new McpClient({
-      ...(this.#options.clientInfo ?? { name: "top", version: "0.0.0" }),
-      requestTimeoutMs: CONNECT_TIMEOUT_MS,
-    });
-    let transport: McpTransport | undefined;
-    const current = () => this.#servers.get(connection.id) === connection && connection.generation === generation && !this.#closed;
-    try {
-      transport = this.#transport(connection);
-      await client.connect(transport);
-      const tools = await client.listTools();
-      if (!current()) return void client.close().catch(() => {});
-      connection.client = client;
-      connection.tools = tools;
-      connection.state = "ready";
-      connection.failures = 0;
-      this.#changed(connection);
-      client.onNotification("notifications/tools/list_changed", () => {
-        void client.listTools().then(
-          (next) => {
-            if (!current() || connection.client !== client) return;
-            connection.tools = next;
-            this.#changed(connection);
+      /** OAuth for one server, its credentials kept in the store (so each connection is its own account). */
+      const oauthProvider = (connection: Connection, onRedirect: (url: URL) => void): McpOAuthProvider => {
+        const config = connection.config;
+        if (config.transport !== "http") throw new Error("OAuth needs an HTTP server");
+        const { id } = connection;
+        return new McpOAuthProvider({
+          serverUrl: config.url,
+          redirectUrl,
+          clientMetadata: { client_name: "Top", redirect_uris: [redirectUrl] },
+          store: {
+            load: () => runPromise(Effect.map(store.mcpServer(id), (row) => (row?.oauth ? (JSON.parse(row.oauth) as McpOAuthState) : undefined))),
+            save: (state) =>
+              runPromise(
+                Effect.gen(function* () {
+                  if (!(yield* store.mcpServer(id))) return;
+                  yield* store.setMcpOAuth(id, JSON.stringify(state));
+                  const signedIn = state.tokens !== undefined;
+                  if (signedIn === connection.signedIn) return;
+                  connection.signedIn = signedIn;
+                  yield* changed(connection);
+                }),
+              ),
           },
-          () => {},
+          onRedirect,
+        });
+      };
+
+      const transport = (connection: Connection): McpTransport => {
+        const config = connection.config;
+        if (config.transport === "stdio") {
+          return new StdioTransport({
+            command: config.command,
+            args: config.args,
+            // The daemon's own environment (PATH, HOME…) plus the server's variables.
+            env: Object.fromEntries(config.env.map((v) => [v.name, v.value ?? ""])),
+            inheritEnv: true,
+            cwd: homedir(),
+            stderr: "pipe",
+            maxStderrBytes: 16_384,
+          });
+        }
+        const headers = Object.fromEntries(config.headers.map((h) => [h.name, h.value ?? ""]));
+        return new StreamableHttpTransport({
+          url: config.url,
+          headers,
+          // With an Authorization header of its own the server needs no OAuth.
+          ...(hasAuthorization(config) ? {} : { authProvider: adaptOAuthProvider(oauthProvider(connection, () => {})) }),
+        });
+      };
+
+      type Attempt = { readonly done: "signin" } | { readonly done: "refused" } | { readonly done: "failed"; readonly error: string };
+
+      /** One connection: ready until it closes (then failed), or why it couldn't connect. */
+      const connectOnce = (connection: Connection): Effect.Effect<Attempt> =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            connection.attempts++;
+            const client = yield* Effect.acquireRelease(
+              Effect.sync(() => new McpClient({ ...(options.clientInfo ?? { name: "top", version: "0.0.0" }), requestTimeoutMs: CONNECT_TIMEOUT_MS })),
+              (client) =>
+                Effect.promise(() => client.close().catch(() => {})).pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      if (connection.client === client) connection.client = undefined;
+                    }),
+                  ),
+                ),
+            );
+            let used: McpTransport | undefined;
+            const connected = yield* Effect.tryPromise({
+              try: async () => {
+                used = transport(connection);
+                await client.connect(used);
+                return await client.listTools();
+              },
+              catch: (cause) => new ConnectFailure({ cause }),
+            }).pipe(Effect.result);
+            if (connected._tag === "Failure") {
+              const error = connected.failure.cause;
+              if (error instanceof McpOAuthAuthorizationRequiredError) return { done: "signin" } as const;
+              if (error instanceof McpAuthRequiredError) return { done: "refused" } as const;
+              const stderr = used instanceof StdioTransport ? lastLines(used.stderr) : "";
+              return { done: "failed", error: messageOf(error) + (stderr ? `\n${stderr}` : "") } as const;
+            }
+            connection.client = client;
+            connection.tools = connected.success;
+            connection.state = "ready";
+            connection.error = undefined;
+            yield* changed(connection);
+            const closed = yield* Deferred.make<void>();
+            client.onNotification("notifications/tools/list_changed", () => {
+              runFork(
+                Effect.tryPromise(() => client.listTools()).pipe(
+                  Effect.flatMap((next) =>
+                    Effect.suspend(() => {
+                      if (connection.client !== client) return Effect.void;
+                      connection.tools = next;
+                      return changed(connection);
+                    }),
+                  ),
+                  Effect.ignore,
+                ),
+              );
+            });
+            client.onClose(() => Deferred.doneUnsafe(closed, Effect.void));
+            yield* Deferred.await(closed);
+            return { done: "failed", error: "The connection closed." } as const;
+          }),
         );
+
+      /** Keep a server connected: retry with backoff, wait for a sign-in, or give up on refused credentials. */
+      const keepConnected = (connection: Connection) =>
+        Effect.gen(function* () {
+          let failures = 0;
+          for (;;) {
+            connection.client = undefined;
+            connection.tools = [];
+            connection.state = "connecting";
+            connection.error = undefined;
+            yield* changed(connection);
+            const result = yield* connectOnce(connection);
+            connection.tools = [];
+            if (result.done === "signin") {
+              connection.state = "signin";
+              connection.error = undefined;
+              return yield* changed(connection);
+            }
+            connection.state = "failed";
+            // Only with an Authorization header of the user's (otherwise OAuth handles a 401): it was refused.
+            connection.error = result.done === "refused" ? "The server refused the credentials (HTTP 401). Check the Authorization header." : result.error;
+            yield* changed(connection);
+            if (result.done === "refused") return;
+            yield* Effect.sleep(Duration.millis(RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)]!));
+            failures++;
+          }
+        });
+
+      /** (Re)connect: a connection already running is interrupted, which closes its client. */
+      const connect = (connection: Connection) => Effect.asVoid(FiberMap.run(fibers, connection.id, keepConnected(connection)));
+
+      const callbackServer = Effect.suspend(() => {
+        callback ??= OAuthCallbackServer.listen({
+          host: "127.0.0.1",
+          port: options.oauthPort,
+          path: CALLBACK_PATH,
+          timeoutMs: SIGN_IN_TIMEOUT_MS,
+          renderPage: (page) =>
+            `<!doctype html><meta charset="utf-8"><title>Top</title><body style="font:15px system-ui;margin:3em;max-width:36em">` +
+            (page.ok ? "<h2>Signed in</h2><p>You can close this tab and go back to Top.</p>" : `<h2>Couldn't sign in</h2><p>${escapeHtml(page.message)}</p>`),
+        });
+        const opening = callback;
+        return Effect.tryPromise({
+          try: () => opening,
+          catch: (error) => {
+            if (callback === opening) callback = undefined;
+            return new McpServerError({ message: `Couldn't open the sign-in redirect on port ${options.oauthPort}: ${messageOf(error)}` });
+          },
+        });
       });
-      client.onClose(() => {
-        if (!current() || connection.client !== client) return;
-        connection.client = undefined;
-        connection.tools = [];
-        this.#failed(connection, "The connection closed.", generation);
+      const closeCallbackServer = Effect.suspend(() => {
+        const closing = callback;
+        callback = undefined;
+        return closing ? Effect.promise(() => closing.then((server) => server.close()).catch(() => {})) : Effect.void;
       });
-    } catch (error) {
-      void client.close().catch(() => {});
-      if (!current()) return;
-      if (error instanceof McpOAuthAuthorizationRequiredError) {
-        connection.state = "signin";
-        connection.error = undefined;
-        this.#changed(connection);
-        return;
+      yield* Effect.addFinalizer(() => closeCallbackServer);
+
+      const validate = (config: McpServerConfig, previous: McpServerConfig | undefined): McpServerConfig => {
+        if (config.transport === "stdio") {
+          const command = config.command.trim();
+          if (!command) throw new McpServerError({ message: "Give the command that starts the server." });
+          const args = [...config.args];
+          const env = secrets(config.env, previous?.transport === "stdio" ? previous.env : [], false, "variable");
+          for (const v of env) if (!ENV_NAME.test(v.name)) throw new McpServerError({ message: `"${v.name}" isn't a valid environment variable name.` });
+          return { transport: "stdio", command, args, env };
+        }
+        const url = config.url.trim();
+        let parsed: URL;
+        try {
+          parsed = new URL(url);
+        } catch {
+          throw new McpServerError({ message: "Give the server's full URL, starting with https://." });
+        }
+        if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
+          throw new McpServerError({ message: "The URL has to start with https:// or http://." });
+        const headers = secrets(config.headers, previous?.transport === "http" ? previous.headers : [], true, "header");
+        for (const h of headers) if (!HEADER_NAME.test(h.name)) throw new McpServerError({ message: `"${h.name}" isn't a valid header name.` });
+        return { transport: "http", url: parsed.href, headers };
+      };
+
+      const adapt = (connection: Connection, tool: Tool): TopTool => {
+        const { id, name: server } = connection;
+        const hints = tool.annotations ?? {};
+        const description = tool.description?.trim() || tool.title || tool.name;
+        return {
+          name: toolName(server, tool.name),
+          label: `${tool.title ?? hints.title ?? tool.name} (${server})`,
+          // The server's name tells two accounts of one service apart.
+          description: `From the MCP server "${server}".\n\n${description}`,
+          // Providers want an object schema, and some reject one without `properties`.
+          parameters: { ...tool.inputSchema, type: "object", properties: tool.inputSchema.properties ?? {} },
+          replay: hints.readOnlyHint === true || hints.idempotentHint === true ? "safe" : "never",
+          run: (args, ctx) =>
+            Effect.suspend(() => {
+              // Looked up per call: the server may have reconnected (a new client) or been removed since.
+              const current = servers.get(id);
+              const client = current?.client;
+              if (!client || current.state !== "ready")
+                return Effect.fail(new ToolError({ message: `The MCP server "${server}" isn't connected${current?.error ? `: ${current.error}` : ""}.` }));
+              return Effect.tryPromise({
+                try: () => client.callTool(tool.name, args, { ...(ctx.signal ? { signal: ctx.signal } : {}), timeoutMs: CALL_TIMEOUT_MS }),
+                catch: ToolError.from,
+              }).pipe(Effect.map((result): ToolResult => ({ content: toLlmContent(result), details: {}, isError: result.isError === true }) as ToolResult));
+            }),
+        };
+      };
+
+      // The servers set up so far, connected in the background: a slow one mustn't hold up the bots.
+      const assignments = yield* store.mcpAssignments;
+      for (const row of yield* store.mcpServers) {
+        const oauth = row.oauth ? (JSON.parse(row.oauth) as McpOAuthState) : undefined;
+        const connection: Connection = {
+          id: row.id,
+          name: row.name,
+          config: check(McpServerConfig, JSON.parse(row.config), `saved settings of MCP server ${row.name}`),
+          bots: new Set(assignments.get(row.id) ?? []),
+          state: "connecting",
+          error: undefined,
+          tools: [],
+          client: undefined,
+          signedIn: oauth?.tokens !== undefined,
+          attempts: 0,
+        };
+        servers.set(row.id, connection);
+        yield* connect(connection);
       }
-      if (error instanceof McpAuthRequiredError) {
-        // Only with an Authorization header of the user's (otherwise OAuth handles a 401): it was refused.
-        return this.#failed(connection, "The server refused the credentials (HTTP 401). Check the Authorization header.", generation, false);
-      }
-      const stderr = transport instanceof StdioTransport ? lastLines(transport.stderr) : "";
-      this.#failed(connection, messageOf(error) + (stderr ? `\n${stderr}` : ""), generation);
-    }
-  }
 
-  #failed(connection: Connection, error: string, generation: number, retry = true) {
-    connection.state = "failed";
-    connection.error = error;
-    this.#changed(connection);
-    if (!retry) return;
-    const delay = RETRY_DELAYS_MS[Math.min(connection.failures, RETRY_DELAYS_MS.length - 1)]!;
-    connection.failures++;
-    connection.retryTimer = setTimeout(() => {
-      if (connection.generation === generation) void this.#connect(connection);
-    }, delay);
-    connection.retryTimer.unref?.();
-  }
-
-  async #disconnect(connection: Connection) {
-    connection.generation++;
-    clearTimeout(connection.retryTimer);
-    const client = connection.client;
-    connection.client = undefined;
-    connection.tools = [];
-    await client?.close().catch(() => {});
-  }
-
-  #transport(connection: Connection): McpTransport {
-    const config = connection.config;
-    if (config.transport === "stdio") {
-      return new StdioTransport({
-        command: config.command,
-        args: config.args,
-        // The daemon's own environment (PATH, HOME…) plus the server's variables.
-        env: Object.fromEntries(config.env.map((v) => [v.name, v.value ?? ""])),
-        inheritEnv: true,
-        cwd: homedir(),
-        stderr: "pipe",
-        maxStderrBytes: 16_384,
+      return Mcp.of({
+        views: Effect.sync(() => [...servers.values()].map(view)),
+        save: (id, rawName, config) =>
+          Effect.gen(function* () {
+            const existing = id === undefined ? undefined : yield* get(id);
+            const name = rawName.trim().replace(/\s+/g, " ");
+            const clean = yield* attempt(() => {
+              if (!name) throw new McpServerError({ message: "Give the server a name." });
+              if (name.length > MAX_MCP_NAME) throw new McpServerError({ message: `Keep the name under ${MAX_MCP_NAME + 1} characters.` });
+              if (!slug(name)) throw new McpServerError({ message: "Use some letters or digits in the name." });
+              // Its tools would clash with Top's own (collar/index.ts).
+              if (slug(name) === COLLAR) throw new McpServerError({ message: `${name} is the name of Top's own tools. Pick another.` });
+              for (const other of servers.values()) {
+                if (other.id === id) continue;
+                if (other.name.toLowerCase() === name.toLowerCase()) throw new McpServerError({ message: `There's already a server named ${other.name}.` });
+                // Their tools would get the same names.
+                if (slug(other.name) === slug(name))
+                  throw new McpServerError({ message: `That name is too close to ${other.name}. Pick one that differs in more than punctuation.` });
+              }
+              return validate(config, existing?.config);
+            });
+            if (existing) {
+              // Credentials belong to one server: a new URL (or a switch to a program) signs in again.
+              const resetOAuth = existing.config.transport !== "http" || clean.transport !== "http" || existing.config.url !== clean.url;
+              yield* store.updateMcpServer(existing.id, name, JSON.stringify(clean), resetOAuth);
+              existing.name = name;
+              existing.config = clean;
+              if (resetOAuth) existing.signedIn = false;
+              yield* connect(existing);
+              return existing.id;
+            }
+            const newId = yield* store.createMcpServer(name, JSON.stringify(clean));
+            const connection: Connection = {
+              id: newId,
+              name,
+              config: clean,
+              bots: new Set(),
+              state: "connecting",
+              error: undefined,
+              tools: [],
+              client: undefined,
+              signedIn: false,
+              attempts: 0,
+            };
+            servers.set(newId, connection);
+            yield* connect(connection);
+            return newId;
+          }),
+        delete: (id) =>
+          Effect.gen(function* () {
+            yield* get(id);
+            servers.delete(id);
+            yield* store.deleteMcpServer(id);
+            yield* FiberMap.remove(fibers, id);
+            yield* events.publish({ _tag: "McpServerRemoved", id });
+          }),
+        assign: (id, bot, on) =>
+          Effect.gen(function* () {
+            const connection = yield* get(id);
+            if (connection.bots.has(bot) === on) return;
+            yield* store.assignMcp(id, bot, on);
+            if (on) connection.bots.add(bot);
+            else connection.bots.delete(bot);
+            yield* changed(connection);
+          }),
+        botRemoved: (bot) =>
+          Effect.forEach(servers.values(), (connection) => (connection.bots.delete(bot) ? changed(connection) : Effect.void), { discard: true }),
+        retry: (id) => Effect.flatMap(get(id), connect),
+        signOut: (id) =>
+          Effect.gen(function* () {
+            const connection = yield* get(id);
+            yield* store.setMcpOAuth(id, null);
+            connection.signedIn = false;
+            yield* connect(connection);
+          }),
+        signIn: (id) =>
+          Effect.gen(function* () {
+            const connection = yield* get(id);
+            const config = connection.config;
+            if (config.transport !== "http") return yield* new McpServerError({ message: `${connection.name} runs as a program; it has no sign-in.` });
+            if (hasAuthorization(config))
+              return yield* new McpServerError({
+                message: `${connection.name} signs in with its Authorization header. Remove the header to sign in with OAuth instead.`,
+              });
+            let authorizationUrl: string | undefined;
+            const provider = oauthProvider(connection, (url) => {
+              authorizationUrl = url.href;
+            });
+            // Registered for another redirect (the daemon's port changed): register again.
+            const client = yield* Effect.promise(() => provider.clientInformation());
+            if (client && "redirect_uris" in client && Array.isArray(client.redirect_uris) && !client.redirect_uris.includes(redirectUrl)) {
+              yield* Effect.promise(() => provider.invalidateCredentials("client"));
+            }
+            const server = yield* callbackServer;
+            const result = yield* Effect.tryPromise({
+              try: () => authorizeMcp(provider, { serverUrl: config.url, skipRefresh: true }),
+              catch: (error) => new McpServerError({ message: `Couldn't start signing in to ${connection.name}: ${messageOf(error)}` }),
+            });
+            if (result === "AUTHORIZED" || !authorizationUrl) {
+              yield* connect(connection);
+              return yield* new McpServerError({ message: `${connection.name} is already signed in.` });
+            }
+            const state = yield* Effect.promise(() => provider.state());
+            if (!waiting.has(state)) {
+              waiting.add(state);
+              const attempts = connection.attempts;
+              const finish = Effect.tryPromise(async () => {
+                const { code, iss } = await server.waitForCallback(state);
+                await authorizeMcp(provider, { serverUrl: config.url, authorizationCode: code, ...(iss ? { iss } : {}) });
+              }).pipe(
+                Effect.andThen(Effect.suspend(() => (servers.get(id) === connection ? connect(connection) : Effect.void))),
+                Effect.catchCause((cause) =>
+                  Effect.suspend(() => {
+                    if (servers.get(id) !== connection || connection.attempts !== attempts) return Effect.void;
+                    connection.error = `Signing in didn't finish: ${messageOf(Cause.squash(cause))}`;
+                    return changed(connection);
+                  }),
+                ),
+                Effect.ensuring(
+                  Effect.suspend(() => {
+                    waiting.delete(state);
+                    return waiting.size === 0 ? closeCallbackServer : Effect.void;
+                  }),
+                ),
+              );
+              yield* Effect.forkIn(finish, scope);
+            }
+            return authorizationUrl;
+          }),
+        toolsFor: (bot) => {
+          const tools: TopTool[] = [];
+          for (const connection of servers.values()) {
+            if (!connection.bots.has(bot) || connection.state !== "ready") continue;
+            for (const tool of connection.tools) tools.push(adapt(connection, tool));
+          }
+          return tools;
+        },
       });
-    }
-    const headers = Object.fromEntries(config.headers.map((h) => [h.name, h.value ?? ""]));
-    return new StreamableHttpTransport({
-      url: config.url,
-      headers,
-      // With an Authorization header of its own the server needs no OAuth.
-      ...(hasAuthorization(config) ? {} : { authProvider: adaptOAuthProvider(this.#oauthProvider(connection, () => {})) }),
-    });
-  }
-
-  /** OAuth for one server, its credentials kept in the store (so each connection is its own account). */
-  #oauthProvider(connection: Connection, onRedirect: (url: URL) => void): McpOAuthProvider {
-    const config = connection.config;
-    if (config.transport !== "http") throw new Error("OAuth needs an HTTP server");
-    const { id } = connection;
-    return new McpOAuthProvider({
-      serverUrl: config.url,
-      redirectUrl: this.#redirectUrl,
-      clientMetadata: { client_name: "Top", redirect_uris: [this.#redirectUrl] },
-      store: {
-        load: () => {
-          const raw = this.#store.mcpServer(id)?.oauth;
-          return raw ? (JSON.parse(raw) as McpOAuthState) : undefined;
-        },
-        save: (state) => {
-          if (!this.#store.mcpServer(id)) return;
-          const hadTokens = this.#signedIn(id);
-          this.#store.setMcpOAuth(id, JSON.stringify(state));
-          if (hadTokens !== this.#signedIn(id) && this.#servers.get(id) === connection) this.#changed(connection);
-        },
-      },
-      onRedirect,
-    });
-  }
-
-  #signedIn(id: number): boolean {
-    const raw = this.#store.mcpServer(id)?.oauth;
-    return raw ? (JSON.parse(raw) as McpOAuthState).tokens !== undefined : false;
-  }
-
-  #callbackServer(): Promise<OAuthCallbackServer> {
-    this.#callback ??= OAuthCallbackServer.listen({
-      host: "127.0.0.1",
-      port: this.#options.oauthPort,
-      path: CALLBACK_PATH,
-      timeoutMs: SIGN_IN_TIMEOUT_MS,
-      renderPage: (page) =>
-        `<!doctype html><meta charset="utf-8"><title>Top</title><body style="font:15px system-ui;margin:3em;max-width:36em">` +
-        (page.ok ? "<h2>Signed in</h2><p>You can close this tab and go back to Top.</p>" : `<h2>Couldn't sign in</h2><p>${escapeHtml(page.message)}</p>`),
-    }).catch((error) => {
-      this.#callback = undefined;
-      throw new McpServerError(`Couldn't open the sign-in redirect on port ${this.#options.oauthPort}: ${messageOf(error)}`);
-    });
-    return this.#callback;
-  }
-
-  async #closeCallbackServer() {
-    const callback = this.#callback;
-    this.#callback = undefined;
-    await callback?.then((server) => server.close()).catch(() => {});
-  }
-
-  // ── helpers ──────────────────────────────────────────────────────────────────
-
-  #get(id: number): Connection {
-    const connection = this.#servers.get(id);
-    if (!connection) throw new McpServerError("That MCP server was removed.");
-    return connection;
-  }
-
-  /** Check a config from a client (its shape is checked already) and fill in the secrets it left out from `previous`. */
-  #validate(config: McpServerConfig, previous: McpServerConfig | undefined): McpServerConfig {
-    if (config.transport === "stdio") {
-      const command = config.command.trim();
-      if (!command) throw new McpServerError("Give the command that starts the server.");
-      const args = [...config.args];
-      const env = secrets(config.env, previous?.transport === "stdio" ? previous.env : [], false, "variable");
-      for (const v of env) if (!ENV_NAME.test(v.name)) throw new McpServerError(`"${v.name}" isn't a valid environment variable name.`);
-      return { transport: "stdio", command, args, env };
-    }
-    const url = config.url.trim();
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new McpServerError("Give the server's full URL, starting with https://.");
-    }
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new McpServerError("The URL has to start with https:// or http://.");
-    const headers = secrets(config.headers, previous?.transport === "http" ? previous.headers : [], true, "header");
-    for (const h of headers) if (!HEADER_NAME.test(h.name)) throw new McpServerError(`"${h.name}" isn't a valid header name.`);
-    return { transport: "http", url: parsed.href, headers };
-  }
-
-  #view(connection: Connection): McpServerView {
-    const config = connection.config;
-    const hide = (list: readonly McpSecret[]) => list.map((s) => ({ name: s.name }));
-    return {
-      id: connection.id,
-      name: connection.name,
-      config: config.transport === "stdio" ? { ...config, env: hide(config.env) } : { ...config, headers: hide(config.headers) },
-      bots: [...connection.bots].sort((a, b) => a - b),
-      state: connection.state,
-      ...(connection.error ? { error: connection.error } : {}),
-      tools: connection.tools.map((t) => t.name),
-      ...(this.#signedIn(connection.id) ? { signedIn: true as const } : {}),
-    };
-  }
-
-  #changed(connection: Connection) {
-    if (this.#servers.get(connection.id) !== connection) return;
-    const view = this.#view(connection);
-    for (const listener of this.#changeListeners) listener(view);
-  }
-}
+    }),
+  );
 
 /**
  * The secrets a client sent, with stored values for those it sent without one. A name may appear once
@@ -568,10 +575,10 @@ function secrets(sent: readonly McpSecret[], stored: readonly McpSecret[], ignor
   for (const secret of sent) {
     const name = secret.name.trim();
     if (!name) continue;
-    if (seen.has(key(name))) throw new McpServerError(`The ${what} ${name} is there twice.`);
+    if (seen.has(key(name))) throw new McpServerError({ message: `The ${what} ${name} is there twice.` });
     seen.add(key(name));
     const value = secret.value ?? before.get(key(name));
-    if (value === undefined) throw new McpServerError(`Give the ${what} ${name} a value.`);
+    if (value === undefined) throw new McpServerError({ message: `Give the ${what} ${name} a value.` });
     result.push({ name, value });
   }
   return result;

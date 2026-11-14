@@ -13,13 +13,22 @@
  *   may have taken effect (a command may even still be running).
  * - A tool marked `background: false` keeps the run waiting however long it takes.
  */
-import type { InboxRow, JobRow, Store } from "./store.ts";
+
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import { type InboxRow, type JobRow, Store } from "./store.ts";
 import { duration } from "./time.ts";
-import { type ToolContext, type ToolResult, type TopTool, text } from "./tools.ts";
+import { stopped, type ToolContext, ToolError, type ToolResult, type TopTool, text } from "./tools.ts";
 import { summarize } from "./wire.ts";
 
-/** How long a tool call may keep a task waiting before it moves to the background. */
-export const FOREGROUND_MS = Number(process.env.TOP_TOOL_FOREGROUND_MS ?? 30_000);
+/** How long a tool call may keep a task waiting before it moves to the background (`TOP_TOOL_FOREGROUND_MS`). */
+export const ForegroundMs = Config.Int("TOP_TOOL_FOREGROUND_MS").pipe(Config.withDefault(30_000));
 /**
  * A call started straight in the background still gets this long: one that fails at once (a typo in
  * a command, a server that refuses) comes back as its result, not as a job that ends a moment later.
@@ -30,7 +39,7 @@ const RESULT_CHARS = 30_000;
 /** How long `stop` waits for a stopped job to wind down before answering. */
 const STOP_GRACE_MS = 5_000;
 
-type Outcome = { readonly ok: true; readonly result: ToolResult } | { readonly ok: false; readonly error: unknown };
+export type Outcome = { readonly ok: true; readonly result: ToolResult } | { readonly ok: false; readonly error: unknown };
 
 type Live = {
   readonly id: number;
@@ -38,8 +47,9 @@ type Live = {
   readonly tool: string;
   readonly summary: string;
   readonly startedAt: number;
+  /** Stops the call cooperatively: it winds down and reports what it got to. */
   readonly controller: AbortController;
-  readonly outcome: Promise<Outcome>;
+  readonly outcome: Deferred.Deferred<Outcome>;
   /** The output it reported last, if the tool reports progress. */
   readonly progress: { latest?: ToolResult };
   /** What it's for, in the bot's words (`collar__background`'s `note`). */
@@ -83,6 +93,9 @@ export function outcomeText(outcome: Outcome): { text: string; failed: boolean }
   return { text: capped(resultText(outcome.result) || "(no output)"), failed: outcome.result.isError === true };
 }
 
+const outcomeOf = (exit: Exit.Exit<ToolResult, ToolError>): Outcome =>
+  Exit.isSuccess(exit) ? { ok: true, result: exit.value } : { ok: false, error: Cause.squash(exit.cause) };
+
 const label = (job: { tool: string; summary: string; note: string }) => {
   const call = job.summary ? `${job.tool} (${job.summary})` : job.tool;
   return job.note ? `${job.note}: ${call}` : call;
@@ -90,57 +103,80 @@ const label = (job: { tool: string; summary: string; note: string }) => {
 
 export type JobsEvents = {
   /** A job's message was queued for its bot. */
-  deliver(row: InboxRow): void;
+  readonly deliver: (row: InboxRow) => Effect.Effect<void>;
   /** The bot's set of running jobs changed. */
-  changed(bot: number): void;
+  readonly changed: (bot: number) => Effect.Effect<void>;
 };
 
-export class Jobs {
-  readonly #store: Store;
-  readonly #events: JobsEvents;
-  readonly #foregroundMs: number;
-  readonly #live = new Map<number, Live>();
-
-  constructor(store: Store, events: JobsEvents, foregroundMs = FOREGROUND_MS) {
-    this.#store = store;
-    this.#events = events;
-    this.#foregroundMs = foregroundMs;
-  }
-
-  get foregroundMs(): number {
-    return this.#foregroundMs;
-  }
-
+export type Jobs = {
+  readonly foregroundMs: number;
   /** The tool, with calls that outrun the time limit moved to the background. */
-  wrap(tool: TopTool): TopTool {
-    if (tool.background === false || !(this.#foregroundMs > 0)) return tool;
-    return { ...tool, run: (args, ctx) => this.run(tool, args, ctx, { foregroundMs: this.#foregroundMs }) };
-  }
-
+  readonly wrap: (tool: TopTool) => TopTool;
   /**
    * Run one call: its result if it ends within `foregroundMs`, else it goes on as a job and the result
    * says so. `ctx.key` names the job, so the same call is never two jobs.
    */
-  async run(tool: TopTool, args: Record<string, unknown>, ctx: ToolContext, options: JobOptions): Promise<ToolResult> {
+  readonly run: (tool: TopTool, args: Record<string, unknown>, ctx: ToolContext, options: JobOptions) => Effect.Effect<ToolResult, ToolError>;
+  /** The bot's jobs running now, oldest first. */
+  readonly running: (bot: number) => JobView[];
+  readonly count: (bot: number) => number;
+  /** A running job of this bot, or why there isn't one. */
+  readonly find: (bot: number, id: number) => Effect.Effect<{ live: JobView } | { ended: JobRow | undefined }>;
+  /** The output the job reported last, if its tool reports progress. */
+  readonly output: (id: number) => string | undefined;
+  /** Wait up to `ms` for a job; its result if it ended meanwhile (and then no message is sent about it). */
+  readonly wait: (id: number, ms: number, signal?: AbortSignal) => Effect.Effect<Outcome | undefined>;
+  /** Stop a job and give it a moment to wind down; what it came to, if it did. */
+  readonly stop: (id: number) => Effect.Effect<Outcome | undefined>;
+  /** Stop all of a bot's jobs without reporting them: the user stopped the bot, or deleted it. */
+  readonly stopAll: (bot: number) => Effect.Effect<void>;
+  /**
+   * At startup, before the bots start: jobs the last process was running were lost with it. Each bot
+   * is told (its next task starts with the message), so it can check what happened and run it again.
+   */
+  readonly recover: Effect.Effect<number>;
+};
+
+/** The daemon's background jobs. Calls run in the scope this is made in, so they outlive the task that started them. */
+export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregroundMs: number) {
+  const store = yield* Store;
+  const scope = yield* Effect.scope;
+  const live = new Map<number, Live>();
+  const now = Clock.currentTimeMillis;
+
+  const end = Effect.fnUntraced(function* (job: Live, outcome: Outcome) {
+    live.delete(job.id);
+    const ran = duration((yield* now) - job.startedAt);
+    if (job.timedOut && !job.stopping) {
+      // It ran past the time the bot allowed: it hears so, with what the job had done.
+      const head = `[Background job ${job.id} timed out] ${label(job)}: stopped after ${ran}, the time you allowed it`;
+      const row = yield* store.endJob(job.id, "stopped", `${head}\n\n${outcomeText(outcome).text}`);
+      if (row) yield* events.deliver(row);
+    } else if (job.stopping || job.waiters > 0) {
+      // Stopped by the bot or the user, or its result went to a `wait`: nobody needs a message about it.
+      yield* store.endJob(job.id, job.stopping ? "stopped" : "finished");
+    } else {
+      const { text: body, failed } = outcomeText(outcome);
+      const head = `[Background job ${job.id} ${failed ? "failed" : "finished"}] ${label(job)}, after ${ran}`;
+      const row = yield* store.endJob(job.id, "finished", `${head}\n\n${body}`);
+      if (row) yield* events.deliver(row);
+    }
+    yield* events.changed(job.bot);
+  });
+
+  const run = Effect.fn("Jobs.run")(function* (tool: TopTool, args: Record<string, unknown>, ctx: ToolContext, options: JobOptions) {
     // The call gets its own signal: the task's stops it only while the task is waiting on it.
     const controller = new AbortController();
     const forward = () => controller.abort();
     if (ctx.signal?.aborted) controller.abort();
     else ctx.signal?.addEventListener("abort", forward, { once: true });
+    const unforward = Effect.sync(() => ctx.signal?.removeEventListener("abort", forward));
 
-    const startedAt = Date.now();
+    const startedAt = yield* now;
     const progress: { latest?: ToolResult } = {};
-    let job: Live | undefined;
-    let timedOut = false;
-    const deadline =
-      options.stopAfterMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            timedOut = true;
-            if (job) job.timedOut = true;
-            controller.abort();
-          }, options.stopAfterMs);
-    const outcome: Promise<Outcome> = tool
+    const timing = { job: undefined as Live | undefined, timedOut: false };
+    const outcome = yield* Deferred.make<Outcome>();
+    const call = tool
       .run(args, {
         ...ctx,
         signal: controller.signal,
@@ -149,33 +185,64 @@ export class Jobs {
           ctx.onUpdate?.(partial);
         },
       })
-      .then(
-        (result) => ({ ok: true as const, result }),
-        (error: unknown) => ({ ok: false as const, error }),
-      )
-      .finally(() => clearTimeout(deadline));
+      .pipe(
+        Effect.exit,
+        Effect.flatMap((exit) => Deferred.succeed(outcome, outcomeOf(exit))),
+      );
+    // The call runs in the jobs' scope, not the task's: it may outlive this tool call.
+    const deadline =
+      options.stopAfterMs === undefined
+        ? Effect.void
+        : Effect.sleep(Duration.millis(options.stopAfterMs)).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                timing.timedOut = true;
+                if (timing.job) timing.job.timedOut = true;
+                controller.abort();
+              }),
+            ),
+          );
+    yield* Effect.forkIn(Effect.raceFirst(Effect.andThen(Deferred.await(outcome), Effect.void), deadline.pipe(Effect.andThen(Effect.never))), scope);
+    yield* Effect.forkIn(call, scope);
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const waitMs = options.foregroundMs > 0 ? options.foregroundMs : STARTUP_GRACE_MS;
-    const first = await Promise.race([outcome, new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), waitMs)))]);
-    clearTimeout(timer);
-    if (first) {
-      ctx.signal?.removeEventListener("abort", forward);
-      if (timedOut) throw new Error(`Stopped after ${duration(Date.now() - startedAt)}: it ran past the time allowed.\n\n${outcomeText(first).text}`);
-      if (first.ok) return first.result;
-      throw first.error;
+    const first = yield* Deferred.await(outcome).pipe(Effect.timeoutOption(Duration.millis(waitMs)));
+    yield* unforward;
+    if (Option.isSome(first)) {
+      const result = first.value;
+      if (timing.timedOut)
+        return yield* new ToolError({
+          message: `Stopped after ${duration((yield* now) - startedAt)}: it ran past the time allowed.\n\n${outcomeText(result).text}`,
+        });
+      if (result.ok) return result.result;
+      return yield* ToolError.from(result.error);
     }
 
     // Still running: hand the task a result now and let the call go on.
-    ctx.signal?.removeEventListener("abort", forward);
     const summary = summarize(args);
     const note = options.note?.trim() ?? "";
-    const id = this.#store.startJob(ctx.bot, ctx.key, tool.name, summary, note, startedAt);
-    const live: Live = { id, bot: ctx.bot, tool: tool.name, summary, note, startedAt, controller, outcome, progress, waiters: 0, stopping: false, timedOut };
-    job = live;
-    this.#live.set(id, live);
-    void outcome.then((result) => this.#end(live, result));
-    this.#events.changed(ctx.bot);
+    const id = yield* store.startJob(ctx.bot, ctx.key, tool.name, summary, note, startedAt);
+    const job: Live = {
+      id,
+      bot: ctx.bot,
+      tool: tool.name,
+      summary,
+      note,
+      startedAt,
+      controller,
+      outcome,
+      progress,
+      waiters: 0,
+      stopping: false,
+      timedOut: timing.timedOut,
+    };
+    timing.job = job;
+    live.set(id, job);
+    yield* Effect.forkIn(
+      Effect.flatMap(Deferred.await(outcome), (result) => end(job, result)),
+      scope,
+    );
+    yield* events.changed(ctx.bot);
     const started =
       options.foregroundMs > 0
         ? `Still running after ${duration(options.foregroundMs)}, so it moved to the background as job ${id}`
@@ -186,115 +253,81 @@ export class Jobs {
         "Its result will come to you as a message when it ends, so don't wait or check on it: carry on, or end your turn if there's nothing else to do. " +
         "To see its output so far, wait for it, or stop it, use collar__jobs.",
     );
-  }
+  });
 
-  #end(job: Live, outcome: Outcome) {
-    this.#live.delete(job.id);
-    if (job.timedOut && !job.stopping) {
-      // It ran past the time the bot allowed: it hears so, with what the job had done.
-      const head = `[Background job ${job.id} timed out] ${label(job)}: stopped after ${duration(Date.now() - job.startedAt)}, the time you allowed it`;
-      const row = this.#store.endJob(job.id, "stopped", `${head}\n\n${outcomeText(outcome).text}`);
-      if (row) this.#events.deliver(row);
-    } else if (job.stopping || job.waiters > 0) {
-      // Stopped by the bot or the user, or its result went to a `wait`: nobody needs a message about it.
-      this.#store.endJob(job.id, job.stopping ? "stopped" : "finished");
-    } else {
-      const { text: body, failed } = outcomeText(outcome);
-      const head = `[Background job ${job.id} ${failed ? "failed" : "finished"}] ${label(job)}, after ${duration(Date.now() - job.startedAt)}`;
-      const row = this.#store.endJob(job.id, "finished", `${head}\n\n${body}`);
-      if (row) this.#events.deliver(row);
-    }
-    this.#events.changed(job.bot);
-  }
+  const view = (job: Live): JobView => ({ id: job.id, tool: job.tool, summary: job.summary, note: job.note, startedAt: job.startedAt });
 
-  /** The bot's jobs running now, oldest first. */
-  running(bot: number): JobView[] {
-    return [...this.#live.values()].filter((job) => job.bot === bot).map(({ id, tool, summary, note, startedAt }) => ({ id, tool, summary, note, startedAt }));
-  }
-
-  count(bot: number): number {
-    let n = 0;
-    for (const job of this.#live.values()) if (job.bot === bot) n++;
-    return n;
-  }
-
-  /** A running job of this bot, or why there isn't one. */
-  find(bot: number, id: number): { live: JobView } | { ended: JobRow | undefined } {
-    const job = this.#live.get(id);
-    if (job && job.bot === bot) return { live: { id, tool: job.tool, summary: job.summary, note: job.note, startedAt: job.startedAt } };
-    const row = this.#store.job(id);
-    return { ended: row && row.bot === bot ? row : undefined };
-  }
-
-  /** The output the job reported last, if its tool reports progress. */
-  output(id: number): string | undefined {
-    const latest = this.#live.get(id)?.progress.latest;
-    return latest ? resultText(latest) : undefined;
-  }
-
-  /** Wait up to `ms` for a job; its result if it ended meanwhile (and then no message is sent about it). */
-  async wait(id: number, ms: number, signal?: AbortSignal): Promise<Outcome | undefined> {
-    const job = this.#live.get(id);
-    if (!job) return undefined;
-    job.waiters++;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let onAbort: (() => void) | undefined;
-    try {
-      return await Promise.race([
-        job.outcome,
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), ms);
-          onAbort = () => resolve(undefined);
-          signal?.addEventListener("abort", onAbort, { once: true });
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-      if (onAbort) signal?.removeEventListener("abort", onAbort);
-      job.waiters--;
-    }
-  }
-
-  /** Stop a job and give it a moment to wind down; what it came to, if it did. */
-  async stop(id: number): Promise<Outcome | undefined> {
-    const job = this.#live.get(id);
-    if (!job) return undefined;
-    job.stopping = true;
-    job.controller.abort();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const result = await Promise.race([job.outcome, new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), STOP_GRACE_MS)))]);
-    clearTimeout(timer);
-    // A tool that ignores its signal is let go: it's no longer the bot's job.
-    if (!result && this.#live.delete(id)) {
-      this.#store.endJob(id, "stopped");
-      this.#events.changed(job.bot);
-    }
-    return result;
-  }
-
-  /** Stop all of a bot's jobs without reporting them: the user stopped the bot, or deleted it. */
-  stopAll(bot: number) {
-    for (const job of [...this.#live.values()]) {
-      if (job.bot !== bot) continue;
-      job.stopping = true;
-      job.controller.abort();
-    }
-  }
-
-  /**
-   * At startup, before the bots start: jobs the last process was running were lost with it. Each bot
-   * is told (its next task starts with the message), so it can check what happened and run it again.
-   */
-  recover(): number {
-    const lost = this.#store.runningJobs();
-    for (const job of lost) {
-      const command = job.tool === "bash" ? " The command may even still be running." : "";
-      this.#store.endJob(
-        job.id,
-        "lost",
-        `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(Date.now() - job.startedAt)} after it started, so its result is lost. It may have taken effect, fully or partly.${command} Check before running it again.`,
-      );
-    }
-    return lost.length;
-  }
-}
+  const jobs: Jobs = {
+    foregroundMs,
+    wrap: (tool) => {
+      if (tool.background === false || !(foregroundMs > 0)) return tool;
+      return { ...tool, run: (args, ctx) => run(tool, args, ctx, { foregroundMs }) };
+    },
+    run,
+    running: (bot) => [...live.values()].filter((job) => job.bot === bot).map(view),
+    count: (bot) => {
+      let n = 0;
+      for (const job of live.values()) if (job.bot === bot) n++;
+      return n;
+    },
+    find: (bot, id) =>
+      Effect.gen(function* () {
+        const job = live.get(id);
+        if (job && job.bot === bot) return { live: view(job) };
+        const row = yield* store.job(id);
+        return { ended: row && row.bot === bot ? row : undefined };
+      }),
+    output: (id) => {
+      const latest = live.get(id)?.progress.latest;
+      return latest ? resultText(latest) : undefined;
+    },
+    wait: (id, ms, signal) =>
+      Effect.suspend(() => {
+        const job = live.get(id);
+        if (!job) return Effect.undefined;
+        job.waiters++;
+        return Deferred.await(job.outcome).pipe(
+          Effect.timeoutOption(Duration.millis(ms)),
+          Effect.map(Option.getOrUndefined),
+          (waiting) => Effect.raceFirst(waiting, Effect.as(Effect.ignore(stopped(signal)), undefined)),
+          Effect.ensuring(Effect.sync(() => job.waiters--)),
+        );
+      }),
+    stop: (id) =>
+      Effect.gen(function* () {
+        const job = live.get(id);
+        if (!job) return undefined;
+        job.stopping = true;
+        job.controller.abort();
+        const result = Option.getOrUndefined(yield* Deferred.await(job.outcome).pipe(Effect.timeoutOption(Duration.millis(STOP_GRACE_MS))));
+        // A tool that ignores its signal is let go: it's no longer the bot's job.
+        if (!result && live.delete(id)) {
+          yield* store.endJob(id, "stopped");
+          yield* events.changed(job.bot);
+        }
+        return result;
+      }),
+    stopAll: (bot) =>
+      Effect.sync(() => {
+        for (const job of [...live.values()]) {
+          if (job.bot !== bot) continue;
+          job.stopping = true;
+          job.controller.abort();
+        }
+      }),
+    recover: Effect.gen(function* () {
+      const lost = yield* store.runningJobs;
+      const at = yield* now;
+      for (const job of lost) {
+        const command = job.tool === "bash" ? " The command may even still be running." : "";
+        yield* store.endJob(
+          job.id,
+          "lost",
+          `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(at - job.startedAt)} after it started, so its result is lost. It may have taken effect, fully or partly.${command} Check before running it again.`,
+        );
+      }
+      return lost.length;
+    }),
+  };
+  return jobs;
+});

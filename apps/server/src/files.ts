@@ -18,7 +18,14 @@ import { type Dirent, type FSWatcher, mkdirSync, watch } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { type FileChange, type FileView, MAX_FILES } from "@top/protocol";
-import type { FileStat, Store, StoredEntry } from "./store.ts";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Schedule from "effect/Schedule";
+import * as Semaphore from "effect/Semaphore";
+import { type FileStat, Store, type StoredEntry } from "./store.ts";
 
 /** Writes this close together are one change. */
 const SETTLE_MS = 400;
@@ -86,123 +93,98 @@ export function diff(before: ReadonlyMap<string, FileStat>, after: ReadonlyMap<s
 
 export const fileViews = (listing: Listing): FileView[] => [...listing.files].map(([path, { size, mtime }]) => ({ path, size, mtime }));
 
-/** One bot's files folder, watched. `onChange` gets the new listing, and the entry when something changed. */
-export class FilesFolder {
+export type FilesFolder = {
   readonly bot: number;
   readonly folder: string;
-  readonly #store: Store;
-  readonly #onChange: (listing: Listing, entry: StoredEntry | undefined) => void;
+  /** What was listed last (empty until the first listing). */
+  readonly listing: () => Listing;
+  /** List the folder now and report what changed. Listings run one at a time. */
+  readonly rescan: Effect.Effect<void>;
+};
+
+/**
+ * One bot's files folder, watched for as long as the scope it's made in. It's made, listed and watched
+ * before this returns. `onChange` gets the new listing, and the entry when something changed.
+ */
+export const makeFilesFolder = Effect.fnUntraced(function* (
+  bot: number,
+  folder: string,
+  onChange: (listing: Listing, entry: StoredEntry | undefined) => Effect.Effect<void>,
+) {
+  const store = yield* Store;
+  const scope = yield* Effect.scope;
   /** What the store holds; `undefined` until the folder was first listed (then nothing is reported). */
-  #known: ReadonlyMap<string, FileStat> | undefined;
-  #listing: Listing = EMPTY;
-  #watcher: FSWatcher | undefined;
-  #settle: ReturnType<typeof setTimeout> | undefined;
-  #deadline: ReturnType<typeof setTimeout> | undefined;
-  #poll: ReturnType<typeof setInterval> | undefined;
-  #scanning: Promise<void> | undefined;
-  #again = false;
-  #closed = false;
+  let known: ReadonlyMap<string, FileStat> | undefined = yield* store.files(bot);
+  let listing: Listing = EMPTY;
+  let watcher: FSWatcher | undefined;
+  /** A change to look at: `true` to list at once (the poll, a broken watcher), `false` once writes settle. */
+  const signals = yield* Queue.unbounded<boolean>();
+  const signal = (now: boolean) => Queue.offerUnsafe(signals, now);
+  const scanning = yield* Semaphore.make(1);
 
-  constructor(bot: number, folder: string, store: Store, onChange: (listing: Listing, entry: StoredEntry | undefined) => void) {
-    this.bot = bot;
-    this.folder = folder;
-    this.#store = store;
-    this.#onChange = onChange;
-    this.#known = store.files(bot);
-  }
-
-  get listing(): Listing {
-    return this.#listing;
-  }
-
-  /** Make the folder if it isn't there, list it, and watch it. Resolves once it has been listed. */
-  start(): Promise<void> {
+  const unwatch = () => {
+    watcher?.close();
+    watcher = undefined;
+  };
+  yield* Effect.addFinalizer(() => Effect.sync(unwatch));
+  const startWatching = () => {
     try {
-      mkdirSync(this.folder, { recursive: true });
-    } catch (error) {
-      console.error(`[top] can't make ${this.folder}:`, error);
-    }
-    this.#watch();
-    this.#poll = setInterval(() => this.#schedule(true), POLL_MS);
-    this.#poll.unref();
-    return this.rescan();
-  }
-
-  #watch() {
-    if (this.#closed) return;
-    try {
+      mkdirSync(folder, { recursive: true });
       // Recursive watching works on macOS, Windows and (Node ≥ 20) Linux.
-      const watcher = watch(this.folder, { recursive: true }, () => this.#schedule());
-      watcher.on("error", () => {
+      const current = watch(folder, { recursive: true }, () => signal(false));
+      current.on("error", () => {
         // The folder was removed or the watcher broke: the poll keeps going, and it is watched again.
-        watcher.close();
-        if (this.#watcher === watcher) this.#watcher = undefined;
-        this.#schedule(true);
+        current.close();
+        if (watcher === current) watcher = undefined;
+        signal(true);
       });
-      this.#watcher = watcher;
+      watcher = current;
     } catch {
       // Not there (yet) or not watchable: the poll covers it.
     }
-  }
+  };
 
-  /** List the folder again once writes settle, and at most `MAX_WAIT_MS` after the first one. */
-  #schedule(now = false) {
-    if (this.#closed) return;
-    clearTimeout(this.#settle);
-    this.#settle = setTimeout(() => this.#fire(), now ? 0 : SETTLE_MS);
-    this.#deadline ??= setTimeout(() => this.#fire(), MAX_WAIT_MS);
-  }
-
-  #fire() {
-    clearTimeout(this.#settle);
-    clearTimeout(this.#deadline);
-    this.#settle = this.#deadline = undefined;
-    void this.rescan();
-  }
-
-  /** List the folder now and report what changed. Calls that overlap a listing run one more after it. */
-  rescan(): Promise<void> {
-    if (this.#scanning) {
-      this.#again = true;
-      return this.#scanning;
+  const scanOnce = Effect.gen(function* () {
+    if (!watcher) startWatching();
+    const next = yield* Effect.promise(() => scan(folder));
+    const changes = known ? diff(known, next.files) : [];
+    const first = listing === EMPTY;
+    if (known && changes.length === 0) {
+      listing = next;
+      if (first) yield* onChange(next, undefined);
+      return;
     }
-    this.#scanning = (async () => {
-      try {
-        do {
-          this.#again = false;
-          if (!this.#watcher) {
-            mkdirSync(this.folder, { recursive: true });
-            this.#watch();
-          }
-          const next = await scan(this.folder);
-          if (this.#closed) return;
-          const changes = this.#known ? diff(this.#known, next.files) : [];
-          const first = this.#listing === EMPTY;
-          if (this.#known && changes.length === 0) {
-            this.#listing = next;
-            if (first) this.#onChange(next, undefined);
-            continue;
-          }
-          const entry = this.#store.recordFiles(this.bot, next.files, changes);
-          this.#known = next.files;
-          this.#listing = next;
-          this.#onChange(next, entry);
-        } while (this.#again && !this.#closed);
-      } catch (error) {
-        if (!this.#closed) console.error(`[top] listing ${this.folder}:`, error);
-      } finally {
-        this.#scanning = undefined;
-      }
-    })();
-    return this.#scanning;
-  }
+    const entry = yield* store.recordFiles(bot, next.files, changes);
+    known = next.files;
+    listing = next;
+    yield* onChange(next, entry);
+  }).pipe(Effect.catchCause((cause) => Effect.logError(`listing ${folder}`, cause)));
+  const rescan = scanning.withPermits(1)(scanOnce);
 
-  close() {
-    this.#closed = true;
-    clearTimeout(this.#settle);
-    clearTimeout(this.#deadline);
-    clearInterval(this.#poll);
-    this.#watcher?.close();
-    this.#watcher = undefined;
-  }
-}
+  /** Wait for writes to settle (`SETTLE_MS` of quiet), but list at most `MAX_WAIT_MS` after the first. */
+  const settle = Effect.fnUntraced(function* (now: boolean) {
+    const deadline = (yield* Clock.currentTimeMillis) + MAX_WAIT_MS;
+    let immediate = now;
+    while (!immediate) {
+      const left = deadline - (yield* Clock.currentTimeMillis);
+      if (left <= 0) return;
+      const next = yield* Queue.take(signals).pipe(Effect.timeoutOption(Duration.millis(Math.min(SETTLE_MS, left))));
+      if (Option.isNone(next)) return;
+      immediate = next.value;
+    }
+  });
+
+  yield* Effect.sync(startWatching);
+  yield* rescan;
+  yield* Effect.forkIn(Effect.forever(Effect.flatMap(Queue.take(signals), settle).pipe(Effect.andThen(rescan))), scope);
+  yield* Effect.forkIn(
+    Effect.repeat(
+      Effect.sync(() => signal(true)),
+      Schedule.spaced(Duration.millis(POLL_MS)),
+    ).pipe(Effect.delay(Duration.millis(POLL_MS))),
+    scope,
+  );
+
+  const folderHandle: FilesFolder = { bot, folder, listing: () => listing, rescan };
+  return folderHandle;
+});

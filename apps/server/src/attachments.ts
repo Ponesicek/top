@@ -8,13 +8,21 @@
  * doesn't know (a crash mid-upload) goes on the next sweep.
  */
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type Stats } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import { type Attachment, isModelImage, MAX_ATTACHMENT_BYTES, MODEL_IMAGE_TYPES } from "@top/protocol";
-import { sendFile } from "./sendFile.ts";
-import type { Store } from "./store.ts";
+import { type Attachment, AttachmentError, isModelImage, MAX_ATTACHMENT_BYTES, MODEL_IMAGE_TYPES } from "@top/protocol";
+import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
+import * as Stream from "effect/Stream";
+import { type FileServing, sendFile } from "./sendFile.ts";
+import { Store } from "./store.ts";
 
 const UNCLAIMED_MS = 24 * 60 * 60_000;
 const SWEEP_MS = 60 * 60_000;
@@ -70,173 +78,188 @@ function servedAs(attachment: Attachment): { type: string; inline: boolean; sand
   return { type: "application/octet-stream", inline: false, sandbox: true };
 }
 
-export class Attachments {
-  readonly root: string;
-  readonly #store: Store;
-  readonly #images = new Map<string, string>();
-  #imageBytes = 0;
-  readonly #sweeper: ReturnType<typeof setInterval>;
+const textResponse = (request: HttpServerRequest.HttpServerRequest, status: number, message: string) =>
+  HttpServerResponse.text(request.method === "HEAD" ? "" : message, {
+    status,
+    contentType: "text/plain; charset=utf-8",
+    headers: { "cache-control": "no-store", "access-control-allow-origin": "*" },
+  });
 
-  constructor(dataDir: string, store: Store) {
-    this.root = resolve(dataDir, "attachments");
-    this.#store = store;
-    void this.sweep();
-    this.#sweeper = setInterval(() => void this.sweep(), SWEEP_MS);
-    this.#sweeper.unref();
+export class Attachments extends Context.Service<
+  Attachments,
+  {
+    readonly root: string;
+    /** Where an attachment's file is, on this computer. */
+    readonly path: (attachment: Pick<Attachment, "id" | "name">) => string;
+    /** The bot's uploads by id, in order; fails naming one that doesn't exist (or is another bot's). */
+    readonly lookup: (bot: number, ids: readonly string[]) => Effect.Effect<Attachment[], AttachmentError>;
+    /** An image's bytes as base64, for the model; undefined if its file is gone. */
+    readonly imageData: (attachment: Attachment) => Effect.Effect<string | undefined>;
+    /** Delete a bot's attachments, before its rows go (store.purgeBot). */
+    readonly removeBot: (bot: number) => Effect.Effect<void>;
+    /** Delete unclaimed uploads past their day, and folders the store doesn't know. */
+    readonly sweep: Effect.Effect<void>;
+    /** An HTTP request under `<attachmentsPath>/`; `rest` is what follows: `upload` or an id. */
+    readonly handle: (request: HttpServerRequest.HttpServerRequest, rest: string) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, FileServing>;
   }
+>()("top/Attachments") {}
 
-  close() {
-    clearInterval(this.#sweeper);
-  }
+/** Attachments kept under `<dataDir>/attachments`, swept every hour while the layer lives. */
+export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | FileSystem.FileSystem> =>
+  Layer.effect(
+    Attachments,
+    Effect.gen(function* () {
+      const store = yield* Store;
+      const fs = yield* FileSystem.FileSystem;
+      const root = resolve(dataDir, "attachments");
+      const images = new Map<string, string>();
+      let imageBytes = 0;
+      const path = (attachment: Pick<Attachment, "id" | "name">) => join(root, attachment.id, cleanName(attachment.name));
 
-  /** Where an attachment's file is, on this computer. */
-  path(attachment: Pick<Attachment, "id" | "name">): string {
-    return join(this.root, attachment.id, cleanName(attachment.name));
-  }
+      const remove = (id: string) =>
+        Effect.gen(function* () {
+          const data = images.get(id);
+          if (data !== undefined) {
+            images.delete(id);
+            imageBytes -= data.length;
+          }
+          yield* Effect.ignore(fs.remove(join(root, id), { recursive: true, force: true }));
+        });
 
-  /** The bot's uploads by id, in order, or an error naming one that doesn't exist (or is another bot's). */
-  lookup(bot: number, ids: readonly string[]): Attachment[] {
-    return ids.map((id) => {
-      const row = ID.test(id) ? this.#store.attachment(id) : undefined;
-      if (!row || (row.bot !== null && row.bot !== bot)) throw new Error("An attachment is gone (uploads are kept a day): attach it again.");
-      return { id: row.id, name: row.name, mimeType: row.mimeType, size: row.size };
-    });
-  }
-
-  /** An image's bytes as base64, for the model; undefined if its file is gone. */
-  async imageData(attachment: Attachment): Promise<string | undefined> {
-    const cached = this.#images.get(attachment.id);
-    if (cached !== undefined) {
-      // Most recently used goes last.
-      this.#images.delete(attachment.id);
-      this.#images.set(attachment.id, cached);
-      return cached;
-    }
-    const data = await readFile(this.path(attachment))
-      .then((bytes) => bytes.toString("base64"))
-      .catch(() => undefined);
-    if (data === undefined) return undefined;
-    this.#images.set(attachment.id, data);
-    this.#imageBytes += data.length;
-    for (const [id, old] of this.#images) {
-      if (this.#imageBytes <= IMAGE_CACHE_BYTES || id === attachment.id) break;
-      this.#images.delete(id);
-      this.#imageBytes -= old.length;
-    }
-    return data;
-  }
-
-  /** Delete a bot's attachments, before its rows go (store.purgeBot). */
-  async removeBot(bot: number) {
-    await Promise.all(this.#store.botAttachments(bot).map((a) => this.#remove(a.id)));
-  }
-
-  /** Delete unclaimed uploads past their day, and folders the store doesn't know. */
-  async sweep() {
-    for (const row of this.#store.unclaimedAttachments(Date.now() - UNCLAIMED_MS)) {
-      await this.#remove(row.id);
-      this.#store.deleteAttachment(row.id);
-    }
-    const folders = await readdir(this.root).catch(() => [] as string[]);
-    for (const id of folders) {
-      if (!ID.test(id) || this.#store.attachment(id)) continue;
-      // Not one being uploaded right now.
-      const info = await stat(join(this.root, id)).catch(() => undefined);
-      if (info && Date.now() - info.mtimeMs > SWEEP_MS) await this.#remove(id);
-    }
-  }
-
-  async #remove(id: string) {
-    const data = this.#images.get(id);
-    if (data !== undefined) {
-      this.#images.delete(id);
-      this.#imageBytes -= data.length;
-    }
-    await rm(join(this.root, id), { recursive: true, force: true });
-  }
-
-  // ── HTTP ─────────────────────────────────────────────────────────────────────
-
-  /** `rest`: the path after `<attachmentsPath>/`, i.e. `upload` or an id. */
-  async handle(request: IncomingMessage, response: ServerResponse, rest: string, query: URLSearchParams) {
-    const fail = (status: number, message: string) => {
-      response.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
-      response.end(request.method === "HEAD" ? undefined : message);
-    };
-    // The app uploads from `file://` (and the dev UI from :5199): the secret in the path is what guards this.
-    response.setHeader("Access-Control-Allow-Origin", "*");
-    if (request.method === "OPTIONS") {
-      response.writeHead(204, {
-        "Access-Control-Allow-Methods": "GET, HEAD, POST",
-        "Access-Control-Allow-Headers": "Content-Type, Range",
-        "Access-Control-Max-Age": "86400",
-      });
-      return response.end();
-    }
-    if (rest === "upload") {
-      if (request.method !== "POST") return fail(405, "Only POST");
-      return this.#receive(request, response, query.get("name") ?? "", fail);
-    }
-    if (request.method !== "GET" && request.method !== "HEAD") return fail(405, "Only GET and HEAD");
-    const row = ID.test(rest) ? this.#store.attachment(rest) : undefined;
-    if (!row) return fail(404, "Not found");
-    const path = this.path(row);
-    const info: Stats | undefined = await stat(path).catch(() => undefined);
-    if (!info?.isFile()) return fail(404, "Not found");
-    const as = servedAs(row);
-    sendFile(request, response, path, info, {
-      "Content-Type": as.type,
-      "Content-Disposition": `${as.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(cleanName(row.name))}`,
-      // An attachment never changes.
-      "Cache-Control": "private, max-age=31536000, immutable",
-      "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "no-referrer",
-      ...(as.sandbox ? { "Content-Security-Policy": "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox" } : {}),
-    });
-  }
-
-  /** Take one upload: the raw bytes, exactly `Content-Length` of them, into its own folder. */
-  async #receive(request: IncomingMessage, response: ServerResponse, rawName: string, fail: (status: number, message: string) => void) {
-    const length = Number(request.headers["content-length"]);
-    if (!Number.isInteger(length) || length < 0) return fail(411, "Send the file's length (Content-Length).");
-    if (length === 0) return fail(400, "The file is empty.");
-    if (length > MAX_ATTACHMENT_BYTES) return fail(413, `Files can be up to ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`);
-    const name = cleanName(rawName);
-    const id = randomBytes(12).toString("base64url");
-    const folder = join(this.root, id);
-    await mkdir(folder, { recursive: true });
-    const part = join(folder, ".part");
-    const head: Buffer[] = [];
-    let headBytes = 0;
-    let received = 0;
-    const ok = await new Promise<boolean>((done) => {
-      const out = createWriteStream(part);
-      request.on("data", (chunk: Buffer) => {
-        received += chunk.length;
-        if (headBytes < 16) {
-          head.push(chunk);
-          headBytes += chunk.length;
+      const sweep = Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        for (const row of yield* store.unclaimedAttachments(now - UNCLAIMED_MS)) {
+          yield* remove(row.id);
+          yield* store.deleteAttachment(row.id);
         }
-        if (received > length) request.destroy();
+        const folders = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed((): string[] => []));
+        for (const id of folders) {
+          if (!ID.test(id) || (yield* store.attachment(id))) continue;
+          // Not one being uploaded right now.
+          const info = yield* Effect.option(fs.stat(join(root, id)));
+          const mtime = Option.flatMap(info, (i) => i.mtime);
+          if (Option.isSome(mtime) && now - mtime.value.getTime() > SWEEP_MS) yield* remove(id);
+        }
+      }).pipe(Effect.catchCause((cause) => Effect.logError("sweeping attachments", cause)));
+
+      /** Take one upload: the raw bytes, exactly `Content-Length` of them, into its own folder. */
+      const receive = (request: HttpServerRequest.HttpServerRequest, rawName: string) =>
+        Effect.gen(function* () {
+          const length = Number(request.headers["content-length"]);
+          if (!Number.isInteger(length) || length < 0) return textResponse(request, 411, "Send the file's length (Content-Length).");
+          if (length === 0) return textResponse(request, 400, "The file is empty.");
+          if (length > MAX_ATTACHMENT_BYTES) return textResponse(request, 413, `Files can be up to ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`);
+          const name = cleanName(rawName);
+          const id = randomBytes(12).toString("base64url");
+          const folder = join(root, id);
+          const part = join(folder, ".part");
+          let head = Buffer.alloc(0);
+          let received = 0;
+          const written = yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* fs.makeDirectory(folder, { recursive: true });
+              const file = yield* fs.open(part, { flag: "w" });
+              yield* request.stream.pipe(
+                Stream.runForEach((chunk) =>
+                  Effect.gen(function* () {
+                    received += chunk.length;
+                    if (received > length) return yield* Effect.fail("too long" as const);
+                    if (head.length < 16) head = Buffer.concat([head, Buffer.from(chunk)]);
+                    yield* file.writeAll(chunk);
+                  }),
+                ),
+              );
+              yield* file.sync;
+              return received === length;
+            }),
+          ).pipe(Effect.orElseSucceed(() => false));
+          if (!written) {
+            yield* Effect.ignore(fs.remove(folder, { recursive: true, force: true }));
+            return textResponse(request, 400, `Expected ${length} bytes, got ${received}.`);
+          }
+          const attachment: Attachment = { id, name, mimeType: decideType(String(request.headers["content-type"] ?? ""), head), size: length };
+          yield* Effect.orDie(fs.rename(part, path(attachment)));
+          yield* store.addAttachment(attachment);
+          return HttpServerResponse.jsonUnsafe(attachment, { headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } });
+        });
+
+      const handle = (request: HttpServerRequest.HttpServerRequest, rest: string) =>
+        Effect.gen(function* () {
+          // The app uploads from `file://` (and the dev UI from :5199): the secret in the path is what guards this.
+          if (request.method === "OPTIONS")
+            return HttpServerResponse.empty({
+              status: 204,
+              headers: {
+                "access-control-allow-origin": "*",
+                "access-control-allow-methods": "GET, HEAD, POST",
+                "access-control-allow-headers": "Content-Type, Range",
+                "access-control-max-age": "86400",
+              },
+            });
+          if (rest === "upload") {
+            if (request.method !== "POST") return textResponse(request, 405, "Only POST");
+            return yield* receive(request, new URL(request.url, "http://top").searchParams.get("name") ?? "");
+          }
+          if (request.method !== "GET" && request.method !== "HEAD") return textResponse(request, 405, "Only GET and HEAD");
+          const row = ID.test(rest) ? yield* store.attachment(rest) : undefined;
+          if (!row) return textResponse(request, 404, "Not found");
+          const as = servedAs(row);
+          return yield* sendFile(request, path(row), {
+            "Content-Type": as.type,
+            "Content-Disposition": `${as.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(cleanName(row.name))}`,
+            // An attachment never changes.
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "Access-Control-Allow-Origin": "*",
+            ...(as.sandbox ? { "Content-Security-Policy": "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox" } : {}),
+          }).pipe(Effect.catchTag("NotFound", () => Effect.succeed(textResponse(request, 404, "Not found"))));
+        });
+
+      yield* Effect.forkScoped(Effect.repeat(sweep, Schedule.spaced(Duration.millis(SWEEP_MS))));
+
+      return Attachments.of({
+        root,
+        path,
+        lookup: (bot, ids) =>
+          Effect.forEach(ids, (id) =>
+            Effect.gen(function* () {
+              const row = ID.test(id) ? yield* store.attachment(id) : undefined;
+              if (!row || (row.bot !== null && row.bot !== bot))
+                return yield* new AttachmentError({ message: "An attachment is gone (uploads are kept a day): attach it again." });
+              return { id: row.id, name: row.name, mimeType: row.mimeType, size: row.size };
+            }),
+          ),
+        imageData: (attachment) =>
+          Effect.gen(function* () {
+            const cached = images.get(attachment.id);
+            if (cached !== undefined) {
+              // Most recently used goes last.
+              images.delete(attachment.id);
+              images.set(attachment.id, cached);
+              return cached;
+            }
+            const bytes = yield* Effect.option(fs.readFile(path(attachment)));
+            if (Option.isNone(bytes)) return undefined;
+            const data = Buffer.from(bytes.value).toString("base64");
+            images.set(attachment.id, data);
+            imageBytes += data.length;
+            for (const [id, old] of images) {
+              if (imageBytes <= IMAGE_CACHE_BYTES || id === attachment.id) break;
+              images.delete(id);
+              imageBytes -= old.length;
+            }
+            return data;
+          }),
+        removeBot: (bot) =>
+          Effect.gen(function* () {
+            for (const row of yield* store.botAttachments(bot)) yield* remove(row.id);
+          }),
+        sweep,
+        handle,
       });
-      request.on("aborted", () => done(false));
-      request.on("error", () => done(false));
-      out.on("error", () => done(false));
-      out.on("finish", () => done(received === length));
-      request.pipe(out);
-    });
-    if (!ok) {
-      await rm(folder, { recursive: true, force: true });
-      if (!response.destroyed) fail(400, `Expected ${length} bytes, got ${received}.`);
-      return;
-    }
-    const attachment: Attachment = { id, name, mimeType: decideType(String(request.headers["content-type"] ?? ""), Buffer.concat(head)), size: length };
-    await rename(part, this.path(attachment));
-    this.#store.addAttachment(attachment);
-    response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    response.end(JSON.stringify(attachment));
-  }
-}
+    }),
+  );
 
 // ── what the model gets ──────────────────────────────────────────────────────
 
@@ -266,20 +289,20 @@ export function userContent(text: string, attachments: readonly Attachment[], pa
 type ContextMessage = { role?: string; content?: unknown; attachments?: readonly Attachment[] };
 
 /** The context for one model request, with each image part's bytes read in (or a note, if its file is gone). */
-export async function withImageData<M>(messages: M[], attachments: Attachments): Promise<M[]> {
-  return Promise.all(
-    messages.map(async (message) => {
-      const m = message as ContextMessage;
-      if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p: Part) => p.type === "image" && p.attachment && !p.data)) return message;
-      const content = await Promise.all(
-        (m.content as Part[]).map(async (part) => {
-          if (part.type !== "image" || !part.attachment || part.data) return part;
-          const attachment = m.attachments?.find((a) => a.id === part.attachment);
-          const data = attachment && (await attachments.imageData(attachment));
-          return data ? { ...part, data } : { type: "text", text: `[The image "${attachment?.name ?? part.attachment}" is no longer available.]` };
-        }),
-      );
-      return { ...message, content } as M;
-    }),
-  );
-}
+export const withImageData = <M>(messages: M[], attachments: Attachments["Service"]): Effect.Effect<M[]> =>
+  Effect.forEach(messages, (message) => {
+    const m = message as ContextMessage;
+    if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p: Part) => p.type === "image" && p.attachment && !p.data))
+      return Effect.succeed(message);
+    return Effect.map(
+      Effect.forEach(m.content as Part[], (part) => {
+        if (part.type !== "image" || !part.attachment || part.data) return Effect.succeed(part);
+        const attachment = m.attachments?.find((a) => a.id === part.attachment);
+        return Effect.map(
+          attachment ? attachments.imageData(attachment) : Effect.undefined,
+          (data): Part => (data ? { ...part, data } : { type: "text", text: `[The image "${attachment?.name ?? part.attachment}" is no longer available.]` }),
+        );
+      }),
+      (content) => ({ ...message, content }) as M,
+    );
+  });

@@ -16,16 +16,28 @@
  * Talks to tailscaled through its CLI, which hides where its socket is on each OS.
  */
 import { execFile } from "node:child_process";
-import type { IncomingMessage } from "node:http";
 import type { Viewer } from "@top/protocol";
-
-/** Runs the `tailscale` CLI and answers with its stdout. Rejects with its stderr (or why it couldn't start). */
-export type TailscaleCli = (args: readonly string[]) => Promise<string>;
+import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 
 /** A problem the user can fix: printed as is, without a stack. */
-export class TailscaleError extends Error {
-  override name = "TailscaleError";
-}
+export class TailscaleError extends Schema.TaggedError<TailscaleError>()("TailscaleError", { message: Schema.String }) {}
+
+/** The `tailscale` CLI failed: `message` is its stderr, or why it couldn't start. */
+export class TailscaleCommandError extends Schema.TaggedError<TailscaleCommandError>()("TailscaleCommandError", {
+  message: Schema.String,
+  /** There's no such program. */
+  missing: Schema.Boolean,
+}) {}
+
+/** Runs the `tailscale` CLI and answers with its stdout. */
+export type TailscaleCli = (args: readonly string[]) => Effect.Effect<string, TailscaleCommandError | TailscaleError>;
 
 const CANDIDATES: Record<string, readonly string[]> = {
   darwin: ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"],
@@ -33,36 +45,36 @@ const CANDIDATES: Record<string, readonly string[]> = {
 };
 
 /** The system's `tailscale` CLI (`$TOP_TAILSCALE` names another). */
-export function systemCli(): TailscaleCli {
-  const candidates = process.env.TOP_TAILSCALE ? [process.env.TOP_TAILSCALE] : (CANDIDATES[process.platform] ?? ["tailscale"]);
+export const systemCli: Effect.Effect<TailscaleCli, Config.ConfigError> = Effect.gen(function* () {
+  const named = yield* Config.option(Config.String("TOP_TAILSCALE"));
+  const candidates = Option.match(named, { onNone: () => CANDIDATES[process.platform] ?? ["tailscale"], onSome: (bin) => [bin] });
   let found: string | undefined;
   const run = (bin: string, args: readonly string[]) =>
-    new Promise<string>((resolve, reject) => {
+    Effect.callback<string, TailscaleCommandError>((resume) => {
       execFile(bin, args, { timeout: 15_000, maxBuffer: 16 << 20, windowsHide: true }, (error, stdout, stderr) => {
-        if (!error) return resolve(stdout);
+        if (!error) return resume(Effect.succeed(stdout));
         const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
-        reject(Object.assign(new Error(String(stderr).trim() || error.message), { missing }));
+        resume(Effect.fail(new TailscaleCommandError({ message: String(stderr).trim() || error.message, missing })));
       });
     });
-  return async (args) => {
-    if (found) return run(found, args);
-    let last: unknown;
-    for (const bin of candidates) {
-      try {
-        const out = await run(bin, args);
-        found = bin;
-        return out;
-      } catch (error) {
-        if (!(error as { missing?: boolean }).missing) {
+  const cli: TailscaleCli = (args) =>
+    Effect.gen(function* () {
+      if (found) return yield* run(found, args);
+      for (const bin of candidates) {
+        const result = yield* Effect.result(run(bin, args));
+        if (result._tag === "Success") {
           found = bin;
-          throw error;
+          return result.success;
         }
-        last = error;
+        if (!result.failure.missing) {
+          found = bin;
+          return yield* result.failure;
+        }
       }
-    }
-    throw Object.assign(new TailscaleError("Tailscale isn't installed (no `tailscale` command). Get it at https://tailscale.com/download."), { cause: last });
-  };
-}
+      return yield* new TailscaleError({ message: "Tailscale isn't installed (no `tailscale` command). Get it at https://tailscale.com/download." });
+    });
+  return cli;
+});
 
 // ── this device ──────────────────────────────────────────────────────────────────
 
@@ -89,15 +101,28 @@ type StatusJson = {
 };
 
 /** What `tailscale status --json` says about this device. Throws a TailscaleError when Top can't use it. */
-export function parseStatus(json: string): TailnetSelf {
+export function parseStatus(json: string): Effect.Effect<TailnetSelf, TailscaleError> {
+  return Effect.suspend(() => {
+    try {
+      return Effect.succeed(parseStatusOrThrow(json));
+    } catch (error) {
+      return Schema.is(TailscaleError)(error) ? Effect.fail(error) : Effect.die(error);
+    }
+  });
+}
+
+function parseStatusOrThrow(json: string): TailnetSelf {
   const status = JSON.parse(json) as StatusJson;
   const state = status.BackendState;
-  if (state === "NeedsLogin" || state === "NoState") throw new TailscaleError("Tailscale isn't signed in. Run `tailscale up`, then start Top again.");
-  if (state !== "Running") throw new TailscaleError(`Tailscale is ${state ?? "not running"}. Run \`tailscale up\`, then start Top again.`);
+  if (state === "NeedsLogin" || state === "NoState")
+    throw new TailscaleError({ message: "Tailscale isn't signed in. Run `tailscale up`, then start Top again." });
+  if (state !== "Running") throw new TailscaleError({ message: `Tailscale is ${state ?? "not running"}. Run \`tailscale up\`, then start Top again.` });
   const self = status.Self;
   const dnsName = self?.DNSName?.replace(/\.$/, "");
   if (!self?.ID || !dnsName || status.CurrentTailnet?.MagicDNSEnabled === false)
-    throw new TailscaleError("This tailnet has MagicDNS turned off, so the device has no name to serve at. Turn it on: https://login.tailscale.com/admin/dns");
+    throw new TailscaleError({
+      message: "This tailnet has MagicDNS turned off, so the device has no name to serve at. Turn it on: https://login.tailscale.com/admin/dns",
+    });
   const tags = self.Tags ?? [];
   const users = status.User ?? {};
   const person = (login: string | undefined) => (login?.includes("@") ? login : undefined);
@@ -190,145 +215,140 @@ export type TailnetOptions = {
    */
   readonly allow: readonly AllowRule[];
   /** The HTTPS port on the tailnet. */
-  readonly port?: number;
-  readonly cli?: TailscaleCli;
+  readonly port?: number | undefined;
+  readonly cli: TailscaleCli;
   /** For tests: who an address is. Defaults to `tailscale whois`. */
-  readonly whois?: (address: string) => Promise<Caller | undefined>;
+  readonly whois?: ((address: string) => Effect.Effect<Caller | undefined>) | undefined;
 };
 
-export class Tailnet {
+/** The headers of a request that reached the tailnet listener. */
+export type RequestHeaders = Readonly<Record<string, string | ReadonlyArray<string> | undefined>>;
+
+export type Tailnet = {
   readonly self: TailnetSelf;
   /** Empty: every device on the tailnet may connect. */
   readonly rules: readonly AllowRule[];
   readonly port: number;
-  readonly #cli: TailscaleCli;
-  readonly #whois: (address: string) => Promise<Caller | undefined>;
-  readonly #cache = new Map<string, { at: number; caller: Promise<Caller | undefined> }>();
-  /** Addresses already warned about, so a retrying client doesn't fill the log. */
-  readonly #warned = new Map<string, number>();
-  #exposed: number | undefined;
-
-  constructor(options: TailnetOptions) {
-    this.self = options.self;
-    const owner = options.self.owner && options.allow.length ? [{ kind: "login" as const, value: options.self.owner.toLowerCase() }] : [];
-    this.rules = [...owner, ...options.allow.filter((r) => !(r.kind === "login" && r.value === owner[0]?.value))];
-    this.port = options.port ?? TAILNET_PORT;
-    this.#cli = options.cli ?? systemCli();
-    this.#whois =
-      options.whois ??
-      (async (address) => {
-        try {
-          return parseWhois(await this.#cli(["whois", "--json", address]));
-        } catch {
-          return undefined; // not a tailnet address (Funnel's public traffic), or whois failed
-        }
-      });
-  }
-
   /** Where clients reach the daemon on the tailnet. */
-  get url(): string {
-    return `wss://${this.self.dnsName}${this.port === 443 ? "" : `:${this.port}`}`;
-  }
-
+  readonly url: string;
   /** The HTTPS origin of `url`, for links (MCP sign-in redirects). */
-  get origin(): string {
-    return this.url.replace(/^wss:/, "https:");
-  }
-
+  readonly origin: string;
   /** Who may use Top, for the startup line. */
-  describeAllowed(): string {
-    return this.rules.length ? `${this.rules.map(describe).join(", ")} (and this computer)` : "every device on it";
-  }
-
+  readonly describeAllowed: () => string;
   /** Let a request on the tailnet port in, or say why not. */
-  async admit(request: IncomingMessage): Promise<Admission> {
-    const forwarded = request.headers["x-forwarded-for"];
-    const address = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
-    if (!address) return { ok: false, reason: "Only Tailscale Serve reaches this port." };
-    const now = Date.now();
-    let cached = this.#cache.get(address);
-    if (!cached || now - cached.at > WHOIS_TTL_MS) {
-      cached = { at: now, caller: this.#whois(address) };
-      this.#cache.set(address, cached);
-      if (this.#cache.size > 1_000) for (const [key, value] of this.#cache) if (now - value.at > WHOIS_TTL_MS) this.#cache.delete(key);
-    }
-    const caller = await cached.caller;
-    if (!caller) return this.#refuse(address, `${address} isn't on your tailnet.`);
-    if (this.rules.length && caller.stableId !== this.self.stableId && !allows(this.rules, caller))
-      return this.#refuse(
-        address,
-        `${callerName(caller)} isn't allowed to use Top on ${this.self.device}. Its owner can let it in with --tailscale-allow ${caller.login ?? caller.device}.`,
-      );
-    return {
-      ok: true,
-      viewer: {
-        device: caller.device,
-        ...(caller.login ? { login: caller.login } : {}),
-        ...(caller.name ? { name: caller.name } : {}),
-        ...(caller.tags.length ? { tags: [...caller.tags] } : {}),
-      },
-    };
-  }
-
-  #refuse(address: string, reason: string): Admission {
-    const last = this.#warned.get(address) ?? 0;
-    if (Date.now() - last > 60_000) {
-      this.#warned.set(address, Date.now());
-      console.warn(`[top] refused a tailnet connection: ${reason}`);
-    }
-    return { ok: false, reason };
-  }
-
+  readonly admit: (headers: RequestHeaders) => Effect.Effect<Admission>;
   /**
-   * Point Tailscale Serve's `https://<device>:<port>` at the tailnet listener on `backendPort`. Refuses
-   * to take over a port that serves something else, or one open to the internet with Funnel.
+   * Point Tailscale Serve's `https://<device>:<port>` at the tailnet listener on `backendPort`, and take
+   * it off again when the scope closes. Refuses to take over a port that serves something else, or one
+   * open to the internet with Funnel.
    */
-  async expose(backendPort: number): Promise<void> {
-    if (!this.self.https)
-      throw new TailscaleError(
-        "Tailscale Serve needs HTTPS certificates, which are off for this tailnet. Turn on HTTPS at https://login.tailscale.com/admin/dns, then start Top again.",
-      );
-    const target = `http://127.0.0.1:${backendPort}`;
-    const host = `${this.self.dnsName}:${this.port}`;
-    const config = JSON.parse((await this.#cli(["serve", "status", "--json"]).catch(() => "{}")) || "{}") as ServeConfig;
-    if (config.AllowFunnel?.[host])
-      throw new TailscaleError(
-        `Funnel is on for https://${host}, which would put Top on the internet. Turn it off (\`tailscale funnel --https=${this.port} off\`) or pick another --tailscale-port.`,
-      );
-    const tcp = config.TCP?.[String(this.port)];
-    const handlers = config.Web?.[host]?.Handlers ?? {};
-    const ours = Object.keys(handlers).length === 1 && handlers["/"]?.Proxy === target;
-    if (tcp && !(tcp.HTTPS && (ours || Object.keys(handlers).length === 0))) {
-      const what = Object.entries(handlers)
-        .map(([path, h]) => `${path} → ${h.Proxy ?? h.Path ?? h.Text ?? "?"}`)
-        .join(", ");
-      throw new TailscaleError(
-        `Port ${this.port} on the tailnet already serves something else${what ? ` (${what})` : tcp.TCPForward ? ` (${tcp.TCPForward})` : ""}. Pick another with --tailscale-port, or free it with \`tailscale serve --https=${this.port} off\`.`,
-      );
-    }
-    try {
-      await this.#cli(["serve", "--bg", `--https=${this.port}`, target]);
-    } catch (error) {
-      if (error instanceof TailscaleError) throw error;
-      const message = (error as Error).message;
-      const denied = /access denied|permission|operator|not allowed/i.test(message);
-      throw new TailscaleError(
-        denied
-          ? `Tailscale won't let ${process.env.USER ?? "this user"} change Serve settings. Run \`sudo tailscale set --operator=$USER\` once, then start Top again.\n(${message})`
-          : `Couldn't set up Tailscale Serve: ${message}`,
-      );
-    }
-    this.#exposed = this.port;
-  }
+  readonly expose: (backendPort: number) => Effect.Effect<void, TailscaleError, Scope.Scope>;
+};
 
-  /** Take Top off the tailnet (on a clean shutdown). */
-  async unexpose(): Promise<void> {
-    if (this.#exposed === undefined) return;
-    const port = this.#exposed;
-    this.#exposed = undefined;
-    await this.#cli(["serve", `--https=${port}`, "off"]).catch((error: Error) => console.warn(`[top] couldn't turn off Tailscale Serve: ${error.message}`));
-  }
-}
+export const makeTailnet = (options: TailnetOptions): Effect.Effect<Tailnet> =>
+  Effect.gen(function* () {
+    const { self, cli } = options;
+    const owner = self.owner && options.allow.length ? [{ kind: "login" as const, value: self.owner.toLowerCase() }] : [];
+    const rules: AllowRule[] = [...owner, ...options.allow.filter((r) => !(r.kind === "login" && r.value === owner[0]?.value))];
+    const port = options.port ?? TAILNET_PORT;
+    const url = `wss://${self.dnsName}${port === 443 ? "" : `:${port}`}`;
+    const whois =
+      options.whois ??
+      ((address: string) =>
+        cli(["whois", "--json", address]).pipe(
+          Effect.map(parseWhois),
+          // Not a tailnet address (Funnel's public traffic), or whois failed.
+          Effect.orElseSucceed(() => undefined),
+        ));
+    const callers = yield* Cache.make({ lookup: whois, capacity: 1_000, timeToLive: Duration.millis(WHOIS_TTL_MS) });
+    /** Addresses already warned about, so a retrying client doesn't fill the log. */
+    const warned = new Map<string, number>();
+
+    const refuse = (address: string, reason: string) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (now - (warned.get(address) ?? 0) > 60_000) {
+          warned.set(address, now);
+          yield* Effect.logWarning(`refused a tailnet connection: ${reason}`);
+        }
+        return { ok: false, reason } satisfies Admission;
+      });
+
+    return {
+      self,
+      rules,
+      port,
+      url,
+      origin: url.replace(/^wss:/, "https:"),
+      describeAllowed: () => (rules.length ? `${rules.map(describe).join(", ")} (and this computer)` : "every device on it"),
+      admit: (headers) =>
+        Effect.gen(function* () {
+          const forwarded = headers["x-forwarded-for"];
+          const address = (typeof forwarded === "string" ? forwarded : forwarded?.[0])?.split(",")[0]?.trim();
+          if (!address) return { ok: false, reason: "Only Tailscale Serve reaches this port." } satisfies Admission;
+          const caller = yield* Cache.get(callers, address);
+          if (!caller) return yield* refuse(address, `${address} isn't on your tailnet.`);
+          if (rules.length && caller.stableId !== self.stableId && !allows(rules, caller))
+            return yield* refuse(
+              address,
+              `${callerName(caller)} isn't allowed to use Top on ${self.device}. Its owner can let it in with --tailscale-allow ${caller.login ?? caller.device}.`,
+            );
+          return {
+            ok: true,
+            viewer: {
+              device: caller.device,
+              ...(caller.login ? { login: caller.login } : {}),
+              ...(caller.name ? { name: caller.name } : {}),
+              ...(caller.tags.length ? { tags: [...caller.tags] } : {}),
+            },
+          } satisfies Admission;
+        }),
+      expose: (backendPort) =>
+        Effect.acquireRelease(
+          Effect.gen(function* () {
+            if (!self.https)
+              return yield* new TailscaleError({
+                message:
+                  "Tailscale Serve needs HTTPS certificates, which are off for this tailnet. Turn on HTTPS at https://login.tailscale.com/admin/dns, then start Top again.",
+              });
+            const target = `http://127.0.0.1:${backendPort}`;
+            const host = `${self.dnsName}:${port}`;
+            const status = yield* cli(["serve", "status", "--json"]).pipe(Effect.orElseSucceed(() => "{}"));
+            const config = JSON.parse(status || "{}") as ServeConfig;
+            if (config.AllowFunnel?.[host])
+              return yield* new TailscaleError({
+                message: `Funnel is on for https://${host}, which would put Top on the internet. Turn it off (\`tailscale funnel --https=${port} off\`) or pick another --tailscale-port.`,
+              });
+            const tcp = config.TCP?.[String(port)];
+            const handlers = config.Web?.[host]?.Handlers ?? {};
+            const ours = Object.keys(handlers).length === 1 && handlers["/"]?.Proxy === target;
+            if (tcp && !(tcp.HTTPS && (ours || Object.keys(handlers).length === 0))) {
+              const what = Object.entries(handlers)
+                .map(([path, h]) => `${path} → ${h.Proxy ?? h.Path ?? h.Text ?? "?"}`)
+                .join(", ");
+              return yield* new TailscaleError({
+                message: `Port ${port} on the tailnet already serves something else${what ? ` (${what})` : tcp.TCPForward ? ` (${tcp.TCPForward})` : ""}. Pick another with --tailscale-port, or free it with \`tailscale serve --https=${port} off\`.`,
+              });
+            }
+            yield* cli(["serve", "--bg", `--https=${port}`, target]).pipe(
+              Effect.catchTag("TailscaleCommandError", (error) => {
+                const denied = /access denied|permission|operator|not allowed/i.test(error.message);
+                return Effect.fail(
+                  new TailscaleError({
+                    message: denied
+                      ? `Tailscale won't let ${process.env.USER ?? "this user"} change Serve settings. Run \`sudo tailscale set --operator=$USER\` once, then start Top again.\n(${error.message})`
+                      : `Couldn't set up Tailscale Serve: ${error.message}`,
+                  }),
+                );
+              }),
+            );
+          }),
+          // Take Top off the tailnet when it stops.
+          () =>
+            cli(["serve", `--https=${port}`, "off"]).pipe(Effect.catch((error) => Effect.logWarning(`couldn't turn off Tailscale Serve: ${error.message}`))),
+        ),
+    } satisfies Tailnet;
+  });
 
 type ServeConfig = {
   TCP?: Record<string, { HTTPS?: boolean; TCPForward?: string }>;
@@ -337,14 +357,14 @@ type ServeConfig = {
 };
 
 /** Read this device's Tailscale state and set up who may connect. */
-export async function connectTailnet(options: { allow: readonly string[]; port?: number; cli?: TailscaleCli }): Promise<Tailnet> {
-  const cli = options.cli ?? systemCli();
-  let status: string;
-  try {
-    status = await cli(["status", "--json"]);
-  } catch (error) {
-    if (error instanceof TailscaleError) throw error;
-    throw new TailscaleError(`Can't reach Tailscale: ${(error as Error).message}. Is it running?`);
-  }
-  return new Tailnet({ self: parseStatus(status), allow: parseAllow(options.allow), cli, ...(options.port ? { port: options.port } : {}) });
-}
+export const connectTailnet = (options: { allow: readonly string[]; port?: number | undefined; cli: TailscaleCli }): Effect.Effect<Tailnet, TailscaleError> =>
+  Effect.gen(function* () {
+    const status = yield* options
+      .cli(["status", "--json"])
+      .pipe(
+        Effect.catchTag("TailscaleCommandError", (error) =>
+          Effect.fail(new TailscaleError({ message: `Can't reach Tailscale: ${error.message}. Is it running?` })),
+        ),
+      );
+    return yield* makeTailnet({ self: yield* parseStatus(status), allow: parseAllow(options.allow), cli: options.cli, port: options.port });
+  });

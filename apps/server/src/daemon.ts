@@ -1,26 +1,45 @@
 /**
- * The daemon's parts wired together: storage, one runner per bot, and the sidebar summaries.
- * The WebSocket layer (serve.ts) and the load driver both go through `submit()` and the listeners here.
+ * The daemon's parts wired together: storage, one runner per bot, the sidebar summaries, background
+ * jobs and wake-ups. The WebSocket layer (serve.ts) and the load driver go through this service and
+ * listen to the event bus (events.ts).
  */
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, type Models, toToolDeclaration } from "@earendil-works/pi-ai";
-import { type Attachment, type BotSummary, MAX_ATTACHMENTS, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, type WhenBusy } from "@top/protocol";
-import type { Attachments } from "./attachments.ts";
+import {
+  type Attachment,
+  AttachmentError,
+  BotError,
+  type BotSummary,
+  BusyError,
+  MAX_ATTACHMENTS,
+  MAX_BOT_DESCRIPTION,
+  MAX_BOT_NAME,
+  UnknownBotError,
+  type WhenBusy,
+} from "@top/protocol";
+import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as FiberMap from "effect/FiberMap";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
+import { Attachments } from "./attachments.ts";
 import { collarTools } from "./collar/index.ts";
-import { FilesFolder, type Listing } from "./files.ts";
-import { Jobs } from "./jobs.ts";
-import type { McpManager } from "./mcp.ts";
-import { BotRunner, type RunnerOptions } from "./runner.ts";
-import type { BotRow, InboxRow, Store, StoredEntry } from "./store.ts";
+import { Events } from "./events.ts";
+import { type FilesFolder, makeFilesFolder } from "./files.ts";
+import { type Jobs, makeJobs } from "./jobs.ts";
+import { Mcp } from "./mcp.ts";
+import { type BotRunner, makeRunner } from "./runner.ts";
+import { seedHistory } from "./seed.ts";
+import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
 import type { TopTool } from "./tools.ts";
-import { WakeClock } from "./wakes.ts";
+import { makeWakeClock, type WakeClock } from "./wakes.ts";
 import { textOf } from "./wire.ts";
 
 const SUMMARY_DELAY_MS = 100;
-
-export class BusyError extends Error {
-  override name = "ConversationBusy";
-}
 
 /**
  * The answer's last line of prose, for the sidebar: code fences and table rows are skipped, and only
@@ -63,358 +82,343 @@ export const defaultInstructions = (name: string, description: string) =>
 /** The line of a bot's instructions that carries the description it was made with. */
 export const purpose = (description: string) => `What the user made you for: ${description}`;
 
-/** A bot was refused (empty or taken name, too long): the message is meant for the user. */
-export class BotError extends Error {
-  override name = "BotError";
-}
-
-/** A message's attachments were refused: the message is meant for the user. */
-export class AttachmentError extends Error {
-  override name = "AttachmentError";
-}
+/** What the daemon's bots are made of: real ones on a model with the computer's tools, or fake ones. */
+export class BotKit extends Context.Service<
+  BotKit,
+  {
+    readonly models: Models;
+    /** The bots' own tools; per bot when they differ (each real bot works in its own folder). */
+    readonly tools: readonly TopTool[] | ((bot: BotRow) => readonly TopTool[]);
+    readonly thinking: ThinkingLevel;
+    /** Named system prompt sections each bot should have (see runner.ts). */
+    readonly sections?: ((bot: BotRow) => Effect.Effect<Readonly<Record<string, string>>>) | undefined;
+    /** How bots are made, and the first ones (made once). Without it, bots can't be made from the app. */
+    readonly newBot?: NewBot | undefined;
+    readonly firstBots?: readonly string[] | undefined;
+    /** Give the first bot a history this long (`--seed`). */
+    readonly seed?: number | undefined;
+    /** Each bot's files folder (see files.ts). Without it, bots have none. */
+    readonly files?: ((bot: BotRow) => string) | undefined;
+    /** How long a tool call may run before it moves to the background (see jobs.ts). */
+    readonly foregroundMs: number;
+    /** How long Top's own messages to an idle bot wait for others before starting a task (see runner.ts). */
+    readonly gatherMs?: number | undefined;
+    /** Backoff before each retry of a failed model request. */
+    readonly retryDelaysMs?: readonly number[] | undefined;
+  }
+>()("top/BotKit") {}
 
 /** Add a bot to the store. Its transcript begins with its system message. */
-function addBot(store: Store, name: string, description: string, newBot: NewBot): number {
-  const instructions = newBot.instructions(name, description);
-  return store.transaction(() => {
-    const id = store.createBot(name, instructions, newBot.model, description);
-    store.append(id, "system", createInitialSystemMessage(instructions, newBot.declare.map(toToolDeclaration)));
-    return id;
+const addBot = (name: string, description: string, newBot: NewBot) =>
+  Effect.gen(function* () {
+    const store = yield* Store;
+    const instructions = newBot.instructions(name, description);
+    return yield* store.transaction(
+      Effect.gen(function* () {
+        const id = yield* store.createBot(name, instructions, newBot.model, description);
+        yield* store.append(id, "system", createInitialSystemMessage(instructions, newBot.declare.map(toToolDeclaration)));
+        return id;
+      }),
+    );
   });
-}
 
 /** Create the first bots, once: a user who deletes them all doesn't get them back on the next start. */
-export function ensureBots(store: Store, names: readonly string[], newBot: NewBot) {
-  if (store.flag("seeded")) return;
-  if (store.bots().length === 0) for (const name of names) addBot(store, name, "", newBot);
-  store.setFlag("seeded");
-}
+export const ensureBots = (names: readonly string[], newBot: NewBot) =>
+  Effect.gen(function* () {
+    const store = yield* Store;
+    if (yield* store.flag("seeded")) return;
+    if ((yield* store.bots).length === 0) for (const name of names) yield* addBot(name, "", newBot);
+    yield* store.setFlag("seeded");
+  });
 
-type Tools = readonly TopTool[] | ((bot: BotRow) => readonly TopTool[]);
-type DaemonOptions = {
-  thinking?: ThinkingLevel;
-  sections?: (bot: BotRow) => RunnerOptions["sections"];
-  newBot?: NewBot;
-  /** MCP servers set up in the app; a bot gets the tools of those it has been given. */
-  mcp?: McpManager;
-  /** Each bot's files folder (see files.ts). Without it, bots have none. */
-  files?: (bot: BotRow) => string;
-  /** How long a tool call may run before it moves to the background (see jobs.ts). */
-  foregroundMs?: number;
-  /** How long Top's own messages to an idle bot wait for others before starting a task (see runner.ts). */
-  gatherMs?: number;
-  /** Where the user's attachments are kept. Without it, messages can't have any. */
-  attachments?: Attachments;
+type LiveBot = {
+  readonly runner: BotRunner;
+  /** Everything the bot runs (its task, its gather timer, its files watcher) lives here. */
+  readonly scope: Scope.Closeable;
+  folder: FilesFolder | undefined;
+  summary: BotSummary;
 };
 
-export class Daemon {
-  readonly store: Store;
-  readonly runners = new Map<number, BotRunner>();
-  readonly #models: Models;
-  readonly #tools: Tools;
-  readonly #options: DaemonOptions;
-  readonly #summaries = new Map<number, BotSummary>();
-  readonly #dirty = new Map<number, ReturnType<typeof setTimeout>>();
-  readonly #entryListeners = new Set<(entry: StoredEntry) => void>();
-  readonly #inboxListeners = new Set<(bot: number) => void>();
-  readonly #botListeners = new Set<(summary: BotSummary) => void>();
-  readonly #removedListeners = new Set<(bot: number) => void>();
-  readonly #filesListeners = new Set<(bot: number, folder: FilesFolder) => void>();
-  readonly #folders = new Map<number, FilesFolder>();
-  /** Tool calls that outran the time limit and run on in the background (see jobs.ts). */
-  readonly jobs: Jobs;
-  /** Wake-ups the bots set for themselves (see wakes.ts). */
-  readonly wakes: WakeClock;
+export class Daemon extends Context.Service<
+  Daemon,
+  {
+    /** Every bot's summary, for the sidebar. */
+    readonly bots: () => BotSummary[];
+    readonly has: (bot: number) => boolean;
+    readonly runner: (bot: number) => Effect.Effect<BotRunner, UnknownBotError>;
+    readonly runners: () => BotRunner[];
+    /** Make a bot and announce it. Fails with a `BotError` the user can read when the name is empty or taken. */
+    readonly createBot: (name: string, description: string) => Effect.Effect<number, BotError>;
+    /**
+     * Delete a bot and its transcript. It leaves the roster at once; whatever it was doing is stopped,
+     * and its rows are removed once it has. Files it made in its folder stay.
+     */
+    readonly deleteBot: (id: number) => Effect.Effect<void, UnknownBotError>;
+    /**
+     * Accept a message, with the attachments it names (uploaded already). Durable once this has run; a
+     * repeated `requestId` changes nothing.
+     */
+    readonly submit: (
+      bot: number,
+      requestId: string,
+      text: string,
+      whenBusy: WhenBusy,
+      clientId: string | null,
+      attachmentIds?: readonly string[],
+    ) => Effect.Effect<{ duplicate: boolean }, UnknownBotError | BusyError | AttachmentError>;
+    /** The user's Stop: the bot's task ends, and so do its background jobs. Its wake-ups stay. */
+    readonly stop: (bot: number) => Effect.Effect<void, UnknownBotError>;
+    /** Settle whatever the last process left unfinished, then start every bot, then the wake-up clock. */
+    readonly start: Effect.Effect<void>;
+    /** Something about a bot changed that its summary shows (wake-ups, jobs). */
+    readonly changed: (bot: number) => Effect.Effect<void>;
+    /** A bot's tools as they are now (its own, Collar's, its MCP servers'), as written: no time limit. */
+    readonly toolsOf: (bot: number) => readonly TopTool[];
+    /** Whether bots have files folders here. */
+    readonly hasFiles: boolean;
+    /** A bot's files folder, once it has been listed. */
+    readonly files: (bot: number) => FilesFolder | undefined;
+    readonly jobs: Jobs;
+    readonly wakes: WakeClock;
+  }
+>()("top/Daemon") {}
+
+const make = Effect.gen(function* () {
+  const store = yield* Store;
+  const events = yield* Events;
+  const kit = yield* BotKit;
+  const mcp = Option.getOrUndefined(yield* Effect.serviceOption(Mcp));
+  const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
+  const scope = yield* Effect.scope;
+  const bots = new Map<number, LiveBot>();
   /** Each bot's tools as they are now, without the time limit (see `toolsOf`). */
-  readonly #toolSources = new Map<number, () => readonly TopTool[]>();
-  /** Top's own tools, which every bot has (see collar/index.ts). */
-  readonly #collar = collarTools(this);
+  const toolSources = new Map<number, () => readonly TopTool[]>();
+  /** Summaries waiting to be recomputed (see `touch`). */
+  const dirty = yield* FiberMap.make<number>();
 
-  /**
-   * `tools` and `sections` may differ per bot (each real bot works in its own folder). Without
-   * `newBot`, bots can't be made from the app.
-   */
-  constructor(store: Store, models: Models, tools: Tools, options: DaemonOptions = {}) {
-    this.store = store;
-    this.#models = models;
-    this.#tools = tools;
-    this.#options = options;
-    this.jobs = new Jobs(store, { deliver: (row) => this.#queued(row), changed: (bot) => this.#touch(bot) }, options.foregroundMs);
-    this.wakes = new WakeClock(store, (row) => this.#queued(row));
-    for (const bot of store.bots()) this.#add(bot);
-  }
-
-  #add(bot: BotRow): BotRunner {
-    const { thinking, sections, gatherMs } = this.#options;
-    // A deleted bot may still be finishing a step; nothing it does after that is announced.
-    const live = () => this.runners.get(bot.id) === runner;
-    // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run. Any of
-    // them that runs too long moves to the background.
-    const own = [...(typeof this.#tools === "function" ? this.#tools(bot) : this.#tools), ...this.#collar];
-    const mcp = this.#options.mcp;
-    const plain = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
-    this.#toolSources.set(bot.id, plain);
-    const wrapped = own.map((tool) => this.jobs.wrap(tool));
-    const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map((tool) => this.jobs.wrap(tool))] : () => wrapped;
-    const runner: BotRunner = new BotRunner(
-      bot,
-      this.store,
-      this.#models,
-      tools,
-      {
-        entry: (entry) => {
-          if (!live()) return;
-          for (const listener of this.#entryListeners) listener(entry);
-          if (entry.kind !== "system") this.#touch(bot.id);
-        },
-        inbox: (id) => {
-          if (!live()) return;
-          for (const listener of this.#inboxListeners) listener(id);
-          this.#touch(id);
-        },
-        status: (id) => live() && this.#touch(id),
-      },
-      {
-        thinkingLevel: thinking ?? "off",
-        ...(sections ? { sections: sections(bot) } : {}),
-        ...(gatherMs !== undefined ? { gatherMs } : {}),
-        ...(this.#options.attachments ? { attachments: this.#options.attachments } : {}),
-      },
-    );
-    this.runners.set(bot.id, runner);
-    this.#summaries.set(bot.id, this.#summarize(bot.id));
-    if (this.#options.files) {
-      const folder = new FilesFolder(bot.id, this.#options.files(bot), this.store, (_listing: Listing, entry) => {
-        if (!live()) return;
-        if (entry) {
-          for (const listener of this.#entryListeners) listener(entry);
-          this.#touch(bot.id);
-        }
-        for (const listener of this.#filesListeners) listener(bot.id, folder);
-      });
-      this.#folders.set(bot.id, folder);
-      void folder.start();
-    }
-    return runner;
-  }
-
-  /** Make a bot and announce it. Throws a `BotError` the user can read when the name is empty or taken. */
-  createBot(name: string, description: string): number {
-    if (!this.#options.newBot) throw new BotError("This daemon can't make bots.");
-    name = name.trim().replace(/\s+/g, " ");
-    description = description.trim();
-    if (!name) throw new BotError("Give the bot a name.");
-    if (name.length > MAX_BOT_NAME) throw new BotError(`Keep the name under ${MAX_BOT_NAME + 1} characters.`);
-    if (description.length > MAX_BOT_DESCRIPTION) throw new BotError(`Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.`);
-    // Case-insensitive: a real bot's folder is named after it, and Windows and macOS folders ignore case.
-    const taken = [...this.runners.values()].some((runner) => runner.name.toLowerCase() === name.toLowerCase());
-    if (taken) throw new BotError(`There's already a bot named ${name}.`);
-    const id = addBot(this.store, name, description, this.#options.newBot);
-    this.#add(this.store.bot(id)!);
-    const summary = this.#summaries.get(id)!;
-    for (const listener of this.#botListeners) listener(summary);
-    return id;
-  }
-
-  /**
-   * Delete a bot and its transcript. It leaves the roster at once; whatever it was doing is stopped,
-   * and its rows are removed once it has. Files it made in its folder stay.
-   */
-  deleteBot(id: number) {
-    const runner = this.runner(id);
-    this.runners.delete(id);
-    this.#toolSources.delete(id);
-    this.#summaries.delete(id);
-    clearTimeout(this.#dirty.get(id));
-    this.#dirty.delete(id);
-    this.#folders.get(id)?.close();
-    this.#folders.delete(id);
-    this.store.markDeleted(id);
-    this.wakes.changed();
-    for (const listener of this.#removedListeners) listener(id);
-    this.#options.mcp?.botRemoved(id);
-    runner.close();
-    runner.abort();
-    this.jobs.stopAll(id);
-    void runner
-      .waitForIdle()
-      .then(() => this.#options.attachments?.removeBot(id))
-      .then(() => this.store.purgeBot(id))
-      .catch((error) => console.error(`[top] deleting ${runner.name}:`, error));
-  }
-
-  /** Settle whatever the last process left unfinished, then start every bot, then the wake-up clock. */
-  async start() {
-    const lost = this.jobs.recover();
-    if (lost) console.log(`[top] ${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
-    for (const runner of this.runners.values()) {
-      const report = await runner.recover();
-      if (report) console.log(`[top] ${runner.name}: ${report}`);
-    }
-    for (const runner of this.runners.values()) runner.start();
-    this.wakes.start();
-  }
-
-  /** The user's Stop: the bot's task ends, and so do its background jobs. Its wake-ups stay. */
-  stop(bot: number) {
-    this.runner(bot).abort();
-    this.jobs.stopAll(bot);
-  }
-
-  /** Stop the clocks (the daemon is shutting down). */
-  close() {
-    this.wakes.close();
-    for (const runner of this.runners.values()) runner.close();
-    for (const timer of this.#dirty.values()) clearTimeout(timer);
-    this.#dirty.clear();
-    this.closeFiles();
-  }
-
-  /** Something about a bot changed that its summary shows (wake-ups, jobs). */
-  changed(bot: number) {
-    if (this.runners.has(bot)) this.#touch(bot);
-  }
-
-  /** A bot's tools as they are now (its own, Collar's, its MCP servers'), as written: no time limit. */
-  toolsOf(bot: number): readonly TopTool[] {
-    return this.#toolSources.get(bot)?.() ?? [];
-  }
-
-  /** The MCP servers set up in the app, when this daemon has them. */
-  get mcp(): McpManager | undefined {
-    return this.#options.mcp;
-  }
-
-  /** Whether bots have files folders here. */
-  get hasFiles(): boolean {
-    return this.#options.files !== undefined;
-  }
-
-  /** A bot's files folder, when this daemon gives bots one. */
-  files(bot: number): FilesFolder | undefined {
-    return this.#folders.get(bot);
-  }
-
-  /** Stop watching the files folders (the daemon is shutting down). */
-  closeFiles() {
-    for (const folder of this.#folders.values()) folder.close();
-  }
-
-  get bots(): BotSummary[] {
-    return [...this.#summaries.values()];
-  }
-
-  runner(bot: number): BotRunner {
-    const runner = this.runners.get(bot);
-    if (!runner) throw new Error(`Unknown bot ${bot}`);
-    return runner;
-  }
-
-  get attachments(): Attachments | undefined {
-    return this.#options.attachments;
-  }
-
-  /**
-   * Accept a message, with the attachments it names (uploaded already). Durable when this returns; a
-   * repeated `requestId` changes nothing.
-   */
-  submit(
-    bot: number,
-    requestId: string,
-    text: string,
-    whenBusy: WhenBusy,
-    clientId: string | null,
-    attachmentIds: readonly string[] = [],
-  ): { duplicate: boolean } {
-    const runner = this.runner(bot);
-    if (whenBusy === "reject" && (runner.busy || this.store.inbox(bot).length > 0)) throw new BusyError(`${runner.name} is busy`);
-    if (attachmentIds.length && !this.#options.attachments) throw new AttachmentError("This daemon doesn't take attachments.");
-    if (attachmentIds.length > MAX_ATTACHMENTS) throw new AttachmentError(`A message can have up to ${MAX_ATTACHMENTS} attachments.`);
-    if (!text.trim() && !attachmentIds.length) throw new AttachmentError("The message is empty.");
-    let attachments: Attachment[] = [];
-    try {
-      attachments = this.#options.attachments?.lookup(bot, attachmentIds) ?? [];
-    } catch (error) {
-      throw new AttachmentError((error as Error).message);
-    }
-    const result = this.store.submit(bot, requestId, text, whenBusy === "steer" ? "steer" : "followUp", clientId, attachments);
-    if (result === "duplicate") return { duplicate: true };
-    this.#queued(this.store.inboxRow(requestId) as InboxRow);
-    return { duplicate: false };
-  }
-
-  /** A message is in a bot's inbox (from the user, a wake-up or a job): announce it and hand it to the bot. */
-  #queued(row: InboxRow) {
-    const runner = this.runners.get(row.bot);
-    if (!runner) return;
-    for (const listener of this.#inboxListeners) listener(row.bot);
-    this.#touch(row.bot);
-    runner.submitted(row);
-  }
-
-  onEntry(listener: (entry: StoredEntry) => void) {
-    this.#entryListeners.add(listener);
-    return () => this.#entryListeners.delete(listener);
-  }
-  onInbox(listener: (bot: number) => void) {
-    this.#inboxListeners.add(listener);
-    return () => this.#inboxListeners.delete(listener);
-  }
-  onBot(listener: (summary: BotSummary) => void) {
-    this.#botListeners.add(listener);
-    return () => this.#botListeners.delete(listener);
-  }
-  /** A bot's files changed (or were listed for the first time). */
-  onFiles(listener: (bot: number, folder: FilesFolder) => void) {
-    this.#filesListeners.add(listener);
-    return () => this.#filesListeners.delete(listener);
-  }
-  onBotRemoved(listener: (bot: number) => void) {
-    this.#removedListeners.add(listener);
-    return () => this.#removedListeners.delete(listener);
-  }
-
-  /** Recompute one bot's summary soon, and announce it only if it changed. */
-  #touch(bot: number) {
-    if (this.#dirty.has(bot)) return;
-    this.#dirty.set(
-      bot,
-      setTimeout(() => {
-        this.#dirty.delete(bot);
-        if (!this.runners.has(bot)) return;
-        const next = this.#summarize(bot);
-        const previous = this.#summaries.get(bot);
-        if (previous && JSON.stringify(previous) === JSON.stringify(next)) return;
-        this.#summaries.set(bot, next);
-        for (const listener of this.#botListeners) listener(next);
-      }, SUMMARY_DELAY_MS),
-    );
-  }
+  if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot);
+  // One model for every bot for now; switching `--model` moves the existing bots over.
+  if (kit.newBot) for (const bot of yield* store.bots) if (bot.model !== kit.newBot.model) yield* store.setModel(bot.id, kit.newBot.model);
+  const seeded = (yield* store.bots)[0];
+  if (kit.seed && seeded) yield* seedHistory(seeded.id, kit.seed);
 
   /** What the bot is waiting on: jobs in the background, its next wake-up. */
-  #waiting(bot: number): { background?: number; wakeAt?: number } {
-    const background = this.jobs.count(bot);
-    const wakeAt = this.store.wakes(bot)[0]?.dueAt;
-    return { ...(background ? { background } : {}), ...(wakeAt !== undefined ? { wakeAt } : {}) };
-  }
+  const waiting = (bot: number): Effect.Effect<{ background?: number; wakeAt?: number }> =>
+    Effect.gen(function* () {
+      const background = jobs.count(bot);
+      const wakeAt = (yield* store.wakes(bot))[0]?.dueAt;
+      return { ...(background ? { background } : {}), ...(wakeAt !== undefined ? { wakeAt } : {}) };
+    });
 
-  #summarize(bot: number): BotSummary {
-    const row = this.store.bot(bot)!;
-    const runner = this.runners.get(bot);
-    const status = runner?.status ?? { status: "idle" as const, since: Date.now() };
-    const answer = this.store.lastAnswer(bot) as { content?: string | { type: string; text?: string }[] } | undefined;
-    return {
-      id: bot,
-      name: row.name,
-      description: row.description,
-      status: status.status,
-      ...(status.tool ? { tool: status.tool } : {}),
-      ...(status.error ? { error: status.error } : {}),
-      since: status.since,
-      preview: lastLine(textOf(answer?.content)),
-      queued: this.store.inbox(bot).length,
-      ...this.#waiting(bot),
-      lastSeq: this.store.lastSeq(bot),
-    };
-  }
-}
+  const summarize = (bot: number, runner: BotRunner | undefined): Effect.Effect<BotSummary> =>
+    Effect.gen(function* () {
+      const row = (yield* store.bot(bot))!;
+      const status = runner?.status() ?? { status: "idle" as const, since: yield* Clock.currentTimeMillis };
+      const answer = (yield* store.lastAnswer(bot)) as { content?: string | { type: string; text?: string }[] } | undefined;
+      return {
+        id: bot,
+        name: row.name,
+        description: row.description,
+        status: status.status,
+        ...(status.tool ? { tool: status.tool } : {}),
+        ...(status.error ? { error: status.error } : {}),
+        since: status.since,
+        preview: lastLine(textOf(answer?.content)),
+        queued: (yield* store.inbox(bot)).length,
+        ...(yield* waiting(bot)),
+        lastSeq: yield* store.lastSeq(bot),
+      } satisfies BotSummary;
+    });
+
+  /** Recompute one bot's summary soon, and announce it only if it changed. */
+  const touch = (bot: number): Effect.Effect<void> =>
+    Effect.asVoid(
+      FiberMap.run(
+        dirty,
+        bot,
+        Effect.gen(function* () {
+          yield* Effect.sleep(Duration.millis(SUMMARY_DELAY_MS));
+          const live = bots.get(bot);
+          if (!live) return;
+          const next = yield* summarize(bot, live.runner);
+          if (JSON.stringify(live.summary) === JSON.stringify(next)) return;
+          live.summary = next;
+          yield* events.publish({ _tag: "Bot", summary: next });
+        }),
+        { onlyIfMissing: true },
+      ),
+    );
+
+  /** A message is in a bot's inbox (from the user, a wake-up or a job): announce it and hand it to the bot. */
+  const queued = (row: InboxRow): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const live = bots.get(row.bot);
+      if (!live) return;
+      yield* events.publish({ _tag: "Inbox", bot: row.bot });
+      yield* touch(row.bot);
+      yield* live.runner.submitted(row);
+    });
+
+  const changed = (bot: number): Effect.Effect<void> => (bots.has(bot) ? touch(bot) : Effect.void);
+  const jobs: Jobs = yield* makeJobs({ deliver: queued, changed }, kit.foregroundMs);
+  const wakes = yield* makeWakeClock(queued);
+  const toolsOf = (bot: number) => toolSources.get(bot)?.() ?? [];
+  /** Top's own tools, which every bot has (see collar/index.ts). */
+  const collar = collarTools({ store, jobs, wakes, changed, toolsOf });
+
+  const add = (bot: BotRow): Effect.Effect<LiveBot> =>
+    Effect.gen(function* () {
+      const botScope = yield* Scope.fork(scope);
+      // A deleted bot may still be finishing a step; nothing it does after that is announced.
+      const isLive = () => bots.get(bot.id)?.scope === botScope;
+      const announce = (entry: StoredEntry) =>
+        Effect.suspend(() => {
+          if (!isLive()) return Effect.void;
+          return Effect.andThen(events.publish({ _tag: "Entry", entry }), entry.kind !== "system" ? touch(bot.id) : Effect.void);
+        });
+      // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run. Any of
+      // them that runs too long moves to the background.
+      const own = [...(typeof kit.tools === "function" ? kit.tools(bot) : kit.tools), ...collar];
+      const plain = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
+      toolSources.set(bot.id, plain);
+      const wrapped = own.map(jobs.wrap);
+      const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map(jobs.wrap)] : () => wrapped;
+      const runner = yield* makeRunner(
+        bot,
+        kit.models,
+        tools,
+        {
+          entry: announce,
+          inbox: (id) => (isLive() ? Effect.andThen(events.publish({ _tag: "Inbox", bot: id }), touch(id)) : Effect.void),
+          status: (id) => (isLive() ? touch(id) : Effect.void),
+        },
+        {
+          thinkingLevel: kit.thinking,
+          sections: kit.sections ? yield* kit.sections(bot) : undefined,
+          gatherMs: kit.gatherMs,
+          attachments,
+          retryDelaysMs: kit.retryDelaysMs,
+        },
+      ).pipe(Scope.provide(botScope));
+      const live: LiveBot = { runner, scope: botScope, folder: undefined, summary: yield* summarize(bot.id, runner) };
+      bots.set(bot.id, live);
+      if (kit.files) {
+        const path = kit.files(bot);
+        // Listed in the background: a big folder mustn't hold up the daemon's start.
+        yield* makeFilesFolder(bot.id, path, (listing, entry) =>
+          Effect.gen(function* () {
+            if (!isLive()) return;
+            if (entry) yield* announce(entry);
+            yield* events.publish({ _tag: "Files", bot: bot.id, folder: path, listing });
+          }),
+        ).pipe(
+          Effect.tap((folder) =>
+            Effect.sync(() => {
+              live.folder = folder;
+            }),
+          ),
+          Scope.provide(botScope),
+          Effect.forkIn(botScope),
+        );
+      }
+      return live;
+    }).pipe(Effect.provideService(Store, store));
+
+  for (const bot of yield* store.bots) yield* add(bot);
+
+  const runnerOf = (bot: number) =>
+    Effect.suspend(() => {
+      const live = bots.get(bot);
+      return live ? Effect.succeed(live.runner) : Effect.fail(new UnknownBotError({ bot }));
+    });
+
+  return Daemon.of({
+    bots: () => [...bots.values()].map((live) => live.summary),
+    has: (bot) => bots.has(bot),
+    runner: runnerOf,
+    runners: () => [...bots.values()].map((live) => live.runner),
+    createBot: (rawName, rawDescription) =>
+      Effect.gen(function* () {
+        const newBot = kit.newBot;
+        if (!newBot) return yield* new BotError({ message: "This daemon can't make bots." });
+        const name = rawName.trim().replace(/\s+/g, " ");
+        const description = rawDescription.trim();
+        if (!name) return yield* new BotError({ message: "Give the bot a name." });
+        if (name.length > MAX_BOT_NAME) return yield* new BotError({ message: `Keep the name under ${MAX_BOT_NAME + 1} characters.` });
+        if (description.length > MAX_BOT_DESCRIPTION)
+          return yield* new BotError({ message: `Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.` });
+        // Case-insensitive: a real bot's folder is named after it, and Windows and macOS folders ignore case.
+        const taken = [...bots.values()].some((live) => live.runner.name.toLowerCase() === name.toLowerCase());
+        if (taken) return yield* new BotError({ message: `There's already a bot named ${name}.` });
+        const id = yield* addBot(name, description, newBot).pipe(Effect.provideService(Store, store));
+        const live = yield* add((yield* store.bot(id))!);
+        yield* events.publish({ _tag: "Bot", summary: live.summary });
+        return id;
+      }),
+    deleteBot: (id) =>
+      Effect.gen(function* () {
+        const live = bots.get(id);
+        if (!live) return yield* new UnknownBotError({ bot: id });
+        bots.delete(id);
+        toolSources.delete(id);
+        yield* FiberMap.remove(dirty, id);
+        yield* store.markDeleted(id);
+        yield* wakes.changed;
+        yield* events.publish({ _tag: "BotRemoved", bot: id });
+        if (mcp) yield* mcp.botRemoved(id);
+        const { runner } = live;
+        yield* runner.close;
+        yield* runner.abort;
+        yield* jobs.stopAll(id);
+        // Its rows go once it has stopped: a step it was finishing can still be written meanwhile.
+        yield* Effect.forkIn(
+          Effect.gen(function* () {
+            yield* runner.waitForIdle;
+            yield* Scope.close(live.scope, Exit.void);
+            if (attachments) yield* attachments.removeBot(id);
+            yield* store.purgeBot(id);
+          }).pipe(Effect.catchCause((cause) => Effect.logError(`deleting ${runner.name}`, cause))),
+          scope,
+        );
+      }),
+    submit: (bot, requestId, text, whenBusy, clientId, attachmentIds = []) =>
+      Effect.gen(function* () {
+        const runner = yield* runnerOf(bot);
+        if (whenBusy === "reject" && (runner.busy() || (yield* store.inbox(bot)).length > 0))
+          return yield* new BusyError({ message: `${runner.name} is busy` });
+        if (attachmentIds.length && !attachments) return yield* new AttachmentError({ message: "This daemon doesn't take attachments." });
+        if (attachmentIds.length > MAX_ATTACHMENTS) return yield* new AttachmentError({ message: `A message can have up to ${MAX_ATTACHMENTS} attachments.` });
+        if (!text.trim() && !attachmentIds.length) return yield* new AttachmentError({ message: "The message is empty." });
+        const found: Attachment[] = attachments ? yield* attachments.lookup(bot, attachmentIds) : [];
+        const result = yield* store.submit(bot, requestId, text, whenBusy === "steer" ? "steer" : "followUp", clientId, found);
+        if (result === "duplicate") return { duplicate: true };
+        yield* queued((yield* store.inboxRow(requestId))!);
+        return { duplicate: false };
+      }),
+    stop: (bot) =>
+      Effect.gen(function* () {
+        const runner = yield* runnerOf(bot);
+        yield* runner.abort;
+        yield* jobs.stopAll(bot);
+      }),
+    start: Effect.gen(function* () {
+      const lost = yield* jobs.recover;
+      if (lost) yield* Effect.log(`${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
+      for (const live of bots.values()) {
+        const report = yield* live.runner.recover;
+        if (report) yield* Effect.log(`${live.runner.name}: ${report}`);
+      }
+      for (const live of bots.values()) yield* live.runner.start;
+      yield* wakes.start;
+    }),
+    changed,
+    toolsOf,
+    hasFiles: kit.files !== undefined,
+    files: (bot) => bots.get(bot)?.folder,
+    jobs,
+    wakes,
+  });
+});
+
+/** The daemon, running its bots until the layer closes. */
+export const layer: Layer.Layer<Daemon, never, Store | Events | BotKit> = Layer.effect(Daemon, make);
