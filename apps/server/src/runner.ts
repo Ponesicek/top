@@ -255,8 +255,10 @@ export const makeRunner = Effect.fnUntraced(function* (
         }
       }
     });
-  // pi waits for the listener before it goes on: every step is saved before the next one starts.
-  agent.subscribe((event) => runPromise(onEvent(event)));
+  // pi waits for the listener before it goes on: every step is saved before the next one starts. Most
+  // events (each streamed token) need nothing, and answer at once instead of a trip through the runtime.
+  const handled: ReadonlySet<AgentEvent["type"]> = new Set(["message_start", "message_end", "tool_execution_start", "tool_execution_end"]);
+  agent.subscribe((event) => (handled.has(event.type) ? runPromise(onEvent(event)) : undefined));
 
   /** Take the bot's tools as they are now. Between runs only: a run keeps the tools it started with. */
   const refreshTools = () => {

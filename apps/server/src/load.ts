@@ -15,7 +15,7 @@ export const startLoad = (options: { tools: boolean }) =>
       const next = Effect.gen(function* () {
         yield* runner.waitForIdle;
         yield* Effect.sleep(Duration.millis(400 + (yield* Random.next) * 1600));
-        const prompt = prompts[yield* Random.nextIntBetween(0, prompts.length)]!;
+        const prompt = prompts[yield* Random.nextIntBetween(0, prompts.length, { halfOpen: true })]!;
         yield* daemon.submit(runner.id, `load-${randomUUID()}`, prompt, "reject", "load").pipe(
           // Let the runner pick it up before waiting for idle again.
           Effect.andThen(Effect.sleep(Duration.millis(50))),
@@ -28,6 +28,7 @@ export const startLoad = (options: { tools: boolean }) =>
           }),
         );
       });
-      yield* Effect.forkScoped(Effect.forever(next));
+      // Something unexpected is logged, and the bot gets its next message anyway.
+      yield* Effect.forkScoped(Effect.forever(next.pipe(Effect.catchCause((cause) => Effect.logError(`[load] ${runner.name}`, cause)))));
     }
   });
