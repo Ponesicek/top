@@ -6,13 +6,13 @@
 
 import type { ConversationSync } from "@top/client";
 import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { addAttachments, clearAttachments, LARGE_PASTE_BYTES, pastedTextName, readyAttachments, sizeLabel, useAttachments } from "../attachments.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { clearQuotes, onQuoteAdded, type Quote, quotesOf } from "../quotes.ts";
 import { isWorking } from "../rows.ts";
-import { top } from "../top.ts";
+import { top, useClient } from "../top.ts";
 import { AttachmentStrip } from "./AttachmentStrip.tsx";
 import { focusEnd, insertChip, isEmpty, makeChip, readSegments, type Segment, toMessage, writeSegments } from "./composerEditor.ts";
 import { CommentPopover } from "./Quotes.tsx";
@@ -91,7 +91,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
   const key = String(sync.id);
   const ref = useRef<HTMLDivElement>(null);
   const [empty, setEmpty] = useState(() => isEmpty(drafts.get(key) ?? []));
-  const running = useSyncExternalStore(top.subscribe, () => isWorking(top.getSnapshot().bots.find((b) => b.id === sync.id)?.status));
+  const running = useClient((snapshot) => isWorking(snapshot.bots.find((b) => b.id === sync.id)?.status));
   // The chip whose comment is open, and where the caret last was in the field (a quote goes there).
   const [editing, setEditing] = useState<{ quote: Quote; chip: HTMLElement } | null>(null);
   const caret = useRef<Range | null>(null);

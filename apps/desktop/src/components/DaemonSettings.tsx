@@ -4,9 +4,9 @@
  * those `--tailscale-allow` names); it tells the app who Tailscale says it is.
  */
 import { Check, Copy, RefreshCw } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "../lib/utils.ts";
-import { connectTo, DEFAULT_SERVER, daemonUrl, serverUrl, top, useTailnet } from "../top.ts";
+import { connectTo, DEFAULT_SERVER, daemonUrl, serverUrl, useClient, useTailnet } from "../top.ts";
 import { Section } from "./SettingsSection.tsx";
 import { Button } from "./ui/button.tsx";
 import { Input } from "./ui/field.tsx";
@@ -43,7 +43,7 @@ function useCopied(): [boolean, (text: string) => void] {
 }
 
 function Address() {
-  const connection = useSyncExternalStore(top.subscribe, () => top.getSnapshot().connection);
+  const connection = useClient((snapshot) => snapshot.connection);
   const { viewer } = useTailnet();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(serverUrl);
@@ -151,7 +151,7 @@ function TailnetAddress({ url }: { url: string }) {
 }
 
 function Found({ daemon }: { daemon: FoundDaemon }) {
-  const serverId = useSyncExternalStore(top.subscribe, () => top.getSnapshot().serverId);
+  const serverId = useClient((snapshot) => snapshot.serverId);
   // The same data is the same daemon, whichever address the app reached it at.
   const current = sameAddress(daemon.url, serverUrl) || (daemon.serverId !== undefined && daemon.serverId === serverId);
   return (

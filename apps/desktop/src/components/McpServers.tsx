@@ -1,9 +1,9 @@
 import type { BotId, McpServerView } from "@top/client";
 import { Plus } from "lucide-react";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useRef, useState } from "react";
 import { joinCommand } from "../command.ts";
 import { cn } from "../lib/utils.ts";
-import { serverUrl, top, useRoster, useTailnet } from "../top.ts";
+import { serverUrl, top, useClient, useRoster, useTailnet } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
 import { McpServerDialog } from "./McpServerDialog.tsx";
 import { Section } from "./SettingsSection.tsx";
@@ -150,7 +150,7 @@ function ServerRow({ server, bots, onEdit }: { server: McpServerView; bots: read
 
 /** The MCP servers on the daemon, and which bots use each. A bot starts with none. */
 export function McpServers() {
-  const servers = useSyncExternalStore(top.subscribe, () => top.getSnapshot().mcpServers);
+  const servers = useClient((snapshot) => snapshot.mcpServers);
   // Only names and ids: they don't change when a bot's status does.
   const bots = useRoster();
   const [editing, setEditing] = useState<number | "new">();

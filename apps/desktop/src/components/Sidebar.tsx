@@ -1,8 +1,8 @@
 import type { BotId, BotSummary } from "@top/client";
 import { Plus, Settings, Trash2 } from "lucide-react";
-import { memo, useCallback, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useState } from "react";
 import { cn } from "../lib/utils.ts";
-import { serverUrl, top, useSeen } from "../top.ts";
+import { serverUrl, useClient, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";
 import { StatusDot } from "./StatusDot.tsx";
@@ -151,7 +151,8 @@ export function Sidebar({
   settingsOpen: boolean;
   onOpenSettings: () => void;
 }) {
-  const { bots, connection } = useSyncExternalStore(top.subscribe, top.getSnapshot);
+  const bots = useClient((snapshot) => snapshot.bots);
+  const connection = useClient((snapshot) => snapshot.connection);
   const seen = useSeen();
   const [deleting, setDeleting] = useState<BotSummary>();
   const [deleteOpen, setDeleteOpen] = useState(false);

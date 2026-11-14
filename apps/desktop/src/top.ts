@@ -1,7 +1,26 @@
-/** The app's one TopClient, plus the local cache that makes cold start instant and reconnects cheap. */
+/**
+ * The app's one TopClient, plus the local cache that makes cold start instant and reconnects cheap.
+ *
+ * The UI reads it through atoms (Effect's `effect/reactivity`) on one registry, `registry`, which
+ * main.tsx provides to React: `clientAtom` follows the client's snapshot, `conversationAtom(id)` a
+ * bot's transcript, and the hooks below select from them so a component re-renders only when what
+ * it shows changes.
+ */
 
-import { type BotId, type BotSummary, type ConversationCache, type ConversationSync, TopClient, type Viewer } from "@top/client";
-import { useSyncExternalStore } from "react";
+import { useAtomValue } from "@effect/atom-react";
+import {
+  type BotId,
+  type BotSummary,
+  type ConversationCache,
+  type ConversationSnapshot,
+  type ConversationSync,
+  TopClient,
+  type TopSnapshot,
+  type Viewer,
+} from "@top/client";
+import * as Option from "effect/Option";
+import * as Atom from "effect/reactivity/Atom";
+import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 
 const params = new URLSearchParams(location.search);
 export const DEFAULT_SERVER = "ws://127.0.0.1:7357";
@@ -142,46 +161,77 @@ export function conversation(id: BotId): ConversationSync {
   return top.conversation(id);
 }
 
+// ── atoms ────────────────────────────────────────────────────────────────────
+
+/** The app's atoms live here; main.tsx gives it to React, and code outside components sets atoms through it. */
+export const registry = AtomRegistry.make();
+
+/** An atom that follows an external store: its value now, then every change. */
+const following = <A>(subscribe: (listener: () => void) => () => void, read: () => A) =>
+  Atom.readable((get) => {
+    get.addFinalizer(subscribe(() => get.setSelf(read())));
+    return read();
+  });
+
+/** The client's snapshot: connection, roster, MCP servers, files, … */
+export const clientAtom: Atom.Atom<TopSnapshot> = following(top.subscribe, top.getSnapshot).pipe(Atom.keepAlive);
+
+/** One bot's transcript, as its conversation has it. */
+export const conversationAtom = Atom.family((id: BotId): Atom.Atom<ConversationSnapshot> => {
+  const sync = top.conversation(id);
+  return following(sync.subscribe, sync.getSnapshot);
+});
+
+/** A value from the client's snapshot; re-renders only when it changes. */
+export function useClient<A>(select: (snapshot: TopSnapshot) => A): A {
+  return useAtomValue(clientAtom, select);
+}
+
+/** A bot's transcript as it is now; re-renders on every change to it. */
+export function useConversation(sync: ConversationSync): ConversationSnapshot {
+  return useAtomValue(conversationAtom(sync.id));
+}
+
 // ── the daemon on the tailnet ──────────────────────────────────────────────────
 
 export type TailnetInfo = { readonly tailnetUrl: string | undefined; readonly viewer: Viewer | undefined };
-let tailnetInfo: TailnetInfo = { tailnetUrl: undefined, viewer: undefined };
-function tailnetSnapshot(): TailnetInfo {
-  const { tailnetUrl, viewer } = top.getSnapshot();
-  if (tailnetUrl !== tailnetInfo.tailnetUrl || viewer !== tailnetInfo.viewer) tailnetInfo = { tailnetUrl, viewer };
-  return tailnetInfo;
-}
+
+const tailnetAtom = Atom.make((get): TailnetInfo => {
+  const { tailnetUrl, viewer } = get(clientAtom);
+  const previous = get.self<TailnetInfo>();
+  if (Option.isSome(previous) && previous.value.tailnetUrl === tailnetUrl && previous.value.viewer === viewer) return previous.value;
+  return { tailnetUrl, viewer };
+});
 
 /** Where the daemon is on the tailnet, and who it says this app is (when it came in that way). */
 export function useTailnet(): TailnetInfo {
-  return useSyncExternalStore(top.subscribe, tailnetSnapshot);
+  return useAtomValue(tailnetAtom);
 }
 
 export type RosterBot = { readonly id: BotId; readonly name: string };
 
-let roster: { readonly key: string; readonly bots: readonly RosterBot[] } = { key: "[]", bots: [] };
-function rosterSnapshot(): readonly RosterBot[] {
-  const bots = top.getSnapshot().bots;
+const rosterAtom = Atom.make((get): { readonly key: string; readonly bots: readonly RosterBot[] } => {
+  const bots = get(clientAtom).bots;
   const key = JSON.stringify(bots.map((b) => [b.id, b.name]));
-  if (key !== roster.key) roster = { key, bots: bots.map(({ id, name }) => ({ id, name })) };
-  return roster.bots;
-}
+  const previous = get.self<{ key: string; bots: readonly RosterBot[] }>();
+  if (Option.isSome(previous) && previous.value.key === key) return previous.value;
+  return { key, bots: bots.map(({ id, name }) => ({ id, name })) };
+});
 
 /** Every bot's id and name; re-renders only when a bot is added, removed or renamed, not on status changes. */
 export function useRoster(): readonly RosterBot[] {
-  return useSyncExternalStore(top.subscribe, rosterSnapshot);
+  return useAtomValue(rosterAtom, (roster) => roster.bots);
 }
 
 /** One bot's summary; re-renders only when that bot changes. */
 export function useBot(id: BotId | undefined): BotSummary | undefined {
-  return useSyncExternalStore(top.subscribe, () => (id === undefined ? undefined : top.getSnapshot().bots.find((b) => b.id === id)));
+  return useClient((snapshot) => (id === undefined ? undefined : snapshot.bots.find((b) => b.id === id)));
 }
 
 // ── unread: the newest entry seen per bot, kept locally ─────────────────────────
 
 const seenKey = cacheKey("seen");
-let seen: Record<string, number> = (cachedServer && safeJson<Record<string, number>>(seenKey)) || {};
-const seenListeners = new Set<() => void>();
+const seenAtom = Atom.make<Record<string, number>>((cachedServer && safeJson<Record<string, number>>(seenKey)) || {}).pipe(Atom.keepAlive);
 
 // A different daemon (another --data, or a reset): the client has dropped what it held from the old
 // one, so drop the cache and read marks too. They'd show its transcripts and hide new messages.
@@ -191,26 +241,20 @@ top.subscribe(() => {
   if (!serverId || serverId === currentServer) return;
   if (currentServer !== undefined) {
     dropCache(cachePrefix);
-    seen = {};
-    for (const listener of seenListeners) listener();
+    registry.set(seenAtom, {});
   }
   currentServer = serverId;
   safeSet(cacheKey("server"), serverId);
 });
 
 export function markSeen(id: BotId, seq: number) {
+  const seen = registry.get(seenAtom);
   if ((seen[id] ?? 0) >= seq) return;
-  seen = { ...seen, [id]: seq };
-  safeSet(seenKey, JSON.stringify(seen));
-  for (const listener of seenListeners) listener();
+  const next = { ...seen, [id]: seq };
+  registry.set(seenAtom, next);
+  safeSet(seenKey, JSON.stringify(next));
 }
 
 export function useSeen(): Record<string, number> {
-  return useSyncExternalStore(
-    (listener) => {
-      seenListeners.add(listener);
-      return () => seenListeners.delete(listener);
-    },
-    () => seen,
-  );
+  return useAtomValue(seenAtom);
 }
