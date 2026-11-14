@@ -290,7 +290,11 @@ test("files, discovery and sign-in redirects on the tailnet are for allowed call
   assert.equal(await passed.text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz`);
   assert.equal(passed.headers.get("content-type"), "text/html; charset=utf-8", "its own type");
   assert.equal(passed.headers.get("x-signed-in"), "yes", "and its other headers");
-  const posted = await fetch(callback, { method: "POST", body: "code=abc", headers: { ...from("100.64.0.1"), "Content-Type": "application/x-www-form-urlencoded" } });
+  const posted = await fetch(callback, {
+    method: "POST",
+    body: "code=abc",
+    headers: { ...from("100.64.0.1"), "Content-Type": "application/x-www-form-urlencoded" },
+  });
   assert.equal(await posted.text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz with code=abc`, "a form post keeps its body");
   assert.equal((await fetch(callback, { headers: from("100.64.0.3") })).status, 403);
   await new Promise((resolve) => oauth.close(resolve));
