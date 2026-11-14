@@ -6,7 +6,7 @@ show as steps, and the app says what each bot is doing while it does it.
 
 ```
 ┌──────────── Top daemon (apps/server) ────────────┐        ┌── desktop (apps/desktop, Electron) ──┐
-│ pi-agent-core: one Agent per bot                 │  WS    │ @top/client                           │
+│ one agent loop per bot (loop.ts), pi-ai models   │  WS    │ @top/client                           │
 │ SQLite: entries · inbox · tool_calls · bots      │◄──────►│  entries after `seq`, gaps, paging    │
 │ every step saved before the next one starts      │ deflate│  optimistic sends, requestId resend   │
 └──────────────────────────────────────────────────┘        └── phone (React Native, next) ─────────┘
@@ -16,13 +16,15 @@ show as steps, and the app says what each bot is doing while it does it.
 |---|---|
 | `packages/protocol` | Wire frames (JSON over one compressed WebSocket), as Effect schemas: the types derive from them, and both ends check every frame that arrives. Also the daemon's refusals, as tagged errors. |
 | `packages/client` | `@top/client`: connection, reconnect, catch-up by sequence number, history paging, optimistic sends. Framework-free, so it's shared by desktop and mobile: Effect inside, snapshots and Promises outside. |
-| `apps/server` | The daemon, as Effect services: storage (`store.ts`, Effect SQL on `node:sqlite`), one runner per bot (`runner.ts`), tools and their crash policies (`tools.ts`), the event bus (`events.ts`), the HTTP and WebSocket layer (`serve.ts`). |
+| `apps/server` | The daemon, as Effect services: storage (`store.ts`, Effect SQL on `node:sqlite`), one runner per bot (`runner.ts`) on Top's own agent loop (`loop.ts`), tools and their crash policies (`tools.ts`), the event bus (`events.ts`), the HTTP and WebSocket layer (`serve.ts`). |
 | `apps/desktop` | Electron + React, its state in Effect atoms. Virtualized transcript, performance overlay, benchmark. |
 
 Everything but the React components runs on [Effect](https://effect.website) 4. The daemon is a set of
-services composed as Layers (`main.ts`) and closed in reverse order when it stops. Where pi calls in
-(its Agent's hooks and listener, tools, credentials) the interfaces stay Promise-based, and run Effects
-inside. The wire format is Top's own: Effect RPC's socket protocol answers every streamed frame with an
+services composed as Layers (`main.ts`) and closed in reverse order when it stops. The agent loop is
+Top's own, an Effect: Stop is checked before every model request and tool call, and stopping the daemon
+interrupts it, so nothing more is saved. pi still talks to the models (`pi-ai`), signs in, and provides
+the coding tools; where it calls in (tools, credentials) the interfaces stay Promise-based, and run
+Effects inside. The wire format is Top's own: Effect RPC's socket protocol answers every streamed frame with an
 acknowledgement, which would cost about a fifth more data while following bots (see Data use).
 
 ## Run it
@@ -164,7 +166,7 @@ saved in SQLite (`synchronous=FULL`) before the next one starts:
 
 1. A message you send is stored in the inbox before the daemon confirms it. It moves into the
    transcript in one transaction when the model takes it, so it is never lost or doubled.
-2. An answer is saved when it ends. pi-agent-core waits for that before it starts any tool.
+2. An answer is saved when it ends, before any of its tools start: the loop waits for each save.
 3. A tool call is recorded right before the tool runs, and its result is saved the moment it returns.
 
 After a crash, a tool call without a result is settled by the tool's own policy:

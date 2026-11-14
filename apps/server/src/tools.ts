@@ -12,7 +12,7 @@
  * `ctx.key` is stable for one call across restarts; pass it to outside services as an idempotency key.
  */
 import { dirname, join } from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { ImageContent, TextContent, Usage } from "@earendil-works/pi-ai";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -33,7 +33,17 @@ export type ToolContext = {
   readonly onUpdate?: ((partial: ToolResult) => void) | undefined;
 };
 
-export type ToolResult = AgentToolResult<unknown>;
+/** What a tool call comes to: `content` goes to the model, `details` to clients. */
+export type ToolResult = {
+  readonly content: (TextContent | ImageContent)[];
+  readonly details: unknown;
+  readonly structuredContent?: unknown;
+  readonly usage?: Usage;
+  /** A failure reported without failing: the model sees it as an error result. */
+  readonly isError?: boolean;
+  /** Every call of a batch saying so ends the task after it, without asking the model again. */
+  readonly terminate?: boolean;
+};
 
 /** A tool call that failed; the model is told `message`. */
 export class ToolError extends Schema.TaggedError<ToolError>()("ToolError", { message: Schema.String }) {

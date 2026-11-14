@@ -1,5 +1,5 @@
 /**
- * The Top daemon: runs the bots 24/7 on pi-agent-core with its own SQLite storage, and serves any
+ * The Top daemon: runs the bots 24/7 on its own agent loop with its own SQLite storage, and serves any
  * number of desktop and phone clients over one WebSocket each.
  *
  *   node --import tsx src/main.ts --model openai/gpt-6.1-sol [--thinking medium] [--workspace ~]   real bots
@@ -21,7 +21,6 @@
  */
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
@@ -43,6 +42,7 @@ import { BOT_NAMES, FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "./f
 import { ForegroundMs } from "./jobs.ts";
 import { startLoad } from "./load.ts";
 import * as Logger from "./logger.ts";
+import type { ThinkingLevel } from "./loop.ts";
 import * as Mcp from "./mcp.ts";
 import { RetryDelaysMs } from "./runner.ts";
 import { serve } from "./serve.ts";

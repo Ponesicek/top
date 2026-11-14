@@ -9,11 +9,10 @@
  */
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { fromPromise, type TopTool } from "./tools.ts";
+import { fromPromise, type ToolResult, type TopTool } from "./tools.ts";
 
 const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
 
@@ -34,11 +33,18 @@ export function botFolder(root: string, name: string): string {
 export const ensureFolder = (folder: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => Effect.as(Effect.orDie(fs.makeDirectory(folder, { recursive: true })), folder));
 
-// pi's tools each have their own parameter schema; any one of them goes in.
-// biome-ignore lint/suspicious/noExplicitAny: plain AgentTool doesn't accept pi's concrete tools (typecheck fails), any does
-type AnyAgentTool = AgentTool<any>;
+/** What Top takes from one of pi's coding tools (each has its own parameter schema). */
+type CodingTool = {
+  readonly name: string;
+  readonly label: string;
+  readonly description: string;
+  readonly parameters: object;
+  readonly prepareArguments?: (args: unknown) => Record<string, unknown>;
+  readonly executionMode?: "sequential" | "parallel";
+  readonly execute: (toolCallId: string, args: never, signal?: AbortSignal, onUpdate?: never) => Promise<ToolResult>;
+};
 
-function adapt(tool: AnyAgentTool): TopTool {
+function adapt(tool: CodingTool): TopTool {
   return {
     name: tool.name,
     label: tool.label,
@@ -61,7 +67,7 @@ export function computerTools(folder: string): TopTool[] {
     createGrepTool(folder),
     createFindTool(folder),
     createLsTool(folder),
-  ].map((tool) => adapt(tool as AnyAgentTool));
+  ].map((tool) => adapt(tool as unknown as CodingTool));
 }
 
 /** The `workspace` section of a bot's system prompt. `outdated` says an earlier "no tools" note no longer holds. */
