@@ -11,12 +11,12 @@
  *
  * `ctx.key` is stable for one call across restarts; pass it to outside services as an idempotency key.
  */
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import Type, { type TProperties } from "typebox";
 
@@ -127,22 +127,28 @@ flowchart LR
  * Side effects of the fake tools, one JSON line each, so tests can count what really happened.
  * `filesOf` gives a bot's files folder, for `write_report`.
  */
-export function createFakeTools(effectsPath: string, filesOf: (bot: number) => Effect.Effect<string | undefined> = () => Effect.undefined): TopTool[] {
+export const makeFakeTools = Effect.fnUntraced(function* (
+  effectsPath: string,
+  filesOf: (bot: number) => Effect.Effect<string | undefined> = () => Effect.undefined,
+) {
+  const fs = yield* FileSystem.FileSystem;
   const record = (tool: string, phase: string, key: string, detail?: unknown) =>
-    Effect.flatMap(Clock.currentTimeMillis, (at) => Effect.sync(() => appendFileSync(effectsPath, `${JSON.stringify({ tool, phase, key, detail, at })}\n`)));
-  const recorded = (tool: string, phase: string, key: string) => {
-    try {
-      return readFileSync(effectsPath, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .some((line) => {
-          const e = JSON.parse(line) as { tool: string; phase: string; key: string };
-          return e.tool === tool && e.phase === phase && e.key === key;
-        });
-    } catch {
-      return false;
-    }
-  };
+    Effect.flatMap(Clock.currentTimeMillis, (at) =>
+      Effect.orDie(fs.writeFileString(effectsPath, `${JSON.stringify({ tool, phase, key, detail, at })}\n`, { flag: "a" })),
+    );
+  const recorded = (tool: string, phase: string, key: string) =>
+    fs.readFileString(effectsPath).pipe(
+      Effect.map((text) =>
+        text
+          .split("\n")
+          .filter(Boolean)
+          .some((line) => {
+            const e = JSON.parse(line) as { tool: string; phase: string; key: string };
+            return e.tool === tool && e.phase === phase && e.key === key;
+          }),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
   const seconds = (args: Record<string, unknown>, fallback: number) => Math.max(0, Number(args.seconds ?? fallback)) * 1_000;
   const schema = (properties: TProperties) => Type.Object(properties, { additionalProperties: false });
   const { Optional, String: Str, Number: Num } = Type;
@@ -171,15 +177,13 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => E
       parameters: schema({ to: Optional(Str()), subject: Optional(Str()), seconds: Optional(Num()) }),
       run: (args, ctx) =>
         Effect.gen(function* () {
-          if (!recorded("send_email", "effect", ctx.key)) yield* record("send_email", "effect", ctx.key, args.to);
+          if (!(yield* recorded("send_email", "effect", ctx.key))) yield* record("send_email", "effect", ctx.key, args.to);
           yield* sleep(seconds(args, 2), ctx.signal);
           return text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")}.`);
         }),
       recover: (args, ctx) =>
-        Effect.sync(() =>
-          recorded("send_email", "effect", ctx.key)
-            ? text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")} (confirmed after a restart).`)
-            : false,
+        Effect.map(recorded("send_email", "effect", ctx.key), (sent) =>
+          sent ? text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")} (confirmed after a restart).`) : false,
         ),
     },
     {
@@ -207,19 +211,15 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => E
         Effect.gen(function* () {
           const folder = yield* filesOf(ctx.bot);
           if (!folder) return text("This bot has no files folder.");
-          yield* Effect.try({
-            try: () => {
-              for (const [name, content] of [
-                ["report.html", REPORT_HTML],
-                ["notes.md", REPORT_NOTES],
-              ] as const) {
-                const path = join(folder, name);
-                mkdirSync(dirname(path), { recursive: true });
-                writeFileSync(path, content);
-              }
-            },
-            catch: ToolError.from,
-          });
+          for (const [name, content] of [
+            ["report.html", REPORT_HTML],
+            ["notes.md", REPORT_NOTES],
+          ] as const) {
+            const path = join(folder, name);
+            yield* fs
+              .makeDirectory(dirname(path), { recursive: true })
+              .pipe(Effect.andThen(fs.writeFileString(path, content)), Effect.mapError(ToolError.from));
+          }
           yield* record("write_report", "effect", ctx.key);
           return text("Wrote files/report.html and files/notes.md.");
         }),
@@ -238,5 +238,5 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => E
           return yield* Effect.never;
         }),
     },
-  ];
-}
+  ] satisfies TopTool[];
+});

@@ -190,13 +190,14 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
     ),
   );
 
+  /** Run a request (in a span named for it, `Connection.submit`, …) and answer it. */
   const answer = <A, E>(req: number, run: Effect.Effect<A, E>) =>
-    Effect.flatMap(Effect.exit(run), (exit) =>
+    Effect.flatMap(Effect.exit(Effect.withSpan(run, `Connection.${requestName(req)}`)), (exit) =>
       Effect.andThen(
         caughtUp,
         send(Exit.isSuccess(exit) ? { t: "result", req, ok: true, value: exit.value ?? null } : { t: "result", req, ok: false, error: errorText(exit.cause) }),
       ),
-    );
+    ).pipe(Effect.ensuring(Effect.sync(() => kinds.delete(req))));
   const mcpOf = () => (mcp ? Effect.succeed(mcp) : Effect.fail(new NoMcp()));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
 
@@ -233,8 +234,12 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       if (folder) yield* send(filesFrame(frame.bot, folder.folder, folder.listing()));
     });
 
+  /** The kind of each request being answered, for its span. */
+  const kinds = new Map<number, string>();
+  const requestName = (req: number) => kinds.get(req) ?? "request";
   const receive = (text: string): Effect.Effect<void> => {
     const parsed = parseClientFrame(text);
+    if (parsed.ok && "req" in parsed.frame) kinds.set(parsed.frame.req, parsed.frame.t);
     if (!parsed.ok) {
       // Answer a request, so the client isn't left waiting for its timeout; drop anything else.
       if (parsed.req !== undefined) return send({ t: "result", req: parsed.req, ok: false, error: parsed.error });

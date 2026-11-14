@@ -270,13 +270,12 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
       for (const job of live.values()) if (job.bot === bot) n++;
       return n;
     },
-    find: (bot, id) =>
-      Effect.gen(function* () {
-        const job = live.get(id);
-        if (job && job.bot === bot) return { live: view(job) };
-        const row = yield* store.job(id);
-        return { ended: row && row.bot === bot ? row : undefined };
-      }),
+    find: Effect.fn("Jobs.find")(function* (bot, id) {
+      const job = live.get(id);
+      if (job && job.bot === bot) return { live: view(job) };
+      const row = yield* store.job(id);
+      return { ended: row && row.bot === bot ? row : undefined };
+    }),
     output: (id) => {
       const latest = live.get(id)?.progress.latest;
       return latest ? resultText(latest) : undefined;
@@ -293,20 +292,19 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
           Effect.ensuring(Effect.sync(() => job.waiters--)),
         );
       }),
-    stop: (id) =>
-      Effect.gen(function* () {
-        const job = live.get(id);
-        if (!job) return undefined;
-        job.stopping = true;
-        job.controller.abort();
-        const result = Option.getOrUndefined(yield* Deferred.await(job.outcome).pipe(Effect.timeoutOption(Duration.millis(STOP_GRACE_MS))));
-        // A tool that ignores its signal is let go: it's no longer the bot's job.
-        if (!result && live.delete(id)) {
-          yield* store.endJob(id, "stopped");
-          yield* events.changed(job.bot);
-        }
-        return result;
-      }),
+    stop: Effect.fn("Jobs.stop")(function* (id) {
+      const job = live.get(id);
+      if (!job) return undefined;
+      job.stopping = true;
+      job.controller.abort();
+      const result = Option.getOrUndefined(yield* Deferred.await(job.outcome).pipe(Effect.timeoutOption(Duration.millis(STOP_GRACE_MS))));
+      // A tool that ignores its signal is let go: it's no longer the bot's job.
+      if (!result && live.delete(id)) {
+        yield* store.endJob(id, "stopped");
+        yield* events.changed(job.bot);
+      }
+      return result;
+    }),
     stopAll: (bot) =>
       Effect.sync(() => {
         for (const job of [...live.values()]) {
@@ -315,19 +313,22 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
           job.controller.abort();
         }
       }),
-    recover: Effect.gen(function* () {
-      const lost = yield* store.runningJobs;
-      const at = yield* now;
-      for (const job of lost) {
-        const command = job.tool === "bash" ? " The command may even still be running." : "";
-        yield* store.endJob(
-          job.id,
-          "lost",
-          `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(at - job.startedAt)} after it started, so its result is lost. It may have taken effect, fully or partly.${command} Check before running it again.`,
-        );
-      }
-      return lost.length;
-    }),
+    recover: Effect.withSpan(
+      Effect.gen(function* () {
+        const lost = yield* store.runningJobs;
+        const at = yield* now;
+        for (const job of lost) {
+          const command = job.tool === "bash" ? " The command may even still be running." : "";
+          yield* store.endJob(
+            job.id,
+            "lost",
+            `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(at - job.startedAt)} after it started, so its result is lost. It may have taken effect, fully or partly.${command} Check before running it again.`,
+          );
+        }
+        return lost.length;
+      }),
+      "Jobs.recover",
+    ),
   };
   return jobs;
 });

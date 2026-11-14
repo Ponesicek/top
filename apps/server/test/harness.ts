@@ -16,7 +16,7 @@ import { afterAll } from "vitest";
 import * as Attachments from "../src/attachments.ts";
 import * as Daemon from "../src/daemon.ts";
 import * as Events from "../src/events.ts";
-import { createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "../src/fake-bots.ts";
+import { FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "../src/fake-bots.ts";
 import * as Mcp from "../src/mcp.ts";
 import { type ServeOptions, serve } from "../src/serve.ts";
 import * as Sqlite from "../src/sqlite.ts";
@@ -52,9 +52,6 @@ type Services = Store.Store | Events.Events | Daemon.Daemon | Daemon.BotKit;
 
 export async function harness(options: HarnessOptions = {}) {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "top-test-"));
-  const models = createModels();
-  models.setProvider(createFakeModelProvider(options.tps ?? 2_000).provider);
-
   const base = Layer.mergeAll(Events.layer, Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: join(dir, "top.sqlite") }))));
   const firstBots = Layer.effectDiscard(
     Effect.gen(function* () {
@@ -62,16 +59,20 @@ export async function harness(options: HarnessOptions = {}) {
       if ((yield* store.bots).length === 0) for (const name of options.bots ?? ["Atlas"]) yield* store.createBot(name, "", MODEL);
     }),
   );
-  const kit = Layer.succeed(
+  const kit = Layer.effect(
     Daemon.BotKit,
-    Daemon.BotKit.of({
-      models,
-      tools: options.tools ?? [],
-      thinking: "off",
-      files: options.files,
-      foregroundMs: options.foregroundMs ?? 30_000,
-      gatherMs: options.gatherMs,
-      retryDelaysMs: [100, 100, 100],
+    Effect.gen(function* () {
+      const models = createModels();
+      models.setProvider((yield* makeFakeModelProvider(options.tps ?? 2_000)).provider);
+      return Daemon.BotKit.of({
+        models,
+        tools: options.tools ?? [],
+        thinking: "off",
+        files: options.files,
+        foregroundMs: options.foregroundMs ?? 30_000,
+        gatherMs: options.gatherMs,
+        retryDelaysMs: [100, 100, 100],
+      });
     }),
   );
   const extras = Layer.mergeAll(options.attachments ? Attachments.layer(dir) : Layer.empty, options.mcp ? Mcp.layer({ oauthPort: 0 }) : Layer.empty);

@@ -100,14 +100,14 @@ test("files entries stay out of the model's context", async () => {
 });
 
 test("hidden files and dependency folders aren't listed", async () => {
-  const { folder } = await setup();
+  const { h, folder } = await setup();
   mkdirSync(join(folder, ".git"), { recursive: true });
   mkdirSync(join(folder, "node_modules", "x"), { recursive: true });
   writeFileSync(join(folder, ".git", "HEAD"), "ref");
   writeFileSync(join(folder, "node_modules", "x", "index.js"), "");
   writeFileSync(join(folder, ".env"), "SECRET=1");
   writeFileSync(join(folder, "page.html"), "");
-  assert.deepEqual([...(await scan(folder)).files.keys()], ["page.html"]);
+  assert.deepEqual([...(await h.run(scan(folder))).files.keys()], ["page.html"]);
   assert.deepEqual(diff(new Map([["a", { size: 1, mtime: 1 }]]), new Map([["a", { size: 1, mtime: 1 }]])), []);
 });
 

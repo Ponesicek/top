@@ -60,7 +60,7 @@ export const makeWakeClock = Effect.fnUntraced(function* (deliver: (row: InboxRo
       );
     }
     return failed;
-  });
+  }).pipe(Effect.withSpan("WakeClock.fire"));
 
   const loop = Effect.gen(function* () {
     for (;;) {

@@ -7,11 +7,12 @@
  * - read, ls, grep, find only look, and write puts the same content again, so they re-run;
  * - bash and edit may have half-happened or happened, so the model is told and checks first.
  */
-import { mkdirSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import { fromPromise, type TopTool } from "./tools.ts";
 
 const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
@@ -30,10 +31,8 @@ export function botFolder(root: string, name: string): string {
 }
 
 /** Make the bot's folder if it isn't there. */
-export function ensureFolder(folder: string): string {
-  mkdirSync(folder, { recursive: true });
-  return folder;
-}
+export const ensureFolder = (folder: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) => Effect.as(Effect.orDie(fs.makeDirectory(folder, { recursive: true })), folder));
 
 // pi's tools each have their own parameter schema; any one of them goes in.
 // biome-ignore lint/suspicious/noExplicitAny: plain AgentTool doesn't accept pi's concrete tools (typecheck fails), any does

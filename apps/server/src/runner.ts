@@ -354,7 +354,7 @@ export const makeRunner = Effect.fnUntraced(function* (
       // Not when the daemon is stopping (interrupted above): the task is still running, and resumes when it starts.
       yield* store.setRunActive(id, false);
       return ok;
-    });
+    }).pipe(Effect.withSpan("Runner.run", { attributes: { bot: bot.name } }));
 
   const drive = Effect.gen(function* () {
     for (;;) {
@@ -469,7 +469,7 @@ export const makeRunner = Effect.fnUntraced(function* (
       yield* setStatus("failed", { error: `Stopped after ${restarts} restarts` });
     }
     return `restart ${restarts}${giveUp ? " (task ended)" : ""}${settled.length ? `; ${settled.join(", ")}` : ""}`;
-  });
+  }).pipe(Effect.withSpan("Runner.recover", { attributes: { bot: bot.name } }));
 
   const runner: BotRunner = {
     id,

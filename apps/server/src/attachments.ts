@@ -221,7 +221,7 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
       return Attachments.of({
         root,
         path,
-        lookup: (bot, ids) =>
+        lookup: Effect.fn("Attachments.lookup")((bot: number, ids: readonly string[]) =>
           Effect.forEach(ids, (id) =>
             Effect.gen(function* () {
               const row = ID.test(id) ? yield* store.attachment(id) : undefined;
@@ -230,33 +230,32 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
               return { id: row.id, name: row.name, mimeType: row.mimeType, size: row.size };
             }),
           ),
-        imageData: (attachment) =>
-          Effect.gen(function* () {
-            const cached = images.get(attachment.id);
-            if (cached !== undefined) {
-              // Most recently used goes last.
-              images.delete(attachment.id);
-              images.set(attachment.id, cached);
-              return cached;
-            }
-            const bytes = yield* Effect.option(fs.readFile(path(attachment)));
-            if (Option.isNone(bytes)) return undefined;
-            const data = Buffer.from(bytes.value).toString("base64");
-            images.set(attachment.id, data);
-            imageBytes += data.length;
-            for (const [id, old] of images) {
-              if (imageBytes <= IMAGE_CACHE_BYTES || id === attachment.id) break;
-              images.delete(id);
-              imageBytes -= old.length;
-            }
-            return data;
-          }),
-        removeBot: (bot) =>
-          Effect.gen(function* () {
-            for (const row of yield* store.botAttachments(bot)) yield* remove(row.id);
-          }),
-        sweep,
-        handle,
+        ),
+        imageData: Effect.fn("Attachments.imageData")(function* (attachment) {
+          const cached = images.get(attachment.id);
+          if (cached !== undefined) {
+            // Most recently used goes last.
+            images.delete(attachment.id);
+            images.set(attachment.id, cached);
+            return cached;
+          }
+          const bytes = yield* Effect.option(fs.readFile(path(attachment)));
+          if (Option.isNone(bytes)) return undefined;
+          const data = Buffer.from(bytes.value).toString("base64");
+          images.set(attachment.id, data);
+          imageBytes += data.length;
+          for (const [id, old] of images) {
+            if (imageBytes <= IMAGE_CACHE_BYTES || id === attachment.id) break;
+            images.delete(id);
+            imageBytes -= old.length;
+          }
+          return data;
+        }),
+        removeBot: Effect.fn("Attachments.removeBot")(function* (bot) {
+          for (const row of yield* store.botAttachments(bot)) yield* remove(row.id);
+        }),
+        sweep: Effect.withSpan(sweep, "Attachments.sweep"),
+        handle: (request, rest) => Effect.withSpan(handle(request, rest), "Attachments.handle"),
       });
     }),
   );

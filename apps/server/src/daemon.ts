@@ -23,6 +23,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FiberMap from "effect/FiberMap";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
@@ -87,8 +88,8 @@ export class BotKit extends Context.Service<
   BotKit,
   {
     readonly models: Models;
-    /** The bots' own tools; per bot when they differ (each real bot works in its own folder). */
-    readonly tools: readonly TopTool[] | ((bot: BotRow) => readonly TopTool[]);
+    /** The bots' own tools; per bot when they differ (each real bot works in its own folder, made first). */
+    readonly tools: readonly TopTool[] | ((bot: BotRow) => Effect.Effect<readonly TopTool[]>);
     readonly thinking: ThinkingLevel;
     /** Named system prompt sections each bot should have (see runner.ts). */
     readonly sections?: ((bot: BotRow) => Effect.Effect<Readonly<Record<string, string>>>) | undefined;
@@ -187,6 +188,7 @@ const make = Effect.gen(function* () {
   const store = yield* Store;
   const events = yield* Events;
   const kit = yield* BotKit;
+  const fs = yield* FileSystem.FileSystem;
   const mcp = Option.getOrUndefined(yield* Effect.serviceOption(Mcp));
   const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
   const scope = yield* Effect.scope;
@@ -278,7 +280,7 @@ const make = Effect.gen(function* () {
         });
       // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run. Any of
       // them that runs too long moves to the background.
-      const own = [...(typeof kit.tools === "function" ? kit.tools(bot) : kit.tools), ...collar];
+      const own = [...(typeof kit.tools === "function" ? yield* kit.tools(bot) : kit.tools), ...collar];
       const plain = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
       toolSources.set(bot.id, plain);
       const wrapped = own.map(jobs.wrap);
@@ -322,7 +324,7 @@ const make = Effect.gen(function* () {
         );
       }
       return live;
-    }).pipe(Effect.provideService(Store, store));
+    }).pipe(Effect.provideService(Store, store), Effect.provideService(FileSystem.FileSystem, fs));
 
   for (const bot of yield* store.bots) yield* add(bot);
 
@@ -337,70 +339,65 @@ const make = Effect.gen(function* () {
     has: (bot) => bots.has(bot),
     runner: runnerOf,
     runners: () => [...bots.values()].map((live) => live.runner),
-    createBot: (rawName, rawDescription) =>
-      Effect.gen(function* () {
-        const newBot = kit.newBot;
-        if (!newBot) return yield* new BotError({ message: "This daemon can't make bots." });
-        const name = rawName.trim().replace(/\s+/g, " ");
-        const description = rawDescription.trim();
-        if (!name) return yield* new BotError({ message: "Give the bot a name." });
-        if (name.length > MAX_BOT_NAME) return yield* new BotError({ message: `Keep the name under ${MAX_BOT_NAME + 1} characters.` });
-        if (description.length > MAX_BOT_DESCRIPTION)
-          return yield* new BotError({ message: `Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.` });
-        // Case-insensitive: a real bot's folder is named after it, and Windows and macOS folders ignore case.
-        const taken = [...bots.values()].some((live) => live.runner.name.toLowerCase() === name.toLowerCase());
-        if (taken) return yield* new BotError({ message: `There's already a bot named ${name}.` });
-        const id = yield* addBot(name, description, newBot).pipe(Effect.provideService(Store, store));
-        const live = yield* add((yield* store.bot(id))!);
-        yield* events.publish({ _tag: "Bot", summary: live.summary });
-        return id;
-      }),
-    deleteBot: (id) =>
-      Effect.gen(function* () {
-        const live = bots.get(id);
-        if (!live) return yield* new UnknownBotError({ bot: id });
-        bots.delete(id);
-        toolSources.delete(id);
-        yield* FiberMap.remove(dirty, id);
-        yield* store.markDeleted(id);
-        yield* wakes.changed;
-        yield* events.publish({ _tag: "BotRemoved", bot: id });
-        if (mcp) yield* mcp.botRemoved(id);
-        const { runner } = live;
-        yield* runner.close;
-        yield* runner.abort;
-        yield* jobs.stopAll(id);
-        // Its rows go once it has stopped: a step it was finishing can still be written meanwhile.
-        yield* Effect.forkIn(
-          Effect.gen(function* () {
-            yield* runner.waitForIdle;
-            yield* Scope.close(live.scope, Exit.void);
-            if (attachments) yield* attachments.removeBot(id);
-            yield* store.purgeBot(id);
-          }).pipe(Effect.catchCause((cause) => Effect.logError(`deleting ${runner.name}`, cause))),
-          scope,
-        );
-      }),
-    submit: (bot, requestId, text, whenBusy, clientId, attachmentIds = []) =>
-      Effect.gen(function* () {
-        const runner = yield* runnerOf(bot);
-        if (whenBusy === "reject" && (runner.busy() || (yield* store.inbox(bot)).length > 0))
-          return yield* new BusyError({ message: `${runner.name} is busy` });
-        if (attachmentIds.length && !attachments) return yield* new AttachmentError({ message: "This daemon doesn't take attachments." });
-        if (attachmentIds.length > MAX_ATTACHMENTS) return yield* new AttachmentError({ message: `A message can have up to ${MAX_ATTACHMENTS} attachments.` });
-        if (!text.trim() && !attachmentIds.length) return yield* new AttachmentError({ message: "The message is empty." });
-        const found: Attachment[] = attachments ? yield* attachments.lookup(bot, attachmentIds) : [];
-        const result = yield* store.submit(bot, requestId, text, whenBusy === "steer" ? "steer" : "followUp", clientId, found);
-        if (result === "duplicate") return { duplicate: true };
-        yield* queued((yield* store.inboxRow(requestId))!);
-        return { duplicate: false };
-      }),
-    stop: (bot) =>
-      Effect.gen(function* () {
-        const runner = yield* runnerOf(bot);
-        yield* runner.abort;
-        yield* jobs.stopAll(bot);
-      }),
+    createBot: Effect.fn("Daemon.createBot")(function* (rawName, rawDescription) {
+      const newBot = kit.newBot;
+      if (!newBot) return yield* new BotError({ message: "This daemon can't make bots." });
+      const name = rawName.trim().replace(/\s+/g, " ");
+      const description = rawDescription.trim();
+      if (!name) return yield* new BotError({ message: "Give the bot a name." });
+      if (name.length > MAX_BOT_NAME) return yield* new BotError({ message: `Keep the name under ${MAX_BOT_NAME + 1} characters.` });
+      if (description.length > MAX_BOT_DESCRIPTION)
+        return yield* new BotError({ message: `Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.` });
+      // Case-insensitive: a real bot's folder is named after it, and Windows and macOS folders ignore case.
+      const taken = [...bots.values()].some((live) => live.runner.name.toLowerCase() === name.toLowerCase());
+      if (taken) return yield* new BotError({ message: `There's already a bot named ${name}.` });
+      const id = yield* addBot(name, description, newBot).pipe(Effect.provideService(Store, store));
+      const live = yield* add((yield* store.bot(id))!);
+      yield* events.publish({ _tag: "Bot", summary: live.summary });
+      return id;
+    }),
+    deleteBot: Effect.fn("Daemon.deleteBot")(function* (id) {
+      const live = bots.get(id);
+      if (!live) return yield* new UnknownBotError({ bot: id });
+      bots.delete(id);
+      toolSources.delete(id);
+      yield* FiberMap.remove(dirty, id);
+      yield* store.markDeleted(id);
+      yield* wakes.changed;
+      yield* events.publish({ _tag: "BotRemoved", bot: id });
+      if (mcp) yield* mcp.botRemoved(id);
+      const { runner } = live;
+      yield* runner.close;
+      yield* runner.abort;
+      yield* jobs.stopAll(id);
+      // Its rows go once it has stopped: a step it was finishing can still be written meanwhile.
+      yield* Effect.forkIn(
+        Effect.gen(function* () {
+          yield* runner.waitForIdle;
+          yield* Scope.close(live.scope, Exit.void);
+          if (attachments) yield* attachments.removeBot(id);
+          yield* store.purgeBot(id);
+        }).pipe(Effect.catchCause((cause) => Effect.logError(`deleting ${runner.name}`, cause))),
+        scope,
+      );
+    }),
+    submit: Effect.fn("Daemon.submit")(function* (bot, requestId, text, whenBusy, clientId, attachmentIds = []) {
+      const runner = yield* runnerOf(bot);
+      if (whenBusy === "reject" && (runner.busy() || (yield* store.inbox(bot)).length > 0)) return yield* new BusyError({ message: `${runner.name} is busy` });
+      if (attachmentIds.length && !attachments) return yield* new AttachmentError({ message: "This daemon doesn't take attachments." });
+      if (attachmentIds.length > MAX_ATTACHMENTS) return yield* new AttachmentError({ message: `A message can have up to ${MAX_ATTACHMENTS} attachments.` });
+      if (!text.trim() && !attachmentIds.length) return yield* new AttachmentError({ message: "The message is empty." });
+      const found: Attachment[] = attachments ? yield* attachments.lookup(bot, attachmentIds) : [];
+      const result = yield* store.submit(bot, requestId, text, whenBusy === "steer" ? "steer" : "followUp", clientId, found);
+      if (result === "duplicate") return { duplicate: true };
+      yield* queued((yield* store.inboxRow(requestId))!);
+      return { duplicate: false };
+    }),
+    stop: Effect.fn("Daemon.stop")(function* (bot) {
+      const runner = yield* runnerOf(bot);
+      yield* runner.abort;
+      yield* jobs.stopAll(bot);
+    }),
     start: Effect.gen(function* () {
       const lost = yield* jobs.recover;
       if (lost) yield* Effect.log(`${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
@@ -410,7 +407,7 @@ const make = Effect.gen(function* () {
       }
       for (const live of bots.values()) yield* live.runner.start;
       yield* wakes.start;
-    }),
+    }).pipe(Effect.withSpan("Daemon.start")),
     changed,
     toolsOf,
     hasFiles: kit.files !== undefined,
@@ -421,4 +418,4 @@ const make = Effect.gen(function* () {
 });
 
 /** The daemon, running its bots until the layer closes. */
-export const layer: Layer.Layer<Daemon, never, Store | Events | BotKit> = Layer.effect(Daemon, make);
+export const layer: Layer.Layer<Daemon, never, Store | Events | BotKit | FileSystem.FileSystem> = Layer.effect(Daemon, make);

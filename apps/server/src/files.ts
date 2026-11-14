@@ -14,17 +14,18 @@
  * - The listing is saved with the entry that reports it, so a change made while the daemon was down,
  *   or cut off by a crash before it was reported, is reported when it starts.
  */
-import { type Dirent, type FSWatcher, mkdirSync, watch } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { type FileChange, type FileView, MAX_FILES } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FiberHandle from "effect/FiberHandle";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { type FileStat, Store, type StoredEntry } from "./store.ts";
 
 /** Writes this close together are one change. */
@@ -41,43 +42,37 @@ export type Listing = { readonly files: ReadonlyMap<string, FileStat>; readonly 
 const EMPTY: Listing = { files: new Map(), more: false };
 
 /** The files under `folder`, by path relative to it (`/` between parts), at most `MAX_FILES`. */
-export async function scan(folder: string): Promise<Listing> {
-  const files = new Map<string, FileStat>();
-  let more = false;
-  const walk = async (dir: string, prefix: string, depth: number) => {
-    let entries: Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const entry of entries) {
-      if (more) return;
-      if (entry.name.startsWith(".") || SKIP.has(entry.name)) continue;
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        if (depth < MAX_DEPTH) await walk(join(dir, entry.name), path, depth + 1);
-        continue;
-      }
-      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-      try {
-        // Follows a link; a link to a folder isn't walked (it could loop).
-        const info = await stat(join(dir, entry.name));
-        if (!info.isFile()) continue;
-        if (files.size >= MAX_FILES) {
-          more = true;
-          return;
+export const scan = (folder: string): Effect.Effect<Listing, never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const files = new Map<string, FileStat>();
+    let more = false;
+    const walk = (dir: string, prefix: string, depth: number): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const entries = [...(yield* fs.readDirectoryEntries(dir).pipe(Effect.orElseSucceed(() => [])))];
+        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        for (const entry of entries) {
+          if (more) return;
+          if (entry.name.startsWith(".") || SKIP.has(entry.name)) continue;
+          const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+          if (entry.type === "Directory") {
+            if (depth < MAX_DEPTH) yield* walk(join(dir, entry.name), path, depth + 1);
+            continue;
+          }
+          if (entry.type !== "File" && entry.type !== "SymbolicLink") continue;
+          // Follows a link; a link to a folder isn't walked (it could loop). One removed while listing is skipped.
+          const info = yield* Effect.option(fs.stat(join(dir, entry.name)));
+          if (Option.isNone(info) || info.value.type !== "File") continue;
+          if (files.size >= MAX_FILES) {
+            more = true;
+            return;
+          }
+          files.set(path, { size: Number(info.value.size), mtime: Option.match(info.value.mtime, { onNone: () => 0, onSome: (d) => d.getTime() }) });
         }
-        files.set(path, { size: info.size, mtime: Math.round(info.mtimeMs) });
-      } catch {
-        // removed while listing
-      }
-    }
-  };
-  await walk(folder, "", 0);
-  return { files, more };
-}
+      });
+    yield* walk(folder, "", 0);
+    return { files, more };
+  });
 
 /** What changed between two listings, by path. */
 export function diff(before: ReadonlyMap<string, FileStat>, after: ReadonlyMap<string, FileStat>): FileChange[] {
@@ -112,41 +107,41 @@ export const makeFilesFolder = Effect.fnUntraced(function* (
   onChange: (listing: Listing, entry: StoredEntry | undefined) => Effect.Effect<void>,
 ) {
   const store = yield* Store;
+  const fs = yield* FileSystem.FileSystem;
   const scope = yield* Effect.scope;
   /** What the store holds; `undefined` until the folder was first listed (then nothing is reported). */
   let known: ReadonlyMap<string, FileStat> | undefined = yield* store.files(bot);
   let listing: Listing = EMPTY;
-  let watcher: FSWatcher | undefined;
   /** A change to look at: `true` to list at once (the poll, a broken watcher), `false` once writes settle. */
   const signals = yield* Queue.unbounded<boolean>();
   const signal = (now: boolean) => Queue.offerUnsafe(signals, now);
   const scanning = yield* Semaphore.make(1);
+  const watcher = yield* FiberHandle.make();
+  let watching = false;
 
-  const unwatch = () => {
-    watcher?.close();
-    watcher = undefined;
-  };
-  yield* Effect.addFinalizer(() => Effect.sync(unwatch));
-  const startWatching = () => {
-    try {
-      mkdirSync(folder, { recursive: true });
-      // Recursive watching works on macOS, Windows and (Node ≥ 20) Linux.
-      const current = watch(folder, { recursive: true }, () => signal(false));
-      current.on("error", () => {
-        // The folder was removed or the watcher broke: the poll keeps going, and it is watched again.
-        current.close();
-        if (watcher === current) watcher = undefined;
-        signal(true);
-      });
-      watcher = current;
-    } catch {
-      // Not there (yet) or not watchable: the poll covers it.
-    }
-  };
+  /** Watch the folder (recursively: macOS, Windows and Linux with Node ≥ 20). If it's removed or the watcher breaks, the poll goes on and it's watched again. */
+  const watch = Effect.gen(function* () {
+    if (watching) return;
+    yield* Effect.ignore(fs.makeDirectory(folder, { recursive: true }));
+    watching = true;
+    yield* FiberHandle.run(
+      watcher,
+      fs.watch(folder, { recursive: true }).pipe(
+        Stream.runForEach(() => Effect.sync(() => signal(false))),
+        Effect.ignore,
+        Effect.andThen(
+          Effect.sync(() => {
+            watching = false;
+            signal(true);
+          }),
+        ),
+      ),
+    );
+  });
 
   const scanOnce = Effect.gen(function* () {
-    if (!watcher) startWatching();
-    const next = yield* Effect.promise(() => scan(folder));
+    yield* watch;
+    const next = yield* scan(folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
     const changes = known ? diff(known, next.files) : [];
     const first = listing === EMPTY;
     if (known && changes.length === 0) {
@@ -159,7 +154,9 @@ export const makeFilesFolder = Effect.fnUntraced(function* (
     listing = next;
     yield* onChange(next, entry);
   }).pipe(Effect.catchCause((cause) => Effect.logError(`listing ${folder}`, cause)));
-  const rescan = scanning.withPermits(1)(scanOnce);
+  const rescan = scanning
+    .withPermits(1)(scanOnce)
+    .pipe(Effect.withSpan("FilesFolder.rescan", { attributes: { bot } }));
 
   /** Wait for writes to settle (`SETTLE_MS` of quiet), but list at most `MAX_WAIT_MS` after the first. */
   const settle = Effect.fnUntraced(function* (now: boolean) {
@@ -174,7 +171,6 @@ export const makeFilesFolder = Effect.fnUntraced(function* (
     }
   });
 
-  yield* Effect.sync(startWatching);
   yield* rescan;
   yield* Effect.forkIn(Effect.forever(Effect.flatMap(Queue.take(signals), settle).pipe(Effect.andThen(rescan))), scope);
   yield* Effect.forkIn(

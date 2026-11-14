@@ -80,17 +80,6 @@ export function toolName(server: string, tool: string): string {
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
-const isMcpServerError = Schema.is(McpServerError);
-/** A check below that throws an `McpServerError` (anything else it throws is a bug). */
-const attempt = <A>(f: () => A): Effect.Effect<A, McpServerError> =>
-  Effect.suspend(() => {
-    try {
-      return Effect.succeed(f());
-    } catch (error) {
-      return isMcpServerError(error) ? Effect.fail(error) : Effect.die(error);
-    }
-  });
-
 /** Why connecting failed, as pi-mcp threw it. */
 class ConnectFailure extends Data.TaggedError("ConnectFailure")<{ readonly cause: unknown }> {}
 
@@ -352,28 +341,24 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
       });
       yield* Effect.addFinalizer(() => closeCallbackServer);
 
-      const validate = (config: McpServerConfig, previous: McpServerConfig | undefined): McpServerConfig => {
-        if (config.transport === "stdio") {
-          const command = config.command.trim();
-          if (!command) throw new McpServerError({ message: "Give the command that starts the server." });
-          const args = [...config.args];
-          const env = secrets(config.env, previous?.transport === "stdio" ? previous.env : [], false, "variable");
-          for (const v of env) if (!ENV_NAME.test(v.name)) throw new McpServerError({ message: `"${v.name}" isn't a valid environment variable name.` });
-          return { transport: "stdio", command, args, env };
-        }
-        const url = config.url.trim();
-        let parsed: URL;
-        try {
-          parsed = new URL(url);
-        } catch {
-          throw new McpServerError({ message: "Give the server's full URL, starting with https://." });
-        }
-        if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
-          throw new McpServerError({ message: "The URL has to start with https:// or http://." });
-        const headers = secrets(config.headers, previous?.transport === "http" ? previous.headers : [], true, "header");
-        for (const h of headers) if (!HEADER_NAME.test(h.name)) throw new McpServerError({ message: `"${h.name}" isn't a valid header name.` });
-        return { transport: "http", url: parsed.href, headers };
-      };
+      /** Check a config from a client (its shape is checked already) and fill in the secrets it left out from `previous`. */
+      const validate = (config: McpServerConfig, previous: McpServerConfig | undefined) =>
+        Effect.gen(function* () {
+          if (config.transport === "stdio") {
+            const command = config.command.trim();
+            if (!command) return yield* refuse("Give the command that starts the server.");
+            const args = [...config.args];
+            const env = yield* secrets(config.env, previous?.transport === "stdio" ? previous.env : [], false, "variable");
+            for (const v of env) if (!ENV_NAME.test(v.name)) return yield* refuse(`"${v.name}" isn't a valid environment variable name.`);
+            return { transport: "stdio", command, args, env } satisfies McpServerConfig;
+          }
+          const parsed = parseUrl(config.url.trim());
+          if (!parsed) return yield* refuse("Give the server's full URL, starting with https://.");
+          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return yield* refuse("The URL has to start with https:// or http://.");
+          const headers = yield* secrets(config.headers, previous?.transport === "http" ? previous.headers : [], true, "header");
+          for (const h of headers) if (!HEADER_NAME.test(h.name)) return yield* refuse(`"${h.name}" isn't a valid header name.`);
+          return { transport: "http", url: parsed.href, headers } satisfies McpServerConfig;
+        });
 
       const adapt = (connection: Connection, tool: Tool): TopTool => {
         const { id, name: server } = connection;
@@ -424,133 +409,126 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
 
       return Mcp.of({
         views: Effect.sync(() => [...servers.values()].map(view)),
-        save: (id, rawName, config) =>
-          Effect.gen(function* () {
-            const existing = id === undefined ? undefined : yield* get(id);
-            const name = rawName.trim().replace(/\s+/g, " ");
-            const clean = yield* attempt(() => {
-              if (!name) throw new McpServerError({ message: "Give the server a name." });
-              if (name.length > MAX_MCP_NAME) throw new McpServerError({ message: `Keep the name under ${MAX_MCP_NAME + 1} characters.` });
-              if (!slug(name)) throw new McpServerError({ message: "Use some letters or digits in the name." });
-              // Its tools would clash with Top's own (collar/index.ts).
-              if (slug(name) === COLLAR) throw new McpServerError({ message: `${name} is the name of Top's own tools. Pick another.` });
-              for (const other of servers.values()) {
-                if (other.id === id) continue;
-                if (other.name.toLowerCase() === name.toLowerCase()) throw new McpServerError({ message: `There's already a server named ${other.name}.` });
-                // Their tools would get the same names.
-                if (slug(other.name) === slug(name))
-                  throw new McpServerError({ message: `That name is too close to ${other.name}. Pick one that differs in more than punctuation.` });
-              }
-              return validate(config, existing?.config);
-            });
-            if (existing) {
-              // Credentials belong to one server: a new URL (or a switch to a program) signs in again.
-              const resetOAuth = existing.config.transport !== "http" || clean.transport !== "http" || existing.config.url !== clean.url;
-              yield* store.updateMcpServer(existing.id, name, JSON.stringify(clean), resetOAuth);
-              existing.name = name;
-              existing.config = clean;
-              if (resetOAuth) existing.signedIn = false;
-              yield* connect(existing);
-              return existing.id;
-            }
-            const newId = yield* store.createMcpServer(name, JSON.stringify(clean));
-            const connection: Connection = {
-              id: newId,
-              name,
-              config: clean,
-              bots: new Set(),
-              state: "connecting",
-              error: undefined,
-              tools: [],
-              client: undefined,
-              signedIn: false,
-              attempts: 0,
-            };
-            servers.set(newId, connection);
-            yield* connect(connection);
-            return newId;
-          }),
-        delete: (id) =>
-          Effect.gen(function* () {
-            yield* get(id);
-            servers.delete(id);
-            yield* store.deleteMcpServer(id);
-            yield* FiberMap.remove(fibers, id);
-            yield* events.publish({ _tag: "McpServerRemoved", id });
-          }),
-        assign: (id, bot, on) =>
-          Effect.gen(function* () {
-            const connection = yield* get(id);
-            if (connection.bots.has(bot) === on) return;
-            yield* store.assignMcp(id, bot, on);
-            if (on) connection.bots.add(bot);
-            else connection.bots.delete(bot);
-            yield* changed(connection);
-          }),
+        save: Effect.fn("Mcp.save")(function* (id, rawName, config) {
+          const existing = id === undefined ? undefined : yield* get(id);
+          const name = rawName.trim().replace(/\s+/g, " ");
+          if (!name) return yield* refuse("Give the server a name.");
+          if (name.length > MAX_MCP_NAME) return yield* refuse(`Keep the name under ${MAX_MCP_NAME + 1} characters.`);
+          if (!slug(name)) return yield* refuse("Use some letters or digits in the name.");
+          // Its tools would clash with Top's own (collar/index.ts).
+          if (slug(name) === COLLAR) return yield* refuse(`${name} is the name of Top's own tools. Pick another.`);
+          for (const other of servers.values()) {
+            if (other.id === id) continue;
+            if (other.name.toLowerCase() === name.toLowerCase()) return yield* refuse(`There's already a server named ${other.name}.`);
+            // Their tools would get the same names.
+            if (slug(other.name) === slug(name))
+              return yield* refuse(`That name is too close to ${other.name}. Pick one that differs in more than punctuation.`);
+          }
+          const clean = yield* validate(config, existing?.config);
+          if (existing) {
+            // Credentials belong to one server: a new URL (or a switch to a program) signs in again.
+            const resetOAuth = existing.config.transport !== "http" || clean.transport !== "http" || existing.config.url !== clean.url;
+            yield* store.updateMcpServer(existing.id, name, JSON.stringify(clean), resetOAuth);
+            existing.name = name;
+            existing.config = clean;
+            if (resetOAuth) existing.signedIn = false;
+            yield* connect(existing);
+            return existing.id;
+          }
+          const newId = yield* store.createMcpServer(name, JSON.stringify(clean));
+          const connection: Connection = {
+            id: newId,
+            name,
+            config: clean,
+            bots: new Set(),
+            state: "connecting",
+            error: undefined,
+            tools: [],
+            client: undefined,
+            signedIn: false,
+            attempts: 0,
+          };
+          servers.set(newId, connection);
+          yield* connect(connection);
+          return newId;
+        }),
+        delete: Effect.fn("Mcp.delete")(function* (id) {
+          yield* get(id);
+          servers.delete(id);
+          yield* store.deleteMcpServer(id);
+          yield* FiberMap.remove(fibers, id);
+          yield* events.publish({ _tag: "McpServerRemoved", id });
+        }),
+        assign: Effect.fn("Mcp.assign")(function* (id, bot, on) {
+          const connection = yield* get(id);
+          if (connection.bots.has(bot) === on) return;
+          yield* store.assignMcp(id, bot, on);
+          if (on) connection.bots.add(bot);
+          else connection.bots.delete(bot);
+          yield* changed(connection);
+        }),
         botRemoved: (bot) =>
           Effect.forEach(servers.values(), (connection) => (connection.bots.delete(bot) ? changed(connection) : Effect.void), { discard: true }),
-        retry: (id) => Effect.flatMap(get(id), connect),
-        signOut: (id) =>
-          Effect.gen(function* () {
-            const connection = yield* get(id);
-            yield* store.setMcpOAuth(id, null);
-            connection.signedIn = false;
+        retry: Effect.fn("Mcp.retry")((id: number) => Effect.flatMap(get(id), connect)),
+        signOut: Effect.fn("Mcp.signOut")(function* (id) {
+          const connection = yield* get(id);
+          yield* store.setMcpOAuth(id, null);
+          connection.signedIn = false;
+          yield* connect(connection);
+        }),
+        signIn: Effect.fn("Mcp.signIn")(function* (id) {
+          const connection = yield* get(id);
+          const config = connection.config;
+          if (config.transport !== "http") return yield* new McpServerError({ message: `${connection.name} runs as a program; it has no sign-in.` });
+          if (hasAuthorization(config))
+            return yield* new McpServerError({
+              message: `${connection.name} signs in with its Authorization header. Remove the header to sign in with OAuth instead.`,
+            });
+          let authorizationUrl: string | undefined;
+          const provider = oauthProvider(connection, (url) => {
+            authorizationUrl = url.href;
+          });
+          // Registered for another redirect (the daemon's port changed): register again.
+          const client = yield* Effect.promise(() => provider.clientInformation());
+          if (client && "redirect_uris" in client && Array.isArray(client.redirect_uris) && !client.redirect_uris.includes(redirectUrl)) {
+            yield* Effect.promise(() => provider.invalidateCredentials("client"));
+          }
+          const server = yield* callbackServer;
+          const result = yield* Effect.tryPromise({
+            try: () => authorizeMcp(provider, { serverUrl: config.url, skipRefresh: true }),
+            catch: (error) => new McpServerError({ message: `Couldn't start signing in to ${connection.name}: ${messageOf(error)}` }),
+          });
+          if (result === "AUTHORIZED" || !authorizationUrl) {
             yield* connect(connection);
-          }),
-        signIn: (id) =>
-          Effect.gen(function* () {
-            const connection = yield* get(id);
-            const config = connection.config;
-            if (config.transport !== "http") return yield* new McpServerError({ message: `${connection.name} runs as a program; it has no sign-in.` });
-            if (hasAuthorization(config))
-              return yield* new McpServerError({
-                message: `${connection.name} signs in with its Authorization header. Remove the header to sign in with OAuth instead.`,
-              });
-            let authorizationUrl: string | undefined;
-            const provider = oauthProvider(connection, (url) => {
-              authorizationUrl = url.href;
-            });
-            // Registered for another redirect (the daemon's port changed): register again.
-            const client = yield* Effect.promise(() => provider.clientInformation());
-            if (client && "redirect_uris" in client && Array.isArray(client.redirect_uris) && !client.redirect_uris.includes(redirectUrl)) {
-              yield* Effect.promise(() => provider.invalidateCredentials("client"));
-            }
-            const server = yield* callbackServer;
-            const result = yield* Effect.tryPromise({
-              try: () => authorizeMcp(provider, { serverUrl: config.url, skipRefresh: true }),
-              catch: (error) => new McpServerError({ message: `Couldn't start signing in to ${connection.name}: ${messageOf(error)}` }),
-            });
-            if (result === "AUTHORIZED" || !authorizationUrl) {
-              yield* connect(connection);
-              return yield* new McpServerError({ message: `${connection.name} is already signed in.` });
-            }
-            const state = yield* Effect.promise(() => provider.state());
-            if (!waiting.has(state)) {
-              waiting.add(state);
-              const attempts = connection.attempts;
-              const finish = Effect.tryPromise(async () => {
-                const { code, iss } = await server.waitForCallback(state);
-                await authorizeMcp(provider, { serverUrl: config.url, authorizationCode: code, ...(iss ? { iss } : {}) });
-              }).pipe(
-                Effect.andThen(Effect.suspend(() => (servers.get(id) === connection ? connect(connection) : Effect.void))),
-                Effect.catchCause((cause) =>
-                  Effect.suspend(() => {
-                    if (servers.get(id) !== connection || connection.attempts !== attempts) return Effect.void;
-                    connection.error = `Signing in didn't finish: ${messageOf(Cause.squash(cause))}`;
-                    return changed(connection);
-                  }),
-                ),
-                Effect.ensuring(
-                  Effect.suspend(() => {
-                    waiting.delete(state);
-                    return waiting.size === 0 ? closeCallbackServer : Effect.void;
-                  }),
-                ),
-              );
-              yield* Effect.forkIn(finish, scope);
-            }
-            return authorizationUrl;
-          }),
+            return yield* new McpServerError({ message: `${connection.name} is already signed in.` });
+          }
+          const state = yield* Effect.promise(() => provider.state());
+          if (!waiting.has(state)) {
+            waiting.add(state);
+            const attempts = connection.attempts;
+            const finish = Effect.tryPromise(async () => {
+              const { code, iss } = await server.waitForCallback(state);
+              await authorizeMcp(provider, { serverUrl: config.url, authorizationCode: code, ...(iss ? { iss } : {}) });
+            }).pipe(
+              Effect.andThen(Effect.suspend(() => (servers.get(id) === connection ? connect(connection) : Effect.void))),
+              Effect.catchCause((cause) =>
+                Effect.suspend(() => {
+                  if (servers.get(id) !== connection || connection.attempts !== attempts) return Effect.void;
+                  connection.error = `Signing in didn't finish: ${messageOf(Cause.squash(cause))}`;
+                  return changed(connection);
+                }),
+              ),
+              Effect.ensuring(
+                Effect.suspend(() => {
+                  waiting.delete(state);
+                  return waiting.size === 0 ? closeCallbackServer : Effect.void;
+                }),
+              ),
+            );
+            yield* Effect.forkIn(finish, scope);
+          }
+          return authorizationUrl;
+        }),
         toolsFor: (bot) => {
           const tools: TopTool[] = [];
           for (const connection of servers.values()) {
@@ -563,26 +541,39 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
     }),
   );
 
+/** A refusal the user reads. */
+const refuse = (message: string) => new McpServerError({ message });
+
+/** A URL, or undefined if it isn't one. */
+function parseUrl(text: string): URL | undefined {
+  try {
+    return new URL(text);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The secrets a client sent, with stored values for those it sent without one. A name may appear once
  * (headers ignore case).
  */
-function secrets(sent: readonly McpSecret[], stored: readonly McpSecret[], ignoreCase: boolean, what: string): McpSecret[] {
-  const key = (name: string) => (ignoreCase ? name.toLowerCase() : name);
-  const before = new Map(stored.map((s) => [key(s.name), s.value]));
-  const seen = new Set<string>();
-  const result: McpSecret[] = [];
-  for (const secret of sent) {
-    const name = secret.name.trim();
-    if (!name) continue;
-    if (seen.has(key(name))) throw new McpServerError({ message: `The ${what} ${name} is there twice.` });
-    seen.add(key(name));
-    const value = secret.value ?? before.get(key(name));
-    if (value === undefined) throw new McpServerError({ message: `Give the ${what} ${name} a value.` });
-    result.push({ name, value });
-  }
-  return result;
-}
+const secrets = (sent: readonly McpSecret[], stored: readonly McpSecret[], ignoreCase: boolean, what: string) =>
+  Effect.gen(function* () {
+    const key = (name: string) => (ignoreCase ? name.toLowerCase() : name);
+    const before = new Map(stored.map((s) => [key(s.name), s.value]));
+    const seen = new Set<string>();
+    const result: McpSecret[] = [];
+    for (const secret of sent) {
+      const name = secret.name.trim();
+      if (!name) continue;
+      if (seen.has(key(name))) return yield* refuse(`The ${what} ${name} is there twice.`);
+      seen.add(key(name));
+      const value = secret.value ?? before.get(key(name));
+      if (value === undefined) return yield* refuse(`Give the ${what} ${name} a value.`);
+      result.push({ name, value });
+    }
+    return result;
+  });
 
 const hasAuthorization = (config: Extract<McpServerConfig, { transport: "http" }>) => config.headers.some((h) => h.name.toLowerCase() === "authorization");
 

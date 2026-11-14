@@ -15,7 +15,6 @@
  *
  * Talks to tailscaled through its CLI, which hides where its socket is on each OS.
  */
-import { execFile } from "node:child_process";
 import type { Viewer } from "@top/protocol";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
@@ -23,8 +22,11 @@ import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 
 /** A problem the user can fix: printed as is, without a stack. */
 export class TailscaleError extends Schema.TaggedError<TailscaleError>()("TailscaleError", { message: Schema.String }) {}
@@ -44,19 +46,35 @@ const CANDIDATES: Record<string, readonly string[]> = {
   win32: ["tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe"],
 };
 
+/** How long one `tailscale` command may take. */
+const CLI_TIMEOUT_MS = 15_000;
+
 /** The system's `tailscale` CLI (`$TOP_TAILSCALE` names another). */
-export const systemCli: Effect.Effect<TailscaleCli, Config.ConfigError> = Effect.gen(function* () {
+export const systemCli: Effect.Effect<TailscaleCli, Config.ConfigError, ChildProcessSpawner.ChildProcessSpawner> = Effect.gen(function* () {
   const named = yield* Config.option(Config.String("TOP_TAILSCALE"));
   const candidates = Option.match(named, { onNone: () => CANDIDATES[process.platform] ?? ["tailscale"], onSome: (bin) => [bin] });
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   let found: string | undefined;
+  const failed = (message: string, missing = false) => new TailscaleCommandError({ message, missing });
   const run = (bin: string, args: readonly string[]) =>
-    Effect.callback<string, TailscaleCommandError>((resume) => {
-      execFile(bin, args, { timeout: 15_000, maxBuffer: 16 << 20, windowsHide: true }, (error, stdout, stderr) => {
-        if (!error) return resume(Effect.succeed(stdout));
-        const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
-        resume(Effect.fail(new TailscaleCommandError({ message: String(stderr).trim() || error.message, missing })));
-      });
-    });
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* spawner
+          .spawn(ChildProcess.make(bin, [...args]))
+          .pipe(Effect.mapError((error) => failed(error.message, error.reason._tag === "NotFound")));
+        const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString);
+        const [stdout, stderr, code] = yield* Effect.all([text(handle.stdout), text(handle.stderr), handle.exitCode], { concurrency: "unbounded" }).pipe(
+          Effect.mapError((error) => failed(error instanceof Error ? error.message : String(error))),
+        );
+        if (code !== 0) return yield* failed(stderr.trim() || `tailscale ${args.join(" ")} exited with ${code}`);
+        return stdout;
+      }),
+    ).pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(CLI_TIMEOUT_MS),
+        orElse: () => Effect.fail(failed(`tailscale ${args.join(" ")} didn't answer in ${CLI_TIMEOUT_MS / 1000} s`)),
+      }),
+    );
   const cli: TailscaleCli = (args) =>
     Effect.gen(function* () {
       if (found) return yield* run(found, args);
@@ -101,41 +119,33 @@ type StatusJson = {
 };
 
 /** What `tailscale status --json` says about this device. Throws a TailscaleError when Top can't use it. */
-export function parseStatus(json: string): Effect.Effect<TailnetSelf, TailscaleError> {
-  return Effect.suspend(() => {
-    try {
-      return Effect.succeed(parseStatusOrThrow(json));
-    } catch (error) {
-      return Schema.is(TailscaleError)(error) ? Effect.fail(error) : Effect.die(error);
-    }
+export const parseStatus = (json: string): Effect.Effect<TailnetSelf, TailscaleError> =>
+  Effect.gen(function* () {
+    const status = JSON.parse(json) as StatusJson;
+    const state = status.BackendState;
+    if (state === "NeedsLogin" || state === "NoState")
+      return yield* new TailscaleError({ message: "Tailscale isn't signed in. Run `tailscale up`, then start Top again." });
+    if (state !== "Running")
+      return yield* new TailscaleError({ message: `Tailscale is ${state ?? "not running"}. Run \`tailscale up\`, then start Top again.` });
+    const self = status.Self;
+    const dnsName = self?.DNSName?.replace(/\.$/, "");
+    if (!self?.ID || !dnsName || status.CurrentTailnet?.MagicDNSEnabled === false)
+      return yield* new TailscaleError({
+        message: "This tailnet has MagicDNS turned off, so the device has no name to serve at. Turn it on: https://login.tailscale.com/admin/dns",
+      });
+    const tags = self.Tags ?? [];
+    const users = status.User ?? {};
+    const person = (login: string | undefined) => (login?.includes("@") ? login : undefined);
+    const owner = tags.length === 0 ? person(users[String(self.UserID)]?.LoginName) : undefined;
+    return {
+      dnsName,
+      device: dnsName.split(".")[0]!,
+      stableId: self.ID,
+      tags,
+      owner,
+      https: (status.CertDomains ?? []).includes(dnsName),
+    };
   });
-}
-
-function parseStatusOrThrow(json: string): TailnetSelf {
-  const status = JSON.parse(json) as StatusJson;
-  const state = status.BackendState;
-  if (state === "NeedsLogin" || state === "NoState")
-    throw new TailscaleError({ message: "Tailscale isn't signed in. Run `tailscale up`, then start Top again." });
-  if (state !== "Running") throw new TailscaleError({ message: `Tailscale is ${state ?? "not running"}. Run \`tailscale up\`, then start Top again.` });
-  const self = status.Self;
-  const dnsName = self?.DNSName?.replace(/\.$/, "");
-  if (!self?.ID || !dnsName || status.CurrentTailnet?.MagicDNSEnabled === false)
-    throw new TailscaleError({
-      message: "This tailnet has MagicDNS turned off, so the device has no name to serve at. Turn it on: https://login.tailscale.com/admin/dns",
-    });
-  const tags = self.Tags ?? [];
-  const users = status.User ?? {};
-  const person = (login: string | undefined) => (login?.includes("@") ? login : undefined);
-  const owner = tags.length === 0 ? person(users[String(self.UserID)]?.LoginName) : undefined;
-  return {
-    dnsName,
-    device: dnsName.split(".")[0]!,
-    stableId: self.ID,
-    tags,
-    owner,
-    https: (status.CertDomains ?? []).includes(dnsName),
-  };
-}
 
 // ── who is calling ───────────────────────────────────────────────────────────────
 

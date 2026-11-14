@@ -19,7 +19,6 @@
  * Everything the daemon opens is a scoped resource: on SIGINT or SIGTERM they close in reverse order
  * (load, Tailscale Serve, the listeners, the bots, MCP servers, the database).
  */
-import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -33,13 +32,14 @@ import * as Command from "effect/cli/Command";
 import * as Flag from "effect/cli/Flag";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Attachments from "./attachments.ts";
 import { PiAuthFile, piAuthPath } from "./auth.ts";
 import * as Daemon from "./daemon.ts";
 import * as Events from "./events.ts";
-import { BOT_NAMES, createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "./fake-bots.ts";
+import { BOT_NAMES, FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "./fake-bots.ts";
 import { ForegroundMs } from "./jobs.ts";
 import { startLoad } from "./load.ts";
 import * as Logger from "./logger.ts";
@@ -49,7 +49,7 @@ import { serve } from "./serve.ts";
 import * as Sqlite from "./sqlite.ts";
 import * as Store from "./store.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
-import { createFakeTools } from "./tools.ts";
+import { makeFakeTools } from "./tools.ts";
 import { botFolder, computerTools, ensureFolder, FILES_FOLDER, workspaceSection } from "./workspace.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
@@ -106,7 +106,7 @@ const realBots = (args: Args, model: string, workspace: string) =>
     const slash = model.indexOf("/");
     if (slash <= 0) return yield* new StartError({ message: `--model takes provider/model-id, e.g. openai/gpt-6.1-sol (got "${model}").` });
     const providerId = model.slice(0, slash);
-    const credentials = new PiAuthFile(yield* piAuthPath);
+    const credentials = new PiAuthFile(yield* piAuthPath, yield* FileSystem.FileSystem);
     const models = builtinModels({ credentials });
     if (!models.getProvider(providerId))
       return yield* new StartError({
@@ -130,17 +130,18 @@ const realBots = (args: Args, model: string, workspace: string) =>
       Daemon.BotKit,
       Effect.gen(function* () {
         const store = yield* Store.Store;
+        const fs = yield* FileSystem.FileSystem;
         // Each bot works in a folder it owns, with pi's tools over the whole computer. The tools are
         // declared to the model on its next request, and the workspace section with its next message.
-        const folderOf = (bot: Store.BotRow) => ensureFolder(botFolder(workspace, bot.name));
+        const folderOf = (bot: Store.BotRow) => ensureFolder(botFolder(workspace, bot.name)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
         return Daemon.BotKit.of({
           models,
-          tools: (bot) => computerTools(folderOf(bot)),
+          tools: (bot) => Effect.map(folderOf(bot), computerTools),
           thinking: args.thinking,
           sections: (bot) =>
-            Effect.map(store.context(bot.id), (context) => {
-              const prompt = getCurrentSystemPrompt(context.map((e) => e.message) as never);
-              return { workspace: workspaceSection(folderOf(bot), prompt.includes("You have no tools yet")), quotes: QUOTES_SECTION };
+            Effect.gen(function* () {
+              const prompt = getCurrentSystemPrompt((yield* store.context(bot.id)).map((e) => e.message) as never);
+              return { workspace: workspaceSection(yield* folderOf(bot), prompt.includes("You have no tools yet")), quotes: QUOTES_SECTION };
             }),
           // Real bots' tools are declared on their first request, so their first system message holds only instructions.
           newBot: {
@@ -171,9 +172,9 @@ const fakeBots = (args: Args, dataDir: string) =>
       const store = yield* Store.Store;
       const model = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
       const models = createModels();
-      models.setProvider(createFakeModelProvider(args.tps).provider);
+      models.setProvider((yield* makeFakeModelProvider(args.tps)).provider);
       const filesOf = (bot: Store.BotRow) => join(botFolder(dataDir, bot.name), FILES_FOLDER);
-      const tools = createFakeTools(resolve(dataDir, "effects.jsonl"), (id) => Effect.map(store.bot(id), (bot) => bot && filesOf(bot)));
+      const tools = yield* makeFakeTools(resolve(dataDir, "effects.jsonl"), (id) => Effect.map(store.bot(id), (bot) => bot && filesOf(bot)));
       return Daemon.BotKit.of({
         models,
         tools,
@@ -204,10 +205,9 @@ const program = (args: Args) =>
     const workspace = resolve(Option.getOrElse(args.workspace, homedir).replace(/^~(?=$|\/)/, homedir()));
     // Real and fake bots keep separate data, so trying the fake ones never touches real transcripts.
     const dataDir = resolve(Option.getOrElse(args.data, () => (real ? ".data/bots" : ".data/fake")));
-    yield* Effect.sync(() => {
-      if (args.reset) rmSync(dataDir, { recursive: true, force: true });
-      mkdirSync(dataDir, { recursive: true });
-    });
+    const fs = yield* FileSystem.FileSystem;
+    if (args.reset) yield* Effect.orDie(fs.remove(dataDir, { recursive: true, force: true }));
+    yield* Effect.orDie(fs.makeDirectory(dataDir, { recursive: true }));
     const kit = Option.isSome(args.model) ? yield* realBots(args, args.model.value, workspace) : fakeBots(args, dataDir);
 
     // On the tailnet: who may connect is settled before anything listens.

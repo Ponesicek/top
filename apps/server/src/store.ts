@@ -30,7 +30,7 @@
  * not something a caller can handle, so the store's Effects die on it instead of failing.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { type Attachment, Attachment as AttachmentSchema, type MessageSource } from "@top/protocol";
+import { type Attachment, Attachment as AttachmentSchema, MessageSource } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -40,74 +40,110 @@ import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-export type EntryKind = "system" | "user" | "assistant" | "tool" | "notice" | "files";
+// ── rows ─────────────────────────────────────────────────────────────────────────
+//
+// Each table's rows as Schemas: the types derive from them, and every row read is decoded (column names
+// are snake_case in SQLite, camelCase here).
+
+const Int = Schema.Int;
+const Text = Schema.String;
+const NullableText = Schema.NullOr(Schema.String);
+const Source = Schema.NullOr(MessageSource);
+
+export const EntryKind = Schema.Literals(["system", "user", "assistant", "tool", "notice", "files"]);
+export type EntryKind = typeof EntryKind.Type;
 
 /** A file in a bot's files folder, as last seen. */
-export type FileStat = { readonly size: number; readonly mtime: number };
+export const FileStat = Schema.Struct({ size: Schema.Number, mtime: Schema.Number });
+export type FileStat = typeof FileStat.Type;
 
-export type StoredEntry = {
-  readonly seq: number;
-  readonly bot: number;
-  readonly kind: EntryKind;
+export const StoredEntry = Schema.Struct({
+  seq: Int,
+  bot: Int,
+  kind: EntryKind,
   /** JSON: an agent message (system/user/assistant/toolResult), `{ text }` for a notice, `{ files }` for files. */
-  readonly message: string;
-  readonly requestId: string | null;
-  readonly toolCallId: string | null;
-  readonly outcome: string | null;
-  readonly source: MessageSource | null;
-  readonly at: number;
-};
+  message: Text,
+  requestId: NullableText,
+  toolCallId: NullableText,
+  outcome: NullableText,
+  source: Source,
+  at: Schema.Number,
+}).pipe(Schema.encodeKeys({ requestId: "request_id", toolCallId: "tool_call_id" }));
+export type StoredEntry = typeof StoredEntry.Type;
 
-export type BotRow = {
-  readonly id: number;
-  readonly name: string;
-  readonly description: string;
-  readonly instructions: string;
-  readonly model: string;
-  readonly runActive: boolean;
-  readonly restarts: number;
-};
+export const BotRow = Schema.Struct({
+  id: Int,
+  name: Text,
+  description: Text,
+  instructions: Text,
+  model: Text,
+  runActive: Schema.BooleanFromBit,
+  restarts: Int,
+}).pipe(Schema.encodeKeys({ runActive: "run_active" }));
+export type BotRow = typeof BotRow.Type;
 
-export type InboxRow = {
-  readonly id: number;
-  readonly bot: number;
-  readonly requestId: string;
-  readonly text: string;
-  readonly mode: "steer" | "followUp";
-  readonly clientId: string | null;
-  readonly source: MessageSource | null;
-  readonly attachments: readonly Attachment[];
-  readonly at: number;
-};
+const InboxColumns = Schema.Struct({
+  id: Int,
+  bot: Int,
+  requestId: Text,
+  text: Text,
+  mode: Schema.Literals(["steer", "followUp"]),
+  clientId: NullableText,
+  source: Source,
+  /** JSON, or NULL when there are none. */
+  attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(AttachmentSchema))),
+  at: Schema.Number,
+}).pipe(Schema.encodeKeys({ requestId: "request_id", clientId: "client_id" }));
+export type InboxRow = Omit<typeof InboxColumns.Type, "attachments"> & { readonly attachments: readonly Attachment[] };
 
 /** An uploaded file: `bot` is null until a message claims it. */
-export type AttachmentRow = Attachment & { readonly bot: number | null; readonly at: number };
+export const AttachmentRow = Schema.Struct({
+  id: Text,
+  bot: Schema.NullOr(Int),
+  name: Text,
+  mimeType: Text,
+  size: Int,
+  at: Schema.Number,
+}).pipe(Schema.encodeKeys({ mimeType: "mime" }));
+export type AttachmentRow = typeof AttachmentRow.Type;
 
-export type WakeRow = { readonly id: number; readonly bot: number; readonly dueAt: number; readonly note: string; readonly createdAt: number };
+export const WakeRow = Schema.Struct({ id: Int, bot: Int, dueAt: Schema.Number, note: Text, createdAt: Schema.Number }).pipe(
+  Schema.encodeKeys({ dueAt: "due_at", createdAt: "created_at" }),
+);
+export type WakeRow = typeof WakeRow.Type;
 
-export type JobState = "running" | "finished" | "stopped" | "lost";
-export type JobRow = {
-  readonly id: number;
-  readonly bot: number;
-  readonly tool: string;
+export const JobState = Schema.Literals(["running", "finished", "stopped", "lost"]);
+export type JobState = typeof JobState.Type;
+export const JobRow = Schema.Struct({
+  id: Int,
+  bot: Int,
+  tool: Text,
   /** The arguments, shortened to one line. */
-  readonly summary: string;
+  summary: Text,
   /** What it's for, in the bot's words; may be empty. */
-  readonly note: string;
-  readonly startedAt: number;
-  readonly state: JobState;
-};
+  note: Text,
+  startedAt: Schema.Number,
+  state: JobState,
+}).pipe(Schema.encodeKeys({ startedAt: "started_at" }));
+export type JobRow = typeof JobRow.Type;
 
-export type McpServerRow = {
-  readonly id: number;
-  readonly name: string;
+export const McpServerRow = Schema.Struct({
+  id: Int,
+  name: Text,
   /** JSON: the protocol's `McpServerConfig`, secret values included. */
-  readonly config: string;
+  config: Text,
   /** JSON: pi-mcp's `McpOAuthState`, once the server signed in with OAuth. */
-  readonly oauth: string | null;
-};
+  oauth: NullableText,
+});
+export type McpServerRow = typeof McpServerRow.Type;
 
-export type ToolCallRow = { readonly name: string; readonly args: string; readonly startedAt: number; readonly finishedAt: number | null };
+export const ToolCallRow = Schema.Struct({ name: Text, args: Text, startedAt: Schema.Number, finishedAt: Schema.NullOr(Schema.Number) }).pipe(
+  Schema.encodeKeys({ startedAt: "started_at", finishedAt: "finished_at" }),
+);
+export type ToolCallRow = typeof ToolCallRow.Type;
+
+const FileRow = Schema.Struct({ path: Text, size: Schema.Number, mtime: Schema.Number });
+const ContextRow = Schema.Struct({ kind: EntryKind, message: Schema.fromJsonString(Schema.Unknown) });
 
 export type AppendExtra = {
   readonly requestId?: string | undefined;
@@ -239,76 +275,28 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
   }),
 };
 
-// ── rows ─────────────────────────────────────────────────────────────────────────
-
 type Row = Record<string, unknown>;
 
-const nullableString = (value: unknown) => (value === null || value === undefined ? null : String(value));
-
-const entryOf = (row: Row): StoredEntry => ({
-  seq: Number(row.seq),
-  bot: Number(row.bot),
-  kind: row.kind as EntryKind,
-  message: String(row.message),
-  requestId: nullableString(row.request_id),
-  toolCallId: nullableString(row.tool_call_id),
-  outcome: nullableString(row.outcome),
-  source: nullableString(row.source) as MessageSource | null,
-  at: Number(row.at),
-});
-
-const decodeAttachments = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(AttachmentSchema)));
-
-const inboxOf = (row: Row): InboxRow => ({
-  id: Number(row.id),
-  bot: Number(row.bot),
-  requestId: String(row.request_id),
-  text: String(row.text),
-  mode: row.mode === "steer" ? "steer" : "followUp",
-  clientId: nullableString(row.client_id),
-  source: nullableString(row.source) as MessageSource | null,
-  attachments: row.attachments ? decodeAttachments(String(row.attachments)) : [],
-  at: Number(row.at),
-});
-
-const attachmentOf = (row: Row): AttachmentRow => ({
-  id: String(row.id),
-  bot: row.bot === null ? null : Number(row.bot),
-  name: String(row.name),
-  mimeType: String(row.mime),
-  size: Number(row.size),
-  at: Number(row.at),
-});
-
-const wakeOf = (row: Row): WakeRow => ({
-  id: Number(row.id),
-  bot: Number(row.bot),
-  dueAt: Number(row.due_at),
-  note: String(row.note),
-  createdAt: Number(row.created_at),
-});
-
-const jobOf = (row: Row): JobRow => ({
-  id: Number(row.id),
-  bot: Number(row.bot),
-  tool: String(row.tool),
-  summary: String(row.summary),
-  note: String(row.note ?? ""),
-  startedAt: Number(row.started_at),
-  state: row.state as JobState,
-});
-
-const mcpServerOf = (row: Row): McpServerRow => ({ id: Number(row.id), name: String(row.name), config: String(row.config), oauth: nullableString(row.oauth) });
-
-const botOf = (row: Row): BotRow => ({
-  id: Number(row.id),
-  name: String(row.name),
-  description: String(row.description ?? ""),
-  instructions: String(row.instructions),
-  model: String(row.model),
-  runActive: Number(row.run_active) === 1,
-  restarts: Number(row.restarts),
-});
+// A row that doesn't match its schema is a broken file or a bug, like a failed query. (One argument
+// each, so they can be handed to `map`.)
+const decoder =
+  <A>(decode: (input: unknown) => A) =>
+  (row: Row): A =>
+    decode(row);
+const entryOf = decoder(Schema.decodeUnknownSync(StoredEntry));
+const inboxColumns = Schema.decodeUnknownSync(InboxColumns);
+const inboxOf = (row: Row): InboxRow => {
+  const decoded = inboxColumns(row);
+  return { ...decoded, attachments: decoded.attachments ?? [] };
+};
+const attachmentOf = decoder(Schema.decodeUnknownSync(AttachmentRow));
+const wakeOf = decoder(Schema.decodeUnknownSync(WakeRow));
+const jobOf = decoder(Schema.decodeUnknownSync(JobRow));
+const mcpServerOf = decoder(Schema.decodeUnknownSync(McpServerRow));
+const botOf = decoder(Schema.decodeUnknownSync(BotRow));
+const toolCallOf = decoder(Schema.decodeUnknownSync(ToolCallRow));
+const fileOf = decoder(Schema.decodeUnknownSync(FileRow));
+const contextOf = decoder(Schema.decodeUnknownSync(ContextRow));
 
 // ── the service ──────────────────────────────────────────────────────────────────
 
@@ -445,6 +433,22 @@ export class Store extends Context.Service<
   }
 >()("top/Store") {}
 
+/**
+ * Each of the store's operations in a span of its own name (`Store.append`, …); SQL's own spans nest in
+ * them. `transaction` is left as it is: it wraps other operations.
+ */
+const traced = (store: Store["Service"]): Store["Service"] => {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(store)) {
+    if (name === "transaction") wrapped[name] = value;
+    else if (Effect.isEffect(value)) wrapped[name] = Effect.withSpan(value as Effect.Effect<unknown>, `Store.${name}`);
+    else if (typeof value === "function")
+      wrapped[name] = (...args: unknown[]) => Effect.withSpan((value as (...a: unknown[]) => Effect.Effect<unknown>)(...args), `Store.${name}`);
+    else wrapped[name] = value;
+  }
+  return wrapped as Store["Service"];
+};
+
 const VISIBLE = "kind != 'system'";
 /** Entries the model sees: not the ones only clients show. */
 const CONTEXT = "kind NOT IN ('notice', 'files')";
@@ -509,236 +513,233 @@ const make = Effect.gen(function* () {
   // Bots deleted just before a crash or a stop: finish the job.
   for (const row of yield* rows(sql`SELECT id FROM bots WHERE deleted = 1`)) yield* purgeBot(Number(row.id));
 
-  return Store.of({
-    id,
-    filesSecret,
-    transaction,
+  return Store.of(
+    traced({
+      id,
+      filesSecret,
+      transaction,
 
-    bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY id`), (r) => r.map(botOf)),
-    bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
-    createBot: (name, instructions, model, description = "") =>
-      Effect.map(
-        first(sql`INSERT INTO bots (name, description, instructions, model) VALUES (${name}, ${description}, ${instructions}, ${model}) RETURNING id`),
-        (row) => Number(row!.id),
-      ),
-    markDeleted: (bot) =>
-      transaction(
-        Effect.gen(function* () {
-          yield* q(sql`UPDATE bots SET deleted = 1, run_active = 0, name = ${`deleted:${bot}:${randomUUID()}`} WHERE id = ${bot}`);
-          yield* q(sql`DELETE FROM inbox WHERE bot = ${bot}`);
-          yield* q(sql`DELETE FROM bot_mcp WHERE bot = ${bot}`);
-          yield* q(sql`UPDATE wakes SET state = 'cancelled' WHERE bot = ${bot} AND state = 'pending'`);
-          yield* q(sql`UPDATE jobs SET state = 'stopped' WHERE bot = ${bot} AND state = 'running'`);
-        }),
-      ),
-    purgeBot,
-    flag: (key) => Effect.map(first(sql`SELECT 1 AS one FROM meta WHERE key = ${`flag:${key}`}`), (row) => row !== undefined),
-    setFlag: (key) => Effect.asVoid(q(sql`INSERT OR IGNORE INTO meta (key, value) VALUES (${`flag:${key}`}, '1')`)),
-    setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
-    setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
-    setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),
-
-    files: (bot) =>
-      Effect.gen(function* () {
-        const scanned = yield* first(sql`SELECT files_scanned FROM bots WHERE id = ${bot}`);
-        if (!scanned || Number(scanned.files_scanned) !== 1) return undefined;
-        const files = yield* rows(sql`SELECT path, size, mtime FROM files WHERE bot = ${bot}`);
-        return new Map(files.map((row) => [String(row.path), { size: Number(row.size), mtime: Number(row.mtime) }]));
-      }),
-    recordFiles: (bot, listing, changes) =>
-      transaction(
-        Effect.gen(function* () {
-          yield* q(sql`DELETE FROM files WHERE bot = ${bot}`);
-          for (const [path, stat] of listing) yield* q(sql`INSERT INTO files (bot, path, size, mtime) VALUES (${bot}, ${path}, ${stat.size}, ${stat.mtime})`);
-          yield* q(sql`UPDATE bots SET files_scanned = 1 WHERE id = ${bot}`);
-          return changes.length ? yield* append(bot, "files", { files: changes }) : undefined;
-        }),
-      ),
-
-    mcpServers: Effect.map(rows(sql`SELECT * FROM mcp_servers ORDER BY id`), (r) => r.map(mcpServerOf)),
-    mcpServer: (server) => Effect.map(first(sql`SELECT * FROM mcp_servers WHERE id = ${server}`), (row) => row && mcpServerOf(row)),
-    createMcpServer: (name, config) =>
-      Effect.map(first(sql`INSERT INTO mcp_servers (name, config) VALUES (${name}, ${config}) RETURNING id`), (row) => Number(row!.id)),
-    updateMcpServer: (server, name, config, resetOAuth) =>
-      Effect.asVoid(
-        q(
-          resetOAuth
-            ? sql`UPDATE mcp_servers SET name = ${name}, config = ${config}, oauth = NULL WHERE id = ${server}`
-            : sql`UPDATE mcp_servers SET name = ${name}, config = ${config} WHERE id = ${server}`,
+      bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY id`), (r) => r.map(botOf)),
+      bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
+      createBot: (name, instructions, model, description = "") =>
+        Effect.map(
+          first(sql`INSERT INTO bots (name, description, instructions, model) VALUES (${name}, ${description}, ${instructions}, ${model}) RETURNING id`),
+          (row) => Number(row!.id),
         ),
-      ),
-    setMcpOAuth: (server, oauth) => Effect.asVoid(q(sql`UPDATE mcp_servers SET oauth = ${oauth} WHERE id = ${server}`)),
-    deleteMcpServer: (server) =>
-      transaction(
-        Effect.gen(function* () {
-          yield* q(sql`DELETE FROM bot_mcp WHERE server = ${server}`);
-          yield* q(sql`DELETE FROM mcp_servers WHERE id = ${server}`);
-        }),
-      ),
-    mcpAssignments: Effect.map(
-      rows(sql`SELECT bot, server FROM bot_mcp JOIN bots ON bots.id = bot_mcp.bot WHERE bots.deleted = 0 ORDER BY bot`),
-      (assignments) => {
-        const map = new Map<number, number[]>();
-        for (const row of assignments) {
-          const server = Number(row.server);
-          map.set(server, [...(map.get(server) ?? []), Number(row.bot)]);
-        }
-        return map;
-      },
-    ),
-    assignMcp: (server, bot, on) =>
-      Effect.asVoid(
-        q(
-          on ? sql`INSERT OR IGNORE INTO bot_mcp (bot, server) VALUES (${bot}, ${server})` : sql`DELETE FROM bot_mcp WHERE bot = ${bot} AND server = ${server}`,
+      markDeleted: (bot) =>
+        transaction(
+          Effect.gen(function* () {
+            yield* q(sql`UPDATE bots SET deleted = 1, run_active = 0, name = ${`deleted:${bot}:${randomUUID()}`} WHERE id = ${bot}`);
+            yield* q(sql`DELETE FROM inbox WHERE bot = ${bot}`);
+            yield* q(sql`DELETE FROM bot_mcp WHERE bot = ${bot}`);
+            yield* q(sql`UPDATE wakes SET state = 'cancelled' WHERE bot = ${bot} AND state = 'pending'`);
+            yield* q(sql`UPDATE jobs SET state = 'stopped' WHERE bot = ${bot} AND state = 'running'`);
+          }),
         ),
-      ),
+      purgeBot,
+      flag: (key) => Effect.map(first(sql`SELECT 1 AS one FROM meta WHERE key = ${`flag:${key}`}`), (row) => row !== undefined),
+      setFlag: (key) => Effect.asVoid(q(sql`INSERT OR IGNORE INTO meta (key, value) VALUES (${`flag:${key}`}, '1')`)),
+      setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
+      setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
+      setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),
 
-    append,
-    entry: (seq) => Effect.map(first(sql`SELECT * FROM entries WHERE seq = ${seq}`), (row) => row && entryOf(row)),
-    context: (bot) =>
-      Effect.map(rows(sql.unsafe(`SELECT kind, message FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq`, [bot])), (r) =>
-        r.map((row) => ({ kind: row.kind as EntryKind, message: JSON.parse(String(row.message)) as unknown })),
-      ),
-    lastContextEntry: (bot) =>
-      Effect.map(first(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq DESC LIMIT 1`, [bot])), (row) => row && entryOf(row)),
-    lastSeq: (bot) => Effect.map(first(sql.unsafe(`SELECT MAX(seq) AS seq FROM entries WHERE bot = ? AND ${VISIBLE}`, [bot])), (row) => Number(row?.seq ?? 0)),
-    lastAssistantSeq: (bot) =>
-      Effect.map(first(sql`SELECT MAX(seq) AS seq FROM entries WHERE bot = ${bot} AND kind = 'assistant'`), (row) => Number(row?.seq ?? 0)),
-    lastAnswer: (bot) =>
-      Effect.map(first(sql`SELECT message FROM entries WHERE bot = ${bot} AND kind = 'assistant' ORDER BY seq DESC LIMIT 1`), (row) =>
-        row ? (JSON.parse(String(row.message)) as unknown) : undefined,
-      ),
-    newest: (bot, limit) =>
-      Effect.map(rows(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} ORDER BY seq DESC LIMIT ?`, [bot, limit])), (r) =>
-        r.map(entryOf).reverse(),
-      ),
-    after: (bot, after, limit) =>
-      Effect.map(rows(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} AND seq > ? ORDER BY seq LIMIT ?`, [bot, after, limit])), (r) =>
-        r.map(entryOf),
-      ),
-    hasBefore: (bot, seq) =>
-      Effect.map(
-        first(sql.unsafe(`SELECT EXISTS(SELECT 1 FROM entries WHERE bot = ? AND ${VISIBLE} AND seq < ?) AS any`, [bot, seq])),
-        (row) => Number(row?.any) === 1,
-      ),
-    history: (bot, before, after, limit) =>
-      Effect.map(
-        rows(
-          sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} AND seq < ? AND seq > ? ORDER BY seq DESC LIMIT ?`, [bot, before, after, limit + 1]),
+      files: (bot) =>
+        Effect.gen(function* () {
+          const scanned = yield* first(sql`SELECT files_scanned FROM bots WHERE id = ${bot}`);
+          if (!scanned || Number(scanned.files_scanned) !== 1) return undefined;
+          const files = yield* rows(sql`SELECT path, size, mtime FROM files WHERE bot = ${bot}`);
+          return new Map(files.map(fileOf).map(({ path, size, mtime }) => [path, { size, mtime }]));
+        }),
+      recordFiles: (bot, listing, changes) =>
+        transaction(
+          Effect.gen(function* () {
+            yield* q(sql`DELETE FROM files WHERE bot = ${bot}`);
+            for (const [path, stat] of listing) yield* q(sql`INSERT INTO files (bot, path, size, mtime) VALUES (${bot}, ${path}, ${stat.size}, ${stat.mtime})`);
+            yield* q(sql`UPDATE bots SET files_scanned = 1 WHERE id = ${bot}`);
+            return changes.length ? yield* append(bot, "files", { files: changes }) : undefined;
+          }),
         ),
-        (r) => {
-          const entries = r.map(entryOf);
-          return { entries: entries.slice(0, limit).reverse(), more: entries.length > limit };
+
+      mcpServers: Effect.map(rows(sql`SELECT * FROM mcp_servers ORDER BY id`), (r) => r.map(mcpServerOf)),
+      mcpServer: (server) => Effect.map(first(sql`SELECT * FROM mcp_servers WHERE id = ${server}`), (row) => row && mcpServerOf(row)),
+      createMcpServer: (name, config) =>
+        Effect.map(first(sql`INSERT INTO mcp_servers (name, config) VALUES (${name}, ${config}) RETURNING id`), (row) => Number(row!.id)),
+      updateMcpServer: (server, name, config, resetOAuth) =>
+        Effect.asVoid(
+          q(
+            resetOAuth
+              ? sql`UPDATE mcp_servers SET name = ${name}, config = ${config}, oauth = NULL WHERE id = ${server}`
+              : sql`UPDATE mcp_servers SET name = ${name}, config = ${config} WHERE id = ${server}`,
+          ),
+        ),
+      setMcpOAuth: (server, oauth) => Effect.asVoid(q(sql`UPDATE mcp_servers SET oauth = ${oauth} WHERE id = ${server}`)),
+      deleteMcpServer: (server) =>
+        transaction(
+          Effect.gen(function* () {
+            yield* q(sql`DELETE FROM bot_mcp WHERE server = ${server}`);
+            yield* q(sql`DELETE FROM mcp_servers WHERE id = ${server}`);
+          }),
+        ),
+      mcpAssignments: Effect.map(
+        rows(sql`SELECT bot, server FROM bot_mcp JOIN bots ON bots.id = bot_mcp.bot WHERE bots.deleted = 0 ORDER BY bot`),
+        (assignments) => {
+          const map = new Map<number, number[]>();
+          for (const row of assignments) {
+            const server = Number(row.server);
+            map.set(server, [...(map.get(server) ?? []), Number(row.bot)]);
+          }
+          return map;
         },
       ),
-    toolResultsAfter: (bot, seq) =>
-      Effect.map(
-        rows(sql`SELECT tool_call_id FROM entries WHERE bot = ${bot} AND kind = 'tool' AND seq > ${seq}`),
-        (r) => new Set(r.map((row) => String(row.tool_call_id))),
-      ),
+      assignMcp: (server, bot, on) =>
+        Effect.asVoid(
+          q(
+            on
+              ? sql`INSERT OR IGNORE INTO bot_mcp (bot, server) VALUES (${bot}, ${server})`
+              : sql`DELETE FROM bot_mcp WHERE bot = ${bot} AND server = ${server}`,
+          ),
+        ),
 
-    submit: (bot, requestId, text, mode, clientId, attachments = []) =>
-      transaction(
-        Effect.gen(function* () {
-          const known =
-            (yield* first(sql`SELECT 1 AS one FROM entries WHERE request_id = ${requestId}`)) ??
-            (yield* first(sql`SELECT 1 AS one FROM inbox WHERE request_id = ${requestId}`));
-          if (known) return "duplicate" as const;
-          const json = attachments.length ? JSON.stringify(attachments) : null;
-          yield* q(sql`
+      append,
+      entry: (seq) => Effect.map(first(sql`SELECT * FROM entries WHERE seq = ${seq}`), (row) => row && entryOf(row)),
+      context: (bot) =>
+        Effect.map(rows(sql.unsafe(`SELECT kind, message FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq`, [bot])), (r) => r.map(contextOf)),
+      lastContextEntry: (bot) =>
+        Effect.map(first(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq DESC LIMIT 1`, [bot])), (row) => row && entryOf(row)),
+      lastSeq: (bot) =>
+        Effect.map(first(sql.unsafe(`SELECT MAX(seq) AS seq FROM entries WHERE bot = ? AND ${VISIBLE}`, [bot])), (row) => Number(row?.seq ?? 0)),
+      lastAssistantSeq: (bot) =>
+        Effect.map(first(sql`SELECT MAX(seq) AS seq FROM entries WHERE bot = ${bot} AND kind = 'assistant'`), (row) => Number(row?.seq ?? 0)),
+      lastAnswer: (bot) =>
+        Effect.map(first(sql`SELECT message FROM entries WHERE bot = ${bot} AND kind = 'assistant' ORDER BY seq DESC LIMIT 1`), (row) =>
+          row ? (JSON.parse(String(row.message)) as unknown) : undefined,
+        ),
+      newest: (bot, limit) =>
+        Effect.map(rows(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} ORDER BY seq DESC LIMIT ?`, [bot, limit])), (r) =>
+          r.map(entryOf).reverse(),
+        ),
+      after: (bot, after, limit) =>
+        Effect.map(rows(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} AND seq > ? ORDER BY seq LIMIT ?`, [bot, after, limit])), (r) =>
+          r.map(entryOf),
+        ),
+      hasBefore: (bot, seq) =>
+        Effect.map(
+          first(sql.unsafe(`SELECT EXISTS(SELECT 1 FROM entries WHERE bot = ? AND ${VISIBLE} AND seq < ?) AS any`, [bot, seq])),
+          (row) => Number(row?.any) === 1,
+        ),
+      history: (bot, before, after, limit) =>
+        Effect.map(
+          rows(
+            sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} AND seq < ? AND seq > ? ORDER BY seq DESC LIMIT ?`, [bot, before, after, limit + 1]),
+          ),
+          (r) => {
+            const entries = r.map(entryOf);
+            return { entries: entries.slice(0, limit).reverse(), more: entries.length > limit };
+          },
+        ),
+      toolResultsAfter: (bot, seq) =>
+        Effect.map(
+          rows(sql`SELECT tool_call_id FROM entries WHERE bot = ${bot} AND kind = 'tool' AND seq > ${seq}`),
+          (r) => new Set(r.map((row) => String(row.tool_call_id))),
+        ),
+
+      submit: (bot, requestId, text, mode, clientId, attachments = []) =>
+        transaction(
+          Effect.gen(function* () {
+            const known =
+              (yield* first(sql`SELECT 1 AS one FROM entries WHERE request_id = ${requestId}`)) ??
+              (yield* first(sql`SELECT 1 AS one FROM inbox WHERE request_id = ${requestId}`));
+            if (known) return "duplicate" as const;
+            const json = attachments.length ? JSON.stringify(attachments) : null;
+            yield* q(sql`
             INSERT INTO inbox (bot, request_id, text, mode, client_id, source, attachments, at)
             VALUES (${bot}, ${requestId}, ${text}, ${mode}, ${clientId}, NULL, ${json}, ${yield* now})`);
-          for (const attachment of attachments) yield* q(sql`UPDATE attachments SET bot = ${bot} WHERE id = ${attachment.id}`);
-          return "queued" as const;
-        }),
-      ),
-    inbox: (bot) => Effect.map(rows(sql`SELECT * FROM inbox WHERE bot = ${bot} ORDER BY id`), (r) => r.map(inboxOf)),
-    inboxRow,
-    place: (bot, requestId, message) =>
-      transaction(
-        Effect.gen(function* () {
-          const source = (yield* inboxRow(requestId))?.source ?? null;
-          yield* q(sql`DELETE FROM inbox WHERE request_id = ${requestId}`);
-          return yield* append(bot, "user", message, { requestId, source });
-        }),
-      ),
+            for (const attachment of attachments) yield* q(sql`UPDATE attachments SET bot = ${bot} WHERE id = ${attachment.id}`);
+            return "queued" as const;
+          }),
+        ),
+      inbox: (bot) => Effect.map(rows(sql`SELECT * FROM inbox WHERE bot = ${bot} ORDER BY id`), (r) => r.map(inboxOf)),
+      inboxRow,
+      place: (bot, requestId, message) =>
+        transaction(
+          Effect.gen(function* () {
+            const source = (yield* inboxRow(requestId))?.source ?? null;
+            yield* q(sql`DELETE FROM inbox WHERE request_id = ${requestId}`);
+            return yield* append(bot, "user", message, { requestId, source });
+          }),
+        ),
 
-    addAttachment: (attachment) =>
-      Effect.gen(function* () {
-        yield* q(sql`
+      addAttachment: (attachment) =>
+        Effect.gen(function* () {
+          yield* q(sql`
           INSERT INTO attachments (id, bot, name, mime, size, at)
           VALUES (${attachment.id}, NULL, ${attachment.name}, ${attachment.mimeType}, ${attachment.size}, ${yield* now})`);
-      }),
-    attachment: (attachment) => Effect.map(first(sql`SELECT * FROM attachments WHERE id = ${attachment}`), (row) => row && attachmentOf(row)),
-    unclaimedAttachments: (before) => Effect.map(rows(sql`SELECT * FROM attachments WHERE bot IS NULL AND at < ${before}`), (r) => r.map(attachmentOf)),
-    botAttachments: (bot) => Effect.map(rows(sql`SELECT * FROM attachments WHERE bot = ${bot}`), (r) => r.map(attachmentOf)),
-    deleteAttachment: (attachment) => Effect.asVoid(q(sql`DELETE FROM attachments WHERE id = ${attachment}`)),
-
-    addWake: (bot, key, dueAt, note) =>
-      Effect.gen(function* () {
-        yield* q(sql`INSERT OR IGNORE INTO wakes (bot, key, due_at, note, created_at) VALUES (${bot}, ${key}, ${dueAt}, ${note}, ${yield* now})`);
-        return wakeOf((yield* first(sql`SELECT * FROM wakes WHERE key = ${key}`))!);
-      }),
-    wakes: (bot) => Effect.map(rows(sql`SELECT * FROM wakes WHERE bot = ${bot} AND state = 'pending' ORDER BY due_at, id`), (r) => r.map(wakeOf)),
-    cancelWake: (bot, wake) =>
-      Effect.map(rows(sql`UPDATE wakes SET state = 'cancelled' WHERE id = ${wake} AND bot = ${bot} AND state = 'pending' RETURNING id`), (r) => r.length > 0),
-    nextWakeAt: Effect.map(first(sql`SELECT MIN(due_at) AS due FROM wakes WHERE state = 'pending'`), (row) =>
-      row?.due === null || row?.due === undefined ? undefined : Number(row.due),
-    ),
-    dueWakes: (at) => Effect.map(rows(sql`SELECT * FROM wakes WHERE state = 'pending' AND due_at <= ${at} ORDER BY due_at, id`), (r) => r.map(wakeOf)),
-    fireWake: (wake, text) =>
-      transaction(
-        Effect.gen(function* () {
-          const fired = yield* rows(sql`UPDATE wakes SET state = 'fired' WHERE id = ${wake.id} AND state = 'pending' RETURNING id`);
-          return fired.length ? yield* queueEvent(wake.bot, `wake:${wake.id}`, text, "wake") : undefined;
         }),
-      ),
+      attachment: (attachment) => Effect.map(first(sql`SELECT * FROM attachments WHERE id = ${attachment}`), (row) => row && attachmentOf(row)),
+      unclaimedAttachments: (before) => Effect.map(rows(sql`SELECT * FROM attachments WHERE bot IS NULL AND at < ${before}`), (r) => r.map(attachmentOf)),
+      botAttachments: (bot) => Effect.map(rows(sql`SELECT * FROM attachments WHERE bot = ${bot}`), (r) => r.map(attachmentOf)),
+      deleteAttachment: (attachment) => Effect.asVoid(q(sql`DELETE FROM attachments WHERE id = ${attachment}`)),
 
-    startJob: (bot, key, tool, summary, note, startedAt) =>
-      Effect.map(
-        first(sql`
+      addWake: (bot, key, dueAt, note) =>
+        Effect.gen(function* () {
+          yield* q(sql`INSERT OR IGNORE INTO wakes (bot, key, due_at, note, created_at) VALUES (${bot}, ${key}, ${dueAt}, ${note}, ${yield* now})`);
+          return wakeOf((yield* first(sql`SELECT * FROM wakes WHERE key = ${key}`))!);
+        }),
+      wakes: (bot) => Effect.map(rows(sql`SELECT * FROM wakes WHERE bot = ${bot} AND state = 'pending' ORDER BY due_at, id`), (r) => r.map(wakeOf)),
+      cancelWake: (bot, wake) =>
+        Effect.map(rows(sql`UPDATE wakes SET state = 'cancelled' WHERE id = ${wake} AND bot = ${bot} AND state = 'pending' RETURNING id`), (r) => r.length > 0),
+      nextWakeAt: Effect.map(first(sql`SELECT MIN(due_at) AS due FROM wakes WHERE state = 'pending'`), (row) =>
+        row?.due === null || row?.due === undefined ? undefined : Number(row.due),
+      ),
+      dueWakes: (at) => Effect.map(rows(sql`SELECT * FROM wakes WHERE state = 'pending' AND due_at <= ${at} ORDER BY due_at, id`), (r) => r.map(wakeOf)),
+      fireWake: (wake, text) =>
+        transaction(
+          Effect.gen(function* () {
+            const fired = yield* rows(sql`UPDATE wakes SET state = 'fired' WHERE id = ${wake.id} AND state = 'pending' RETURNING id`);
+            return fired.length ? yield* queueEvent(wake.bot, `wake:${wake.id}`, text, "wake") : undefined;
+          }),
+        ),
+
+      startJob: (bot, key, tool, summary, note, startedAt) =>
+        Effect.map(
+          first(sql`
           INSERT INTO jobs (bot, key, tool, summary, note, started_at) VALUES (${bot}, ${key}, ${tool}, ${summary}, ${note}, ${startedAt})
           ON CONFLICT(key) DO UPDATE SET state = 'running', started_at = excluded.started_at, finished_at = NULL
           RETURNING id`),
-        (row) => Number(row!.id),
-      ),
-    job: (job) => Effect.map(first(sql`SELECT * FROM jobs WHERE id = ${job}`), (row) => row && jobOf(row)),
-    runningJobs: Effect.map(rows(sql`SELECT * FROM jobs WHERE state = 'running' ORDER BY id`), (r) => r.map(jobOf)),
-    endJob: (job, state, text) =>
-      transaction(
-        Effect.gen(function* () {
-          const at = yield* now;
-          const row = yield* first(sql`UPDATE jobs SET state = ${state}, finished_at = ${at} WHERE id = ${job} AND state = 'running' RETURNING bot`);
-          if (!row || text === undefined) return undefined;
-          return yield* queueEvent(Number(row.bot), `job:${job}:${at}`, text, "job");
-        }),
-      ),
+          (row) => Number(row!.id),
+        ),
+      job: (job) => Effect.map(first(sql`SELECT * FROM jobs WHERE id = ${job}`), (row) => row && jobOf(row)),
+      runningJobs: Effect.map(rows(sql`SELECT * FROM jobs WHERE state = 'running' ORDER BY id`), (r) => r.map(jobOf)),
+      endJob: (job, state, text) =>
+        transaction(
+          Effect.gen(function* () {
+            const at = yield* now;
+            const row = yield* first(sql`UPDATE jobs SET state = ${state}, finished_at = ${at} WHERE id = ${job} AND state = 'running' RETURNING bot`);
+            if (!row || text === undefined) return undefined;
+            return yield* queueEvent(Number(row.bot), `job:${job}:${at}`, text, "job");
+          }),
+        ),
 
-    toolStarted: (bot, assistantSeq, toolCallId, name, args) =>
-      Effect.gen(function* () {
-        yield* q(sql`
+      toolStarted: (bot, assistantSeq, toolCallId, name, args) =>
+        Effect.gen(function* () {
+          yield* q(sql`
           INSERT OR IGNORE INTO tool_calls (assistant_seq, tool_call_id, bot, name, args, started_at)
           VALUES (${assistantSeq}, ${toolCallId}, ${bot}, ${name}, ${JSON.stringify(args ?? {})}, ${yield* now})`);
-      }),
-    toolFinished: (bot, assistantSeq, toolCallId, message, outcome) =>
-      transaction(
-        Effect.gen(function* () {
-          yield* q(sql`UPDATE tool_calls SET finished_at = ${yield* now} WHERE assistant_seq = ${assistantSeq} AND tool_call_id = ${toolCallId}`);
-          return yield* append(bot, "tool", message, { toolCallId, outcome });
         }),
-      ),
-    toolCall: (assistantSeq, toolCallId) =>
-      Effect.map(first(sql`SELECT * FROM tool_calls WHERE assistant_seq = ${assistantSeq} AND tool_call_id = ${toolCallId}`), (row) =>
-        row
-          ? {
-              name: String(row.name),
-              args: String(row.args),
-              startedAt: Number(row.started_at),
-              finishedAt: row.finished_at === null ? null : Number(row.finished_at),
-            }
-          : undefined,
-      ),
-  });
+      toolFinished: (bot, assistantSeq, toolCallId, message, outcome) =>
+        transaction(
+          Effect.gen(function* () {
+            yield* q(sql`UPDATE tool_calls SET finished_at = ${yield* now} WHERE assistant_seq = ${assistantSeq} AND tool_call_id = ${toolCallId}`);
+            return yield* append(bot, "tool", message, { toolCallId, outcome });
+          }),
+        ),
+      toolCall: (assistantSeq, toolCallId) =>
+        Effect.map(
+          first(sql`SELECT * FROM tool_calls WHERE assistant_seq = ${assistantSeq} AND tool_call_id = ${toolCallId}`),
+          (row) => row && toolCallOf(row),
+        ),
+    }),
+  );
 });
 
 /** The store on the `SqlClient` it's given. */
