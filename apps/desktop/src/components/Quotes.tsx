@@ -10,7 +10,7 @@ import { cn } from "../lib/utils.ts";
 import { addQuote, rangeText } from "../quotes.ts";
 import { Button } from "./ui/button.tsx";
 
-export type Anchor = Element | { getBoundingClientRect(): DOMRect; contextElement?: Element };
+export type Anchor = Element | { getBoundingClientRect(): DOMRect; contextElement?: Element | undefined };
 
 const POPUP =
   "origin-(--transform-origin) rounded-xl bg-popover shadow-popover transition duration-100 outline-none data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0";

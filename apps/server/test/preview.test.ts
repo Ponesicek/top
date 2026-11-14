@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { lastLine } from "../src/daemon.ts";
 
 test("the sidebar preview keeps hyphens and drops only Markdown syntax", () => {

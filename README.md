@@ -14,10 +14,16 @@ show as steps, and the app says what each bot is doing while it does it.
 
 | Package | What it is |
 |---|---|
-| `packages/protocol` | Wire frames (JSON over one compressed WebSocket), as TypeBox schemas: the types derive from them, and both ends check every frame that arrives. |
-| `packages/client` | `@top/client`: connection, reconnect, catch-up by sequence number, history paging, optimistic sends. Framework-free, so it's shared by desktop and mobile. |
-| `apps/server` | The daemon: storage (`store.ts`), one runner per bot (`runner.ts`), tools and their crash policies (`tools.ts`), the WebSocket layer (`serve.ts`). |
-| `apps/desktop` | Electron + React. Virtualized transcript, performance overlay, benchmark. |
+| `packages/protocol` | Wire frames (JSON over one compressed WebSocket), as Effect schemas: the types derive from them, and both ends check every frame that arrives. Also the daemon's refusals, as tagged errors. |
+| `packages/client` | `@top/client`: connection, reconnect, catch-up by sequence number, history paging, optimistic sends. Framework-free, so it's shared by desktop and mobile: Effect inside, snapshots and Promises outside. |
+| `apps/server` | The daemon, as Effect services: storage (`store.ts`, Effect SQL on `node:sqlite`), one runner per bot (`runner.ts`), tools and their crash policies (`tools.ts`), the event bus (`events.ts`), the HTTP and WebSocket layer (`serve.ts`). |
+| `apps/desktop` | Electron + React, its state in Effect atoms. Virtualized transcript, performance overlay, benchmark. |
+
+Everything but the React components runs on [Effect](https://effect.website) 4. The daemon is a set of
+services composed as Layers (`main.ts`) and closed in reverse order when it stops. Where pi calls in
+(its Agent's hooks and listener, tools, credentials) the interfaces stay Promise-based, and run Effects
+inside. The wire format is Top's own: Effect RPC's socket protocol answers every streamed frame with an
+acknowledgement, which would cost about a fifth more data while following bots (see Data use).
 
 ## Run it
 
@@ -28,7 +34,7 @@ pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser 
 ```
 
 Before committing: `pnpm check` (Biome: lint, format, import order; `pnpm fix` applies the safe fixes),
-`pnpm typecheck` and `pnpm test`.
+`pnpm typecheck` (TypeScript 7 with Effect's diagnostics, through `effect-tsgo`) and `pnpm test` (vitest).
 
 The bots sign in through pi, the coding agent: Top reads and refreshes pi's `~/.pi/agent/auth.json`
 under pi's own file lock, so if `pi` works, Top works. Not signed in? Run `pi`, then `/login`. An API

@@ -6,11 +6,65 @@
     "lib": ["ES2023"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "namespaceImportPackages": ["effect", "@effect/platform-node"],
+        "effectFn": ["span", "inferred-span", "suggested-span"],
+        "diagnosticSeverity": {
+          "runEffectInsideEffect": "error",
+          "tryCatchInEffectGen": "error",
+          "schemaStructWithTag": "error",
+          "preferTypedSchemaDecoder": "error",
+          "catchUnfailableEffect": "error",
+          "raceFirstWithSleepToTimeout": "error",
+          "redundantMapError": "error",
+          "catchToIgnore": "error",
+          "unnecessaryEffectGen": "error",
+          "unnecessaryFailYieldableError": "error",
+          "effectSucceedWithVoid": "error",
+          "unnecessaryPipeChain": "error",
+          "returnEffectInGen": "off",
+          "effectFnOpportunity": "off",
+          "anyUnknownInErrorContext": "error",
+          "unsafeEffectTypeAssertion": "error",
+          "instanceOfSchema": "error",
+          "strictEffectProvide": "off",
+          "unstableApiUsage": "off",
+          "experimentalApiUsage": "off",
+          "missingEffectServiceDependency": "error",
+          "leakingRequirements": "error",
+          "globalErrorInEffectCatch": "error",
+          "globalErrorInEffectFailure": "error",
+          "unknownInEffectCatch": "error",
+          "strictBooleanExpressions": "off",
+          "lazyEffect": "off",
+          "globalJsonInEffect": "off",
+          "schemaSyncInEffect": "off",
+          "cryptoRandomUUIDInEffect": "error",
+          "globalDateInEffect": "error",
+          "globalConsoleInEffect": "error",
+          "globalRandomInEffect": "error",
+          "globalTimersInEffect": "error",
+          "globalFetchInEffect": "error",
+          "schemaNumber": "off",
+          "schemaClassMissingBrand": "off"
+        },
+        "overrides": [
+          {
+            "include": ["**/*.test.ts", "**/test/**"],
+            "options": { "diagnosticSeverity": { "globalJsonInEffect": "off", "effectFnOpportunity": "off" } }
+          }
+        ]
+      }
+    ]
   }
 }

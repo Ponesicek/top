@@ -7,13 +7,19 @@
  * goes off as soon as it starts, saying how late it is. A timer is set for the soonest one only, and
  * set again whenever wake-ups change.
  */
-import type { InboxRow, Store, WakeRow } from "./store.ts";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
+import { type InboxRow, Store, type WakeRow } from "./store.ts";
 import { duration, localTime } from "./time.ts";
 
-/** Timers this long or longer are set to this and checked again (Node's limit is about 24.8 days). */
-const MAX_TIMER_MS = 60 * 60 * 1000;
+/** Sleeps this long or longer are cut to this and the clock looks again. */
+const MAX_WAIT_MS = 60 * 60 * 1000;
 /** A wake-up this much later than due says so. */
 const LATE_MS = 60 * 1000;
+/** After a wake-up couldn't be delivered, wait at least this long before trying again. */
+const RETRY_MS = 5_000;
 
 /** The message a wake-up brings. */
 export function wakeText(wake: WakeRow, now: number): string {
@@ -22,55 +28,54 @@ export function wakeText(wake: WakeRow, now: number): string {
   return lines.join("\n");
 }
 
-export class WakeClock {
-  readonly #store: Store;
-  readonly #deliver: (row: InboxRow) => void;
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  #running = false;
-
-  constructor(store: Store, deliver: (row: InboxRow) => void) {
-    this.#store = store;
-    this.#deliver = deliver;
-  }
-
+export type WakeClock = {
   /** Begin firing wake-ups, those already due first. After the bots have started. */
-  start() {
-    this.#running = true;
-    this.#fire();
-  }
+  readonly start: Effect.Effect<void>;
+  /** Wake-ups were added or removed: look at the soonest one again. */
+  readonly changed: Effect.Effect<void>;
+};
 
-  /** Wake-ups were added or removed: aim the timer again. */
-  changed() {
-    if (this.#running) this.#arm();
-  }
+/** The clock that fires wake-ups, running in the scope it's made in. `deliver` hands a fired one's message to its bot. */
+export const makeWakeClock = Effect.fnUntraced(function* (deliver: (row: InboxRow) => Effect.Effect<void>) {
+  const store = yield* Store;
+  const scope = yield* Effect.scope;
+  const changes = yield* Queue.sliding<void>(1);
 
-  close() {
-    this.#running = false;
-    clearTimeout(this.#timer);
-  }
-
-  /** `atLeast`: after a failure, so a wake-up that can't be delivered isn't retried in a tight loop. */
-  #arm(atLeast = 0) {
-    clearTimeout(this.#timer);
-    const next = this.#store.nextWakeAt();
-    if (next === undefined) return;
-    this.#timer = setTimeout(() => this.#fire(), Math.min(Math.max(atLeast, next - Date.now()), MAX_TIMER_MS));
-    this.#timer.unref?.();
-  }
-
-  #fire() {
-    if (!this.#running) return;
-    const now = Date.now();
+  /** Fire every due wake-up; true if one couldn't be delivered. */
+  const fire = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
     let failed = false;
-    for (const wake of this.#store.dueWakes(now)) {
-      try {
-        const row = this.#store.fireWake(wake, wakeText(wake, now));
-        if (row) this.#deliver(row);
-      } catch (error) {
-        console.error(`[top] wake-up ${wake.id}:`, error);
-        failed = true;
-      }
+    for (const wake of yield* store.dueWakes(now)) {
+      yield* store.fireWake(wake, wakeText(wake, now)).pipe(
+        Effect.flatMap((row) => (row ? deliver(row) : Effect.void)),
+        Effect.catchCause((cause) =>
+          Effect.logError(`wake-up ${wake.id}`, cause).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                failed = true;
+              }),
+            ),
+          ),
+        ),
+      );
     }
-    this.#arm(failed ? 5_000 : 0);
-  }
-}
+    return failed;
+  }).pipe(Effect.withSpan("WakeClock.fire"));
+
+  const loop = Effect.gen(function* () {
+    for (;;) {
+      const failed = yield* fire;
+      const next = yield* store.nextWakeAt;
+      const now = yield* Clock.currentTimeMillis;
+      const wait = next === undefined ? undefined : Math.min(Math.max(failed ? RETRY_MS : 0, next - now), MAX_WAIT_MS);
+      const changed = Queue.take(changes);
+      yield* wait === undefined ? changed : Effect.raceFirst(Effect.sleep(Duration.millis(wait)), changed);
+    }
+  });
+
+  const clock: WakeClock = {
+    start: Effect.asVoid(Effect.forkIn(loop, scope)),
+    changed: Effect.asVoid(Queue.offer(changes, undefined)),
+  };
+  return clock;
+});

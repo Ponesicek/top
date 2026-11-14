@@ -8,14 +8,14 @@
  */
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ConversationSnapshot, ConversationSync } from "@top/client";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { ChatStyle } from "../chatStyle.ts";
 import { copyCode } from "../lib/copyCode.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { findPassage, onJump } from "../quotes.ts";
 import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows } from "../rows.ts";
-import { useBot } from "../top.ts";
+import { useBot, useConversation } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
 import { FilesLine } from "./files/FilesLine.tsx";
@@ -70,7 +70,7 @@ export const Transcript = memo(function Transcript({
   showTools?: boolean;
 }) {
   const look = STYLES[style];
-  const snapshot = useSyncExternalStore(sync.subscribe, sync.getSnapshot);
+  const snapshot = useConversation(sync);
   const bot = useBot(sync.id);
   const rows = useRows(snapshot, isWorking(bot?.status), showTools);
 

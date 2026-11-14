@@ -1,4 +1,6 @@
 /** `collar__wake`: set, list and cancel wake-ups (see wakes.ts). */
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { duration, localTime } from "../time.ts";
 import { text } from "../tools.ts";
@@ -37,49 +39,50 @@ export const wakeGroup: CollarGroup = (daemon) => [
     // Setting is keyed by the call, so running it again sets nothing new; list and cancel only look or repeat.
     replay: "safe",
     background: false,
-    async run(args, ctx) {
-      const store = daemon.store;
-      const action = (args.action as string | undefined) ?? "set";
-      const now = Date.now();
-      if (action === "list") {
-        const wakes = store.wakes(ctx.bot);
-        if (!wakes.length) return text(`No wake-ups set. It's ${localTime(now)}.`);
-        const lines = wakes.map((w) => `- ${w.id}: ${localTime(w.dueAt)} (in ${duration(w.dueAt - now)}): ${w.note}`);
-        return text(`It's ${localTime(now)}. Your wake-ups:\n${lines.join("\n")}`);
-      }
-      if (action === "cancel") {
-        const id = Number(args.id);
-        if (!Number.isInteger(id)) return { ...text('Say which wake-up to cancel with `id` (see `action: "list"`).'), isError: true };
-        const cancelled = store.cancelWake(ctx.bot, id);
-        daemon.wakes.changed();
-        daemon.changed(ctx.bot);
-        return cancelled ? text(`Cancelled wake-up ${id}.`) : { ...text(`You have no wake-up ${id} waiting.`), isError: true };
-      }
+    run: (args, ctx) =>
+      Effect.gen(function* () {
+        const store = daemon.store;
+        const action = (args.action as string | undefined) ?? "set";
+        const now = yield* Clock.currentTimeMillis;
+        if (action === "list") {
+          const wakes = yield* store.wakes(ctx.bot);
+          if (!wakes.length) return text(`No wake-ups set. It's ${localTime(now)}.`);
+          const lines = wakes.map((w) => `- ${w.id}: ${localTime(w.dueAt)} (in ${duration(w.dueAt - now)}): ${w.note}`);
+          return text(`It's ${localTime(now)}. Your wake-ups:\n${lines.join("\n")}`);
+        }
+        if (action === "cancel") {
+          const id = Number(args.id);
+          if (!Number.isInteger(id)) return { ...text('Say which wake-up to cancel with `id` (see `action: "list"`).'), isError: true };
+          const cancelled = yield* store.cancelWake(ctx.bot, id);
+          yield* daemon.wakes.changed;
+          yield* daemon.changed(ctx.bot);
+          return cancelled ? text(`Cancelled wake-up ${id}.`) : { ...text(`You have no wake-up ${id} waiting.`), isError: true };
+        }
 
-      const note = String(args.note ?? "").trim();
-      if (!note) return { ...text("Give the wake-up a `note`: what to do when it goes off."), isError: true };
-      let dueAt: number;
-      if (args.in_minutes !== undefined) {
-        const minutes = Number(args.in_minutes);
-        if (!Number.isFinite(minutes) || minutes < 0) return { ...text("`in_minutes` must be a number of minutes, 0 or more."), isError: true };
-        dueAt = now + minutes * 60_000;
-      } else if (typeof args.at === "string") {
-        dueAt = Date.parse(args.at);
-        if (Number.isNaN(dueAt)) return { ...text(`Can't read the time "${args.at}". Use ISO 8601, such as 2026-11-07T09:00.`), isError: true };
-        if (dueAt < now - 60_000) return { ...text(`${localTime(dueAt)} has passed; it's ${localTime(now)} now.`), isError: true };
-      } else {
-        return { ...text(`Say when: \`in_minutes\`, or \`at\`. It's ${localTime(now)} now.`), isError: true };
-      }
-      if (dueAt - now > MAX_AHEAD_MS) return { ...text("That's more than a year away; pick a nearer time."), isError: true };
-      if (store.wakes(ctx.bot).length >= MAX_PENDING) {
-        return { ...text(`You already have ${MAX_PENDING} wake-ups waiting. Cancel some first (see \`action: "list"\`).`), isError: true };
-      }
-      const wake = store.addWake(ctx.bot, ctx.key, Math.round(dueAt), note);
-      daemon.wakes.changed();
-      daemon.changed(ctx.bot);
-      return text(
-        `Wake-up ${wake.id} set for ${localTime(wake.dueAt)}, in ${duration(wake.dueAt - now)}. Your note will come to you as a message then; end your turn when you have nothing else to do.`,
-      );
-    },
+        const note = String(args.note ?? "").trim();
+        if (!note) return { ...text("Give the wake-up a `note`: what to do when it goes off."), isError: true };
+        let dueAt: number;
+        if (args.in_minutes !== undefined) {
+          const minutes = Number(args.in_minutes);
+          if (!Number.isFinite(minutes) || minutes < 0) return { ...text("`in_minutes` must be a number of minutes, 0 or more."), isError: true };
+          dueAt = now + minutes * 60_000;
+        } else if (typeof args.at === "string") {
+          dueAt = Date.parse(args.at);
+          if (Number.isNaN(dueAt)) return { ...text(`Can't read the time "${args.at}". Use ISO 8601, such as 2026-11-07T09:00.`), isError: true };
+          if (dueAt < now - 60_000) return { ...text(`${localTime(dueAt)} has passed; it's ${localTime(now)} now.`), isError: true };
+        } else {
+          return { ...text(`Say when: \`in_minutes\`, or \`at\`. It's ${localTime(now)} now.`), isError: true };
+        }
+        if (dueAt - now > MAX_AHEAD_MS) return { ...text("That's more than a year away; pick a nearer time."), isError: true };
+        if ((yield* store.wakes(ctx.bot)).length >= MAX_PENDING) {
+          return { ...text(`You already have ${MAX_PENDING} wake-ups waiting. Cancel some first (see \`action: "list"\`).`), isError: true };
+        }
+        const wake = yield* store.addWake(ctx.bot, ctx.key, Math.round(dueAt), note);
+        yield* daemon.wakes.changed;
+        yield* daemon.changed(ctx.bot);
+        return text(
+          `Wake-up ${wake.id} set for ${localTime(wake.dueAt)}, in ${duration(wake.dueAt - now)}. Your note will come to you as a message then; end your turn when you have nothing else to do.`,
+        );
+      }),
   },
 ];

@@ -1,5 +1,5 @@
 import type { BotId } from "@top/client";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type ChatStyle, readChatStyle, readShowTools, saveChatStyle, saveShowTools } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { Composer } from "./components/Composer.tsx";
@@ -15,7 +15,7 @@ import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { togglePanel, useBotFiles, usePanel } from "./files.ts";
 import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
-import { conversation, markSeen, top, useBot, useRoster } from "./top.ts";
+import { conversation, markSeen, top, useBot, useClient, useRoster } from "./top.ts";
 
 function readSelected(): string | undefined {
   try {
@@ -68,7 +68,7 @@ export function App() {
     applyScale(next);
   }, []);
   const [creating, setCreating] = useState(false);
-  const ready = useSyncExternalStore(top.subscribe, () => top.getSnapshot().ready);
+  const ready = useClient((snapshot) => snapshot.ready);
 
   const setHud = useCallback((update: (on: boolean) => boolean) => {
     setHudState((h) => {

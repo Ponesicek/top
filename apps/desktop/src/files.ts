@@ -2,9 +2,10 @@
  * The Files panel's state: whether it's open, how wide, and which file each bot has open in it. The
  * bots' file listings themselves come from the daemon, through `top`.
  */
+import { useAtomValue } from "@effect/atom-react";
 import type { BotFiles, BotId } from "@top/client";
-import { useSyncExternalStore } from "react";
-import { top } from "./top.ts";
+import * as Atom from "effect/reactivity/Atom";
+import { registry, useClient } from "./top.ts";
 
 export const PANEL_MIN = 300;
 export const PANEL_DEFAULT = 460;
@@ -25,45 +26,39 @@ function read(): PanelState {
   }
 }
 
-let state = read();
-const listeners = new Set<() => void>();
+const panelAtom = Atom.make(read()).pipe(Atom.keepAlive);
 
 function set(change: Partial<PanelState>) {
-  state = { ...state, ...change };
+  const state = { ...registry.get(panelAtom), ...change };
+  registry.set(panelAtom, state);
   try {
     localStorage.setItem("top.filesPanel", JSON.stringify({ open: state.open, width: state.width }));
   } catch {
     // disabled storage: the panel just won't remember
   }
-  for (const listener of listeners) listener();
 }
-
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
 
 export function usePanel(): PanelState {
-  return useSyncExternalStore(subscribe, () => state);
+  return useAtomValue(panelAtom);
 }
 
-export const togglePanel = () => set({ open: !state.open });
+export const togglePanel = () => set({ open: !registry.get(panelAtom).open });
 export const closePanel = () => set({ open: false });
 export const setPanelWidth = (width: number) => set({ width: Math.round(width) });
 
 /** Open one of a bot's files in the panel (opening the panel if it's closed). */
 export function openFile(bot: BotId, path: string) {
-  set({ open: true, selected: { ...state.selected, [bot]: path } });
+  set({ open: true, selected: { ...registry.get(panelAtom).selected, [bot]: path } });
 }
 
 /** Back to the bot's list of files. */
 export function showList(bot: BotId) {
-  set({ selected: { ...state.selected, [bot]: undefined } });
+  set({ selected: { ...registry.get(panelAtom).selected, [bot]: undefined } });
 }
 
 /** A bot's files, once the daemon has listed them. */
 export function useBotFiles(bot: BotId | undefined): BotFiles | undefined {
-  return useSyncExternalStore(top.subscribe, () => (bot === undefined ? undefined : top.getSnapshot().files[bot]));
+  return useClient((snapshot) => (bot === undefined ? undefined : snapshot.files[bot]));
 }
 
 // ── what a file is ────────────────────────────────────────────────────────────

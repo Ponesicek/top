@@ -3,21 +3,40 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
-import { createModels } from "@earendil-works/pi-ai/models";
 import type { ServerFrame } from "@top/protocol";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
+import { afterAll as after, test } from "vitest";
 import { WebSocket } from "ws";
-import { Daemon } from "../src/daemon.ts";
-import { createFakeModelProvider, FAKE_MODEL, FAKE_PROVIDER } from "../src/fake-bots.ts";
 import { CALLBACK_PATH } from "../src/mcp.ts";
-import { serve } from "../src/serve.ts";
-import { Store } from "../src/store.ts";
-import { type Caller, parseAllow, parseStatus, parseWhois, Tailnet, type TailnetSelf } from "../src/tailscale.ts";
+import {
+  type Caller,
+  makeTailnet,
+  parseAllow,
+  parseStatus as parseStatusEffect,
+  parseWhois,
+  type TailnetOptions,
+  type TailnetSelf,
+  TailscaleCommandError,
+} from "../src/tailscale.ts";
+import { harness, until } from "./harness.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 after(async () => {
   for (const fn of cleanup.reverse()) await fn();
 });
+
+const parseStatus = (json: string) => Effect.runSync(parseStatusEffect(json));
+const tailnetOf = (options: Omit<TailnetOptions, "cli"> & Partial<Pick<TailnetOptions, "cli">>) =>
+  Effect.runSync(makeTailnet({ cli: () => Effect.succeed(""), ...options }));
+/** Expose in a scope of its own, and close it (which takes Top off the tailnet again). */
+const exposed = async (tailnet: ReturnType<typeof tailnetOf>, port: number) => {
+  const scope = Scope.makeUnsafe();
+  await Effect.runPromise(tailnet.expose(port).pipe(Scope.provide(scope)));
+  return () => Effect.runPromise(Scope.close(scope, Exit.void));
+};
+const exposing = (tailnet: ReturnType<typeof tailnetOf>, port: number) => Effect.runPromise(Effect.scoped(tailnet.expose(port)));
 
 // ── what the CLI says ────────────────────────────────────────────────────────────
 
@@ -72,11 +91,11 @@ test("whois names the device, and its owner only when it isn't tagged", () => {
 });
 
 test("without --tailscale-allow the whole tailnet may connect; with it, the owner and those named", () => {
-  const tagged = new Tailnet({ self: parseStatus(status({ UserID: 4, Tags: ["tag:servers"] })), allow: [], cli: async () => "" });
+  const tagged = tailnetOf({ self: parseStatus(status({ UserID: 4, Tags: ["tag:servers"] })), allow: [] });
   assert.deepEqual(tagged.rules, []);
   assert.equal(tagged.describeAllowed(), "every device on it");
-  assert.deepEqual(new Tailnet({ self: parseStatus(status({})), allow: [], cli: async () => "" }).rules, [], "not even the owner is singled out");
-  const owned = new Tailnet({ self: parseStatus(status({})), allow: parseAllow(["You@Example.com, tag:laptops", "Phone"]), cli: async () => "" });
+  assert.deepEqual(tailnetOf({ self: parseStatus(status({})), allow: [] }).rules, [], "not even the owner is singled out");
+  const owned = tailnetOf({ self: parseStatus(status({})), allow: parseAllow(["You@Example.com, tag:laptops", "Phone"]) });
   assert.deepEqual(owned.rules, [
     { kind: "login", value: "you@example.com" },
     { kind: "tag", value: "tag:laptops" },
@@ -84,19 +103,20 @@ test("without --tailscale-allow the whole tailnet may connect; with it, the owne
   ]);
   assert.equal(owned.describeAllowed(), "you@example.com, tag:laptops, phone (and this computer)");
   assert.equal(owned.url, "wss://box.tail1234.ts.net:7357");
-  assert.equal(new Tailnet({ self: owned.self, allow: [], port: 443, cli: async () => "" }).url, "wss://box.tail1234.ts.net");
+  assert.equal(tailnetOf({ self: owned.self, allow: [], port: 443 }).url, "wss://box.tail1234.ts.net");
 });
 
 // ── setting up Serve ─────────────────────────────────────────────────────────────
 
 function fakeCli(serveStatus: object, fail?: string) {
   const calls: string[][] = [];
-  const cli = async (args: readonly string[]) => {
-    calls.push([...args]);
-    if (args[0] === "serve" && args[1] === "status") return JSON.stringify(serveStatus);
-    if (fail && args[0] === "serve") throw new Error(fail);
-    return "";
-  };
+  const cli = (args: readonly string[]) =>
+    Effect.suspend(() => {
+      calls.push([...args]);
+      if (args[0] === "serve" && args[1] === "status") return Effect.succeed(JSON.stringify(serveStatus));
+      if (fail && args[0] === "serve") return Effect.fail(new TailscaleCommandError({ message: fail, missing: false }));
+      return Effect.succeed("");
+    });
   return { cli, calls };
 }
 
@@ -105,19 +125,19 @@ test("Serve is pointed at the tailnet listener, and never takes over someone els
   const host = "box.tail1234.ts.net:7357";
 
   const fresh = fakeCli({ TCP: { 443: { HTTPS: true } }, Web: { "box.tail1234.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:3000" } } } } });
-  const tailnet = new Tailnet({ self, allow: [], cli: fresh.cli });
-  await tailnet.expose(7359);
+  const tailnet = tailnetOf({ self, allow: [], cli: fresh.cli });
+  const unexpose = await exposed(tailnet, 7359);
   assert.deepEqual(fresh.calls.at(-1), ["serve", "--bg", "--https=7357", "http://127.0.0.1:7359"]);
-  await tailnet.unexpose();
+  await unexpose();
   assert.deepEqual(fresh.calls.at(-1), ["serve", "--https=7357", "off"]);
 
   // Already ours (left by a run that crashed): set it again.
   const ours = fakeCli({ TCP: { 7357: { HTTPS: true } }, Web: { [host]: { Handlers: { "/": { Proxy: "http://127.0.0.1:7359" } } } } });
-  await new Tailnet({ self, allow: [], cli: ours.cli }).expose(7359);
-  assert.equal(ours.calls.at(-1)?.[1], "--bg");
+  await exposing(tailnetOf({ self, allow: [], cli: ours.cli }), 7359);
+  assert.equal(ours.calls.at(-2)?.[1], "--bg", "then taken off again when its scope closed");
 
   const taken = fakeCli({ TCP: { 7357: { HTTPS: true } }, Web: { [host]: { Handlers: { "/": { Proxy: "http://127.0.0.1:8080" } } } } });
-  await assert.rejects(new Tailnet({ self, allow: [], cli: taken.cli }).expose(7359), /already serves something else \(\/ → http:\/\/127\.0\.0\.1:8080\)/);
+  await assert.rejects(exposing(tailnetOf({ self, allow: [], cli: taken.cli }), 7359), /already serves something else \(\/ → http:\/\/127\.0\.0\.1:8080\)/);
   assert.ok(!taken.calls.some((c) => c[1] === "--bg"));
 
   const funnel = fakeCli({
@@ -125,13 +145,13 @@ test("Serve is pointed at the tailnet listener, and never takes over someone els
     Web: { [host]: { Handlers: { "/": { Proxy: "http://127.0.0.1:7359" } } } },
     AllowFunnel: { [host]: true },
   });
-  await assert.rejects(new Tailnet({ self, allow: [], cli: funnel.cli }).expose(7359), /Funnel is on/);
+  await assert.rejects(exposing(tailnetOf({ self, allow: [], cli: funnel.cli }), 7359), /Funnel is on/);
 
   const noHttps = { ...self, https: false };
-  await assert.rejects(new Tailnet({ self: noHttps, allow: [], cli: fresh.cli }).expose(7359), /HTTPS certificates/);
+  await assert.rejects(exposing(tailnetOf({ self: noHttps, allow: [], cli: fresh.cli }), 7359), /HTTPS certificates/);
 
   const denied = fakeCli({}, "Access denied: serve config denied");
-  await assert.rejects(new Tailnet({ self, allow: [], cli: denied.cli }).expose(7359), /tailscale set --operator=\$USER/);
+  await assert.rejects(exposing(tailnetOf({ self, allow: [], cli: denied.cli }), 7359), /tailscale set --operator=\$USER/);
 });
 
 // ── the tailnet listener ─────────────────────────────────────────────────────────
@@ -145,44 +165,40 @@ const callers: Record<string, Caller> = {
 };
 
 async function setup(allow: readonly string[] = ["tag:laptops"]) {
-  const dir = mkdtempSync(join(tmpdir(), "top-tailnet-"));
-  const store = new Store(join(dir, "top.sqlite"));
-  store.createBot("Atlas", "", `${FAKE_PROVIDER}/${FAKE_MODEL}`);
-  const models = createModels();
-  models.setProvider(createFakeModelProvider(1_000).provider);
-  const daemon = new Daemon(store, models, [], { files: (bot) => join(dir, "bots", bot.name, "files") });
-  const bot = store.bots()[0]!.id;
-  const folder = daemon.files(bot)!.folder;
-  mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "report.html"), "<h1>Report</h1>");
-
+  const root = mkdtempSync(join(tmpdir(), "top-tailnet-"));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const lookups: string[] = [];
   const self: TailnetSelf = { ...parseStatus(status({})), stableId: "nSELF" };
-  const gate = new Tailnet({
+  const gate = tailnetOf({
     self,
     allow: parseAllow(allow),
-    cli: async () => "",
-    whois: async (address) => {
-      lookups.push(address);
-      return callers[address];
-    },
+    whois: (address) =>
+      Effect.sync(() => {
+        lookups.push(address);
+        return callers[address];
+      }),
   });
   // Stands in for MCP's sign-in redirect server.
-  const oauth = createServer((request, response) => response.end(`signed in: ${request.url}`));
+  const oauth = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk: Buffer) => (body += chunk));
+    request.on("end", () => {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Signed-In": "yes" });
+      response.end(`signed in: ${request.url}${body ? ` with ${body}` : ""}`);
+    });
+  });
   await new Promise<void>((resolve) => oauth.listen(0, "127.0.0.1", resolve));
   const oauthPort = (oauth.address() as { port: number }).port;
+  cleanup.push(() => new Promise((resolve) => oauth.close(() => resolve())));
 
-  const server = serve(daemon, { host: "127.0.0.1", port: 0, compress: false, tailnet: { gate, port: 0, oauthPort, oauthPath: CALLBACK_PATH } });
-  const port = await server.listening;
-  const tsPort = (await server.tailnetListening)!;
-  cleanup.push(async () => {
-    await server.close();
-    await new Promise((resolve) => oauth.close(resolve));
-    daemon.closeFiles();
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
+  const h = await harness({
+    files: (bot) => join(root, "bots", bot.name, "files"),
+    serve: { tailnet: { gate, port: 0, oauthPort, oauthPath: CALLBACK_PATH } },
   });
-  return { store, bot, port, tsPort, lookups, oauth };
+  const folder = (await until("the folder to be listed", () => h.daemon.files(h.bot))).folder;
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "report.html"), "<h1>Report</h1>");
+  return { store: h.store, bot: h.bot, port: h.port, tsPort: h.tailnetPort!, lookups, oauth };
 }
 
 /** Open the WebSocket and answer with its `welcome`, or the HTTP status it was refused with. */
@@ -270,7 +286,16 @@ test("files, discovery and sign-in redirects on the tailnet are for allowed call
   assert.deepEqual(Object.keys((await hidden.json()) as object).sort(), ["device", "error", "top"]);
 
   const callback = `${base}${CALLBACK_PATH}?code=abc&state=xyz`;
-  assert.equal(await (await fetch(callback, { headers: from("100.64.0.1") })).text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz`);
+  const passed = await fetch(callback, { headers: from("100.64.0.1") });
+  assert.equal(await passed.text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz`);
+  assert.equal(passed.headers.get("content-type"), "text/html; charset=utf-8", "its own type");
+  assert.equal(passed.headers.get("x-signed-in"), "yes", "and its other headers");
+  const posted = await fetch(callback, {
+    method: "POST",
+    body: "code=abc",
+    headers: { ...from("100.64.0.1"), "Content-Type": "application/x-www-form-urlencoded" },
+  });
+  assert.equal(await posted.text(), `signed in: ${CALLBACK_PATH}?code=abc&state=xyz with code=abc`, "a form post keeps its body");
   assert.equal((await fetch(callback, { headers: from("100.64.0.3") })).status, 403);
   await new Promise((resolve) => oauth.close(resolve));
   const nobody = await fetch(callback, { headers: from("100.64.0.1") });

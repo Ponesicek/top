@@ -3,10 +3,19 @@
  * starts uploading as soon as it's added, so sending only names them (see the protocol's Attachment).
  * Images are prepared first: shrunk to MAX_IMAGE_EDGE on their long side, and re-encoded when they're
  * over MAX_IMAGE_BYTES.
+ *
+ * The lists are an atom (see top.ts); each draft's preparing and uploading is a fiber, at most
+ * UPLOADS_AT_ONCE uploading together, and removing a draft interrupts its fiber, which cancels the upload.
  */
+import { useAtomValue } from "@effect/atom-react";
 import { type Attachment, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, MAX_IMAGE_EDGE, MODEL_IMAGE_TYPES } from "@top/client";
-import { useSyncExternalStore } from "react";
-import { top } from "./top.ts";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as FiberMap from "effect/FiberMap";
+import * as Atom from "effect/reactivity/Atom";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
+import { registry, top } from "./top.ts";
 
 export type Draft = {
   readonly key: number;
@@ -19,42 +28,39 @@ export type Draft = {
   readonly state: "preparing" | "uploading" | "ready" | "failed";
   /** Fraction uploaded, while uploading. */
   readonly progress: number;
-  readonly error?: string;
+  readonly error?: string | undefined;
   readonly uploaded?: Attachment;
 };
 
 const NONE: readonly Draft[] = [];
-const lists = new Map<string, readonly Draft[]>();
-const listeners = new Set<() => void>();
+/** Each bot's drafts, by bot id (as a string). */
+const listsAtom = Atom.make<ReadonlyMap<string, readonly Draft[]>>(new Map()).pipe(Atom.keepAlive);
 let nextKey = 1;
 
-function emit() {
-  for (const listener of listeners) listener();
+const listOf = (bot: string) => registry.get(listsAtom).get(bot) ?? NONE;
+function setList(bot: string, list: readonly Draft[] | undefined) {
+  const lists = new Map(registry.get(listsAtom));
+  if (list) lists.set(bot, list);
+  else lists.delete(bot);
+  registry.set(listsAtom, lists);
 }
 
 function update(bot: string, key: number, change: Partial<Draft>) {
-  const list = lists.get(bot);
-  if (!list?.some((d) => d.key === key)) return;
-  lists.set(
+  const list = listOf(bot);
+  if (!list.some((d) => d.key === key)) return;
+  setList(
     bot,
     list.map((d) => (d.key === key ? { ...d, ...change } : d)),
   );
-  emit();
 }
 
-const find = (bot: string, key: number) => lists.get(bot)?.find((d) => d.key === key);
+const find = (bot: string, key: number) => listOf(bot).find((d) => d.key === key);
 
 export function useAttachments(bot: string): readonly Draft[] {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => lists.get(bot) ?? NONE,
-  );
+  return useAtomValue(listsAtom, (lists) => lists.get(bot) ?? NONE);
 }
 
-export const attachmentsOf = (bot: string): readonly Draft[] => lists.get(bot) ?? NONE;
+export const attachmentsOf = (bot: string): readonly Draft[] => listOf(bot);
 
 export function sizeLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -109,7 +115,7 @@ async function prepareImage(file: File, type: string): Promise<File | undefined>
     };
     const fit = Math.min(1, MAX_IMAGE_EDGE / long);
     // The same type first; then WebP, smaller and smaller, until it fits.
-    const attempts: [number, string, number?][] = [
+    const attempts: [number, string, (number | undefined)?][] = [
       [fit, type === "image/png" ? "image/png" : type, type === "image/png" ? undefined : 0.9],
       [fit, "image/webp", 0.85],
       [fit, "image/webp", 0.7],
@@ -133,43 +139,44 @@ async function prepareImage(file: File, type: string): Promise<File | undefined>
 // ── uploading ────────────────────────────────────────────────────────────────
 
 const UPLOADS_AT_ONCE = 3;
-let uploading = 0;
-const waiting: (() => void)[] = [];
+/** Where the drafts' fibers run: as long as the app. */
+const scope = Scope.makeUnsafe();
+const slots = Semaphore.makeUnsafe(UPLOADS_AT_ONCE);
+/** Each draft's fiber, by its key: preparing, then waiting for a slot, then uploading. */
+const work = Effect.runSync(FiberMap.make<number>().pipe(Scope.provide(scope)));
 
-async function slot<T>(run: () => Promise<T>): Promise<T> {
-  if (uploading >= UPLOADS_AT_ONCE) await new Promise<void>((resolve) => waiting.push(resolve));
-  uploading++;
-  try {
-    return await run();
-  } finally {
-    uploading--;
-    waiting.shift()?.();
-  }
-}
-
-async function upload(bot: string, key: number) {
-  const draft = find(bot, key);
-  if (!draft) return;
-  update(bot, key, { state: "uploading", progress: 0, error: undefined });
-  let shown = 0;
-  try {
-    const uploaded = await slot(() => {
-      if (!find(bot, key)) throw new DOMException("removed", "AbortError");
-      return top.upload(draft.file, draft.name, {
-        onProgress: (fraction) => {
-          // Re-render on visible steps only.
-          if (fraction - shown < 0.02 && fraction < 1) return;
-          shown = fraction;
-          update(bot, key, { progress: fraction });
-        },
-      });
-    });
+const upload = (bot: string, key: number) =>
+  Effect.gen(function* () {
+    const draft = find(bot, key);
+    if (!draft) return;
+    update(bot, key, { state: "uploading", progress: 0, error: undefined });
+    let shown = 0;
+    const uploaded = yield* slots.withPermits(1)(
+      // Interrupting the fiber aborts the signal, which cancels the request.
+      Effect.tryPromise((signal) =>
+        top.upload(draft.file, draft.name, {
+          signal,
+          onProgress: (fraction) => {
+            // Re-render on visible steps only.
+            if (fraction - shown < 0.02 && fraction < 1) return;
+            shown = fraction;
+            update(bot, key, { progress: fraction });
+          },
+        }),
+      ),
+    );
     update(bot, key, { state: "ready", progress: 1, uploaded });
-  } catch (error) {
-    if ((error as Error).name === "AbortError") return;
-    update(bot, key, { state: "failed", error: (error as Error).message });
-  }
-}
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.sync(() => {
+        const error = Cause.squash(cause);
+        const reason = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+        update(bot, key, { state: "failed", error: reason instanceof Error ? reason.message : String(reason) });
+      }),
+    ),
+  );
+
+const run = (key: number, effect: Effect.Effect<void>) => Effect.runFork(FiberMap.run(work, key, effect));
 
 /**
  * Add files to `bot`'s composer. Those that can't be attached are left out, and the reasons come back
@@ -178,7 +185,7 @@ async function upload(bot: string, key: number) {
  */
 export function addAttachments(bot: string, files: readonly File[]): string | undefined {
   const problems: string[] = [];
-  const list = [...(lists.get(bot) ?? NONE)];
+  const list = [...listOf(bot)];
   const added: Draft[] = [];
   for (const file of files) {
     if (list.length + added.length >= MAX_ATTACHMENTS) {
@@ -208,54 +215,53 @@ export function addAttachments(bot: string, files: readonly File[]): string | un
     });
   }
   if (added.length) {
-    lists.set(bot, [...list, ...added]);
-    emit();
-    for (const draft of added) void start(bot, draft);
+    setList(bot, [...list, ...added]);
+    for (const draft of added) run(draft.key, start(bot, draft));
   }
   return problems.length ? problems.join(" ") : undefined;
 }
 
-async function start(bot: string, draft: Draft) {
-  if (draft.kind === "image") {
-    const prepared = await prepareImage(draft.file, draft.file.type);
-    if (!find(bot, draft.key)) return;
-    if (!prepared) {
-      // Not readable as an image after all: it goes as a file.
-      update(bot, draft.key, { kind: "file", file: new File([draft.file], draft.name, { type: "application/octet-stream" }) });
-    } else if (prepared.size > MAX_ATTACHMENT_BYTES) {
-      return update(bot, draft.key, { state: "failed", error: "Too large to attach, even shrunk." });
-    } else {
-      update(bot, draft.key, { file: prepared, name: prepared.name });
+const start = (bot: string, draft: Draft) =>
+  Effect.gen(function* () {
+    if (draft.kind === "image") {
+      const prepared = yield* Effect.promise(() => prepareImage(draft.file, draft.file.type));
+      if (!find(bot, draft.key)) return;
+      if (!prepared) {
+        // Not readable as an image after all: it goes as a file.
+        update(bot, draft.key, { kind: "file", file: new File([draft.file], draft.name, { type: "application/octet-stream" }) });
+      } else if (prepared.size > MAX_ATTACHMENT_BYTES) {
+        return update(bot, draft.key, { state: "failed", error: "Too large to attach, even shrunk." });
+      } else {
+        update(bot, draft.key, { file: prepared, name: prepared.name });
+      }
     }
-  }
-  await upload(bot, draft.key);
-}
+    yield* upload(bot, draft.key);
+  });
 
 export function retryAttachment(bot: string, key: number) {
-  void upload(bot, key);
+  run(key, upload(bot, key));
 }
 
 export function removeAttachment(bot: string, key: number) {
   const draft = find(bot, key);
   if (!draft) return;
   if (draft.preview) URL.revokeObjectURL(draft.preview);
-  lists.set(
+  Effect.runFork(FiberMap.remove(work, key));
+  setList(
     bot,
-    (lists.get(bot) ?? NONE).filter((d) => d.key !== key),
+    listOf(bot).filter((d) => d.key !== key),
   );
-  emit();
 }
 
 /** After a send: the composer starts empty. */
 export function clearAttachments(bot: string) {
-  for (const draft of lists.get(bot) ?? NONE) if (draft.preview) URL.revokeObjectURL(draft.preview);
-  lists.delete(bot);
-  emit();
+  for (const draft of listOf(bot)) if (draft.preview) URL.revokeObjectURL(draft.preview);
+  setList(bot, undefined);
 }
 
 /** What a send would carry, or why it can't go yet. */
 export function readyAttachments(bot: string): { ready: Attachment[] } | { wait: string } {
-  const list = lists.get(bot) ?? NONE;
+  const list = listOf(bot);
   if (list.some((d) => d.state === "failed")) return { wait: "An attachment didn't upload: retry it or remove it." };
   if (list.some((d) => d.state !== "ready")) return { wait: "Attachments are still uploading." };
   return { ready: list.map((d) => d.uploaded!) };
@@ -268,7 +274,7 @@ export const LARGE_PASTE_BYTES = 32 * 1024;
 
 /** `pasted-text.txt`, or the next free `pasted-text-2.txt`, … among `bot`'s attachments. */
 export function pastedTextName(bot: string): string {
-  const taken = new Set((lists.get(bot) ?? NONE).map((d) => d.name));
+  const taken = new Set(listOf(bot).map((d) => d.name));
   for (let n = 1; ; n++) {
     const name = n === 1 ? "pasted-text.txt" : `pasted-text-${n}.txt`;
     if (!taken.has(name)) return name;

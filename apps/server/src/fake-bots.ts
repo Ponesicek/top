@@ -5,7 +5,11 @@
  * `call echo__echo {"text": "hi"}`). Everything above the model is
  * the real daemon: storage, the agent loop, tools, recovery.
  */
+
 import { type FauxResponseFactory, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 
 export const FAKE_PROVIDER = "faux";
 export const FAKE_MODEL = "top-fake";
@@ -186,20 +190,21 @@ export const FAKE_PROMPTS = [
   "List the open TODOs in the client package",
 ] as const;
 
-export function createFakeModelProvider(tokensPerSecond: number) {
-  const faux = fauxProvider({
-    provider: FAKE_PROVIDER,
-    models: [{ id: FAKE_MODEL, name: "Top fake model", contextWindow: 1_000_000, maxTokens: 65_536 }],
-    tokensPerSecond,
-    tokenSize: { min: 3, max: 6 },
+/** The scripted model at `tokensPerSecond`, its script kept topped up by a fiber for as long as the scope lasts. */
+export const makeFakeModelProvider = (tokensPerSecond: number) =>
+  Effect.gen(function* () {
+    const faux = fauxProvider({
+      provider: FAKE_PROVIDER,
+      models: [{ id: FAKE_MODEL, name: "Top fake model", contextWindow: 1_000_000, maxTokens: 65_536 }],
+      tokensPerSecond,
+      tokenSize: { min: 3, max: 6 },
+    });
+    const factory: FauxResponseFactory = (context) => respond(context);
+    // The faux provider consumes one scripted step per request; keep the script topped up forever.
+    const topUp = Effect.sync(() => {
+      if (faux.getPendingResponseCount() < 256) faux.appendResponses(Array.from({ length: 1024 }, () => factory));
+    });
+    yield* topUp;
+    yield* Effect.forkScoped(Effect.repeat(topUp, Schedule.spaced(Duration.seconds(1))));
+    return faux;
   });
-  const factory: FauxResponseFactory = (context) => respond(context);
-  // The faux provider consumes one scripted step per request; keep the script topped up forever.
-  const topUp = () => {
-    if (faux.getPendingResponseCount() < 256) faux.appendResponses(Array.from({ length: 1024 }, () => factory));
-  };
-  topUp();
-  const timer = setInterval(topUp, 1_000);
-  timer.unref();
-  return faux;
-}

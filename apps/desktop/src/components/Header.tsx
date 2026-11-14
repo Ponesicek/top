@@ -1,10 +1,11 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { BotId, ConversationSync } from "@top/client";
 import { Files, WifiOff } from "lucide-react";
-import { memo, useEffect, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useState } from "react";
 import { togglePanel, useBotFiles } from "../files.ts";
 import { cn } from "../lib/utils.ts";
 import { isWorking } from "../rows.ts";
-import { useBot } from "../top.ts";
+import { conversationAtom, useBot } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { statusLabel } from "./Sidebar.tsx";
 import { StatusDot } from "./StatusDot.tsx";
@@ -49,7 +50,7 @@ function FilesToggle({ bot, open }: { bot: BotId; open: boolean }) {
 export const Header = memo(function Header({ sync, name, filesOpen }: { sync: ConversationSync; name: string; filesOpen: boolean }) {
   const bot = useBot(sync.id);
   const working = isWorking(bot?.status);
-  const status = useSyncExternalStore(sync.subscribe, () => sync.getSnapshot().status);
+  const status = useAtomValue(conversationAtom(sync), (snapshot) => snapshot.status);
   const state = bot?.status ?? "idle";
   return (
     <header className="h-15 flex-none overflow-hidden border-b [scrollbar-gutter:stable] [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">

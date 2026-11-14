@@ -11,27 +11,46 @@
  *
  * `ctx.key` is stable for one call across restarts; pass it to outside services as an idempotency key.
  */
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Schema from "effect/Schema";
 import Type, { type TProperties } from "typebox";
 
 export type ToolContext = {
   /** Stable for this one tool call, also across restarts. */
   readonly key: string;
   readonly bot: number;
-  readonly signal?: AbortSignal;
+  /**
+   * Stop asked for (the user's Stop, a job's time limit). Tools stop cooperatively: they wind down and
+   * report what they got to, which is why this is a signal and not an interruption.
+   */
+  readonly signal?: AbortSignal | undefined;
   /** Output so far, for a tool that reports progress (bash does). Shown when someone asks a background job for it. */
-  readonly onUpdate?: (partial: ToolResult) => void;
+  readonly onUpdate?: ((partial: ToolResult) => void) | undefined;
 };
 
 export type ToolResult = AgentToolResult<unknown>;
+
+/** A tool call that failed; the model is told `message`. */
+export class ToolError extends Schema.TaggedError<ToolError>()("ToolError", { message: Schema.String }) {
+  /** Whatever a tool threw, as a `ToolError` (a `ToolError` stays itself). */
+  static from(error: unknown): ToolError {
+    if (isToolError(error)) return error;
+    return new ToolError({ message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+export const isToolError = Schema.is(ToolError);
 
 export type TopTool = {
   readonly name: string;
   readonly label: string;
   readonly description: string;
-  /** JSON Schema of the arguments (a TypeBox `Type.Object(…)` is one). */
+  /** JSON Schema of the arguments (a TypeBox `Type.Object(…)` is one): pi reads it. */
   readonly parameters: object;
   readonly replay?: "never" | "safe";
   /** Normalizes raw arguments before schema validation (pi's tools accept older argument shapes). */
@@ -42,27 +61,29 @@ export type TopTool = {
    * wait on purpose, like Collar's `jobs` waiting for a job.
    */
   readonly background?: false;
-  run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
+  run(args: Record<string, unknown>, ctx: ToolContext): Effect.Effect<ToolResult, ToolError>;
   /** After a restart cut this call off: its result if it took effect, `false` if it surely did not, `undefined` if unknown. */
-  recover?(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult | false | undefined>;
+  recover?(args: Record<string, unknown>, ctx: ToolContext): Effect.Effect<ToolResult | false | undefined>;
 };
 
 export const text = (value: string): ToolResult => ({ content: [{ type: "text", text: value }], details: {} });
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error("Stopped"));
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("Stopped"));
-      },
-      { once: true },
-    );
-  });
-}
+/** A tool whose work is a Promise (pi's tools, MCP calls): what it throws becomes a `ToolError`. */
+export const fromPromise = (run: () => PromiseLike<ToolResult>): Effect.Effect<ToolResult, ToolError> => Effect.tryPromise({ try: run, catch: ToolError.from });
+
+/** Fails with "Stopped" once `signal` is aborted; never ends otherwise. */
+export const stopped = (signal: AbortSignal | undefined): Effect.Effect<never, ToolError> =>
+  signal === undefined
+    ? Effect.never
+    : Effect.callback<never, ToolError>((resume) => {
+        const stop = () => resume(Effect.fail(new ToolError({ message: "Stopped" })));
+        if (signal.aborted) return stop();
+        signal.addEventListener("abort", stop, { once: true });
+        return Effect.sync(() => signal.removeEventListener("abort", stop));
+      });
+
+/** Wait, or fail with "Stopped" when `signal` is aborted first. */
+export const sleep = (ms: number, signal?: AbortSignal): Effect.Effect<void, ToolError> => Effect.raceFirst(Effect.sleep(Duration.millis(ms)), stopped(signal));
 
 // ── fake tools with real side effects, for development and the crash tests ───────
 
@@ -106,22 +127,28 @@ flowchart LR
  * Side effects of the fake tools, one JSON line each, so tests can count what really happened.
  * `filesOf` gives a bot's files folder, for `write_report`.
  */
-export function createFakeTools(effectsPath: string, filesOf: (bot: number) => string | undefined = () => undefined): TopTool[] {
+export const makeFakeTools = Effect.fnUntraced(function* (
+  effectsPath: string,
+  filesOf: (bot: number) => Effect.Effect<string | undefined> = () => Effect.undefined,
+) {
+  const fs = yield* FileSystem.FileSystem;
   const record = (tool: string, phase: string, key: string, detail?: unknown) =>
-    appendFileSync(effectsPath, `${JSON.stringify({ tool, phase, key, detail, at: Date.now() })}\n`);
-  const recorded = (tool: string, phase: string, key: string) => {
-    try {
-      return readFileSync(effectsPath, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .some((line) => {
-          const e = JSON.parse(line) as { tool: string; phase: string; key: string };
-          return e.tool === tool && e.phase === phase && e.key === key;
-        });
-    } catch {
-      return false;
-    }
-  };
+    Effect.flatMap(Clock.currentTimeMillis, (at) =>
+      Effect.orDie(fs.writeFileString(effectsPath, `${JSON.stringify({ tool, phase, key, detail, at })}\n`, { flag: "a" })),
+    );
+  const recorded = (tool: string, phase: string, key: string) =>
+    fs.readFileString(effectsPath).pipe(
+      Effect.map((text) =>
+        text
+          .split("\n")
+          .filter(Boolean)
+          .some((line) => {
+            const e = JSON.parse(line) as { tool: string; phase: string; key: string };
+            return e.tool === tool && e.phase === phase && e.key === key;
+          }),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
   const seconds = (args: Record<string, unknown>, fallback: number) => Math.max(0, Number(args.seconds ?? fallback)) * 1_000;
   const schema = (properties: TProperties) => Type.Object(properties, { additionalProperties: false });
   const { Optional, String: Str, Number: Num } = Type;
@@ -134,11 +161,12 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => s
       label: "Deploy",
       description: "Deploy a service. Takes effect immediately.",
       parameters: schema({ service: Optional(Str()), seconds: Optional(Num()) }),
-      async run(args, ctx) {
-        record("deploy", "effect", ctx.key, args.service);
-        await sleep(seconds(args, 2), ctx.signal);
-        return text(`Deployed ${String(args.service ?? "the service")}.`);
-      },
+      run: (args, ctx) =>
+        Effect.gen(function* () {
+          yield* record("deploy", "effect", ctx.key, args.service);
+          yield* sleep(seconds(args, 2), ctx.signal);
+          return text(`Deployed ${String(args.service ?? "the service")}.`);
+        }),
     },
     {
       // Sends, then waits for the provider's receipt. Its provider dedupes by key, so after a restart
@@ -147,16 +175,16 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => s
       label: "Send email",
       description: "Send an email.",
       parameters: schema({ to: Optional(Str()), subject: Optional(Str()), seconds: Optional(Num()) }),
-      async run(args, ctx) {
-        if (!recorded("send_email", "effect", ctx.key)) record("send_email", "effect", ctx.key, args.to);
-        await sleep(seconds(args, 2), ctx.signal);
-        return text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")}.`);
-      },
-      async recover(args, ctx) {
-        return recorded("send_email", "effect", ctx.key)
-          ? text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")} (confirmed after a restart).`)
-          : false;
-      },
+      run: (args, ctx) =>
+        Effect.gen(function* () {
+          if (!(yield* recorded("send_email", "effect", ctx.key))) yield* record("send_email", "effect", ctx.key, args.to);
+          yield* sleep(seconds(args, 2), ctx.signal);
+          return text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")}.`);
+        }),
+      recover: (args, ctx) =>
+        Effect.map(recorded("send_email", "effect", ctx.key), (sent) =>
+          sent ? text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")} (confirmed after a restart).`) : false,
+        ),
     },
     {
       // Read-only, so a restart just runs it again.
@@ -165,11 +193,12 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => s
       description: "Check the status of a system. Read-only.",
       parameters: schema({ target: Optional(Str()), seconds: Optional(Num()) }),
       replay: "safe",
-      async run(args, ctx) {
-        record("check_status", "start", ctx.key, args.target);
-        await sleep(seconds(args, 1), ctx.signal);
-        return text(`${String(args.target ?? "Everything")} is healthy. Queue depth 0, p99 41 ms.`);
-      },
+      run: (args, ctx) =>
+        Effect.gen(function* () {
+          yield* record("check_status", "start", ctx.key, args.target);
+          yield* sleep(seconds(args, 1), ctx.signal);
+          return text(`${String(args.target ?? "Everything")} is healthy. Queue depth 0, p99 41 ms.`);
+        }),
     },
     {
       // Writes the same files again, so a restart may run it again.
@@ -178,20 +207,22 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => s
       description: "Write a status report (a page and a note) to the bot's files folder.",
       parameters: schema({}),
       replay: "safe",
-      async run(_args, ctx) {
-        const folder = filesOf(ctx.bot);
-        if (!folder) return text("This bot has no files folder.");
-        for (const [name, content] of [
-          ["report.html", REPORT_HTML],
-          ["notes.md", REPORT_NOTES],
-        ] as const) {
-          const path = join(folder, name);
-          mkdirSync(dirname(path), { recursive: true });
-          writeFileSync(path, content);
-        }
-        record("write_report", "effect", ctx.key);
-        return text("Wrote files/report.html and files/notes.md.");
-      },
+      run: (_args, ctx) =>
+        Effect.gen(function* () {
+          const folder = yield* filesOf(ctx.bot);
+          if (!folder) return text("This bot has no files folder.");
+          for (const [name, content] of [
+            ["report.html", REPORT_HTML],
+            ["notes.md", REPORT_NOTES],
+          ] as const) {
+            const path = join(folder, name);
+            yield* fs
+              .makeDirectory(dirname(path), { recursive: true })
+              .pipe(Effect.andThen(fs.writeFileString(path, content)), Effect.mapError(ToolError.from));
+          }
+          yield* record("write_report", "effect", ctx.key);
+          return text("Wrote files/report.html and files/notes.md.");
+        }),
     },
     {
       // Kills the daemon every time it runs, to test that a crash loop ends.
@@ -200,12 +231,12 @@ export function createFakeTools(effectsPath: string, filesOf: (bot: number) => s
       description: "Testing only: kills the daemon process.",
       parameters: schema({}),
       replay: "safe",
-      async run(_args, ctx) {
-        record("crash_daemon", "start", ctx.key);
-        process.kill(process.pid, "SIGKILL");
-        await sleep(60_000);
-        return text("unreachable");
-      },
+      run: (_args, ctx) =>
+        Effect.gen(function* () {
+          yield* record("crash_daemon", "start", ctx.key);
+          yield* Effect.sync(() => process.kill(process.pid, "SIGKILL"));
+          return yield* Effect.never;
+        }),
     },
-  ];
-}
+  ] satisfies TopTool[];
+});
