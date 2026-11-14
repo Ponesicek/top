@@ -55,7 +55,8 @@
           "globalRandomInEffect": "error",
           "globalTimersInEffect": "error",
           "globalFetchInEffect": "error",
-          "schemaNumber": "off"
+          "schemaNumber": "off",
+          "schemaClassMissingBrand": "off"
         },
         "overrides": [
           {
