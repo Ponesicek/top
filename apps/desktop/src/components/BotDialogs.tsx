@@ -1,4 +1,5 @@
 import { type BotId, type BotSummary, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, OfflineError, TimeoutError } from "@top/client";
+import * as Schema from "effect/Schema";
 import { type FormEvent, useRef, useState } from "react";
 import { top } from "../top.ts";
 import { Button } from "./ui/button.tsx";
@@ -17,10 +18,13 @@ import {
 } from "./ui/dialog.tsx";
 import { Field, FieldHint, FieldLabel, Input, Textarea } from "./ui/field.tsx";
 
+const isOffline = Schema.is(OfflineError);
+const isTimeout = Schema.is(TimeoutError);
+
 /** What went wrong, in words for the user. The daemon's own refusals already are ("There's already a bot named Atlas."). */
 export function messageOf(error: unknown): string {
-  if (error instanceof OfflineError) return "Not connected to the Top daemon. Try again once it's back.";
-  if (error instanceof TimeoutError) return "The daemon didn't answer. Try again.";
+  if (isOffline(error)) return "Not connected to the Top daemon. Try again once it's back.";
+  if (isTimeout(error)) return "The daemon didn't answer. Try again.";
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/^\w+: /, "");
 }

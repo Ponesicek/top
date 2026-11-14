@@ -10,7 +10,15 @@
  * with the same `requestId` (applied once by the daemon) until the daemon has them.
  */
 import type { Attachment, BotId, Entry, Gap, HistoryResult, QueuedMessage, Seq, SubmitResult, WhenBusy } from "@top/protocol";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
 import type { Connection } from "./connection.ts";
+
+/** Runs a client's Effects, in its scope (closing the client stops what's still running). */
+export type ClientRuntime = {
+  readonly promise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
+  readonly fork: <A, E>(effect: Effect.Effect<A, E>) => void;
+};
 
 export type PendingMessage = {
   readonly requestId: string;
@@ -71,6 +79,7 @@ export class ConversationSync {
   readonly id: BotId;
   readonly #connection: Connection;
   readonly #clientId: string;
+  readonly #run: ClientRuntime;
   readonly #listeners = new Set<() => void>();
   readonly #itemOf = new WeakMap<Entry, TranscriptItem>();
 
@@ -86,10 +95,11 @@ export class ConversationSync {
   #watching = false;
   #snapshot: ConversationSnapshot;
 
-  constructor(id: BotId, connection: Connection, clientId: string) {
+  constructor(id: BotId, connection: Connection, clientId: string, run: ClientRuntime) {
     this.id = id;
     this.#connection = connection;
     this.#clientId = clientId;
+    this.#run = run;
     this.#snapshot = { id, status: "loading", items: [], inbox: [], pending: [], revision: 0 };
   }
 
@@ -125,7 +135,7 @@ export class ConversationSync {
 
   /** (Re)attach after a connect: ask only for what's newer than what we hold. */
   attach() {
-    if (this.#retained === 0 || this.#connection.status !== "open") return;
+    if (this.#retained === 0 || this.#connection.status() !== "open") return;
     const after = this.#known ? (this.newestSeq ?? 0) : undefined;
     this.#watching = this.#connection.send({ t: "watch", bot: this.id, ...(after === undefined ? {} : { after }) });
     this.#resendUnacknowledged();
@@ -198,29 +208,35 @@ export class ConversationSync {
 
   // ── history ──────────────────────────────────────────────────────────────────
 
-  async loadEarlier() {
+  loadEarlier(): Promise<void> {
     const first = this.#entries[0];
-    if (!this.#earlier || !first) return;
-    const page = await this.#connection.request<HistoryResult>({ t: "history", bot: this.id, before: first.seq, limit: PAGE });
-    this.#earlier = page.more;
-    this.#merge(page.entries);
-    this.#publish();
+    if (!this.#earlier || !first) return Promise.resolve();
+    return this.#run.promise(
+      Effect.map(this.#connection.request<HistoryResult>({ t: "history", bot: this.id, before: first.seq, limit: PAGE }), (page) => {
+        this.#earlier = page.more;
+        this.#merge(page.entries);
+        this.#publish();
+      }),
+    );
   }
 
-  async fillGap(gap: Gap) {
-    const page = await this.#connection.request<HistoryResult>({ t: "history", bot: this.id, before: gap.before, after: gap.after, limit: PAGE });
-    const lowest = page.entries[0]?.seq;
-    this.#gaps = this.#gaps.flatMap((g) => {
-      if (g.after !== gap.after || g.before !== gap.before) return [g];
-      return page.more && lowest !== undefined ? [{ after: g.after, before: lowest }] : [];
-    });
-    this.#merge(page.entries);
-    this.#publish();
+  fillGap(gap: Gap): Promise<void> {
+    return this.#run.promise(
+      Effect.map(this.#connection.request<HistoryResult>({ t: "history", bot: this.id, before: gap.before, after: gap.after, limit: PAGE }), (page) => {
+        const lowest = page.entries[0]?.seq;
+        this.#gaps = this.#gaps.flatMap((g) => {
+          if (g.after !== gap.after || g.before !== gap.before) return [g];
+          return page.more && lowest !== undefined ? [{ after: g.after, before: lowest }] : [];
+        });
+        this.#merge(page.entries);
+        this.#publish();
+      }),
+    );
   }
 
   /** One entry in full: untruncated tool output, thinking, tool arguments. */
   detail(seq: Seq): Promise<Entry> {
-    return this.#connection.request<Entry>({ t: "detail", bot: this.id, seq });
+    return this.#run.promise(this.#connection.request<Entry>({ t: "detail", bot: this.id, seq }));
   }
 
   // ── actions ───────────────────────────────────────────────────────────────────
@@ -250,8 +266,8 @@ export class ConversationSync {
     this.#publish();
   }
 
-  async abort() {
-    await this.#connection.request({ t: "abort", bot: this.id });
+  abort(): Promise<void> {
+    return this.#run.promise(Effect.asVoid(this.#connection.request({ t: "abort", bot: this.id })));
   }
 
   // ── internals ────────────────────────────────────────────────────────────────
@@ -324,35 +340,37 @@ export class ConversationSync {
   }
 
   #submit(message: PendingMessage) {
-    if (this.#connection.status !== "open") return; // resent on reconnect
-    this.#connection
-      .request<SubmitResult>({
-        t: "submit",
-        bot: this.id,
-        requestId: message.requestId,
-        text: message.text,
-        ...(message.attachments?.length ? { attachments: message.attachments.map((a) => a.id) } : {}),
-        whenBusy: message.whenBusy,
-        clientId: this.#clientId,
-      })
-      .then(
-        () => {
-          // The daemon has it durably. It shows as queued or placed once the inbox or entry frame lands.
-          this.#retirePending();
-          if (this.#pending.some((p) => p.requestId === message.requestId)) this.#update(message.requestId, { state: "accepted" });
-          else this.#publish();
-        },
-        (error: Error) => {
-          // A dropped connection is not a failure: the message stays "sending" and goes out again on reconnect.
-          if (error.name === "OfflineError") return;
-          // No answer in time: the daemon may or may not have it. Resending is safe, the requestId dedupes it.
-          if (error.name === "TimeoutError") {
-            setTimeout(() => this.#pending.some((p) => p.requestId === message.requestId) && this.#submit(message), 1_000);
-            return;
-          }
-          this.#update(message.requestId, { state: "failed", error: error.message });
-        },
-      );
+    if (this.#connection.status() !== "open") return; // resent on reconnect
+    const stillPending = () => this.#pending.some((p) => p.requestId === message.requestId);
+    this.#run.fork(
+      this.#connection
+        .request<SubmitResult>({
+          t: "submit",
+          bot: this.id,
+          requestId: message.requestId,
+          text: message.text,
+          ...(message.attachments?.length ? { attachments: message.attachments.map((a) => a.id) } : {}),
+          whenBusy: message.whenBusy,
+          clientId: this.#clientId,
+        })
+        .pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              // The daemon has it durably. It shows as queued or placed once the inbox or entry frame lands.
+              this.#retirePending();
+              if (stillPending()) this.#update(message.requestId, { state: "accepted" });
+              else this.#publish();
+            }),
+          ),
+          Effect.catchTags({
+            // A dropped connection is not a failure: the message stays "sending" and goes out again on reconnect.
+            OfflineError: () => Effect.void,
+            // No answer in time: the daemon may or may not have it. Resending is safe, the requestId dedupes it.
+            TimeoutError: () => Effect.sleep(Duration.seconds(1)).pipe(Effect.andThen(Effect.sync(() => stillPending() && this.#submit(message)))),
+          }),
+          Effect.catch((error) => Effect.sync(() => this.#update(message.requestId, { state: "failed", error: error.message }))),
+        ),
+    );
   }
 
   #resendUnacknowledged() {

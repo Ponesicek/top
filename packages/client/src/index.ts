@@ -8,6 +8,9 @@
  *
  * Retain only the bots on screen when data is metered (a phone on cellular): the sidebar summaries
  * cover the rest, and a retained bot catches up from what it holds when it is opened.
+ *
+ * Inside, the connection and everything waiting on the daemon run as Effects in the client's own scope;
+ * `close()` ends them all. The outside stays plain: snapshots and listeners, and Promises.
  */
 import type {
   Attachment,
@@ -23,8 +26,14 @@ import type {
   ServerFrame,
   Viewer,
 } from "@top/protocol";
-import { Connection, type ConnectionStatus } from "./connection.ts";
-import { ConversationSync } from "./conversation.ts";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import { type Connection, type ConnectionStatus, makeConnection, type RequestFrame } from "./connection.ts";
+import { type ClientRuntime, ConversationSync } from "./conversation.ts";
 
 export type {
   Attachment,
@@ -58,8 +67,14 @@ export {
   MAX_MCP_NAME,
   MODEL_IMAGE_TYPES,
 } from "@top/protocol";
-export { Connection, type ConnectionStatus, OfflineError, TimeoutError } from "./connection.ts";
+export { type Connection, type ConnectionStatus, makeConnection, OfflineError, RequestError, type RequestFailure, TimeoutError } from "./connection.ts";
 export * from "./conversation.ts";
+
+/** An upload the daemon refused (its reason, for the user) or that couldn't reach it. */
+export class UploadError extends Schema.TaggedError<UploadError>()("UploadError", { message: Schema.String }) {}
+
+/** An upload cancelled through its signal. Named like the web's own cancellation, `AbortError`. */
+export class UploadCancelled extends Schema.TaggedError<UploadCancelled>()("AbortError", { message: Schema.String }) {}
 
 export type TopClientOptions = {
   readonly url: string;
@@ -104,10 +119,16 @@ export type TopSnapshot = {
 
 export class TopClient {
   readonly clientId: string;
+  readonly #scope = Scope.makeUnsafe();
+  readonly #run: ClientRuntime = {
+    promise: (effect) => Effect.runPromise(effect),
+    fork: (effect) => {
+      Effect.runFork(Effect.forkIn(effect, this.#scope));
+    },
+  };
   readonly #connection: Connection;
   readonly #conversations = new Map<BotId, ConversationSync>();
   readonly #listeners = new Set<() => void>();
-  readonly #rttTimer: ReturnType<typeof setInterval>;
   readonly #url: string;
   /** Where the daemon serves files, from `welcome` (see the protocol's FileView). */
   #filesPath: string | undefined;
@@ -130,27 +151,39 @@ export class TopClient {
       tailnetUrl: undefined,
       viewer: undefined,
     };
-    this.#connection = new Connection({
-      url: options.url,
-      clientId: this.clientId,
-      WebSocket: options.WebSocket,
-      ...(options.pingIntervalMs ? { pingIntervalMs: options.pingIntervalMs } : {}),
-      ...(options.deadAfterMs ? { deadAfterMs: options.deadAfterMs } : {}),
-    });
+    this.#connection = Effect.runSync(
+      makeConnection(
+        {
+          url: options.url,
+          clientId: this.clientId,
+          WebSocket: options.WebSocket,
+          ...(options.pingIntervalMs ? { pingIntervalMs: options.pingIntervalMs } : {}),
+          ...(options.deadAfterMs ? { deadAfterMs: options.deadAfterMs } : {}),
+        },
+        {
+          onFrame: (frame) => this.#receive(frame),
+          onOpen: () => {
+            for (const conversation of this.#conversations.values()) conversation.attach();
+          },
+          onStatus: () => {
+            const status = this.#connection.status();
+            if (status !== "open") for (const conversation of this.#conversations.values()) conversation.disconnected();
+            this.#publish({ connection: status, attempt: this.#connection.attempt() });
+          },
+        },
+      ).pipe(Scope.provide(this.#scope)),
+    );
     this.#connection.serverId = options.serverId;
-    this.#connection.onFrame = (frame) => this.#receive(frame);
-    this.#connection.onOpen = () => {
-      for (const conversation of this.#conversations.values()) conversation.attach();
-    };
-    this.#connection.onStatus = () => {
-      if (this.#connection.status !== "open") for (const conversation of this.#conversations.values()) conversation.disconnected();
-      this.#publish({ connection: this.#connection.status, attempt: this.#connection.attempt });
-    };
-    this.#connection.start();
     // RTT is read lazily; refresh it in the snapshot now and then without a render per pong.
-    this.#rttTimer = setInterval(() => {
-      if (this.#connection.rttMs !== this.#snapshot.rttMs) this.#publish({ rttMs: this.#connection.rttMs });
-    }, 2_000);
+    this.#run.fork(
+      Effect.repeat(
+        Effect.sync(() => {
+          const rttMs = this.#connection.rttMs();
+          if (rttMs !== this.#snapshot.rttMs) this.#publish({ rttMs });
+        }),
+        Schedule.spaced(Duration.seconds(2)),
+      ),
+    );
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -170,56 +203,62 @@ export class TopClient {
    * check right away that an open socket still works.
    */
   kick() {
-    this.#connection.kick();
+    this.#run.fork(this.#connection.kick);
   }
 
   /**
    * Make a bot. Resolves with its id once it is in the roster; rejects with a message for the user when
    * the daemon refuses it (an empty or taken name) or isn't reachable.
    */
-  async createBot(name: string, description: string): Promise<BotId> {
-    const { id } = await this.#connection.request<CreateBotResult>({ t: "createBot", name, description });
-    return id;
+  createBot(name: string, description: string): Promise<BotId> {
+    return this.#request<CreateBotResult>({ t: "createBot", name, description }).then(({ id }) => id);
   }
 
   /** Delete a bot and its whole transcript, on the daemon and for every client. */
-  async deleteBot(id: BotId): Promise<void> {
-    await this.#connection.request({ t: "deleteBot", bot: id });
+  deleteBot(id: BotId): Promise<void> {
+    return this.#command({ t: "deleteBot", bot: id });
   }
 
   /**
    * Add an MCP server (no `id`) or change one. A secret without a `value` keeps the stored one.
    * Rejects with a message for the user when the daemon refuses it (a taken name, a bad URL).
    */
-  async saveMcpServer(id: McpServerId | undefined, name: string, config: McpServerConfig): Promise<McpServerId> {
-    const result = await this.#connection.request<SaveMcpServerResult>({ t: "saveMcpServer", ...(id === undefined ? {} : { id }), name, config });
-    return result.id;
+  saveMcpServer(id: McpServerId | undefined, name: string, config: McpServerConfig): Promise<McpServerId> {
+    return this.#request<SaveMcpServerResult>({ t: "saveMcpServer", ...(id === undefined ? {} : { id }), name, config }).then((result) => result.id);
   }
 
   /** Remove an MCP server; its bots lose its tools and its credentials are erased. */
-  async deleteMcpServer(id: McpServerId): Promise<void> {
-    await this.#connection.request({ t: "deleteMcpServer", id });
+  deleteMcpServer(id: McpServerId): Promise<void> {
+    return this.#command({ t: "deleteMcpServer", id });
   }
 
   /** Give a bot an MCP server's tools, or take them away. */
-  async assignMcp(server: McpServerId, bot: BotId, on: boolean): Promise<void> {
-    await this.#connection.request({ t: "assignMcp", server, bot, on });
+  assignMcp(server: McpServerId, bot: BotId, on: boolean): Promise<void> {
+    return this.#command({ t: "assignMcp", server, bot, on });
   }
 
   /** Start signing in to an MCP server: resolves with the page to open (in a browser on the daemon's computer). */
-  async mcpSignIn(id: McpServerId): Promise<string> {
-    const { url } = await this.#connection.request<McpSignInResult>({ t: "mcpSignIn", id });
-    return url;
+  mcpSignIn(id: McpServerId): Promise<string> {
+    return this.#request<McpSignInResult>({ t: "mcpSignIn", id }).then(({ url }) => url);
   }
 
   /** Forget an MCP server's credentials, to sign in as someone else. */
-  async mcpSignOut(id: McpServerId): Promise<void> {
-    await this.#connection.request({ t: "mcpSignOut", id });
+  mcpSignOut(id: McpServerId): Promise<void> {
+    return this.#command({ t: "mcpSignOut", id });
   }
 
   /** Reconnect to an MCP server now. */
-  async mcpRetry(id: McpServerId): Promise<void> {
-    await this.#connection.request({ t: "mcpRetry", id });
+  mcpRetry(id: McpServerId): Promise<void> {
+    return this.#command({ t: "mcpRetry", id });
+  }
+
+  /** A request to the daemon, as a Promise for the UI: it rejects with the protocol's error (a message for the user). */
+  #request<T>(frame: RequestFrame): Promise<T> {
+    return this.#run.promise(this.#connection.request<T>(frame));
+  }
+
+  #command(frame: RequestFrame): Promise<void> {
+    return this.#run.promise(Effect.asVoid(this.#connection.request(frame)));
   }
 
   /**
@@ -256,41 +295,45 @@ export class TopClient {
    * `onProgress` gets the fraction sent. Rejects with the daemon's reason (a sentence for the user).
    */
   upload(file: Blob, name: string, options: { onProgress?: (fraction: number) => void; signal?: AbortSignal } = {}): Promise<Attachment> {
-    return new Promise((resolve, reject) => {
-      if (this.#attachmentsPath === undefined) return reject(new Error("Not connected to the daemon."));
+    const path = this.#attachmentsPath;
+    if (path === undefined) return Promise.reject(new Error("Not connected to the daemon."));
+    const url = `${this.#httpOrigin()}${path}/upload?name=${encodeURIComponent(name)}`;
+    // XHR, not fetch: only XHR reports upload progress.
+    const sending = Effect.callback<Attachment, UploadError | UploadCancelled>((resume) => {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${this.#httpOrigin()}${this.#attachmentsPath}/upload?name=${encodeURIComponent(name)}`);
+      xhr.open("POST", url);
       if (file.type) xhr.setRequestHeader("Content-Type", file.type);
       xhr.upload.onprogress = (event) => event.lengthComputable && options.onProgress?.(event.loaded / event.total);
       xhr.onload = () => {
-        if (xhr.status !== 200) return reject(new Error(xhr.responseText.trim() || `Upload failed (${xhr.status}).`));
+        if (xhr.status !== 200) return resume(Effect.fail(new UploadError({ message: xhr.responseText.trim() || `Upload failed (${xhr.status}).` })));
         try {
-          resolve(JSON.parse(xhr.responseText) as Attachment);
+          resume(Effect.succeed(JSON.parse(xhr.responseText) as Attachment));
         } catch {
-          reject(new Error("Upload failed: the daemon's answer wasn't readable."));
+          resume(Effect.fail(new UploadError({ message: "Upload failed: the daemon's answer wasn't readable." })));
         }
       };
-      xhr.onerror = () => reject(new Error("Upload failed: couldn't reach the daemon."));
-      xhr.ontimeout = () => reject(new Error("Upload timed out."));
-      xhr.onabort = () => reject(new DOMException("Upload cancelled.", "AbortError"));
+      xhr.onerror = () => resume(Effect.fail(new UploadError({ message: "Upload failed: couldn't reach the daemon." })));
+      xhr.ontimeout = () => resume(Effect.fail(new UploadError({ message: "Upload timed out." })));
+      xhr.onabort = () => resume(Effect.fail(new UploadCancelled({ message: "Upload cancelled." })));
       xhr.timeout = 5 * 60_000;
       options.signal?.addEventListener("abort", () => xhr.abort());
       xhr.send(file);
+      return Effect.sync(() => xhr.abort());
     });
+    return this.#run.promise(sending);
   }
 
   conversation(id: BotId): ConversationSync {
     let conversation = this.#conversations.get(id);
     if (!conversation) {
-      conversation = new ConversationSync(id, this.#connection, this.clientId);
+      conversation = new ConversationSync(id, this.#connection, this.clientId, this.#run);
       this.#conversations.set(id, conversation);
     }
     return conversation;
   }
 
   close() {
-    clearInterval(this.#rttTimer);
-    this.#connection.close();
+    Effect.runFork(Scope.close(this.#scope, Exit.void));
   }
 
   #receive(frame: ServerFrame) {

@@ -4,9 +4,21 @@
  * rejects every request.
  *
  * Pings are sparse (every 10 s) to keep a phone's radio asleep; when the app comes back to the
- * foreground or the network changes, `kick()` checks the socket right away instead.
+ * foreground or the network changes, `kick` checks the socket right away instead.
+ *
+ * It runs as fibers in the scope it's made in: one per socket's life, then a backoff, then the next.
+ * Requests are Effects that end with the daemon's answer (or its refusal, as the protocol's errors),
+ * `OfflineError` when there's no connection, or `TimeoutError`.
  */
-import { type ClientFrame, PROTOCOL_VERSION, parseServerFrame, type ServerFrame } from "@top/protocol";
+import { AttachmentError, BotError, BusyError, type ClientFrame, McpServerError, PROTOCOL_VERSION, parseServerFrame, type ServerFrame } from "@top/protocol";
+import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as FiberHandle from "effect/FiberHandle";
+import * as Option from "effect/Option";
+import * as Random from "effect/Random";
+import * as Schema from "effect/Schema";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting";
 
@@ -27,217 +39,234 @@ type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K>
 export type RequestFrame = DistributiveOmit<Extract<ClientFrame, { req: number }>, "req">;
 
 const RETRY_DELAYS_MS = [0, 250, 250, 250, 500, 500, 1_000, 2_000, 3_000, 5_000];
+/** After `kick`, an open socket that doesn't answer a ping this soon counts as dropped. */
+const KICK_ANSWER_MS = 3_000;
 
-type Pending = { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
+/** There's no connection to the daemon right now (a request is never sent, or its connection dropped). */
+export class OfflineError extends Schema.TaggedError<OfflineError>()("OfflineError", { message: Schema.String }) {}
 
-export class OfflineError extends Error {
-  override name = "OfflineError";
-}
+/** The daemon didn't answer in time; it may or may not have done what was asked. */
+export class TimeoutError extends Schema.TaggedError<TimeoutError>()("TimeoutError", { message: Schema.String }) {}
 
-export class TimeoutError extends Error {
-  override name = "TimeoutError";
-}
+/** The daemon refused a request for a reason without a type of its own (an unknown bot, a malformed frame). */
+export class RequestError extends Schema.TaggedError<RequestError>()("RequestError", { message: Schema.String }) {}
 
-export class Connection {
-  readonly #options: { [K in keyof Omit<ConnectionOptions, "WebSocket">]-?: Exclude<ConnectionOptions[K], undefined> } & { WebSocket: typeof WebSocket };
-  #socket: WebSocket | undefined;
-  #status: ConnectionStatus = "connecting";
-  #attempt = 0;
-  #retryTimer: ReturnType<typeof setTimeout> | undefined;
-  #pingTimer: ReturnType<typeof setInterval> | undefined;
-  #connectTimer: ReturnType<typeof setTimeout> | undefined;
-  #lastPong = 0;
-  #rttMs: number | undefined;
-  #nextReq = 1;
-  readonly #requests = new Map<number, Pending>();
-  #closed = false;
+/** What a request can end in, besides its answer. */
+export type RequestFailure = OfflineError | TimeoutError | RequestError | BotError | BusyError | AttachmentError | McpServerError;
 
+const REFUSALS: Record<string, (message: string) => RequestFailure> = {
+  BotError: (message) => new BotError({ message }),
+  BusyError: (message) => new BusyError({ message }),
+  AttachmentError: (message) => new AttachmentError({ message }),
+  McpServerError: (message) => new McpServerError({ message }),
+};
+
+/** The daemon's `"<Tag>: <message>"` as the protocol's error, when it's one of those. */
+const refusal = (text: string): RequestFailure => {
+  const match = /^(\w+): ([\s\S]*)$/.exec(text);
+  const make = match ? REFUSALS[match[1]!] : undefined;
+  return make ? make(match![2]!) : new RequestError({ message: text });
+};
+
+export type ConnectionHandlers = {
+  /** A frame that isn't an answer to a request. */
+  readonly onFrame: (frame: ServerFrame) => void;
+  /** A socket opened (the first time, or again after a drop). */
+  readonly onOpen: () => void;
+  readonly onStatus: () => void;
+};
+
+export type Connection = {
+  readonly status: () => ConnectionStatus;
+  readonly rttMs: () => number | undefined;
+  readonly attempt: () => number;
   /** The daemon the client's entries came from; sent in `hello` (see the protocol). */
   serverId: string | undefined;
-  onFrame: (frame: ServerFrame) => void = () => {};
-  onOpen: () => void = () => {};
-  onStatus: () => void = () => {};
-
-  constructor(options: ConnectionOptions) {
-    const WebSocketImpl = options.WebSocket ?? globalThis.WebSocket;
-    if (!WebSocketImpl) throw new Error("No WebSocket implementation available");
-    this.#options = {
-      url: options.url,
-      clientId: options.clientId,
-      pingIntervalMs: options.pingIntervalMs ?? 10_000,
-      connectTimeoutMs: options.connectTimeoutMs ?? 5_000,
-      deadAfterMs: options.deadAfterMs ?? 25_000,
-      requestTimeoutMs: options.requestTimeoutMs ?? 15_000,
-      WebSocket: WebSocketImpl,
-    };
-  }
-
-  get status(): ConnectionStatus {
-    return this.#status;
-  }
-  get rttMs(): number | undefined {
-    return this.#rttMs;
-  }
-  get attempt(): number {
-    return this.#attempt;
-  }
-
-  start() {
-    this.#connect();
-  }
-
+  /** Send a frame now; false when there's no open socket (nothing is queued). */
+  readonly send: (frame: ClientFrame) => boolean;
+  readonly request: <T = unknown>(frame: RequestFrame) => Effect.Effect<T, RequestFailure>;
   /**
    * The app returned to the foreground or the network changed. If connected, check that the socket
-   * still answers (no answer within 3 s counts as a drop); otherwise retry now instead of waiting out
-   * the backoff.
+   * still answers; otherwise retry now instead of waiting out the backoff.
    */
-  kick() {
-    if (this.#closed) return;
-    if (this.#status === "open") {
-      const socket = this.#socket;
-      const sentAt = Date.now();
-      this.send({ t: "ping", at: sentAt });
-      setTimeout(() => {
-        if (this.#socket === socket && this.#status === "open" && this.#lastPong < sentAt) this.#lost();
-      }, 3_000);
-      return;
-    }
-    clearTimeout(this.#retryTimer);
-    this.#attempt = 0;
-    this.#connect();
-  }
+  readonly kick: Effect.Effect<void>;
+};
 
-  send(frame: ClientFrame): boolean {
-    const socket = this.#socket;
-    if (this.#status !== "open" || !socket) return false;
+/** Connect, and keep connecting, for as long as the scope lasts. */
+export const makeConnection = Effect.fnUntraced(function* (options: ConnectionOptions, handlers: ConnectionHandlers) {
+  const WebSocketImpl = options.WebSocket ?? globalThis.WebSocket;
+  if (!WebSocketImpl) return yield* Effect.die(new Error("No WebSocket implementation available"));
+  const pingIntervalMs = options.pingIntervalMs ?? 10_000;
+  const connectTimeoutMs = options.connectTimeoutMs ?? 5_000;
+  const deadAfterMs = options.deadAfterMs ?? 25_000;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
+  const scope = yield* Effect.scope;
+  const life = yield* FiberHandle.make();
+
+  let socket: WebSocket | undefined;
+  let status: ConnectionStatus = "connecting";
+  let attempt = 0;
+  let lastHeard = 0;
+  let rttMs: number | undefined;
+  let nextReq = 1;
+  const requests = new Map<number, Deferred.Deferred<unknown, RequestFailure>>();
+  /** Ends the current socket's life: it closed, broke, or went silent. */
+  let drop: (() => void) | undefined;
+
+  const setStatus = (next: ConnectionStatus) => {
+    if (status === next) return;
+    status = next;
+    handlers.onStatus();
+  };
+
+  const send = (frame: ClientFrame) => {
+    if (status !== "open" || !socket) return false;
     socket.send(JSON.stringify(frame));
     return true;
-  }
+  };
 
-  request<T = unknown>(frame: RequestFrame): Promise<T> {
-    const req = this.#nextReq++;
-    return new Promise<T>((resolve, reject) => {
-      if (this.#status !== "open") return reject(new OfflineError("Not connected"));
-      const timer = setTimeout(() => {
-        this.#requests.delete(req);
-        reject(new TimeoutError("Request timed out"));
-      }, this.#options.requestTimeoutMs);
-      this.#requests.set(req, { resolve: resolve as (value: unknown) => void, reject, timer });
-      this.send({ ...frame, req } as ClientFrame);
-    });
-  }
-
-  close() {
-    this.#closed = true;
-    clearTimeout(this.#retryTimer);
-    this.#teardown();
-  }
-
-  #setStatus(status: ConnectionStatus) {
-    if (this.#status === status) return;
-    this.#status = status;
-    this.onStatus();
-  }
-
-  #connect() {
-    if (this.#closed) return;
-    this.#teardown();
-    const socket = new this.#options.WebSocket(this.#options.url);
-    this.#socket = socket;
-    this.#connectTimer = setTimeout(() => this.#socket === socket && this.#lost(), this.#options.connectTimeoutMs);
-    socket.onopen = () => {
-      if (this.#socket !== socket) return;
-      clearTimeout(this.#connectTimer);
-      this.#attempt = 0;
-      this.#lastPong = Date.now();
-      const hello: ClientFrame = {
-        t: "hello",
-        clientId: this.#options.clientId,
-        protocol: PROTOCOL_VERSION,
-        ...(this.serverId ? { serverId: this.serverId } : {}),
-      };
-      socket.send(JSON.stringify(hello));
-      this.#pingTimer = setInterval(() => this.#ping(), this.#options.pingIntervalMs);
-      this.#setStatus("open");
-      this.onOpen();
-    };
-    socket.onmessage = (event) => {
-      if (this.#socket !== socket) return;
-      this.#lastPong = Date.now(); // any traffic proves the connection is alive
-      const parsed = parseServerFrame(String(event.data));
-      if (!parsed.ok) {
-        // A request it answered badly fails now rather than at its timeout.
-        const pending = parsed.req === undefined ? undefined : this.#requests.get(parsed.req);
-        if (pending) {
-          this.#requests.delete(parsed.req!);
-          clearTimeout(pending.timer);
-          pending.reject(new Error(parsed.error));
-        } else console.warn(`[top] ignored a frame from the daemon: ${parsed.error}`);
-        return;
-      }
-      const frame = parsed.frame;
-      if (frame.t === "pong") {
-        this.#rttMs = Date.now() - frame.at;
-        return;
-      }
-      if (frame.t === "result") {
-        const pending = this.#requests.get(frame.req);
-        if (!pending) return;
-        this.#requests.delete(frame.req);
-        clearTimeout(pending.timer);
-        if (frame.ok) pending.resolve(frame.value);
-        else pending.reject(new Error(frame.error));
-        return;
-      }
-      this.onFrame(frame);
-    };
-    socket.onclose = () => {
-      if (this.#socket === socket) this.#lost();
-    };
-    // Not every WebSocket follows an error with a close (Node 22's leaves a refused connection
-    // CONNECTING forever), so an error counts as a lost connection on its own.
-    socket.onerror = () => {
-      if (this.#socket === socket) this.#lost();
-    };
-  }
-
-  #ping() {
-    if (Date.now() - this.#lastPong > this.#options.deadAfterMs) {
-      this.#lost();
+  const receive = (text: string) => {
+    const parsed = parseServerFrame(text);
+    if (!parsed.ok) {
+      // A request it answered badly fails now rather than at its timeout.
+      const pending = parsed.req === undefined ? undefined : requests.get(parsed.req);
+      if (pending) {
+        requests.delete(parsed.req!);
+        Deferred.doneUnsafe(pending, Effect.fail(new RequestError({ message: parsed.error })));
+      } else console.warn(`[top] ignored a frame from the daemon: ${parsed.error}`);
       return;
     }
-    this.send({ t: "ping", at: Date.now() });
-  }
+    const frame = parsed.frame;
+    if (frame.t === "pong") {
+      rttMs = Date.now() - frame.at;
+      return;
+    }
+    if (frame.t === "result") {
+      const pending = requests.get(frame.req);
+      if (!pending) return;
+      requests.delete(frame.req);
+      Deferred.doneUnsafe(pending, frame.ok ? Effect.succeed(frame.value) : Effect.fail(refusal(frame.error)));
+      return;
+    }
+    handlers.onFrame(frame);
+  };
 
-  #lost() {
-    this.#teardown();
-    if (this.#closed) return;
-    this.#setStatus("reconnecting");
-    // Retry fast through a blip (a daemon restart, a Wi-Fi handoff), then back off to 5 s. ±25% jitter
-    // so a fleet of clients doesn't reconnect in lockstep.
-    const base = RETRY_DELAYS_MS[Math.min(this.#attempt, RETRY_DELAYS_MS.length - 1)]!;
-    const delay = base * (0.75 + Math.random() * 0.5);
-    this.#attempt++;
-    this.#retryTimer = setTimeout(() => this.#connect(), delay);
-  }
+  /** One socket, from opening to its end; its finalizer closes it and fails what it left unanswered. */
+  const session = Effect.gen(function* () {
+    const ws = new WebSocketImpl(options.url);
+    socket = ws;
+    const ended = yield* Deferred.make<void>();
+    const opened = yield* Deferred.make<boolean>();
+    const end = () => {
+      Deferred.doneUnsafe(opened, Effect.succeed(false));
+      Deferred.doneUnsafe(ended, Effect.void);
+    };
+    drop = end;
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        if (drop === end) drop = undefined;
+        if (socket === ws) socket = undefined;
+        ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+        try {
+          ws.close();
+        } catch {
+          // already closed
+        }
+        for (const pending of requests.values()) Deferred.doneUnsafe(pending, Effect.fail(new OfflineError({ message: "Connection lost" })));
+        requests.clear();
+      }),
+    );
+    ws.onopen = () => Deferred.doneUnsafe(opened, Effect.succeed(true));
+    ws.onmessage = (event) => {
+      lastHeard = Date.now(); // any traffic proves the connection is alive
+      receive(String(event.data));
+    };
+    ws.onclose = end;
+    // Not every WebSocket follows an error with a close (Node 22's leaves a refused connection
+    // CONNECTING forever), so an error counts as a lost connection on its own.
+    ws.onerror = end;
 
-  #teardown() {
-    clearInterval(this.#pingTimer);
-    clearTimeout(this.#connectTimer);
-    const socket = this.#socket;
-    this.#socket = undefined;
-    if (socket) {
-      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
-      try {
-        socket.close();
-      } catch {
-        // already closed
+    const open = yield* Deferred.await(opened).pipe(Effect.timeoutOption(Duration.millis(connectTimeoutMs)), Effect.map(Option.getOrElse(() => false)));
+    if (!open) return;
+    attempt = 0;
+    lastHeard = yield* Clock.currentTimeMillis;
+    ws.send(
+      JSON.stringify({
+        t: "hello",
+        clientId: options.clientId,
+        protocol: PROTOCOL_VERSION,
+        ...(connection.serverId ? { serverId: connection.serverId } : {}),
+      } satisfies ClientFrame),
+    );
+    setStatus("open");
+    handlers.onOpen();
+    const ping = Effect.gen(function* () {
+      for (;;) {
+        yield* Effect.sleep(Duration.millis(pingIntervalMs));
+        const now = yield* Clock.currentTimeMillis;
+        if (now - lastHeard > deadAfterMs) return;
+        send({ t: "ping", at: now });
       }
+    });
+    yield* Effect.raceFirst(Deferred.await(ended), ping);
+  });
+
+  /** Connect, and after each drop wait a little and connect again. */
+  const keepConnected = Effect.gen(function* () {
+    for (;;) {
+      yield* Effect.scoped(session);
+      setStatus("reconnecting");
+      // Retry fast through a blip (a daemon restart, a Wi-Fi handoff), then back off to 5 s. ±25% jitter
+      // so a fleet of clients doesn't reconnect in lockstep.
+      const base = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]!;
+      attempt++;
+      yield* Effect.sleep(Duration.millis(base * (0.75 + (yield* Random.next) * 0.5)));
     }
-    for (const pending of this.#requests.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(new OfflineError("Connection lost"));
-    }
-    this.#requests.clear();
-  }
-}
+  });
+
+  const connection: Connection = {
+    status: () => status,
+    rttMs: () => rttMs,
+    attempt: () => attempt,
+    serverId: undefined,
+    send,
+    request: <T>(frame: RequestFrame) =>
+      Effect.suspend(() => {
+        if (status !== "open") return Effect.fail(new OfflineError({ message: "Not connected" }));
+        const req = nextReq++;
+        const answer = Deferred.makeUnsafe<unknown, RequestFailure>();
+        requests.set(req, answer);
+        send({ ...frame, req } as ClientFrame);
+        return Deferred.await(answer).pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.millis(requestTimeoutMs),
+            orElse: () => Effect.fail(new TimeoutError({ message: "Request timed out" })),
+          }),
+          Effect.ensuring(Effect.sync(() => requests.delete(req))),
+        ) as Effect.Effect<T, RequestFailure>;
+      }),
+    kick: Effect.flatMap(Clock.currentTimeMillis, (sentAt) => {
+      if (status === "open") {
+        const current = drop;
+        send({ t: "ping", at: sentAt });
+        return Effect.asVoid(
+          Effect.forkIn(
+            Effect.sleep(Duration.millis(KICK_ANSWER_MS)).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  if (drop === current && status === "open" && lastHeard < sentAt) current?.();
+                }),
+              ),
+            ),
+            scope,
+          ),
+        );
+      }
+      // Down: connect now instead of waiting out the backoff.
+      attempt = 0;
+      return Effect.asVoid(FiberHandle.run(life, keepConnected));
+    }),
+  };
+  yield* FiberHandle.run(life, keepConnected);
+  return connection;
+});
