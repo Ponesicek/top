@@ -365,6 +365,7 @@ export class Store extends Context.Service<
     readonly lastContextEntry: (bot: number) => Effect.Effect<StoredEntry | undefined>;
     readonly lastSeq: (bot: number) => Effect.Effect<number>;
     readonly lastAssistantSeq: (bot: number) => Effect.Effect<number>;
+    /** The newest answer with text in it, for the sidebar: not one that only calls tools (the bot's working on those). */
     readonly lastAnswer: (bot: number) => Effect.Effect<unknown>;
     /** The newest `limit` visible entries, ascending. */
     readonly newest: (bot: number, limit: number) => Effect.Effect<StoredEntry[]>;
@@ -611,8 +612,14 @@ const make = Effect.gen(function* () {
       lastAssistantSeq: (bot) =>
         Effect.map(first(sql`SELECT MAX(seq) AS seq FROM entries WHERE bot = ${bot} AND kind = 'assistant'`), (row) => Number(row?.seq ?? 0)),
       lastAnswer: (bot) =>
-        Effect.map(first(sql`SELECT message FROM entries WHERE bot = ${bot} AND kind = 'assistant' ORDER BY seq DESC LIMIT 1`), (row) =>
-          row ? (JSON.parse(String(row.message)) as unknown) : undefined,
+        Effect.map(
+          first(
+            sql`SELECT message FROM entries WHERE bot = ${bot} AND kind = 'assistant' AND (
+              (json_type(message, '$.content') = 'text' AND json_extract(message, '$.content') <> '')
+              OR EXISTS (SELECT 1 FROM json_each(message, '$.content') WHERE json_extract(value, '$.type') = 'text' AND json_extract(value, '$.text') <> '')
+            ) ORDER BY seq DESC LIMIT 1`,
+          ),
+          (row) => (row ? (JSON.parse(String(row.message)) as unknown) : undefined),
         ),
       newest: (bot, limit) =>
         Effect.map(rows(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} ORDER BY seq DESC LIMIT ?`, [bot, limit])), (r) =>
