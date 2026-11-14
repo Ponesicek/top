@@ -225,7 +225,11 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
         });
       };
 
-      type Attempt = { readonly done: "signin" } | { readonly done: "refused" } | { readonly done: "failed"; readonly error: string };
+      type Attempt =
+        | { readonly done: "signin" }
+        | { readonly done: "refused" }
+        /** `connected`: it was ready before it failed (the connection closed). */
+        | { readonly done: "failed"; readonly error: string; readonly connected?: true };
 
       /** One connection: ready until it closes (then failed), or why it couldn't connect. */
       const connectOnce = (connection: Connection): Effect.Effect<Attempt> =>
@@ -281,7 +285,7 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
             });
             client.onClose(() => Deferred.doneUnsafe(closed, Effect.void));
             yield* Deferred.await(closed);
-            return { done: "failed", error: "The connection closed." } as const;
+            return { done: "failed", error: "The connection closed.", connected: true } as const;
           }),
         );
 
@@ -307,6 +311,8 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
             connection.error = result.done === "refused" ? "The server refused the credentials (HTTP 401). Check the Authorization header." : result.error;
             yield* changed(connection);
             if (result.done === "refused") return;
+            // A connection that worked starts the backoff over: a server that drops now and then isn't failing.
+            if (result.done === "failed" && result.connected) failures = 0;
             yield* Effect.sleep(Duration.millis(RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)]!));
             failures++;
           }

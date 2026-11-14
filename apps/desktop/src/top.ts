@@ -2,7 +2,7 @@
  * The app's one TopClient, plus the local cache that makes cold start instant and reconnects cheap.
  *
  * The UI reads it through atoms (Effect's `effect/reactivity`) on one registry, `registry`, which
- * main.tsx provides to React: `clientAtom` follows the client's snapshot, `conversationAtom(id)` a
+ * main.tsx provides to React: `clientAtom` follows the client's snapshot, `conversationAtom(sync)` a
  * bot's transcript, and the hooks below select from them so a component re-renders only when what
  * it shows changes.
  */
@@ -176,11 +176,19 @@ const following = <A>(subscribe: (listener: () => void) => () => void, read: () 
 /** The client's snapshot: connection, roster, MCP servers, files, … */
 export const clientAtom: Atom.Atom<TopSnapshot> = following(top.subscribe, top.getSnapshot).pipe(Atom.keepAlive);
 
-/** One bot's transcript, as its conversation has it. */
-export const conversationAtom = Atom.family((id: BotId): Atom.Atom<ConversationSnapshot> => {
-  const sync = top.conversation(id);
-  return following(sync.subscribe, sync.getSnapshot);
-});
+/**
+ * One bot's transcript, as its conversation has it. Keyed by the conversation itself, not the bot's id:
+ * a deleted bot's id can come back for a new bot, which gets a new conversation.
+ */
+const conversationAtoms = new WeakMap<ConversationSync, Atom.Atom<ConversationSnapshot>>();
+export function conversationAtom(sync: ConversationSync): Atom.Atom<ConversationSnapshot> {
+  let atom = conversationAtoms.get(sync);
+  if (!atom) {
+    atom = following(sync.subscribe, sync.getSnapshot);
+    conversationAtoms.set(sync, atom);
+  }
+  return atom;
+}
 
 /** A value from the client's snapshot; re-renders only when it changes. */
 export function useClient<A>(select: (snapshot: TopSnapshot) => A): A {
@@ -189,7 +197,7 @@ export function useClient<A>(select: (snapshot: TopSnapshot) => A): A {
 
 /** A bot's transcript as it is now; re-renders on every change to it. */
 export function useConversation(sync: ConversationSync): ConversationSnapshot {
-  return useAtomValue(conversationAtom(sync.id));
+  return useAtomValue(conversationAtom(sync));
 }
 
 // ── the daemon on the tailnet ──────────────────────────────────────────────────

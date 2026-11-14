@@ -393,3 +393,29 @@ test("background finds the tool a bot means, even named the way its model sees i
   assert.match(found("thread_wait"), /no tool named "thread_wait"\. Did you mean "t3code__t3_thread_wait"\?/);
   assert.match(found("deploy"), /no tool named "deploy"\. Use a name exactly/);
 });
+
+test("a daemon that shuts down mid-call stops the tool, and saves nothing after", async () => {
+  const slow = slowTool();
+  const h = await harness({ tools: [slow.tool], foregroundMs: 60_000 });
+  await h.run(h.daemon.start);
+  await h.run(h.daemon.submit(h.bot, "r1", "call slow__tool {}", "followUp", null));
+  await until("the call to start", () => slow.started === 1);
+  const before = (await h.entries()).length;
+  await h.close();
+  assert.equal(slow.stopped, true, "the tool's signal fired");
+
+  const again = await harness({ tools: [slow.tool], foregroundMs: 60_000, dir: h.dir });
+  const after = await again.entries();
+  assert.ok(after.length <= before + 1, "at most the run's end, no further steps");
+  assert.equal(slow.started, 1, "the call wasn't run again");
+});
+
+test("Stop right after a message, before its run gets going, still stops it", async () => {
+  const slow = slowTool();
+  const h = await setup([slow.tool]);
+  await h.run(h.daemon.start);
+  await h.run(Effect.andThen(h.daemon.submit(h.bot, "r1", "call slow__tool {}", "followUp", null), h.daemon.stop(h.bot)));
+  await until("the bot to go idle", () => idle(h));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(slow.started, 0, "the tool never ran");
+});

@@ -131,6 +131,8 @@ export const makeRunner = Effect.fnUntraced(function* (
   /** A failed model request, held back until we know whether a retry succeeds. */
   let pendingError: AssistantMessage | undefined;
   let abortRequested = false;
+  /** The bot's scope closed (the daemon is stopping, or the bot was deleted): nothing more is saved or started. */
+  let closed = false;
   /** Ends the wait before a retry early: the user stopped the bot. */
   let wakeRetry: Deferred.Deferred<void> | undefined;
   let status: RunnerStatus = { status: "idle", since: yield* now };
@@ -171,13 +173,13 @@ export const makeRunner = Effect.fnUntraced(function* (
     followUpMode: "all",
     beforeToolCall: async ({ toolCall, args }) => {
       // Stop means stop: no tool starts after the user asked to stop, whatever the model wants.
-      if (abortRequested) return { block: true, reason: "Not run: stopped by the user." };
+      if (abortRequested || closed) return { block: true, reason: "Not run: stopped by the user." };
       // Recorded before it runs: after a crash, a call with this record and no result may have taken effect.
       await runPromise(store.toolStarted(id, assistantSeq, toolCall.id, toolCall.name, args));
       return undefined;
     },
     // ...and no new model request starts after it either (tool results of the stopped turn are kept).
-    finishTurn: async () => (abortRequested ? { action: "end" } : undefined),
+    finishTurn: async () => (abortRequested || closed ? { action: "end" } : undefined),
     // Images are stored as their attachment's id; each request reads them in (attachments.ts).
     ...(attachments ? { transformContext: (messages: AgentMessage[]) => runPromise(withImageData(messages, attachments)) } : {}),
   });
@@ -258,7 +260,27 @@ export const makeRunner = Effect.fnUntraced(function* (
   // pi waits for the listener before it goes on: every step is saved before the next one starts. Most
   // events (each streamed token) need nothing, and answer at once instead of a trip through the runtime.
   const handled: ReadonlySet<AgentEvent["type"]> = new Set(["message_start", "message_end", "tool_execution_start", "tool_execution_end"]);
-  agent.subscribe((event) => (handled.has(event.type) ? runPromise(onEvent(event)) : undefined));
+  agent.subscribe((event) => (handled.has(event.type) && !closed ? runPromise(onEvent(event)) : undefined));
+
+  // When the scope closes, pi's run is stopped with it, like a crash: its tools are told to stop, and
+  // nothing it does after that is saved, so the task resumes (or is settled) when the daemon starts.
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      closed = true;
+      agent.abort();
+    }),
+  );
+
+  /**
+   * Start pi's loop (`prompt` or `continue`). A Stop that came while the run was getting ready ends it
+   * at once: aborted in the same tick, before pi sends anything.
+   */
+  const begin = (startLoop: () => Promise<void>) =>
+    Effect.tryPromise(() => {
+      const running = startLoop();
+      if (abortRequested || closed) agent.abort();
+      return running;
+    });
 
   /** Take the bot's tools as they are now. Between runs only: a run keeps the tools it started with. */
   const refreshTools = () => {
@@ -301,12 +323,11 @@ export const makeRunner = Effect.fnUntraced(function* (
       delivered.clear();
       for (const row of prompted) delivered.add(row.requestId);
       for (const row of queued) deliver(row);
-      abortRequested = false;
       pendingError = undefined;
       yield* store.setRunActive(id, true);
       yield* setStatus("thinking");
       const ok = yield* Effect.gen(function* () {
-        yield* Effect.tryPromise(startRun);
+        yield* begin(startRun);
         for (let attempt = 0; ; attempt++) {
           const failed = takePendingError();
           if (!failed) break;
@@ -330,7 +351,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           }
           for (const row of yield* store.inbox(id)) deliver(row);
           yield* setStatus("thinking");
-          yield* Effect.tryPromise(() => agent.continue());
+          yield* begin(() => agent.continue());
         }
         // A stop that landed between steps leaves no aborted answer behind; say so in the transcript.
         const last = agent.state.messages.at(-1);
@@ -353,6 +374,8 @@ export const makeRunner = Effect.fnUntraced(function* (
       );
       // Not when the daemon is stopping (interrupted above): the task is still running, and resumes when it starts.
       yield* store.setRunActive(id, false);
+      // The Stop was for this run; the next one (a message queued behind it) runs.
+      abortRequested = false;
       return ok;
     }).pipe(Effect.withSpan("Runner.run", { attributes: { bot: bot.name } }));
 
@@ -387,6 +410,7 @@ export const makeRunner = Effect.fnUntraced(function* (
     yield* FiberHandle.clear(gather);
     if (busy) return;
     busy = true;
+    abortRequested = false;
     yield* idle.close;
     yield* Effect.forkIn(drive, scope);
   });
