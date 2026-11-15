@@ -296,7 +296,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       case "createBot":
         return answer(
           frame,
-          Effect.map(daemon.createBot(frame.name, frame.description), (id) => ({ id })),
+          Effect.map(daemon.createBot(frame.name, frame.description, frame.avatar), (id) => ({ id })),
         );
       case "deleteBot":
         return answer(frame, daemon.deleteBot(frame.bot));

@@ -14,7 +14,7 @@ export type UserRowData = Extract<Row, { kind: "user" }>;
 export type AssistantRowData = Extract<Row, { kind: "assistant" }>;
 
 /** What every style's rows get from the transcript; stable while the conversation is open, so rows memoize. */
-export type RowContext = { sync: ConversationSync; name: string };
+export type RowContext = { sync: ConversationSync; name: string; avatar: number | undefined };
 /** `bot` changes with every status update; only the working row reads it. */
 export type RowRenderer = (rows: readonly DisplayRow[], index: number, ctx: RowContext, bot: BotSummary | undefined) => React.ReactNode;
 

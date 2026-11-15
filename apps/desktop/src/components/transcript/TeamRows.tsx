@@ -63,12 +63,26 @@ function YouAvatar() {
  * One row: with a header (avatar, name, time) when it opens a run, or just its content, its time in
  * the gutter on hover.
  */
-function Shell({ head, who, name, at, children }: { head: boolean; who: "user" | "bot"; name: string; at: number | undefined; children: React.ReactNode }) {
+function Shell({
+  head,
+  who,
+  name,
+  avatar,
+  at,
+  children,
+}: {
+  head: boolean;
+  who: "user" | "bot";
+  name: string;
+  avatar?: number | undefined;
+  at: number | undefined;
+  children: React.ReactNode;
+}) {
   return (
     <div className={cn("group/msg relative px-4 hover:bg-muted", head ? "mt-3.5 flex gap-4 py-1" : "py-0.5 pl-18")}>
       {head ? (
         <>
-          {who === "user" ? <YouAvatar /> : <Avatar name={name} size="md" className="mt-0.5 size-10" />}
+          {who === "user" ? <YouAvatar /> : <Avatar name={name} avatar={avatar} size="md" className="mt-0.5 size-10" />}
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
               <span className="text-body leading-snug font-heading tracking-name text-foreground">{who === "user" ? "You" : name}</span>
@@ -130,7 +144,7 @@ const UserMessage = memo(function UserMessage({ row, ctx, head }: { row: Extract
 const BotMessage = memo(function BotMessage({ row, ctx, head }: { row: Extract<DisplayRow, { kind: "assistant" }>; ctx: RowContext; head: boolean }) {
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
-    <Shell head={head} who="bot" name={ctx.name} at={row.at}>
+    <Shell head={head} who="bot" name={ctx.name} avatar={ctx.avatar} at={row.at}>
       {row.text && <Markdown html={html} answer={row.seq} />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
@@ -139,7 +153,7 @@ const BotMessage = memo(function BotMessage({ row, ctx, head }: { row: Extract<D
 
 const Tools = memo(function Tools({ row, ctx, head }: { row: ToolGroupRow; ctx: RowContext; head: boolean }) {
   return (
-    <Shell head={head} who="bot" name={ctx.name} at={row.at}>
+    <Shell head={head} who="bot" name={ctx.name} avatar={ctx.avatar} at={row.at}>
       <ToolGroup row={row} sync={ctx.sync} className="py-0.5" />
     </Shell>
   );

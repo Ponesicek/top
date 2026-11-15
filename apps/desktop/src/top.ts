@@ -220,17 +220,17 @@ export function useTailnet(): TailnetInfo {
   return useAtomValue(tailnetAtom);
 }
 
-export type RosterBot = { readonly id: BotId; readonly name: string };
+export type RosterBot = { readonly id: BotId; readonly name: string; readonly avatar: number | undefined };
 
 const rosterAtom = Atom.make((get): { readonly key: string; readonly bots: readonly RosterBot[] } => {
   const bots = get(clientAtom).bots;
-  const key = JSON.stringify(bots.map((b) => [b.id, b.name]));
+  const key = JSON.stringify(bots.map((b) => [b.id, b.name, b.avatar ?? 0]));
   const previous = get.self<{ key: string; bots: readonly RosterBot[] }>();
   if (Option.isSome(previous) && previous.value.key === key) return previous.value;
-  return { key, bots: bots.map(({ id, name }) => ({ id, name })) };
+  return { key, bots: bots.map(({ id, name, avatar }) => ({ id, name, avatar })) };
 });
 
-/** Every bot's id and name; re-renders only when a bot is added, removed or renamed, not on status changes. */
+/** Every bot's id, name and icon; re-renders only when a bot is added, removed or renamed, not on status changes. */
 export function useRoster(): readonly RosterBot[] {
   return useAtomValue(rosterAtom, (roster) => roster.bots);
 }
