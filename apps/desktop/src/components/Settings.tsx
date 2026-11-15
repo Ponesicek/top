@@ -2,6 +2,7 @@ import { type ReactNode, useId } from "react";
 import { CHAT_STYLES, type ChatStyle } from "../chatStyle.ts";
 import { cn } from "../lib/utils.ts";
 import { canScale, SCALES, type Scale } from "../scale.ts";
+import { AccountSection } from "./ChatGPT.tsx";
 import { DaemonSettings } from "./DaemonSettings.tsx";
 import { McpServers } from "./McpServers.tsx";
 
@@ -133,6 +134,7 @@ export function Settings({
               />
             )}
           </Section>
+          <AccountSection />
           <McpServers />
           <DaemonSettings />
           <Section title="Performance">

@@ -60,6 +60,7 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import type * as Socket from "effect/socket/Socket";
 import { Attachments } from "./attachments.ts";
+import { ChatGPT } from "./chatgpt.ts";
 import { Daemon } from "./daemon.ts";
 import { type DaemonEvent, Events } from "./events.ts";
 import { fileViews, type Listing } from "./files.ts";
@@ -115,6 +116,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const store = yield* Store;
   const events = yield* Events;
   const mcp = Option.getOrUndefined(yield* Effect.serviceOption(Mcp));
+  const chatgpt = Option.getOrUndefined(yield* Effect.serviceOption(ChatGPT));
   const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
   // Taking the reader completes the handshake; frames written before it would wait for it.
   const reader = yield* socket.reader;
@@ -155,6 +157,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   });
   yield* send({ t: "bots", bots: daemon.bots() });
   if (mcp) yield* send({ t: "mcpServers", servers: yield* mcp.views });
+  if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -178,6 +181,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "mcpServer", server: event.view });
       case "McpServerRemoved":
         return send({ t: "mcpServerRemoved", id: event.id });
+      case "Account":
+        return send({ t: "account", account: event.view });
     }
   };
   yield* Effect.forkScoped(
@@ -201,6 +206,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       ),
     ).pipe(Effect.ensuring(Effect.sync(() => kinds.delete(req))));
   const mcpOf = () => (mcp ? Effect.succeed(mcp) : Effect.fail(new NoMcp()));
+  const chatgptOf = () => (chatgpt ? Effect.succeed(chatgpt) : Effect.fail(new NoChatGPT()));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
 
   const watch = (frame: Extract<ClientFrame, { t: "watch" }>) =>
@@ -318,6 +324,32 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(mcpOf(), (m) => m.retry(frame.id)),
         );
+      case "chatgptSignIn":
+        return answer(
+          frame,
+          Effect.flatMap(chatgptOf(), (c) => Effect.map(c.signIn, (url) => ({ url }))),
+        );
+      case "chatgptSignInFinish":
+        // It waits on OpenAI: other frames go on meanwhile.
+        return Effect.asVoid(
+          Effect.forkIn(
+            answer(
+              frame,
+              Effect.flatMap(chatgptOf(), (c) => c.finish(frame.url)),
+            ),
+            scope,
+          ),
+        );
+      case "chatgptSignInCancel":
+        return answer(
+          frame,
+          Effect.flatMap(chatgptOf(), (c) => c.cancel),
+        );
+      case "chatgptSignOut":
+        return answer(
+          frame,
+          Effect.flatMap(chatgptOf(), (c) => c.signOut),
+        );
     }
   };
 
@@ -346,6 +378,13 @@ type Answer<T extends RequestType> = ResultOf<T> extends null ? void : ResultOf<
 class NoMcp extends Data.TaggedError("NoMcp") {
   override get message() {
     return "This daemon has no MCP servers.";
+  }
+}
+
+/** The daemon runs fake bots, which need no sign-in. */
+class NoChatGPT extends Data.TaggedError("NoChatGPT") {
+  override get message() {
+    return "This daemon's bots don't sign in (they're fake).";
   }
 }
 

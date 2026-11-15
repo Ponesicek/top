@@ -1,32 +1,21 @@
 /**
- * Model credentials, in Top's own `~/.top/server/auth.json` (see home.ts), in pi's format. A provider
- * pi is already signed in to (a ChatGPT, Copilot or Claude subscription) is copied from pi's
- * `auth.json` the first time Top needs it, so there's no extra setup. API keys from the environment
+ * Model credentials, in Top's own `~/.top/server/auth.json` (see home.ts), in pi's format: what Sign
+ * in with ChatGPT saves (see chatgpt.ts), and API keys. API keys from the environment
  * (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) work too; pi-ai reads those itself.
  *
- * OAuth refresh tokens rotate, so every write goes through a file lock (the one pi takes on its own
- * file). Otherwise two daemons on one home could each refresh at once, and the loser would be signed out.
+ * OAuth refresh tokens rotate, so every write goes through a file lock. Otherwise the daemon and
+ * `top login` (or two daemons on one home) could each write at once, and the loser would be signed out.
  *
  * pi-ai asks for credentials through its `CredentialStore` interface, which is Promise-based: this is
  * the adapter, with the work done as Effects inside.
  */
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import lockfile from "proper-lockfile";
-import { expandTilde } from "./home.ts";
-
-/** pi's credentials file: `$PI_CODING_AGENT_DIR/auth.json`, else `~/.pi/agent/auth.json`. */
-export const piAuthPath: Effect.Effect<string, Config.ConfigError> = Effect.gen(function* () {
-  const dir = yield* Config.option(Config.String("PI_CODING_AGENT_DIR"));
-  const folder = Option.match(dir, { onNone: () => join(homedir(), ".pi", "agent"), onSome: expandTilde });
-  return join(folder, "auth.json");
-});
 
 /**
  * The file: provider id → credential. Entries are kept as they are, also ones Top can't read (a newer
@@ -43,7 +32,7 @@ const CredentialShape = Schema.Union([
 const isCredential = Schema.is(CredentialShape);
 const credentialOf = (value: unknown): Credential | undefined => (isCredential(value) ? value : undefined);
 
-/** An `auth.json` in pi's format: Top's own, or pi's (to import from). */
+/** An `auth.json` in pi's format. */
 export class AuthFile implements CredentialStore {
   readonly path: string;
   readonly #fs: FileSystem.FileSystem;
@@ -97,7 +86,7 @@ export class AuthFile implements CredentialStore {
     );
   }
 
-  /** Read-modify-write under the file's lock (pi's, for pi's file); `fn` returns the new file, or undefined to leave it. */
+  /** Read-modify-write under the file's lock; `fn` returns the new file, or undefined to leave it. */
   #locked(fn: (file: AuthEntries) => Effect.Effect<AuthEntries | undefined>): Effect.Effect<void> {
     const path = this.path;
     const fs = this.#fs;
@@ -118,25 +107,3 @@ export class AuthFile implements CredentialStore {
     );
   }
 }
-
-/**
- * Copy pi's credential for `providerId` into `top` if `top` has none, and say whether it did. After
- * that each keeps its own: signing in again in pi doesn't reach Top.
- */
-export const importFromPi = (top: AuthFile, providerId: string, fs: FileSystem.FileSystem): Effect.Effect<boolean, Config.ConfigError> =>
-  Effect.gen(function* () {
-    if (yield* Effect.promise(() => top.read(providerId))) return false;
-    const pi = new AuthFile(yield* piAuthPath, fs);
-    if (pi.path === top.path) return false;
-    const theirs = yield* Effect.promise(() => pi.read(providerId));
-    if (!theirs) return false;
-    // Under the lock, so a credential that appeared since (another daemon's import) is kept.
-    let copied = false;
-    yield* Effect.promise(() =>
-      top.modify(providerId, async (current) => {
-        copied = !current;
-        return current ?? theirs;
-      }),
-    );
-    return copied;
-  });

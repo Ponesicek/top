@@ -14,6 +14,7 @@ import { clearQuotes, onQuoteAdded, type Quote, quotesOf } from "../quotes.ts";
 import { isWorking } from "../rows.ts";
 import { top, useClient } from "../top.ts";
 import { AttachmentStrip } from "./AttachmentStrip.tsx";
+import { PlanLine } from "./ChatGPT.tsx";
 import { focusEnd, insertChip, isEmpty, makeChip, readSegments, type Segment, toMessage, writeSegments } from "./composerEditor.ts";
 import { CommentPopover } from "./Quotes.tsx";
 import { Button } from "./ui/button.tsx";
@@ -312,11 +313,11 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
         </div>
         {/* Only the working state's keys need explaining (idle is the usual Enter / Shift+Enter). The line
             keeps its height either way, so the transcript doesn't jump when a bot starts or stops. */}
-        <div
-          className={cn("h-5.75 truncate pt-1.75 pl-10 text-meta leading-4", notice?.error ? "text-destructive-foreground" : "text-muted-foreground")}
-          aria-live="polite"
-        >
-          {notice ? notice.text : running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}
+        <div className="flex h-5.75 gap-4 pt-1.75 pr-3 pl-10 text-meta leading-4">
+          <span className={cn("min-w-0 flex-1 truncate", notice?.error ? "text-destructive-foreground" : "text-muted-foreground")} aria-live="polite">
+            {notice ? notice.text : running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}
+          </span>
+          <PlanLine />
         </div>
       </div>
       {dropping && (

@@ -2,7 +2,7 @@
  * Top's home folder: `$TOP_HOME`, else `~/.top`. Everything Top keeps lives in it.
  *
  *   ~/.top/
- *   ├── server/           the daemon's own state: top.sqlite, attachments/, auth.json
+ *   ├── server/           the daemon's own state: top.sqlite, attachments/, auth.json, chatgpt-host.json
  *   ├── bots/<name>/      each bot's working folder, with files/ for what it makes for the user
  *   └── desktop/          the desktop app's profile (its cache and settings; see electron/main.js)
  *
@@ -32,6 +32,8 @@ export const layout = (home: string) => {
     bots: join(home, "bots"),
     database: join(server, "top.sqlite"),
     auth: join(server, "auth.json"),
+    /** This installation's id for Sign in with ChatGPT, and the user's consent to background use (see chatgpt.ts). */
+    chatgptHost: join(server, "chatgpt-host.json"),
   };
 };
 
