@@ -9,7 +9,9 @@
 import { type FauxResponseFactory, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 
 export const FAKE_PROVIDER = "faux";
 export const FAKE_MODEL = "top-fake";
@@ -95,6 +97,7 @@ function trailingToolResults(context: Context): ContextMessage[] {
 
 let callCounter = 0;
 type JsonObject = Parameters<typeof fauxToolCall>[1];
+const jsonObject = Schema.decodeOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)));
 const call = (name: string, args: JsonObject) => fauxToolCall(name, args, { id: `call_${Date.now().toString(36)}_${++callCounter}` });
 
 /** The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "write a report", "crash", "call server__tool {…}". */
@@ -102,12 +105,8 @@ export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
   // An MCP tool by its full name, with JSON arguments.
   const named = /\bcall ([A-Za-z0-9-]+__[A-Za-z0-9_-]+)(?:\s+(\{.*\}))?/s.exec(prompt);
   if (named) {
-    let args: JsonObject = {};
-    try {
-      args = named[2] ? (JSON.parse(named[2]) as JsonObject) : {};
-    } catch {
-      // not JSON: call it without arguments
-    }
+    // Not a JSON object: call it without arguments.
+    const args = named[2] ? Option.getOrElse(jsonObject(named[2]), () => ({})) : {};
     return call(named[1]!, args);
   }
   const text = prompt.toLowerCase();

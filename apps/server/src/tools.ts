@@ -12,13 +12,13 @@
  * `ctx.key` is stable for one call across restarts; pass it to outside services as an idempotency key.
  */
 import { dirname, join } from "node:path";
-import type { ImageContent, TextContent, Usage } from "@earendil-works/pi-ai";
+import { type ImageContent, type JsonValue, type TextContent, type ToolCall, type Usage, validateToolArguments } from "@earendil-works/pi-ai";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
-import Type, { type TProperties } from "typebox";
+import Type, { type Static, type TProperties, type TSchema } from "typebox";
 
 export type ToolContext = {
   /** Stable for this one tool call, also across restarts. */
@@ -36,8 +36,8 @@ export type ToolContext = {
 /** What a tool call comes to: `content` goes to the model, `details` to clients. */
 export type ToolResult = {
   readonly content: (TextContent | ImageContent)[];
-  readonly details: unknown;
-  readonly structuredContent?: unknown;
+  readonly details: JsonValue | undefined;
+  readonly structuredContent?: JsonValue;
   readonly usage?: Usage;
   /** A failure reported without failing: the model sees it as an error result. */
   readonly isError?: boolean;
@@ -56,25 +56,59 @@ export class ToolError extends Schema.TaggedError<ToolError>()("ToolError", { me
 
 export const isToolError = Schema.is(ToolError);
 
-export type TopTool = {
+/**
+ * A tool. `P` is the JSON Schema of its arguments (a TypeBox `Type.Object(…)`; an MCP server's schema is
+ * a `Type.Unsafe`). Every call is checked against it first (`checkArguments`), so `run` and `recover`
+ * get `Static<P>`. Lists of tools hold `TopTool` (any arguments); make one with `defineTool`.
+ */
+export interface TopTool<P extends TSchema & object = TSchema & object> {
   readonly name: string;
   readonly label: string;
   readonly description: string;
-  /** JSON Schema of the arguments (a TypeBox `Type.Object(…)` is one): pi reads it. */
-  readonly parameters: object;
+  readonly parameters: P;
   readonly replay?: "never" | "safe";
   /** Normalizes raw arguments before schema validation (pi's tools accept older argument shapes). */
-  readonly prepareArguments?: (args: unknown) => Record<string, unknown>;
+  readonly prepareArguments?: (args: unknown) => Static<P>;
   readonly executionMode?: "sequential" | "parallel";
   /**
    * `false`: never moved to the background, however long it takes (see jobs.ts). For tools that
    * wait on purpose, like Collar's `jobs` waiting for a job.
    */
   readonly background?: false;
-  run(args: Record<string, unknown>, ctx: ToolContext): Effect.Effect<ToolResult, ToolError>;
+  // Methods, not properties, so a TopTool<P> is a TopTool: the arguments it gets were checked against `parameters`.
+  run(args: ArgumentsOf<P>, ctx: ToolContext): Effect.Effect<ToolResult, ToolError>;
   /** After a restart cut this call off: its result if it took effect, `false` if it surely did not, `undefined` if unknown. */
-  recover?(args: Record<string, unknown>, ctx: ToolContext): Effect.Effect<ToolResult | false | undefined>;
-};
+  recover?(args: ArgumentsOf<P>, ctx: ToolContext): Effect.Effect<ToolResult | false | undefined>;
+}
+
+/** Checked arguments: an object (`checkArguments` makes sure), of the shape `P` describes. */
+export type ToolArguments = Readonly<Record<string, unknown>>;
+type ArgumentsOf<P extends TSchema> = Static<P> & ToolArguments;
+
+/** A tool, with `run` and `recover` typed by its parameters. */
+export const defineTool = <P extends TSchema & object>(tool: TopTool<P>): TopTool => tool;
+
+/**
+ * A call's raw arguments, prepared and checked against the tool's parameters (coerced as pi does:
+ * `"42"` for a number, …). Throws with what's wrong, for the model to read; also when the model's
+ * arguments weren't JSON at all (`argumentsError`).
+ */
+export function checkArguments(tool: TopTool, call: Pick<ToolCall, "id" | "argumentsError">, raw: unknown): ToolArguments {
+  const prepared = jsonObject(tool.prepareArguments ? tool.prepareArguments(raw) : raw);
+  if (!prepared) throw new Error(`The arguments of ${tool.name} must be an object.`);
+  const { name, description, parameters } = tool;
+  const checked = jsonObject(validateToolArguments({ name, description, parameters }, { ...call, type: "toolCall", name, arguments: prepared }));
+  if (!checked) throw new Error(`The arguments of ${tool.name} must be an object.`);
+  return checked;
+}
+
+/** `value` if it's a plain object. Arguments are parsed from the model's JSON, so its values are JSON. */
+function jsonObject(value: unknown): { [key: string]: JsonValue } | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as { [key: string]: JsonValue }) : undefined;
+}
+
+/** One line of the fake tools' effects log. */
+const effectLine = Schema.decodeSync(Schema.fromJsonString(Schema.Struct({ tool: Schema.String, phase: Schema.String, key: Schema.String })));
 
 export const text = (value: string): ToolResult => ({ content: [{ type: "text", text: value }], details: {} });
 
@@ -153,18 +187,18 @@ export const makeFakeTools = Effect.fnUntraced(function* (
           .split("\n")
           .filter(Boolean)
           .some((line) => {
-            const e = JSON.parse(line) as { tool: string; phase: string; key: string };
+            const e = effectLine(line);
             return e.tool === tool && e.phase === phase && e.key === key;
           }),
       ),
       Effect.orElseSucceed(() => false),
     );
-  const seconds = (args: Record<string, unknown>, fallback: number) => Math.max(0, Number(args.seconds ?? fallback)) * 1_000;
-  const schema = (properties: TProperties) => Type.Object(properties, { additionalProperties: false });
+  const seconds = (args: { readonly seconds?: number }, fallback: number) => Math.max(0, args.seconds ?? fallback) * 1_000;
+  const schema = <P extends TProperties>(properties: P) => Type.Object(properties, { additionalProperties: false });
   const { Optional, String: Str, Number: Num } = Type;
 
   return [
-    {
+    defineTool({
       // Takes effect at once, then takes a while to report. Cannot check its outcome: a restart in
       // between leaves it "interrupted, may have taken effect".
       name: "deploy",
@@ -175,10 +209,10 @@ export const makeFakeTools = Effect.fnUntraced(function* (
         Effect.gen(function* () {
           yield* record("deploy", "effect", ctx.key, args.service);
           yield* sleep(seconds(args, 2), ctx.signal);
-          return text(`Deployed ${String(args.service ?? "the service")}.`);
+          return text(`Deployed ${args.service ?? "the service"}.`);
         }),
-    },
-    {
+    }),
+    defineTool({
       // Sends, then waits for the provider's receipt. Its provider dedupes by key, so after a restart
       // it can look up whether the send happened.
       name: "send_email",
@@ -189,14 +223,14 @@ export const makeFakeTools = Effect.fnUntraced(function* (
         Effect.gen(function* () {
           if (!(yield* recorded("send_email", "effect", ctx.key))) yield* record("send_email", "effect", ctx.key, args.to);
           yield* sleep(seconds(args, 2), ctx.signal);
-          return text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")}.`);
+          return text(`Sent “${args.subject ?? ""}” to ${args.to ?? ""}.`);
         }),
       recover: (args, ctx) =>
         Effect.map(recorded("send_email", "effect", ctx.key), (sent) =>
-          sent ? text(`Sent “${String(args.subject ?? "")}” to ${String(args.to ?? "")} (confirmed after a restart).`) : false,
+          sent ? text(`Sent “${args.subject ?? ""}” to ${args.to ?? ""} (confirmed after a restart).`) : false,
         ),
-    },
-    {
+    }),
+    defineTool({
       // Read-only, so a restart just runs it again.
       name: "check_status",
       label: "Check status",
@@ -207,10 +241,10 @@ export const makeFakeTools = Effect.fnUntraced(function* (
         Effect.gen(function* () {
           yield* record("check_status", "start", ctx.key, args.target);
           yield* sleep(seconds(args, 1), ctx.signal);
-          return text(`${String(args.target ?? "Everything")} is healthy. Queue depth 0, p99 41 ms.`);
+          return text(`${args.target ?? "Everything"} is healthy. Queue depth 0, p99 41 ms.`);
         }),
-    },
-    {
+    }),
+    defineTool({
       // Writes the same files again, so a restart may run it again.
       name: "write_report",
       label: "Write report",
@@ -233,8 +267,8 @@ export const makeFakeTools = Effect.fnUntraced(function* (
           yield* record("write_report", "effect", ctx.key);
           return text("Wrote files/report.html and files/notes.md.");
         }),
-    },
-    {
+    }),
+    defineTool({
       // Kills the daemon every time it runs, to test that a crash loop ends.
       name: "crash_daemon",
       label: "Crash the daemon",
@@ -247,6 +281,6 @@ export const makeFakeTools = Effect.fnUntraced(function* (
           yield* Effect.sync(() => process.kill(process.pid, "SIGKILL"));
           return yield* Effect.never;
         }),
-    },
-  ] satisfies TopTool[];
+    }),
+  ];
 });

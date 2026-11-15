@@ -30,6 +30,8 @@ import {
   PROTOCOL_VERSION,
   parseClientFrame,
   type QueuedMessage,
+  type RequestType,
+  type ResultOf,
   type ServerFrame,
   UnknownBotError,
   UnknownEntryError,
@@ -46,7 +48,7 @@ import * as Exit from "effect/Exit";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import type * as HttpMethod from "effect/http/HttpMethod";
+import * as HttpMethod from "effect/http/HttpMethod";
 import * as HttpServer from "effect/http/HttpServer";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
@@ -190,8 +192,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
     ),
   );
 
-  /** Run a request (in a span named for it, `Connection.submit`, …) and answer it. */
-  const answer = <A, E>(req: number, run: Effect.Effect<A, E>) =>
+  /** Run a request (in a span named for it, `Connection.submit`, …) and answer it with what that request answers (`null` for none). */
+  const answer = <T extends RequestType, E>({ req }: { readonly t: T; readonly req: number }, run: Effect.Effect<Answer<T>, E>) =>
     Effect.flatMap(Effect.exit(Effect.withSpan(run, `Connection.${requestName(req)}`)), (exit) =>
       Effect.andThen(
         caughtUp,
@@ -259,7 +261,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return Effect.void;
       case "history":
         return answer(
-          frame.req,
+          frame,
           Effect.map(store.history(frame.bot, frame.before, frame.after ?? 0, Math.min(Math.max(1, frame.limit), MAX_WINDOW)), ({ entries, more }) => ({
             entries: wire(entries),
             more,
@@ -267,53 +269,53 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         );
       case "detail":
         return answer(
-          frame.req,
+          frame,
           Effect.flatMap(store.entry(frame.seq), (stored) =>
             !stored || stored.bot !== frame.bot ? Effect.fail(new UnknownEntryError({ seq: frame.seq })) : Effect.succeed(toWire(stored, true) ?? null),
           ),
         );
       case "submit":
-        return answer(frame.req, daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId, frame.attachments ?? []));
+        return answer(frame, daemon.submit(frame.bot, frame.requestId, frame.text, frame.whenBusy, frame.clientId, frame.attachments ?? []));
       case "abort":
-        return answer(frame.req, daemon.stop(frame.bot));
+        return answer(frame, daemon.stop(frame.bot));
       case "createBot":
         return answer(
-          frame.req,
+          frame,
           Effect.map(daemon.createBot(frame.name, frame.description), (id) => ({ id })),
         );
       case "deleteBot":
-        return answer(frame.req, daemon.deleteBot(frame.bot));
+        return answer(frame, daemon.deleteBot(frame.bot));
       case "saveMcpServer":
         return answer(
-          frame.req,
+          frame,
           Effect.flatMap(mcpOf(), (m) => Effect.map(m.save(frame.id, frame.name, frame.config), (id) => ({ id }))),
         );
       case "deleteMcpServer":
         return answer(
-          frame.req,
+          frame,
           Effect.flatMap(mcpOf(), (m) => m.delete(frame.id)),
         );
       case "assignMcp":
         return answer(
-          frame.req,
+          frame,
           Effect.flatMap(mcpOf(), (m) => Effect.andThen(known(frame.bot), m.assign(frame.server, frame.bot, frame.on))),
         );
       case "mcpSignIn":
         // It waits on the MCP server: other frames go on meanwhile.
         return Effect.asVoid(
           Effect.forkIn(
-            Effect.flatMap(Effect.exit(Effect.flatMap(mcpOf(), (m) => Effect.map(m.signIn(frame.id), (url) => ({ url })))), (exit) => answer(frame.req, exit)),
+            Effect.flatMap(Effect.exit(Effect.flatMap(mcpOf(), (m) => Effect.map(m.signIn(frame.id), (url) => ({ url })))), (exit) => answer(frame, exit)),
             scope,
           ),
         );
       case "mcpSignOut":
         return answer(
-          frame.req,
+          frame,
           Effect.flatMap(mcpOf(), (m) => m.signOut(frame.id)),
         );
       case "mcpRetry":
         return answer(
-          frame.req,
+          frame,
           Effect.flatMap(mcpOf(), (m) => m.retry(frame.id)),
         );
     }
@@ -335,6 +337,10 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   );
   yield* Effect.raceFirst(reading, Effect.raceFirst(closed.await, silence));
 });
+
+/** What a request's handler comes to: its result, or nothing for those that answer `null`. */
+// biome-ignore lint/suspicious/noConfusingVoidType: handlers that only do something are `Effect<void>`; `answer` sends `null` for them
+type Answer<T extends RequestType> = ResultOf<T> extends null ? void : ResultOf<T>;
 
 /** The daemon has no MCP servers set up (a test daemon). */
 class NoMcp extends Data.TaggedError("NoMcp") {
@@ -512,7 +518,8 @@ const passable = (headers: Readonly<Record<string, string | undefined>>) =>
 const passOAuth = (request: HttpServerRequest.HttpServerRequest, port: number) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
-    const method = request.method as HttpMethod.HttpMethod;
+    const method = request.method;
+    if (!HttpMethod.isHttpMethod(method)) return HttpServerResponse.empty({ status: 405 });
     const bodied = method !== "GET" && method !== "HEAD";
     const reply = yield* client.execute(
       HttpClientRequest.make(method)(`http://127.0.0.1:${port}${request.url}`, {
@@ -553,8 +560,9 @@ export type ServeOptions = {
 /** A listener couldn't open its port. */
 export class ListenError extends Data.TaggedError("ListenError")<{ readonly host: string; readonly port: number; readonly cause: unknown }> {
   override get message() {
-    const cause = this.cause as { cause?: unknown; message?: string };
-    const inner = cause?.cause instanceof Error ? cause.cause.message : (cause?.message ?? String(cause));
+    const cause = this.cause;
+    const nested = typeof cause === "object" && cause !== null && "cause" in cause ? cause.cause : undefined;
+    const inner = nested instanceof Error ? nested.message : cause instanceof Error ? cause.message : String(cause);
     return `can't listen on ${this.host}:${this.port}: ${inner}`;
   }
 }

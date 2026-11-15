@@ -11,7 +11,7 @@
     "start": "electron .",
     "bench": "node scripts/bench.js",
     "screenshot": "node scripts/screenshot.js",
-    "typecheck": "effect-tsgo tsc -p ."
+    "typecheck": "effect-tsgo tsc -p . && effect-tsgo tsc -p electron"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

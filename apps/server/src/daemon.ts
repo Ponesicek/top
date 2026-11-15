@@ -117,7 +117,8 @@ const addBot = (name: string, description: string, newBot: NewBot) =>
     return yield* store.transaction(
       Effect.gen(function* () {
         const id = yield* store.createBot(name, instructions, newBot.model, description);
-        yield* store.append(id, "system", createInitialSystemMessage(instructions, newBot.declare.map(toToolDeclaration)));
+        const system = createInitialSystemMessage(instructions, newBot.declare.map(toToolDeclaration));
+        if (system) yield* store.append(id, "system", system);
         return id;
       }),
     );
@@ -216,7 +217,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const row = (yield* store.bot(bot))!;
       const status = runner?.status() ?? { status: "idle" as const, since: yield* Clock.currentTimeMillis };
-      const answer = (yield* store.lastAnswer(bot)) as { content?: string | { type: string; text?: string }[] } | undefined;
+      const answer = yield* store.lastAnswer(bot);
       return {
         id: bot,
         name: row.name,

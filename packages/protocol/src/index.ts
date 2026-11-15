@@ -130,6 +130,10 @@ export const isModelImage = (attachment: Pick<Attachment, "mimeType" | "size">) 
 
 const entryBase = { seq: Seq, bot: BotId, at: Schema.Number };
 
+/** A file in a bot's files folder that was added, changed or removed. */
+export const FileChange = Struct({ path: Schema.String, change: Schema.Literals(["added", "changed", "removed"]) });
+export type FileChange = typeof FileChange.Type;
+
 /**
  * Who a message in the bot's inbox comes from, when it isn't the user:
  * - `wake`: a wake-up the bot set for itself came due;
@@ -176,11 +180,10 @@ export const Entry = Schema.Union([
   Struct({
     ...entryBase,
     kind: Schema.Literal("files"),
-    files: List(Struct({ path: Schema.String, change: Schema.Literals(["added", "changed", "removed"]) })),
+    files: List(FileChange),
   }),
 ]);
 export type Entry = typeof Entry.Type;
-export type FileChange = Extract<Entry, { kind: "files" }>["files"][number];
 
 export const WhenBusy = Schema.Literals(["steer", "followUp", "reject"]);
 export type WhenBusy = typeof WhenBusy.Type;
@@ -348,14 +351,37 @@ export const ClientFrame = Schema.Union([
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
 
-export type HistoryResult = {
-  readonly entries: readonly Entry[] /** More entries remain in the asked range. */;
-  readonly more: boolean;
-};
-export type SubmitResult = { readonly duplicate: boolean };
-export type CreateBotResult = { readonly id: BotId };
-export type SaveMcpServerResult = { readonly id: McpServerId };
-export type McpSignInResult = { readonly url: string };
+/** A frame that asks for an answer: a `result` frame with the same `req`. */
+export type RequestFrame = Extract<ClientFrame, { readonly req: number }>;
+export type RequestType = RequestFrame["t"];
+
+/** What each request answers with: the `value` of its `result` frame. Requests that only do something answer `null`. */
+export const RequestResult = {
+  history: Struct({
+    entries: List(Entry),
+    /** More entries remain in the asked range. */
+    more: Schema.Boolean,
+  }),
+  /** `null` for an entry clients don't see. */
+  detail: Schema.NullOr(Entry),
+  submit: Struct({ duplicate: Schema.Boolean }),
+  abort: Schema.Null,
+  createBot: Struct({ id: BotId }),
+  deleteBot: Schema.Null,
+  saveMcpServer: Struct({ id: McpServerId }),
+  deleteMcpServer: Schema.Null,
+  assignMcp: Schema.Null,
+  mcpSignIn: Struct({ url: Schema.String }),
+  mcpSignOut: Schema.Null,
+  mcpRetry: Schema.Null,
+} as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
+export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
+
+export type HistoryResult = ResultOf<"history">;
+export type SubmitResult = ResultOf<"submit">;
+export type CreateBotResult = ResultOf<"createBot">;
+export type SaveMcpServerResult = ResultOf<"saveMcpServer">;
+export type McpSignInResult = ResultOf<"mcpSignIn">;
 
 /** The longest bot name and description `createBot` accepts. */
 export const MAX_BOT_NAME = 40;
@@ -430,13 +456,18 @@ const formatIssue = SchemaIssue.makeFormatterDefault();
  * A parser for a union of frames tagged by `t`. It picks the variant(s) by `t` first, so an error names
  * the field that's wrong instead of "matches none of 16 frames", and only that variant is checked.
  */
-function frameParser<T>(union: { readonly members: ReadonlyArray<Schema.Decoder<unknown>> }): (text: string) => Parsed<T> {
-  const byTag = new Map<string, Schema.Decoder<unknown>[]>();
-  for (const member of union.members) {
-    const tag = String((member as unknown as { fields: { t: { literal: string } } }).fields.t.literal);
-    byTag.set(tag, [...(byTag.get(tag) ?? []), member]);
-  }
-  const decoders = new Map([...byTag].map(([tag, members]) => [tag, Schema.decodeUnknownResult(members.length === 1 ? members[0]! : Schema.Union(members))]));
+/** A frame's schema: a struct whose `t` is a literal. */
+type FrameSchema = Schema.Decoder<unknown> & { readonly fields: { readonly t: { readonly literal: string } } };
+
+function frameParser<M extends FrameSchema>(union: { readonly members: ReadonlyArray<M> }): (text: string) => Parsed<M["Type"]> {
+  const byTag = new Map<string, M[]>();
+  for (const member of union.members) byTag.set(member.fields.t.literal, [...(byTag.get(member.fields.t.literal) ?? []), member]);
+  const decoders = new Map(
+    [...byTag].map(([tag, members]) => [
+      tag,
+      Schema.decodeUnknownResult<Schema.Decoder<M["Type"]>>(members.length === 1 ? members[0]! : Schema.Union(members)),
+    ]),
+  );
   return (text) => {
     let value: unknown;
     try {
@@ -444,25 +475,19 @@ function frameParser<T>(union: { readonly members: ReadonlyArray<Schema.Decoder<
     } catch {
       return { ok: false, error: "Not JSON" };
     }
-    const record = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-    const req = Number.isInteger(record.req) ? (record.req as number) : undefined;
-    const fail = (error: string): Parsed<T> => ({ ok: false, error, ...(req === undefined ? {} : { req }) });
-    const decode = decoders.get(String(record.t));
-    if (!decode) return fail(`Unknown frame ${JSON.stringify(record.t)}`);
+    const object = typeof value === "object" && value !== null ? value : {};
+    const t = "t" in object ? object.t : undefined;
+    const req = "req" in object && typeof object.req === "number" && Number.isInteger(object.req) ? object.req : undefined;
+    const fail = (error: string): Parsed<M["Type"]> => ({ ok: false, error, ...(req === undefined ? {} : { req }) });
+    const decode = decoders.get(String(t));
+    if (!decode) return fail(`Unknown frame ${JSON.stringify(t)}`);
     const result = decode(value);
-    if (Result.isSuccess(result)) return { ok: true, frame: result.success as T };
-    return fail(`Bad ${String(record.t)} frame: ${formatIssue(result.failure.issue)}`);
+    if (Result.isSuccess(result)) return { ok: true, frame: result.success };
+    return fail(`Bad ${String(t)} frame: ${formatIssue(result.failure.issue)}`);
   };
 }
 
 /** Parse and check a frame from a client. */
-export const parseClientFrame = frameParser<ClientFrame>(ClientFrame);
+export const parseClientFrame: (text: string) => Parsed<ClientFrame> = frameParser(ClientFrame);
 /** Parse and check a frame from the daemon. */
-export const parseServerFrame = frameParser<ServerFrame>(ServerFrame);
-
-/** Check a value read back from storage or elsewhere; throws with the first problem. */
-export function check<T>(schema: Schema.Decoder<T>, value: unknown, what: string): T {
-  const result = Schema.decodeUnknownResult(schema)(value);
-  if (Result.isSuccess(result)) return result.success;
-  throw new Error(`Bad ${what}: ${formatIssue(result.failure.issue)}`);
-}
+export const parseServerFrame: (text: string) => Parsed<ServerFrame> = frameParser(ServerFrame);

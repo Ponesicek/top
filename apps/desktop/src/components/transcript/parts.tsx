@@ -115,7 +115,7 @@ const ToolStep = memo(function ToolStep({ entry, sync }: { entry: ToolEntry; syn
       onOpenChange={(open) => {
         if (open && full === undefined)
           void sync.detail(entry.seq).then(
-            (e) => setFull(e.kind === "tool" ? e.text : ""),
+            (e) => setFull(e?.kind === "tool" ? e.text : ""),
             () => setFull("Couldn't load."),
           );
       }}

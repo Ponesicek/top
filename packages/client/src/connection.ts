@@ -10,7 +10,19 @@
  * Requests are Effects that end with the daemon's answer (or its refusal, as the protocol's errors),
  * `OfflineError` when there's no connection, or `TimeoutError`.
  */
-import { AttachmentError, BotError, BusyError, type ClientFrame, McpServerError, PROTOCOL_VERSION, parseServerFrame, type ServerFrame } from "@top/protocol";
+import {
+  AttachmentError,
+  BotError,
+  BusyError,
+  type ClientFrame,
+  McpServerError,
+  PROTOCOL_VERSION,
+  parseServerFrame,
+  RequestResult,
+  type RequestType,
+  type ResultOf,
+  type ServerFrame,
+} from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -36,7 +48,8 @@ export type ConnectionOptions = {
 };
 
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
-export type RequestFrame = DistributiveOmit<Extract<ClientFrame, { req: number }>, "req">;
+/** A request as the caller writes it: the connection numbers it. */
+export type RequestFrame = DistributiveOmit<Extract<ClientFrame, { readonly req: number }>, "req">;
 
 const RETRY_DELAYS_MS = [0, 250, 250, 250, 500, 500, 1_000, 2_000, 3_000, 5_000];
 /** After `kick`, an open socket that doesn't answer a ping this soon counts as dropped. */
@@ -61,6 +74,11 @@ const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   McpServerError: (message) => new McpServerError({ message }),
 };
 
+const numbered = (frame: RequestFrame, req: number): ClientFrame => ({ ...frame, req });
+
+/** Checks the answer to a request of type `t`. */
+const decodeResult = <T extends RequestType>(t: T) => Schema.decodeUnknownEffect<(typeof RequestResult)[T]>(RequestResult[t]);
+
 /** The daemon's `"<Tag>: <message>"` as the protocol's error, when it's one of those. */
 const refusal = (text: string): RequestFailure => {
   const match = /^(\w+): ([\s\S]*)$/.exec(text);
@@ -84,7 +102,8 @@ export type Connection = {
   serverId: string | undefined;
   /** Send a frame now; false when there's no open socket (nothing is queued). */
   readonly send: (frame: ClientFrame) => boolean;
-  readonly request: <T = unknown>(frame: RequestFrame) => Effect.Effect<T, RequestFailure>;
+  /** Send a request; its answer, checked against what that request answers with (see the protocol's `RequestResult`). */
+  readonly request: <F extends RequestFrame>(frame: F) => Effect.Effect<ResultOf<F["t"]>, RequestFailure>;
   /**
    * The app returned to the foreground or the network changed. If connected, check that the socket
    * still answers; otherwise retry now instead of waiting out the backoff.
@@ -230,20 +249,24 @@ export const makeConnection = Effect.fnUntraced(function* (options: ConnectionOp
     attempt: () => attempt,
     serverId: undefined,
     send,
-    request: <T>(frame: RequestFrame) =>
+    request: <F extends RequestFrame>(frame: F): Effect.Effect<ResultOf<F["t"]>, RequestFailure> =>
       Effect.suspend(() => {
         if (status !== "open") return Effect.fail(new OfflineError({ message: "Not connected" }));
         const req = nextReq++;
         const answer = Deferred.makeUnsafe<unknown, RequestFailure>();
         requests.set(req, answer);
-        send({ ...frame, req } as ClientFrame);
+        send(numbered(frame, req));
+        const decode = decodeResult(frame.t);
         return Deferred.await(answer).pipe(
           Effect.timeoutOrElse({
             duration: Duration.millis(requestTimeoutMs),
             orElse: () => Effect.fail(new TimeoutError({ message: "Request timed out" })),
           }),
+          Effect.flatMap((value) =>
+            Effect.mapError(decode(value), (error) => new RequestError({ message: `The daemon's answer to ${frame.t} wasn't readable: ${error.message}` })),
+          ),
           Effect.ensuring(Effect.sync(() => requests.delete(req))),
-        ) as Effect.Effect<T, RequestFailure>;
+        );
       }),
     kick: Effect.flatMap(Clock.currentTimeMillis, (sentAt) => {
       if (status === "open") {

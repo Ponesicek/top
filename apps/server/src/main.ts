@@ -140,7 +140,7 @@ const realBots = (args: Args, model: string, workspace: string) =>
           thinking: args.thinking,
           sections: (bot) =>
             Effect.gen(function* () {
-              const prompt = getCurrentSystemPrompt((yield* store.context(bot.id)).map((e) => e.message) as never);
+              const prompt = getCurrentSystemPrompt(yield* store.context(bot.id));
               return { workspace: workspaceSection(yield* folderOf(bot), prompt.includes("You have no tools yet")), quotes: QUOTES_SECTION };
             }),
           // Real bots' tools are declared on their first request, so their first system message holds only instructions.

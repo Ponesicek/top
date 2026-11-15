@@ -107,13 +107,17 @@ test("a message with attachments gives the bot their paths and the images, and c
   assert.deepEqual(wire?.kind === "user" && wire.attachments, [image, notes]);
 
   // The stored message holds the image by id only; each request reads its bytes in.
-  const message = JSON.parse(placed.message) as { content: { type: string; text?: string; data?: string; attachment?: string }[] };
-  assert.equal(message.content[0]!.text, "What is in these?");
-  assert.match(message.content[1]!.text!, /\[Attached image "shot\.png" \(image\/png, \d+ B\) is saved at: .*shot\.png\]/);
-  assert.match(message.content[1]!.text!, /\[Attached file "notes\.txt" \(text\/plain, 5 B\) is saved at: .*notes\.txt\]/);
-  assert.deepEqual(message.content[2], { type: "image", mimeType: "image/png", data: "", attachment: image.id });
+  const message = (await h.run(h.store.context(bot))).find((m) => m.role === "user");
+  assert(message?.role === "user" && typeof message.content !== "string");
+  const [said, note, picture] = message.content;
+  assert.deepEqual(said, { type: "text", text: "What is in these?" });
+  assert(note?.type === "text" && note.attachmentNote);
+  assert.match(note.text, /\[Attached image "shot\.png" \(image\/png, \d+ B\) is saved at: .*shot\.png\]/);
+  assert.match(note.text, /\[Attached file "notes\.txt" \(text\/plain, 5 B\) is saved at: .*notes\.txt\]/);
+  assert.deepEqual(picture, { type: "image", mimeType: "image/png", data: "", attachment: image.id });
   const [hydrated] = await h.run(withImageData([message], attachments));
-  assert.equal((hydrated!.content[2] as { data: string }).data, PNG.toString("base64"));
+  assert(hydrated?.role === "user" && typeof hydrated.content !== "string");
+  assert.deepEqual(hydrated.content[2], { type: "image", mimeType: "image/png", data: PNG.toString("base64"), attachment: image.id });
 
   // An image whose file is gone becomes a note rather than a broken image (to an attachments service
   // that hasn't cached it).
@@ -124,7 +128,8 @@ test("a message with attachments gives the bot their paths and the images, and c
   cleanup.push(() => runtime.dispose());
   const fresh = await runtime.runPromise(Effect.service(Attachments.Attachments));
   const [gone] = await runtime.runPromise(withImageData([message], fresh));
-  assert.deepEqual(gone!.content[2], { type: "text", text: '[The image "shot.png" is no longer available.]' });
+  assert(gone?.role === "user" && typeof gone.content !== "string");
+  assert.deepEqual(gone.content[2], { type: "text", text: '[The image "shot.png" is no longer available.]' });
 });
 
 test("a message can't use another bot's attachments, ones that don't exist, or carry nothing at all", async () => {

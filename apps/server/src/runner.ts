@@ -10,8 +10,8 @@
  * policy (see tools.ts) and the task continues. If the daemon keeps dying during one task, the task is
  * ended instead of looping forever.
  */
-import { type AssistantMessage, getCurrentSystemMessage, type Message, type Models, type SystemMessage, type ToolCall } from "@earendil-works/pi-ai";
-import type { BotStatus } from "@top/protocol";
+import { type AssistantMessage, getCurrentSystemMessage, type Models, type SystemMessage, type ToolCall } from "@earendil-works/pi-ai";
+import type { BotStatus, ToolOutcome } from "@top/protocol";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
@@ -22,6 +22,7 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as Latch from "effect/Latch";
 import { type Attachments, userContent, withImageData } from "./attachments.ts";
 import { runLoop, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
+import type { EntryBody, TopUserMessage, TranscriptMessage } from "./messages.ts";
 import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
 import { type ToolResult, type TopTool, text } from "./tools.ts";
 
@@ -105,12 +106,12 @@ export const makeRunner = Effect.fnUntraced(function* (
   let busy = false;
   const idle = yield* Latch.make(true);
   /** The transcript, as the model sees it. */
-  const messages = (yield* store.context(id)).map((e) => e.message as Message);
+  const messages: TranscriptMessage[] = yield* store.context(id);
   /** The loop is running: a message that comes now is handed to it, not left for the next run. */
   let looping = false;
   /** Messages for the loop's next turn, and for when it would finish. */
-  let steering: Message[] = [];
-  let followUps: Message[] = [];
+  let steering: TranscriptMessage[] = [];
+  let followUps: TranscriptMessage[] = [];
   /** requestId of each message object handed to the loop. */
   const requestIds = new WeakMap<object, string>();
   /** requestIds handed to the loop in the current run. */
@@ -148,10 +149,11 @@ export const makeRunner = Effect.fnUntraced(function* (
       yield* events.status(id);
     });
 
-  const append = (kind: "assistant" | "system" | "notice", message: unknown) => Effect.tap(store.append(id, kind, message), (stored) => events.entry(stored));
+  const append = <K extends "assistant" | "system" | "notice">(kind: K, message: EntryBody[K]) =>
+    Effect.tap(store.append(id, kind, message), (stored) => events.entry(stored));
 
-  const userMessage = (row: InboxRow): Message => {
-    const message = (
+  const userMessage = (row: InboxRow): TopUserMessage => {
+    const message: TopUserMessage =
       row.attachments.length && attachments
         ? {
             role: "user",
@@ -159,8 +161,7 @@ export const makeRunner = Effect.fnUntraced(function* (
             attachments: row.attachments,
             timestamp: row.at,
           }
-        : { role: "user", content: row.text, timestamp: row.at }
-    ) as Message;
+        : { role: "user", content: row.text, timestamp: row.at };
     requestIds.set(message, row.requestId);
     return message;
   };
@@ -173,7 +174,7 @@ export const makeRunner = Effect.fnUntraced(function* (
     else followUps.push(message);
   };
 
-  const saveMessage = (message: Message) =>
+  const saveMessage = (message: TranscriptMessage) =>
     Effect.gen(function* () {
       switch (message.role) {
         case "user": {
@@ -184,14 +185,13 @@ export const makeRunner = Effect.fnUntraced(function* (
           return;
         }
         case "assistant": {
-          const assistant = message as AssistantMessage;
-          if (assistant.stopReason === "error") {
-            pendingError = assistant;
+          if (message.stopReason === "error") {
+            pendingError = message;
             return;
           }
-          const stored = yield* append("assistant", assistant);
+          const stored = yield* append("assistant", message);
           assistantSeq = stored.seq;
-          if (!toolCallsOf(assistant).length && assistant.stopReason !== "aborted") yield* store.setRestarts(id, 0);
+          if (!toolCallsOf(message).length && message.stopReason !== "aborted") yield* store.setRestarts(id, 0);
           return;
         }
         case "toolResult":
@@ -212,7 +212,7 @@ export const makeRunner = Effect.fnUntraced(function* (
   const take = <A>(queue: A[]) => queue.splice(0);
 
   /** One pass of the loop: from `prompts`, or on from where the transcript ends. */
-  const loop = (signal: AbortSignal, prompts?: readonly Message[]) =>
+  const loop = (signal: AbortSignal, prompts?: readonly TranscriptMessage[]) =>
     Effect.gen(function* () {
       looping = true;
       yield* runLoop(
@@ -229,7 +229,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           steering: () => take(steering),
           followUps: () => take(followUps),
           // Images are stored as their attachment's id; each request reads them in (attachments.ts).
-          transformContext: attachments ? (context) => withImageData(context as never, attachments) as never : undefined,
+          transformContext: attachments ? (context) => withImageData(context, attachments) : undefined,
           hooks: {
             added: saveMessage,
             asking: setStatus("thinking"),
@@ -274,7 +274,7 @@ export const makeRunner = Effect.fnUntraced(function* (
   };
 
   /** One run of the agent loop, with retries. False if something unexpected broke and driving should stop. */
-  const run = (prompts: readonly Message[] | undefined, queued: readonly InboxRow[], prompted: readonly InboxRow[] = []) =>
+  const run = (prompts: readonly TranscriptMessage[] | undefined, queued: readonly InboxRow[], prompted: readonly InboxRow[] = []) =>
     Effect.gen(function* () {
       refreshTools();
       steering = [];
@@ -315,7 +315,7 @@ export const makeRunner = Effect.fnUntraced(function* (
         }
         // A stop that landed between steps leaves no aborted answer behind; say so in the transcript.
         const last = messages.at(-1);
-        if (abortRequested && !(last?.role === "assistant" && (last as AssistantMessage).stopReason === "aborted")) {
+        if (abortRequested && !(last?.role === "assistant" && last.stopReason === "aborted")) {
           yield* append("notice", { text: "Stopped" });
         }
         return true;
@@ -384,10 +384,10 @@ export const makeRunner = Effect.fnUntraced(function* (
       const record = yield* store.toolCall(seq, call.id);
       const tool = tools.get(call.name);
       const ctx = { key: key(seq, call.id), bot: id };
-      const args = record ? (JSON.parse(record.args) as Record<string, unknown>) : call.arguments;
+      const args = record ? record.args : call.arguments;
       let result: ToolResult;
       let isError = true;
-      let outcome: string;
+      let outcome: ToolOutcome;
       if (giveUp) {
         outcome = "stopped";
         result = text(`Stopped: the daemon restarted ${restarts} times while this task ran, so it was ended. This tool may or may not have taken effect.`);
@@ -441,7 +441,7 @@ export const makeRunner = Effect.fnUntraced(function* (
     if (assistant?.role === "assistant") {
       const seq = yield* store.lastAssistantSeq(id);
       const done = yield* store.toolResultsAfter(id, seq);
-      for (const call of toolCallsOf(assistant as AssistantMessage)) {
+      for (const call of toolCallsOf(assistant)) {
         if (done.has(call.id)) continue;
         const outcome = yield* settle(call, seq, giveUp, restarts);
         settled.push(`${call.name}: ${outcome}`);

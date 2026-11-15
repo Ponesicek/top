@@ -3,8 +3,9 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { outcomeText } from "../jobs.ts";
+import type { JobState } from "../store.ts";
 import { duration } from "../time.ts";
-import { type ToolResult, text } from "../tools.ts";
+import { defineTool, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
 
 const parameters = Type.Object(
@@ -18,8 +19,14 @@ const parameters = Type.Object(
 
 const failed = (value: string): ToolResult => ({ ...text(value), isError: true });
 
+const HOW_IT_ENDED: Record<Exclude<JobState, "running">, string> = {
+  finished: "finished; its result was sent to you as a message",
+  stopped: "was stopped",
+  lost: "was cut off by a daemon restart",
+};
+
 export const jobsGroup: CollarGroup = (daemon) => [
-  {
+  defineTool({
     name: "jobs",
     label: "Background jobs",
     description: [
@@ -34,7 +41,7 @@ export const jobsGroup: CollarGroup = (daemon) => [
     run: (args, ctx) =>
       Effect.gen(function* () {
         const jobs = daemon.jobs;
-        const action = String(args.action);
+        const action = args.action;
         const now = yield* Clock.currentTimeMillis;
         if (action === "list") {
           const running = jobs.running(ctx.bot);
@@ -46,15 +53,13 @@ export const jobsGroup: CollarGroup = (daemon) => [
           );
         }
 
-        const id = Number(args.id);
-        if (!Number.isInteger(id)) return failed('Say which job with `id` (see `action: "list"`).');
+        const id = args.id;
+        if (id === undefined) return failed('Say which job with `id` (see `action: "list"`).');
         const found = yield* jobs.find(ctx.bot, id);
         if ("ended" in found) {
           if (!found.ended) return failed(`You have no job ${id}.`);
-          const how = { finished: "finished; its result was sent to you as a message", stopped: "was stopped", lost: "was cut off by a daemon restart" }[
-            found.ended.state as "finished" | "stopped" | "lost"
-          ];
-          return text(`Job ${id} is no longer running: it ${how ?? "ended"}.`);
+          const { state } = found.ended;
+          return text(`Job ${id} is no longer running: it ${state === "running" ? "ended" : HOW_IT_ENDED[state]}.`);
         }
 
         switch (action) {
@@ -68,7 +73,7 @@ export const jobsGroup: CollarGroup = (daemon) => [
           }
           case "wait": {
             const limit = jobs.foregroundMs;
-            const ms = Math.min(Math.max(0, Number(args.seconds ?? limit / 1000) * 1000), limit);
+            const ms = Math.min(Math.max(0, (args.seconds ?? limit / 1000) * 1000), limit);
             const outcome = yield* jobs.wait(id, ms, ctx.signal);
             if (!outcome)
               return text(
@@ -85,5 +90,5 @@ export const jobsGroup: CollarGroup = (daemon) => [
             return failed(`Unknown action "${action}".`);
         }
       }),
-  },
+  }),
 ];

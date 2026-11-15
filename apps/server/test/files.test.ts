@@ -93,7 +93,7 @@ test("files entries stay out of the model's context", async () => {
   await close();
   assert.equal((await h.run(store.newest(bot, 10))).at(-1)!.kind, "files");
   assert.deepEqual(
-    (await h.run(store.context(bot))).map((e) => e.kind),
+    (await h.run(store.context(bot))).map((m) => m.role),
     ["user"],
   );
   assert.equal((await h.run(store.lastContextEntry(bot)))!.kind, "user");
