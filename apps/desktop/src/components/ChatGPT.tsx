@@ -92,11 +92,11 @@ function SignInForm({ onDone }: { onDone: () => void }) {
   return (
     <form onSubmit={finish}>
       <DialogBody>
-        <DialogTitle>Sign in on the page that opened</DialogTitle>
+        <DialogTitle>Sign in with ChatGPT</DialogTitle>
         <DialogDescription>
           On the daemon's computer, this closes by itself once you've signed in.{" "}
           <button type="button" className="text-link underline-offset-2 hover:underline" onClick={() => window.open(url, "_blank", "noopener")}>
-            Open the page again
+            Didn't open? Open the sign-in page
           </button>
         </DialogDescription>
         <Field>
