@@ -87,9 +87,17 @@ export const Header = memo(function Header({
               {bot && bot.queued > 0 && ` · ${bot.queued} queued`}
             </span>
           </div>
+          {/* The sidebar's footer says Reconnecting; it hides that badge in the narrow layout, so only there does the header say it. */}
           {status === "stale" && (
-            <Badge variant="warning" size="xl" className="stale ml-1.5">
-              <WifiOff size={13} strokeWidth={2.2} /> Offline · showing last known state
+            <Badge
+              variant="warning"
+              size="xl"
+              className="ml-1.5 hidden narrow:inline-flex"
+              role="status"
+              aria-label="Offline, showing last known state"
+              title="Offline, showing last known state"
+            >
+              <WifiOff size={13} strokeWidth={2.2} aria-hidden />
             </Badge>
           )}
         </div>
