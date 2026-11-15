@@ -103,6 +103,7 @@ function createWindow() {
   // the action picked, which runs against the right-click that opened the menu.
   win.webContents.on("context-menu", (_event, params) => {
     const items = contextMenuItems(params);
+    lastRightClick.delete(win.webContents);
     if (!items.length) return;
     lastRightClick.set(win.webContents, params);
     win.webContents.send("top:context-menu", { x: params.x, y: params.y, items });

@@ -57,6 +57,12 @@ export function EditMenu() {
       }),
     [],
   );
+  // A system menu closes when the window loses focus; so does this one.
+  useEffect(() => {
+    const close = () => setOpen(false);
+    addEventListener("blur", close);
+    return () => removeEventListener("blur", close);
+  }, []);
   if (!contextMenu || !menu) return null;
   const run = contextMenu.run;
   const anchor = { getBoundingClientRect: () => DOMRect.fromRect({ x: menu.x, y: menu.y, width: 0, height: 0 }) };
@@ -78,7 +84,7 @@ export function EditMenu() {
     >
       <Menu.Portal>
         <Menu.Positioner anchor={anchor} side="bottom" align="start" collisionPadding={8} className="z-50">
-          <Menu.Popup className={POPUP} finalFocus={false} onContextMenu={(e) => e.preventDefault()}>
+          <Menu.Popup className={POPUP} finalFocus={false} onContextMenu={(e) => e.preventDefault()} onKeyDown={(e) => e.stopPropagation()}>
             {menu.items.map((item, i) =>
               "separator" in item ? (
                 // biome-ignore lint/suspicious/noArrayIndexKey: the menu is rebuilt whole on each right-click
