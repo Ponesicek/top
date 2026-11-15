@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { fromPromise, type ToolResult, type TopTool } from "./tools.ts";
+import type { Static, TSchema } from "typebox";
+import { defineTool, fromPromise, type ToolResult, type TopTool } from "./tools.ts";
 
 const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
 
@@ -33,19 +34,19 @@ export function botFolder(root: string, name: string): string {
 export const ensureFolder = (folder: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => Effect.as(Effect.orDie(fs.makeDirectory(folder, { recursive: true })), folder));
 
-/** What Top takes from one of pi's coding tools (each has its own parameter schema). */
-type CodingTool = {
+/** What Top takes from one of pi's coding tools (pi's `TypeBoxAgentTool`: each has its own TypeBox parameters). */
+type CodingTool<P extends TSchema & object> = {
   readonly name: string;
   readonly label: string;
   readonly description: string;
-  readonly parameters: object;
-  readonly prepareArguments?: (args: unknown) => Record<string, unknown>;
-  readonly executionMode?: "sequential" | "parallel";
-  readonly execute: (toolCallId: string, args: never, signal?: AbortSignal, onUpdate?: never) => Promise<ToolResult>;
+  readonly parameters: P;
+  readonly prepareArguments?: ((args: unknown) => Static<P>) | undefined;
+  readonly executionMode?: "sequential" | "parallel" | undefined;
+  readonly execute: (toolCallId: string, args: Static<P>, signal?: AbortSignal, onUpdate?: (partial: ToolResult) => void) => Promise<ToolResult>;
 };
 
-function adapt(tool: CodingTool): TopTool {
-  return {
+function adapt<P extends TSchema & object>(tool: CodingTool<P>): TopTool {
+  return defineTool({
     name: tool.name,
     label: tool.label,
     description: tool.description,
@@ -53,21 +54,21 @@ function adapt(tool: CodingTool): TopTool {
     ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
     ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
     replay: REPLAY_SAFE.has(tool.name) ? "safe" : "never",
-    run: (args, ctx) => fromPromise(() => tool.execute(ctx.key, args as never, ctx.signal, ctx.onUpdate as never)),
-  };
+    run: (args, ctx) => fromPromise(() => tool.execute(ctx.key, args, ctx.signal, ctx.onUpdate)),
+  });
 }
 
 /** The tools of a bot working in `folder`. */
 export function computerTools(folder: string): TopTool[] {
   return [
-    createReadTool(folder),
-    createBashTool(folder),
-    createEditTool(folder),
-    createWriteTool(folder),
-    createGrepTool(folder),
-    createFindTool(folder),
-    createLsTool(folder),
-  ].map((tool) => adapt(tool as unknown as CodingTool));
+    adapt(createReadTool(folder)),
+    adapt(createBashTool(folder)),
+    adapt(createEditTool(folder)),
+    adapt(createWriteTool(folder)),
+    adapt(createGrepTool(folder)),
+    adapt(createFindTool(folder)),
+    adapt(createLsTool(folder)),
+  ];
 }
 
 /** The `workspace` section of a bot's system prompt. `outdated` says an earlier "no tools" note no longer holds. */

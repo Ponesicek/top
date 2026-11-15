@@ -15,45 +15,45 @@
  * last said so are declared to the model in a system message before its next request.
  */
 import {
+  type Api,
   type AssistantMessage,
   getCurrentTools,
   getToolStateChanges,
-  type Message,
   type Model,
   type Models,
   normalizeContext,
   type SystemMessage,
   type ToolCall,
   type ToolResultMessage,
+  type ToolStateChanges,
   toToolDeclaration,
-  validateToolArguments,
 } from "@earendil-works/pi-ai";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import { type ToolContext, type ToolResult, type TopTool, text } from "./tools.ts";
+import type { TranscriptMessage } from "./messages.ts";
+import { checkArguments, type ToolArguments, type ToolContext, type ToolResult, type TopTool, text } from "./tools.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export type LoopHooks = {
   /** A message the loop added to the transcript: one it took from the user or Top, a system message, the model's answer. */
-  readonly added: (message: Message) => Effect.Effect<void>;
+  readonly added: (message: TranscriptMessage) => Effect.Effect<void>;
   /** A model request is about to go out. */
   readonly asking: Effect.Effect<void>;
   /** The model's call is being looked at (it may still not run). */
   readonly toolStart: (call: ToolCall) => Effect.Effect<void>;
   /** The call checked out and runs next: after a crash, a call recorded here may have taken effect. */
-  readonly toolRunning: (call: ToolCall, args: Record<string, unknown>) => Effect.Effect<void>;
+  readonly toolRunning: (call: ToolCall, args: ToolArguments) => Effect.Effect<void>;
   /** The call's result; `ran` when the tool really ran (not refused, not stopped before it started). */
   readonly toolEnd: (result: ToolResultMessage, ran: boolean) => Effect.Effect<void>;
 };
 
 export type LoopOptions = {
   readonly models: Models;
-  // biome-ignore lint/suspicious/noExplicitAny: a model of any API
-  readonly model: Model<any>;
+  readonly model: Model<Api>;
   readonly thinkingLevel: ThinkingLevel;
   /** The transcript. The loop adds to it as it goes. */
-  readonly messages: Message[];
+  readonly messages: TranscriptMessage[];
   /** The tools for this run. */
   readonly tools: readonly TopTool[];
   /** What a tool call gets besides the signal. */
@@ -62,38 +62,37 @@ export type LoopOptions = {
   readonly signal: AbortSignal;
   readonly stopped: () => boolean;
   /** Messages for the next turn, taken. */
-  readonly steering: () => Message[];
+  readonly steering: () => TranscriptMessage[];
   /** Messages for when the bot would finish, taken. */
-  readonly followUps: () => Message[];
+  readonly followUps: () => TranscriptMessage[];
   /** The transcript as the model gets it (images read in, for example). */
-  readonly transformContext?: ((messages: Message[]) => Effect.Effect<Message[]>) | undefined;
+  readonly transformContext?: ((messages: readonly TranscriptMessage[]) => Effect.Effect<readonly TranscriptMessage[]>) | undefined;
   readonly hooks: LoopHooks;
 };
 
 /** A tool result as it goes in the transcript. */
-export const toolResultMessage = (toolCallId: string, toolName: string, result: ToolResult, isError: boolean, timestamp: number): ToolResultMessage =>
-  ({
-    role: "toolResult",
-    toolCallId,
-    toolName,
-    content: (result.content ?? []) as ToolResultMessage["content"],
-    details: result.details,
-    isError,
-    timestamp,
-  }) as ToolResultMessage;
+export const toolResultMessage = (toolCallId: string, toolName: string, result: ToolResult, isError: boolean, timestamp: number): ToolResultMessage => ({
+  role: "toolResult",
+  toolCallId,
+  toolName,
+  content: result.content,
+  ...(result.details === undefined ? {} : { details: result.details }),
+  isError,
+  timestamp,
+});
 
 export const toolCallsOf = (message: AssistantMessage): ToolCall[] => message.content.filter((part): part is ToolCall => part.type === "toolCall");
 
-const NO_CHANGES = { toolsAdded: [], toolsRemoved: [] };
+const NO_CHANGES: ToolStateChanges = { toolsAdded: [], toolsRemoved: [] };
 
 /** A system message with its tool fields replaced by `changes`; empty lists leave the field out. */
-function withToolChanges(message: SystemMessage, changes: { toolsAdded: readonly unknown[]; toolsRemoved: readonly unknown[] }): SystemMessage {
+function withToolChanges(message: SystemMessage, changes: ToolStateChanges): SystemMessage {
   const { toolsAdded: _added, toolsRemoved: _removed, ...rest } = message;
   return {
     ...rest,
     ...(changes.toolsAdded.length ? { toolsAdded: changes.toolsAdded } : {}),
     ...(changes.toolsRemoved.length ? { toolsRemoved: changes.toolsRemoved } : {}),
-  } as SystemMessage;
+  };
 }
 
 /**
@@ -101,13 +100,19 @@ function withToolChanges(message: SystemMessage, changes: { toolsAdded: readonly
  * pending system message if there is one (a prompt change), else on a new one before the first other
  * message. Other messages stay the same objects.
  */
-function declareToolChanges(transcript: readonly Message[], tools: readonly TopTool[], pending: readonly Message[], now: number): Message[] {
+function declareToolChanges(
+  transcript: readonly TranscriptMessage[],
+  tools: readonly TopTool[],
+  pending: readonly TranscriptMessage[],
+  now: number,
+): TranscriptMessage[] {
   const systemIndex = pending.findLastIndex((message) => message.role === "system");
-  const system = pending[systemIndex] as SystemMessage | undefined;
+  const found = pending[systemIndex];
+  const system = found?.role === "system" ? found : undefined;
   const baseline = system ? pending.map((message, index) => (index === systemIndex ? withToolChanges(system, NO_CHANGES) : message)) : [...pending];
   const changes = getToolStateChanges(
     getCurrentTools([...transcript, ...baseline]),
-    tools.map((tool) => toToolDeclaration(tool as never)),
+    tools.map((tool) => toToolDeclaration(tool)),
   );
   const unchanged = !changes.toolsAdded.length && !changes.toolsRemoved.length;
   if (system) {
@@ -123,20 +128,18 @@ function declareToolChanges(transcript: readonly Message[], tools: readonly TopT
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-type Prepared =
-  | { readonly call: ToolCall; readonly tool: TopTool; readonly args: Record<string, unknown> }
-  | { readonly call: ToolCall; readonly result: ToolResult };
+type Prepared = { readonly call: ToolCall; readonly tool: TopTool; readonly args: ToolArguments } | { readonly call: ToolCall; readonly result: ToolResult };
 
 /**
  * Run the loop on the transcript in `options.messages`: with `prompts`, they go in first; without,
  * it continues from where the transcript ends (a user message or tool results).
  */
-export const runLoop = (options: LoopOptions, prompts?: readonly Message[]): Effect.Effect<void> =>
+export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessage[]): Effect.Effect<void> =>
   Effect.gen(function* () {
     const { messages, tools, hooks, signal, stopped } = options;
     const reasoning = options.thinkingLevel === "off" ? undefined : options.thinkingLevel;
 
-    const add = (incoming: readonly Message[]) =>
+    const add = (incoming: readonly TranscriptMessage[]) =>
       Effect.gen(function* () {
         for (const next of declareToolChanges(messages, tools, incoming, yield* Clock.currentTimeMillis)) {
           messages.push(next);
@@ -158,7 +161,8 @@ export const runLoop = (options: LoopOptions, prompts?: readonly Message[]): Eff
         signal,
       });
       const answer = yield* Effect.promise(() => response.result());
-      return Object.assign(answer, { thinkingLevel: options.thinkingLevel }) as AssistantMessage;
+      answer.thinkingLevel = options.thinkingLevel;
+      return answer;
     }).pipe(
       Effect.catchDefect((defect) =>
         Effect.map(
@@ -192,12 +196,7 @@ export const runLoop = (options: LoopOptions, prompts?: readonly Message[]): Eff
         yield* hooks.toolStart(call);
         const tool = tools.find((t) => t.name === call.name);
         if (!tool) return { call, result: text(`Tool ${call.name} not found`) };
-        const checked = yield* Effect.result(
-          Effect.try(() => {
-            const prepared = tool.prepareArguments ? { ...call, arguments: tool.prepareArguments(call.arguments) as ToolCall["arguments"] } : call;
-            return validateToolArguments(tool as never, prepared) as Record<string, unknown>;
-          }),
-        );
+        const checked = yield* Effect.result(Effect.try(() => checkArguments(tool, call, call.arguments)));
         if (checked._tag === "Failure") return { call, result: text(message(checked.failure.cause)) };
         const args = checked.success;
         // Stop means stop: no tool starts after the user asked to stop, whatever the model wants.

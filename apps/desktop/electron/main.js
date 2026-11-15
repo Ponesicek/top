@@ -91,16 +91,27 @@ function createWindow() {
 // refuses this device still says it's there.
 
 const TAILNET_PORT = 7357;
+/** @type {Partial<Record<NodeJS.Platform, string[]>>} */
 const TAILSCALE = {
   darwin: ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"],
   win32: ["tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe"],
 };
 
+/**
+ * What this reads of `tailscale status --json` (unchecked: the page checks the answer it builds, see src/bridge.ts).
+ * @typedef {{ BackendState?: string; Self?: { DNSName?: string }; Peer?: Record<string, { Online?: boolean; DNSName?: string }> }} TailscaleStatus
+ */
+
+/** @returns {Promise<TailscaleStatus>} */
 function tailscaleStatus() {
   const candidates = TAILSCALE[process.platform] ?? ["tailscale"];
+  /**
+   * @param {number} i
+   * @returns {Promise<TailscaleStatus>}
+   */
   const attempt = (i) =>
     new Promise((resolve, reject) => {
-      execFile(candidates[i], ["status", "--json"], { timeout: 5_000, maxBuffer: 16 << 20, windowsHide: true }, (error, stdout, stderr) => {
+      execFile(candidates[i] ?? "tailscale", ["status", "--json"], { timeout: 5_000, maxBuffer: 16 << 20, windowsHide: true }, (error, stdout, stderr) => {
         if (!error) return resolve(JSON.parse(stdout));
         if (error.code === "ENOENT" && i + 1 < candidates.length) return resolve(attempt(i + 1));
         reject(new Error(error.code === "ENOENT" ? "Tailscale isn't installed on this computer." : String(stderr).trim() || error.message));
@@ -109,6 +120,11 @@ function tailscaleStatus() {
   return attempt(0);
 }
 
+/**
+ * @param {string} dnsName
+ * @param {boolean} self
+ * @returns {Promise<import("../src/bridge.ts").FoundDaemon | undefined>}
+ */
 async function probe(dnsName, self) {
   const url = `wss://${dnsName}:${TAILNET_PORT}`;
   try {
@@ -117,30 +133,31 @@ async function probe(dnsName, self) {
     if (body?.top !== true) return undefined;
     const device = typeof body.device === "string" ? body.device : dnsName.split(".")[0];
     if (response.ok) return { device, url: typeof body.url === "string" ? body.url : url, self, serverId: body.serverId, state: "ok" };
-    return { device, url, self, state: "refused", error: typeof body.error === "string" ? body.error : undefined };
+    return { device, url, self, state: "refused", ...(typeof body.error === "string" ? { error: body.error } : {}) };
   } catch {
     return undefined; // no Top there, or the device didn't answer
   }
 }
 
-ipcMain.handle("top:tailnet", async () => {
+/** @returns {Promise<import("../src/bridge.ts").Discovery>} */
+async function findTailnetDaemons() {
   let status;
   try {
     status = await tailscaleStatus();
   } catch (error) {
-    return { ok: false, error: error.message };
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
   if (status.BackendState !== "Running")
     return { ok: false, error: `Tailscale is ${status.BackendState === "NeedsLogin" ? "signed out" : "not running"} on this computer.` };
   const devices = [
     ...(status.Self?.DNSName ? [{ dnsName: status.Self.DNSName.replace(/\.$/, ""), self: true }] : []),
-    ...Object.values(status.Peer ?? {})
-      .filter((peer) => peer.Online && peer.DNSName)
-      .map((peer) => ({ dnsName: peer.DNSName.replace(/\.$/, ""), self: false })),
+    ...Object.values(status.Peer ?? {}).flatMap((peer) => (peer.Online && peer.DNSName ? [{ dnsName: peer.DNSName.replace(/\.$/, ""), self: false }] : [])),
   ];
   const found = await Promise.all(devices.map((d) => probe(d.dnsName, d.self)));
-  return { ok: true, daemons: found.filter(Boolean) };
-});
+  return { ok: true, daemons: found.filter((daemon) => daemon !== undefined) };
+}
+
+ipcMain.handle("top:tailnet", findTailnetDaemons);
 
 app.whenReady().then(async () => {
   const win = createWindow();

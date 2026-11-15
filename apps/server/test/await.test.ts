@@ -10,6 +10,7 @@ import { test } from "vitest";
 import { backgroundGroup, findTool } from "../src/collar/background.ts";
 import { wakeGroup } from "../src/collar/wake.ts";
 import { makeJobs } from "../src/jobs.ts";
+import { textOf as textOfContent } from "../src/messages.ts";
 import type { InboxRow, StoredEntry } from "../src/store.ts";
 import { fromPromise, type TopTool, text } from "../src/tools.ts";
 import { toWire } from "../src/wire.ts";
@@ -56,10 +57,7 @@ function slowTool() {
 
 const setup = (tools: TopTool[] = [], dir?: string) => harness({ tools, foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS, ...(dir ? { dir } : {}) });
 
-const textOf = (entry: StoredEntry) => {
-  const message = JSON.parse(entry.message) as { content?: string | { type: string; text?: string }[] };
-  return typeof message.content === "string" ? message.content : (message.content ?? []).map((p) => p.text ?? "").join("");
-};
+const textOf = (entry: StoredEntry) => (entry.kind === "notice" ? entry.message.text : entry.kind === "files" ? "" : textOfContent(entry.message.content));
 const fromTop = async (h: Harness, source: "wake" | "job") => (await h.entries()).filter((e) => e.kind === "user" && e.source === source);
 const lastIsAnswer = async (h: Harness) => (await h.entries()).at(-1)?.kind === "assistant" && (await idle(h));
 const messagesFrom = (h: Harness, source: "wake" | "job") => async () => {

@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
+import type { TranscriptMessage, UserImage, UserText } from "./messages.ts";
 import { type FileServing, sendFile } from "./sendFile.ts";
 import { Store } from "./store.ts";
 
@@ -265,16 +266,14 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
 const sizeLabel = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
-type Part = { type: string; text?: string; data?: string; mimeType?: string; attachment?: string; attachmentNote?: true };
-
 /**
  * A user message with attachments: the text, one line per attachment saying where it is saved (never
  * cut: the bot must know each one exists), then the images it can see. An image part holds only its
  * attachment's id; `withImageData` puts the bytes in for each model request, so the transcript stays
  * small. The note is marked, so clients are shown only what the user wrote (wire.ts).
  */
-export function userContent(text: string, attachments: readonly Attachment[], pathOf: (attachment: Attachment) => string): Part[] {
-  const parts: Part[] = [];
+export function userContent(text: string, attachments: readonly Attachment[], pathOf: (attachment: Attachment) => string): (UserText | UserImage)[] {
+  const parts: (UserText | UserImage)[] = [];
   // No empty text block: some providers refuse them.
   if (text.trim()) parts.push({ type: "text", text });
   const lines = attachments.map(
@@ -285,23 +284,21 @@ export function userContent(text: string, attachments: readonly Attachment[], pa
   return parts;
 }
 
-type ContextMessage = { role?: string; content?: unknown; attachments?: readonly Attachment[] };
+/** An image part still waiting for its bytes. */
+const unread = (part: UserText | UserImage): part is UserImage & { attachment: string } => part.type === "image" && !!part.attachment && !part.data;
 
 /** The context for one model request, with each image part's bytes read in (or a note, if its file is gone). */
-export const withImageData = <M>(messages: M[], attachments: Attachments["Service"]): Effect.Effect<M[]> =>
-  Effect.forEach(messages, (message) => {
-    const m = message as ContextMessage;
-    if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p: Part) => p.type === "image" && p.attachment && !p.data))
-      return Effect.succeed(message);
+export const withImageData = (messages: readonly TranscriptMessage[], attachments: Attachments["Service"]): Effect.Effect<TranscriptMessage[]> =>
+  Effect.forEach(messages, (message): Effect.Effect<TranscriptMessage> => {
+    if (message.role !== "user" || typeof message.content === "string" || !message.content.some(unread)) return Effect.succeed(message);
     return Effect.map(
-      Effect.forEach(m.content as Part[], (part) => {
-        if (part.type !== "image" || !part.attachment || part.data) return Effect.succeed(part);
-        const attachment = m.attachments?.find((a) => a.id === part.attachment);
-        return Effect.map(
-          attachment ? attachments.imageData(attachment) : Effect.undefined,
-          (data): Part => (data ? { ...part, data } : { type: "text", text: `[The image "${attachment?.name ?? part.attachment}" is no longer available.]` }),
+      Effect.forEach(message.content, (part): Effect.Effect<UserText | UserImage> => {
+        if (!unread(part)) return Effect.succeed(part);
+        const attachment = message.attachments?.find((a) => a.id === part.attachment);
+        return Effect.map(attachment ? attachments.imageData(attachment) : Effect.undefined, (data): UserText | UserImage =>
+          data ? { ...part, data } : { type: "text", text: `[The image "${attachment?.name ?? part.attachment}" is no longer available.]` },
         );
       }),
-      (content) => ({ ...message, content }) as M,
+      (content) => ({ ...message, content }),
     );
   });

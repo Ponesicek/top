@@ -24,7 +24,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import { type InboxRow, type JobRow, Store } from "./store.ts";
 import { duration } from "./time.ts";
-import { stopped, type ToolContext, ToolError, type ToolResult, type TopTool, text } from "./tools.ts";
+import { stopped, type ToolArguments, type ToolContext, ToolError, type ToolResult, type TopTool, text } from "./tools.ts";
 import { summarize } from "./wire.ts";
 
 /** How long a tool call may keep a task waiting before it moves to the background (`TOP_TOOL_FOREGROUND_MS`). */
@@ -116,7 +116,7 @@ export type Jobs = {
    * Run one call: its result if it ends within `foregroundMs`, else it goes on as a job and the result
    * says so. `ctx.key` names the job, so the same call is never two jobs.
    */
-  readonly run: (tool: TopTool, args: Record<string, unknown>, ctx: ToolContext, options: JobOptions) => Effect.Effect<ToolResult, ToolError>;
+  readonly run: (tool: TopTool, args: ToolArguments, ctx: ToolContext, options: JobOptions) => Effect.Effect<ToolResult, ToolError>;
   /** The bot's jobs running now, oldest first. */
   readonly running: (bot: number) => JobView[];
   readonly count: (bot: number) => number;
@@ -164,7 +164,7 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
     yield* events.changed(job.bot);
   });
 
-  const run = Effect.fn("Jobs.run")(function* (tool: TopTool, args: Record<string, unknown>, ctx: ToolContext, options: JobOptions) {
+  const run = Effect.fn("Jobs.run")(function* (tool: TopTool, args: ToolArguments, ctx: ToolContext, options: JobOptions) {
     // The call gets its own signal: the task's stops it only while the task is waiting on it.
     const controller = new AbortController();
     const forward = () => controller.abort();
@@ -174,7 +174,7 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
 
     const startedAt = yield* now;
     const progress: { latest?: ToolResult } = {};
-    const timing = { job: undefined as Live | undefined, timedOut: false };
+    const timing: { job: Live | undefined; timedOut: boolean } = { job: undefined, timedOut: false };
     const outcome = yield* Deferred.make<Outcome>();
     const call = tool
       .run(args, {

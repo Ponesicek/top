@@ -12,34 +12,34 @@
  * Inside, the connection and everything waiting on the daemon run as Effects in the client's own scope;
  * `close()` ends them all. The outside stays plain: snapshots and listeners, and Promises.
  */
-import type {
+import {
   Attachment,
-  BotId,
-  BotSummary,
-  CreateBotResult,
-  FileView,
-  McpServerConfig,
-  McpServerId,
-  McpServerView,
-  McpSignInResult,
-  SaveMcpServerResult,
-  ServerFrame,
-  Viewer,
+  type BotId,
+  type BotSummary,
+  type FileView,
+  type McpServerConfig,
+  type McpServerId,
+  type McpServerView,
+  type ResultOf,
+  type ServerFrame,
+  type Viewer,
 } from "@top/protocol";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { type Connection, type ConnectionStatus, makeConnection, type RequestFrame } from "./connection.ts";
 import { type ClientRuntime, ConversationSync } from "./conversation.ts";
 
+const parseAttachment = Schema.decodeOption(Schema.fromJsonString(Attachment));
+
 export type {
   Attachment,
   BotId,
   BotStatus,
-  BotSummary,
   Entry,
   FileChange,
   FileView,
@@ -57,6 +57,7 @@ export type {
   WhenBusy,
 } from "@top/protocol";
 export {
+  BotSummary,
   isModelImage,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
@@ -211,7 +212,7 @@ export class TopClient {
    * the daemon refuses it (an empty or taken name) or isn't reachable.
    */
   createBot(name: string, description: string): Promise<BotId> {
-    return this.#request<CreateBotResult>({ t: "createBot", name, description }).then(({ id }) => id);
+    return this.#request({ t: "createBot", name, description }).then(({ id }) => id);
   }
 
   /** Delete a bot and its whole transcript, on the daemon and for every client. */
@@ -224,7 +225,7 @@ export class TopClient {
    * Rejects with a message for the user when the daemon refuses it (a taken name, a bad URL).
    */
   saveMcpServer(id: McpServerId | undefined, name: string, config: McpServerConfig): Promise<McpServerId> {
-    return this.#request<SaveMcpServerResult>({ t: "saveMcpServer", ...(id === undefined ? {} : { id }), name, config }).then((result) => result.id);
+    return this.#request({ t: "saveMcpServer", ...(id === undefined ? {} : { id }), name, config }).then((result) => result.id);
   }
 
   /** Remove an MCP server; its bots lose its tools and its credentials are erased. */
@@ -239,7 +240,7 @@ export class TopClient {
 
   /** Start signing in to an MCP server: resolves with the page to open (in a browser on the daemon's computer). */
   mcpSignIn(id: McpServerId): Promise<string> {
-    return this.#request<McpSignInResult>({ t: "mcpSignIn", id }).then(({ url }) => url);
+    return this.#request({ t: "mcpSignIn", id }).then(({ url }) => url);
   }
 
   /** Forget an MCP server's credentials, to sign in as someone else. */
@@ -253,8 +254,8 @@ export class TopClient {
   }
 
   /** A request to the daemon, as a Promise for the UI: it rejects with the protocol's error (a message for the user). */
-  #request<T>(frame: RequestFrame): Promise<T> {
-    return this.#run.promise(this.#connection.request<T>(frame));
+  #request<F extends RequestFrame>(frame: F): Promise<ResultOf<F["t"]>> {
+    return this.#run.promise(this.#connection.request(frame));
   }
 
   #command(frame: RequestFrame): Promise<void> {
@@ -306,11 +307,12 @@ export class TopClient {
       xhr.upload.onprogress = (event) => event.lengthComputable && options.onProgress?.(event.loaded / event.total);
       xhr.onload = () => {
         if (xhr.status !== 200) return resume(Effect.fail(new UploadError({ message: xhr.responseText.trim() || `Upload failed (${xhr.status}).` })));
-        try {
-          resume(Effect.succeed(JSON.parse(xhr.responseText) as Attachment));
-        } catch {
-          resume(Effect.fail(new UploadError({ message: "Upload failed: the daemon's answer wasn't readable." })));
-        }
+        const attachment = parseAttachment(xhr.responseText);
+        resume(
+          Option.isSome(attachment)
+            ? Effect.succeed(attachment.value)
+            : Effect.fail(new UploadError({ message: "Upload failed: the daemon's answer wasn't readable." })),
+        );
       };
       xhr.onerror = () => resume(Effect.fail(new UploadError({ message: "Upload failed: couldn't reach the daemon." })));
       xhr.ontimeout = () => resume(Effect.fail(new UploadError({ message: "Upload timed out." })));

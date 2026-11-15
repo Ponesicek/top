@@ -17,6 +17,13 @@ import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
 import { conversation, markSeen, top, useBot, useClient, useRoster } from "./top.ts";
 
+// For `pnpm bench` and `pnpm screenshot` (electron/bench-driver.js): select the i-th bot.
+declare global {
+  interface Window {
+    __topSelect?: (i: number) => void;
+  }
+}
+
 function readSelected(): string | undefined {
   try {
     return localStorage.getItem("top.selected") ?? undefined;
@@ -132,7 +139,7 @@ export function App() {
 
   // Expose a tiny driver for `pnpm bench`.
   useEffect(() => {
-    (window as unknown as { __topSelect: (i: number) => void }).__topSelect = (i) => {
+    window.__topSelect = (i) => {
       const target = top.getSnapshot().bots[i];
       if (target) select(target.id);
     };

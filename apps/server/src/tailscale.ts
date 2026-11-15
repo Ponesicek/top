@@ -110,18 +110,27 @@ export type TailnetSelf = {
   readonly https: boolean;
 };
 
-type StatusJson = {
-  BackendState?: string;
-  Self?: { ID?: string; DNSName?: string; UserID?: number; Tags?: string[] };
-  User?: Record<string, { LoginName?: string }>;
-  CertDomains?: string[] | null;
-  CurrentTailnet?: { MagicDNSEnabled?: boolean } | null;
-};
+// What Top reads of the CLI's JSON. Its Go structs write `null` for empty fields, so every field may be missing or null.
+const Maybe = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
+const Strings = Schema.Array(Schema.String);
+
+const StatusJson = Schema.fromJsonString(
+  Schema.Struct({
+    BackendState: Maybe(Schema.String),
+    Self: Maybe(Schema.Struct({ ID: Maybe(Schema.String), DNSName: Maybe(Schema.String), UserID: Maybe(Schema.Number), Tags: Maybe(Strings) })),
+    User: Maybe(Schema.Record(Schema.String, Schema.Struct({ LoginName: Maybe(Schema.String) }))),
+    CertDomains: Maybe(Strings),
+    CurrentTailnet: Maybe(Schema.Struct({ MagicDNSEnabled: Maybe(Schema.Boolean) })),
+  }),
+);
+const decodeStatus = Schema.decodeEffect(StatusJson);
 
 /** What `tailscale status --json` says about this device. Throws a TailscaleError when Top can't use it. */
 export const parseStatus = (json: string): Effect.Effect<TailnetSelf, TailscaleError> =>
   Effect.gen(function* () {
-    const status = JSON.parse(json) as StatusJson;
+    const status = yield* decodeStatus(json).pipe(
+      Effect.mapError((error) => new TailscaleError({ message: `Can't read what \`tailscale status\` said: ${error.message}` })),
+    );
     const state = status.BackendState;
     if (state === "NeedsLogin" || state === "NoState")
       return yield* new TailscaleError({ message: "Tailscale isn't signed in. Run `tailscale up`, then start Top again." });
@@ -136,7 +145,7 @@ export const parseStatus = (json: string): Effect.Effect<TailnetSelf, TailscaleE
     const tags = self.Tags ?? [];
     const users = status.User ?? {};
     const person = (login: string | undefined) => (login?.includes("@") ? login : undefined);
-    const owner = tags.length === 0 ? person(users[String(self.UserID)]?.LoginName) : undefined;
+    const owner = tags.length === 0 ? person(users[String(self.UserID)]?.LoginName ?? undefined) : undefined;
     return {
       dnsName,
       device: dnsName.split(".")[0]!,
@@ -162,13 +171,17 @@ export type Caller = {
   readonly name: string | undefined;
 };
 
-type WhoisJson = {
-  Node?: { StableID?: string; Name?: string; ComputedName?: string; Tags?: string[] };
-  UserProfile?: { LoginName?: string; DisplayName?: string };
-};
+const WhoisJson = Schema.fromJsonString(
+  Schema.Struct({
+    Node: Maybe(Schema.Struct({ StableID: Maybe(Schema.String), Name: Maybe(Schema.String), ComputedName: Maybe(Schema.String), Tags: Maybe(Strings) })),
+    UserProfile: Maybe(Schema.Struct({ LoginName: Maybe(Schema.String), DisplayName: Maybe(Schema.String) })),
+  }),
+);
+const decodeWhois = Schema.decodeSync(WhoisJson);
 
+/** Throws if `json` isn't `tailscale whois --json` output. */
 export function parseWhois(json: string): Caller | undefined {
-  const { Node: node, UserProfile: user } = JSON.parse(json) as WhoisJson;
+  const { Node: node, UserProfile: user } = decodeWhois(json);
   if (!node?.StableID || !node.Name) return undefined;
   const dnsName = node.Name.replace(/\.$/, "");
   const tags = node.Tags ?? [];
@@ -178,7 +191,7 @@ export function parseWhois(json: string): Caller | undefined {
     dnsName,
     tags,
     login: tags.length === 0 && user?.LoginName?.includes("@") ? user.LoginName : undefined,
-    name: tags.length === 0 ? user?.DisplayName : undefined,
+    name: tags.length === 0 ? (user?.DisplayName ?? undefined) : undefined,
   };
 }
 
@@ -324,7 +337,7 @@ export const makeTailnet = (options: TailnetOptions): Effect.Effect<Tailnet> =>
             const target = `http://127.0.0.1:${backendPort}`;
             const host = `${self.dnsName}:${port}`;
             const status = yield* cli(["serve", "status", "--json"]).pipe(Effect.orElseSucceed(() => "{}"));
-            const config = JSON.parse(status || "{}") as ServeConfig;
+            const config = decodeServeConfig(status || "{}");
             if (config.AllowFunnel?.[host])
               return yield* new TailscaleError({
                 message: `Funnel is on for https://${host}, which would put Top on the internet. Turn it off (\`tailscale funnel --https=${port} off\`) or pick another --tailscale-port.`,
@@ -360,11 +373,21 @@ export const makeTailnet = (options: TailnetOptions): Effect.Effect<Tailnet> =>
     } satisfies Tailnet;
   });
 
-type ServeConfig = {
-  TCP?: Record<string, { HTTPS?: boolean; TCPForward?: string }>;
-  Web?: Record<string, { Handlers?: Record<string, { Proxy?: string; Path?: string; Text?: string }> }>;
-  AllowFunnel?: Record<string, boolean>;
-};
+const ServeConfig = Schema.fromJsonString(
+  Schema.Struct({
+    TCP: Maybe(Schema.Record(Schema.String, Schema.Struct({ HTTPS: Maybe(Schema.Boolean), TCPForward: Maybe(Schema.String) }))),
+    Web: Maybe(
+      Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          Handlers: Maybe(Schema.Record(Schema.String, Schema.Struct({ Proxy: Maybe(Schema.String), Path: Maybe(Schema.String), Text: Maybe(Schema.String) }))),
+        }),
+      ),
+    ),
+    AllowFunnel: Maybe(Schema.Record(Schema.String, Schema.Boolean)),
+  }),
+);
+const decodeServeConfig = Schema.decodeSync(ServeConfig);
 
 /** Read this device's Tailscale state and set up who may connect. */
 export const connectTailnet = (options: { allow: readonly string[]; port?: number | undefined; cli: TailscaleCli }): Effect.Effect<Tailnet, TailscaleError> =>

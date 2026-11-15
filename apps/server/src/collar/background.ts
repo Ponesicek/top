@@ -3,11 +3,10 @@
  * for it and when to give up (see jobs.ts). It's how a bot runs several slow things at once (other
  * agents over MCP, builds, long commands) and hears back from each as it ends.
  */
-import { validateToolArguments } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { duration } from "../time.ts";
-import { type ToolResult, text } from "../tools.ts";
+import { checkArguments, defineTool, type ToolArguments, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
 
 /** The longest a bot may keep its task waiting on one call: past this, it should let it go and end its turn. */
@@ -76,7 +75,7 @@ const list = (names: string[]) =>
         .join(", ")} or "${names.at(-1)}"`;
 
 export const backgroundGroup: CollarGroup = (daemon) => [
-  {
+  defineTool({
     name: "background",
     label: "Run in the background",
     description: [
@@ -90,37 +89,27 @@ export const backgroundGroup: CollarGroup = (daemon) => [
     background: false,
     run: (args, ctx) =>
       Effect.suspend(() => {
-        const found = findTool(daemon.toolsOf(ctx.bot), String(args.tool ?? ""));
+        const found = findTool(daemon.toolsOf(ctx.bot), args.tool);
         if ("error" in found) return Effect.succeed(failed(found.error));
         const { tool } = found;
         const name = tool.name;
         if (tool.background === false) return Effect.succeed(failed(`${name} can't run in the background.`));
 
-        let callArgs: Record<string, unknown>;
+        let callArgs: ToolArguments;
         try {
-          const raw = (args.arguments ?? {}) as Record<string, unknown>;
-          const prepared = tool.prepareArguments ? tool.prepareArguments(raw) : raw;
-          callArgs = validateToolArguments(
-            { name, description: tool.description, parameters: tool.parameters } as never,
-            {
-              type: "toolCall",
-              id: ctx.key,
-              name,
-              arguments: prepared,
-            } as never,
-          ) as Record<string, unknown>;
+          callArgs = checkArguments(tool, { id: ctx.key }, args.arguments ?? {});
         } catch (error) {
           return Effect.succeed(failed(error instanceof Error ? error.message : String(error)));
         }
 
-        const waitMs = Math.min(Math.max(0, Number(args.wait_seconds ?? 0) * 1000 || 0), MAX_WAIT_MS);
+        const waitMs = Math.min(Math.max(0, (args.wait_seconds ?? 0) * 1000 || 0), MAX_WAIT_MS);
         let stopAfterMs: number | undefined;
         if (args.stop_after_minutes !== undefined) {
-          stopAfterMs = Number(args.stop_after_minutes) * 60_000;
+          stopAfterMs = args.stop_after_minutes * 60_000;
           if (!(stopAfterMs > 0)) return Effect.succeed(failed("`stop_after_minutes` must be more than 0."));
           if (stopAfterMs > MAX_STOP_AFTER_MS) return Effect.succeed(failed(`\`stop_after_minutes\` can be at most ${duration(MAX_STOP_AFTER_MS)}.`));
         }
-        const note = typeof args.note === "string" ? args.note.slice(0, 200) : undefined;
+        const note = args.note?.slice(0, 200);
         // The call to `background` is the job's call: its key names the job.
         return daemon.jobs.run(tool, callArgs, ctx, {
           foregroundMs: waitMs,
@@ -128,5 +117,5 @@ export const backgroundGroup: CollarGroup = (daemon) => [
           ...(note ? { note } : {}),
         });
       }),
-  },
+  }),
 ];

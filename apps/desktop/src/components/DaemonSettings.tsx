@@ -5,26 +5,12 @@
  */
 import { Check, Copy, RefreshCw } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type Discovery, type FoundDaemon, findTailnetDaemons } from "../bridge.ts";
 import { cn } from "../lib/utils.ts";
 import { connectTo, DEFAULT_SERVER, daemonUrl, serverUrl, useClient, useTailnet } from "../top.ts";
 import { Section } from "./SettingsSection.tsx";
 import { Button } from "./ui/button.tsx";
 import { Input } from "./ui/field.tsx";
-
-type FoundDaemon = {
-  readonly device: string;
-  readonly url: string;
-  /** On this computer. */
-  readonly self: boolean;
-  readonly serverId?: string;
-  /** `refused`: there's a Top, but it doesn't let this device in. */
-  readonly state: "ok" | "refused";
-  readonly error?: string;
-};
-type Discovery = { readonly ok: true; readonly daemons: readonly FoundDaemon[] } | { readonly ok: false; readonly error: string };
-
-/** Only the desktop app can ask Tailscale (electron/preload.cjs); in a browser there's no list. */
-const desktop = (window as { topDesktop?: { findTailnetDaemons?: () => Promise<Discovery> } }).topDesktop;
 
 const sameAddress = (a: string, b: string) => daemonUrl(a) === daemonUrl(b);
 
@@ -182,10 +168,11 @@ function Discover() {
   const [result, setResult] = useState<Discovery>();
   const [looking, setLooking] = useState(false);
   const look = useCallback(async () => {
-    if (!desktop?.findTailnetDaemons) return;
+    // Only the desktop app can ask Tailscale; in a browser there's no list.
+    if (!findTailnetDaemons) return;
     setLooking(true);
     try {
-      setResult(await desktop.findTailnetDaemons());
+      setResult(await findTailnetDaemons());
     } catch (error) {
       setResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
     }
@@ -231,7 +218,7 @@ export function DaemonSettings() {
     <Section title="Daemon">
       <Address />
       {tailnetUrl && !viewer && <TailnetAddress url={tailnetUrl} />}
-      {desktop?.findTailnetDaemons && <Discover />}
+      {findTailnetDaemons && <Discover />}
     </Section>
   );
 }

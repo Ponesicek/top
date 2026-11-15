@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { test } from "vitest";
 import { lastLine } from "../src/daemon.ts";
 import { textOf } from "../src/wire.ts";
@@ -19,15 +21,16 @@ test("the sidebar preview skips code fences and table rows", () => {
 
 test("while the bot is calling tools, the sidebar keeps its last answer that said something", async () => {
   const h = await harness();
-  const answer = (content: unknown) => h.run(h.store.append(h.bot, "assistant", { role: "assistant", content, stopReason: "stop", timestamp: 0 }));
-  const said = async () => lastLine(textOf(((await h.run(h.store.lastAnswer(h.bot))) as { content: never }).content));
+  const answer = (content: AssistantMessage["content"]) => h.run(h.store.append(h.bot, "assistant", { ...fauxAssistantMessage(""), content, timestamp: 0 }));
+  const said = async () => lastLine(textOf((await h.run(h.store.lastAnswer(h.bot)))?.content));
 
   await answer([{ type: "text", text: "Deployed the web service." }]);
   // A model that calls tools without a word first (GPT does), and a stopped answer that got nowhere.
-  await answer([{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }]);
+  await answer([fauxToolCall("bash", { command: "ls" })]);
   await answer([{ type: "text", text: "" }]);
   assert.equal(await said(), "Deployed the web service.");
 
-  await answer("Plain string content works too.");
+  // Earlier versions saved some answers with plain string content.
+  await answer("Plain string content works too." as unknown as AssistantMessage["content"]);
   assert.equal(await said(), "Plain string content works too.");
 });

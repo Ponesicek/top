@@ -113,4 +113,9 @@ try {
   // not supported outside Chromium
 }
 
-(window as unknown as { __topPerf: typeof perf }).__topPerf = perf;
+declare global {
+  interface Window {
+    __topPerf?: typeof perf;
+  }
+}
+window.__topPerf = perf;

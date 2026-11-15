@@ -3,8 +3,7 @@
  * layout measures in real sizes. Only the desktop app can (electron/preload.cjs); in a browser, its own
  * zoom does the same, and the setting isn't shown.
  */
-type Desktop = { setZoomFactor(factor: number): void };
-const desktop = (window as { topDesktop?: Desktop }).topDesktop;
+import { desktop } from "./bridge.ts";
 
 export const canScale = desktop !== undefined;
 
@@ -39,4 +38,4 @@ export function stepScale(scale: Scale, direction: 1 | -1): Scale {
 }
 
 // Before the first paint, so the app never flashes at 100%.
-if (canScale) desktop!.setZoomFactor(readScale());
+desktop?.setZoomFactor(readScale());

@@ -30,7 +30,8 @@
  * not something a caller can handle, so the store's Effects die on it instead of failing.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { type Attachment, Attachment as AttachmentSchema, MessageSource } from "@top/protocol";
+import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
+import { type Attachment, Attachment as AttachmentSchema, type FileChange, McpServerConfig, MessageSource, ToolOutcome } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -39,6 +40,17 @@ import * as Schema from "effect/Schema";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import {
+  AssistantView,
+  type EntryBody,
+  FilesView,
+  NoticeView,
+  SystemView,
+  ToolResultView,
+  type TranscriptMessage,
+  transcriptMessage,
+  UserView,
+} from "./messages.ts";
 
 // ── rows ─────────────────────────────────────────────────────────────────────────
 //
@@ -57,18 +69,28 @@ export type EntryKind = typeof EntryKind.Type;
 export const FileStat = Schema.Struct({ size: Schema.Number, mtime: Schema.Number });
 export type FileStat = typeof FileStat.Type;
 
-export const StoredEntry = Schema.Struct({
-  seq: Int,
-  bot: Int,
-  kind: EntryKind,
-  /** JSON: an agent message (system/user/assistant/toolResult), `{ text }` for a notice, `{ files }` for files. */
-  message: Text,
-  requestId: NullableText,
-  toolCallId: NullableText,
-  outcome: NullableText,
-  source: Source,
-  at: Schema.Number,
-}).pipe(Schema.encodeKeys({ requestId: "request_id", toolCallId: "tool_call_id" }));
+/** An entry of one kind; `message` is stored as JSON (see messages.ts). */
+const entryOf_ = <K extends EntryKind, M extends Schema.Top>(kind: K, message: M) =>
+  Schema.Struct({
+    seq: Int,
+    bot: Int,
+    kind: Schema.Literal(kind),
+    message: Schema.fromJsonString(message),
+    requestId: NullableText,
+    toolCallId: NullableText,
+    outcome: Schema.NullOr(ToolOutcome),
+    source: Source,
+    at: Schema.Number,
+  }).pipe(Schema.encodeKeys({ requestId: "request_id", toolCallId: "tool_call_id" }));
+
+export const StoredEntry = Schema.Union([
+  entryOf_("system", SystemView),
+  entryOf_("user", UserView),
+  entryOf_("assistant", AssistantView),
+  entryOf_("tool", ToolResultView),
+  entryOf_("notice", NoticeView),
+  entryOf_("files", FilesView),
+]);
 export type StoredEntry = typeof StoredEntry.Type;
 
 export const BotRow = Schema.Struct({
@@ -127,28 +149,41 @@ export const JobRow = Schema.Struct({
 }).pipe(Schema.encodeKeys({ startedAt: "started_at" }));
 export type JobRow = typeof JobRow.Type;
 
+/**
+ * pi-mcp's saved sign-in. Top checks what it reads of it (that it has tokens); the rest is pi-mcp's,
+ * handed back as it saved it.
+ */
+const McpOAuthShape = Schema.Struct({ serverUrl: Schema.String, tokens: Schema.optionalKey(Schema.Struct({ access_token: Schema.String })) });
+const isMcpOAuthShape = Schema.is(McpOAuthShape);
+const McpOAuth = Schema.declare((u: unknown): u is McpOAuthState => isMcpOAuthShape(u), { title: "McpOAuthState" });
+
 export const McpServerRow = Schema.Struct({
   id: Int,
   name: Text,
-  /** JSON: the protocol's `McpServerConfig`, secret values included. */
-  config: Text,
-  /** JSON: pi-mcp's `McpOAuthState`, once the server signed in with OAuth. */
-  oauth: NullableText,
+  /** JSON: secret values included. */
+  config: Schema.fromJsonString(McpServerConfig),
+  /** JSON, once the server signed in with OAuth. */
+  oauth: Schema.NullOr(Schema.fromJsonString(McpOAuth)),
 });
 export type McpServerRow = typeof McpServerRow.Type;
 
-export const ToolCallRow = Schema.Struct({ name: Text, args: Text, startedAt: Schema.Number, finishedAt: Schema.NullOr(Schema.Number) }).pipe(
-  Schema.encodeKeys({ startedAt: "started_at", finishedAt: "finished_at" }),
-);
+export const ToolCallRow = Schema.Struct({
+  name: Text,
+  /** JSON: the arguments as the tool got them. */
+  args: Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+  startedAt: Schema.Number,
+  finishedAt: Schema.NullOr(Schema.Number),
+}).pipe(Schema.encodeKeys({ startedAt: "started_at", finishedAt: "finished_at" }));
 export type ToolCallRow = typeof ToolCallRow.Type;
 
 const FileRow = Schema.Struct({ path: Text, size: Schema.Number, mtime: Schema.Number });
-const ContextRow = Schema.Struct({ kind: EntryKind, message: Schema.fromJsonString(Schema.Unknown) });
+const ContextRow = Schema.Struct({ kind: Schema.Literals(["system", "user", "assistant", "tool"]), message: Schema.fromJsonString(Schema.Unknown) });
+const answerOf = Schema.decodeUnknownSync(Schema.fromJsonString(AssistantView));
 
 export type AppendExtra = {
   readonly requestId?: string | undefined;
   readonly toolCallId?: string | undefined;
-  readonly outcome?: string | undefined;
+  readonly outcome?: ToolOutcome | undefined;
   readonly source?: MessageSource | null | undefined;
   readonly at?: number | undefined;
 };
@@ -296,7 +331,11 @@ const mcpServerOf = decoder(Schema.decodeUnknownSync(McpServerRow));
 const botOf = decoder(Schema.decodeUnknownSync(BotRow));
 const toolCallOf = decoder(Schema.decodeUnknownSync(ToolCallRow));
 const fileOf = decoder(Schema.decodeUnknownSync(FileRow));
-const contextOf = decoder(Schema.decodeUnknownSync(ContextRow));
+const contextRow = Schema.decodeUnknownSync(ContextRow);
+const contextOf = (row: Row): TranscriptMessage => {
+  const { kind, message } = contextRow(row);
+  return transcriptMessage(kind, message);
+};
 
 // ── the service ──────────────────────────────────────────────────────────────────
 
@@ -338,35 +377,31 @@ export class Store extends Context.Service<
      * Record the bot's files as they are now and, when `changes` has any, the `files` entry that reports
      * them, in one transaction: a crash can't report a change twice or lose one.
      */
-    readonly recordFiles: (
-      bot: number,
-      listing: ReadonlyMap<string, FileStat>,
-      changes: readonly { path: string; change: string }[],
-    ) => Effect.Effect<StoredEntry | undefined>;
+    readonly recordFiles: (bot: number, listing: ReadonlyMap<string, FileStat>, changes: readonly FileChange[]) => Effect.Effect<StoredEntry | undefined>;
 
     // MCP servers
     readonly mcpServers: Effect.Effect<McpServerRow[]>;
     readonly mcpServer: (id: number) => Effect.Effect<McpServerRow | undefined>;
-    readonly createMcpServer: (name: string, config: string) => Effect.Effect<number>;
+    readonly createMcpServer: (name: string, config: McpServerConfig) => Effect.Effect<number>;
     /** Change a server's name and settings. `resetOAuth` drops its credentials (they were for another URL). */
-    readonly updateMcpServer: (id: number, name: string, config: string, resetOAuth: boolean) => Effect.Effect<void>;
-    readonly setMcpOAuth: (id: number, oauth: string | null) => Effect.Effect<void>;
+    readonly updateMcpServer: (id: number, name: string, config: McpServerConfig, resetOAuth: boolean) => Effect.Effect<void>;
+    readonly setMcpOAuth: (id: number, oauth: McpOAuthState | null) => Effect.Effect<void>;
     readonly deleteMcpServer: (id: number) => Effect.Effect<void>;
     /** The bots (not deleted) that use each server: server id → bot ids. */
     readonly mcpAssignments: Effect.Effect<Map<number, number[]>>;
     readonly assignMcp: (server: number, bot: number, on: boolean) => Effect.Effect<void>;
 
     // entries
-    readonly append: (bot: number, kind: EntryKind, message: unknown, extra?: AppendExtra) => Effect.Effect<StoredEntry>;
+    readonly append: <K extends EntryKind>(bot: number, kind: K, message: EntryBody[K], extra?: AppendExtra) => Effect.Effect<StoredEntry>;
     readonly entry: (seq: number) => Effect.Effect<StoredEntry | undefined>;
     /** Every message the model sees, in order. */
-    readonly context: (bot: number) => Effect.Effect<{ kind: EntryKind; message: unknown }[]>;
+    readonly context: (bot: number) => Effect.Effect<TranscriptMessage[]>;
     /** The newest entry that is part of the model's context. */
     readonly lastContextEntry: (bot: number) => Effect.Effect<StoredEntry | undefined>;
     readonly lastSeq: (bot: number) => Effect.Effect<number>;
     readonly lastAssistantSeq: (bot: number) => Effect.Effect<number>;
     /** The newest answer with text in it, for the sidebar: not one that only calls tools (the bot's working on those). */
-    readonly lastAnswer: (bot: number) => Effect.Effect<unknown>;
+    readonly lastAnswer: (bot: number) => Effect.Effect<AssistantView | undefined>;
     /** The newest `limit` visible entries, ascending. */
     readonly newest: (bot: number, limit: number) => Effect.Effect<StoredEntry[]>;
     /** Up to `limit` visible entries after `after`, ascending. */
@@ -390,7 +425,7 @@ export class Store extends Context.Service<
     readonly inbox: (bot: number) => Effect.Effect<InboxRow[]>;
     readonly inboxRow: (requestId: string) => Effect.Effect<InboxRow | undefined>;
     /** The model took a queued message: it becomes an entry and leaves the inbox, atomically. */
-    readonly place: (bot: number, requestId: string, message: unknown) => Effect.Effect<StoredEntry>;
+    readonly place: (bot: number, requestId: string, message: EntryBody["user"]) => Effect.Effect<StoredEntry>;
 
     // attachments
     readonly addAttachment: (attachment: Attachment) => Effect.Effect<void>;
@@ -427,9 +462,15 @@ export class Store extends Context.Service<
     readonly endJob: (id: number, state: Exclude<JobState, "running">, text?: string) => Effect.Effect<InboxRow | undefined>;
 
     // tool calls
-    readonly toolStarted: (bot: number, assistantSeq: number, toolCallId: string, name: string, args: unknown) => Effect.Effect<void>;
+    readonly toolStarted: (bot: number, assistantSeq: number, toolCallId: string, name: string, args: Readonly<Record<string, unknown>>) => Effect.Effect<void>;
     /** A tool's result and the end of its call record, atomically. */
-    readonly toolFinished: (bot: number, assistantSeq: number, toolCallId: string, message: unknown, outcome?: string) => Effect.Effect<StoredEntry>;
+    readonly toolFinished: (
+      bot: number,
+      assistantSeq: number,
+      toolCallId: string,
+      message: EntryBody["tool"],
+      outcome?: ToolOutcome,
+    ) => Effect.Effect<StoredEntry>;
     readonly toolCall: (assistantSeq: number, toolCallId: string) => Effect.Effect<ToolCallRow | undefined>;
   }
 >()("top/Store") {}
@@ -477,7 +518,8 @@ const make = Effect.gen(function* () {
   const id = yield* meta("id", randomUUID());
   const filesSecret = yield* meta("files_secret", randomBytes(18).toString("base64url"));
 
-  const append = Effect.fnUntraced(function* (bot: number, kind: EntryKind, message: unknown, extra: AppendExtra = {}) {
+  // Read back as it's stored: a message that wouldn't load later fails here, where it's written.
+  const append = Effect.fnUntraced(function* <K extends EntryKind>(bot: number, kind: K, message: EntryBody[K], extra: AppendExtra = {}) {
     const at = extra.at ?? (yield* now);
     const json = JSON.stringify(message);
     const requestId = extra.requestId ?? null;
@@ -487,8 +529,8 @@ const make = Effect.gen(function* () {
     const row = yield* first(sql`
       INSERT INTO entries (bot, kind, message, request_id, tool_call_id, outcome, source, at)
       VALUES (${bot}, ${kind}, ${json}, ${requestId}, ${toolCallId}, ${outcome}, ${source}, ${at})
-      RETURNING seq`);
-    return { seq: Number(row!.seq), bot, kind, message: json, requestId, toolCallId, outcome, source, at } satisfies StoredEntry;
+      RETURNING *`);
+    return entryOf(row!);
   });
 
   const inboxRow = (requestId: string) => Effect.map(first(sql`SELECT * FROM inbox WHERE request_id = ${requestId}`), (row) => row && inboxOf(row));
@@ -564,16 +606,17 @@ const make = Effect.gen(function* () {
       mcpServers: Effect.map(rows(sql`SELECT * FROM mcp_servers ORDER BY id`), (r) => r.map(mcpServerOf)),
       mcpServer: (server) => Effect.map(first(sql`SELECT * FROM mcp_servers WHERE id = ${server}`), (row) => row && mcpServerOf(row)),
       createMcpServer: (name, config) =>
-        Effect.map(first(sql`INSERT INTO mcp_servers (name, config) VALUES (${name}, ${config}) RETURNING id`), (row) => Number(row!.id)),
+        Effect.map(first(sql`INSERT INTO mcp_servers (name, config) VALUES (${name}, ${JSON.stringify(config)}) RETURNING id`), (row) => Number(row!.id)),
       updateMcpServer: (server, name, config, resetOAuth) =>
         Effect.asVoid(
           q(
             resetOAuth
-              ? sql`UPDATE mcp_servers SET name = ${name}, config = ${config}, oauth = NULL WHERE id = ${server}`
-              : sql`UPDATE mcp_servers SET name = ${name}, config = ${config} WHERE id = ${server}`,
+              ? sql`UPDATE mcp_servers SET name = ${name}, config = ${JSON.stringify(config)}, oauth = NULL WHERE id = ${server}`
+              : sql`UPDATE mcp_servers SET name = ${name}, config = ${JSON.stringify(config)} WHERE id = ${server}`,
           ),
         ),
-      setMcpOAuth: (server, oauth) => Effect.asVoid(q(sql`UPDATE mcp_servers SET oauth = ${oauth} WHERE id = ${server}`)),
+      setMcpOAuth: (server, oauth) =>
+        Effect.asVoid(q(sql`UPDATE mcp_servers SET oauth = ${oauth === null ? null : JSON.stringify(oauth)} WHERE id = ${server}`)),
       deleteMcpServer: (server) =>
         transaction(
           Effect.gen(function* () {
@@ -619,7 +662,7 @@ const make = Effect.gen(function* () {
               OR EXISTS (SELECT 1 FROM json_each(message, '$.content') WHERE json_extract(value, '$.type') = 'text' AND json_extract(value, '$.text') <> '')
             ) ORDER BY seq DESC LIMIT 1`,
           ),
-          (row) => (row ? (JSON.parse(String(row.message)) as unknown) : undefined),
+          (row) => (row ? answerOf(row.message) : undefined),
         ),
       newest: (bot, limit) =>
         Effect.map(rows(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${VISIBLE} ORDER BY seq DESC LIMIT ?`, [bot, limit])), (r) =>
@@ -731,7 +774,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* q(sql`
           INSERT OR IGNORE INTO tool_calls (assistant_seq, tool_call_id, bot, name, args, started_at)
-          VALUES (${assistantSeq}, ${toolCallId}, ${bot}, ${name}, ${JSON.stringify(args ?? {})}, ${yield* now})`);
+          VALUES (${assistantSeq}, ${toolCallId}, ${bot}, ${name}, ${JSON.stringify(args)}, ${yield* now})`);
         }),
       toolFinished: (bot, assistantSeq, toolCallId, message, outcome) =>
         transaction(

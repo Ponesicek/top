@@ -2,30 +2,46 @@
 // prints one JSON result line. Orchestrated by scripts/bench.js, which also kills/restarts the daemon.
 import { app } from "electron";
 
+/** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * @param {string} tag
+ * @param {unknown} [value]
+ */
 const out = (tag, value) => process.stdout.write(`BENCH:${tag} ${JSON.stringify(value ?? null)}\n`);
 
 /** Wait for a line on stdin from the orchestrator. */
+/** @type {string[]} */
 const stdinLines = [];
+/** @type {(() => void) | undefined} */
 let stdinWaiter;
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
-  for (const line of chunk.split("\n").filter(Boolean)) {
+  for (const line of String(chunk).split("\n").filter(Boolean)) {
     stdinLines.push(line.trim());
     stdinWaiter?.();
   }
 });
+/** @param {string} line */
 async function waitFor(line) {
   for (;;) {
     const i = stdinLines.indexOf(line);
     if (i >= 0) return void stdinLines.splice(i, 1);
-    await new Promise((r) => (stdinWaiter = r));
+    await new Promise((r) => {
+      stdinWaiter = () => r(undefined);
+    });
   }
 }
 
+/** @param {import("electron").BrowserWindow} win */
 export async function runBench(win) {
   const wc = win.webContents;
+  /** @param {string} code */
   const js = (code) => wc.executeJavaScript(code, true);
+  /**
+   * @param {string} code
+   * @param {number} [timeoutMs]
+   */
   const until = async (code, timeoutMs = 20_000) => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
@@ -34,14 +50,15 @@ export async function runBench(win) {
     }
     const state = await js(
       "JSON.stringify({ connection: window.__top?.getSnapshot().connection, bots: window.__top?.getSnapshot().bots.length, page: document.body.innerText.slice(0, 300) })",
-    ).catch((e) => String(e));
+    ).catch((/** @type {unknown} */ e) => String(e));
     throw new Error(`timed out waiting for: ${code}\n  state: ${state}`);
   };
 
-  await new Promise((r) => wc.once("did-finish-load", r));
+  await new Promise((r) => wc.once("did-finish-load", () => r(undefined)));
   await until("window.__topPerf && window.__topPerf.firstContentAt > 0");
   const t0 = Number(process.env.TOP_BENCH_T0);
   const firstContentAt = await js("window.__topPerf.firstContentAt");
+  /** @type {Record<string, unknown>} */
   const result = { coldStartMs: firstContentAt - t0 };
 
   if (process.env.TOP_BENCH === "screenshot") {
@@ -69,8 +86,10 @@ export async function runBench(win) {
     await sleep(Number(process.env.TOP_SHOT_DELAY ?? 1200));
     const image = await wc.capturePage(undefined, { stayHidden: true });
     const { writeFileSync } = await import("node:fs");
-    writeFileSync(process.env.TOP_SHOT_PATH, image.toPNG());
-    out("RESULT", { ...result, screenshot: process.env.TOP_SHOT_PATH });
+    const path = process.env.TOP_SHOT_PATH;
+    if (!path) throw new Error("TOP_SHOT_PATH is not set");
+    writeFileSync(path, image.toPNG());
+    out("RESULT", { ...result, screenshot: path });
     app.quit();
     return;
   }
@@ -93,7 +112,7 @@ export async function runBench(win) {
   const typeEnd = Date.now() + 8_000;
   let typed = 0;
   while (Date.now() < typeEnd) {
-    const ch = "abcdefghij klmnop "[typed++ % 18];
+    const ch = "abcdefghij klmnop ".charAt(typed++ % 18);
     wc.sendInputEvent({ type: "keyDown", keyCode: ch === " " ? "Space" : ch });
     wc.sendInputEvent({ type: "char", keyCode: ch });
     wc.sendInputEvent({ type: "keyUp", keyCode: ch === " " ? "Space" : ch });

@@ -3,7 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { duration, localTime } from "../time.ts";
-import { text } from "../tools.ts";
+import { defineTool, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
 
 /** Pending wake-ups one bot may have at once, so a confused bot can't pile them up. */
@@ -26,7 +26,7 @@ const parameters = Type.Object(
 );
 
 export const wakeGroup: CollarGroup = (daemon) => [
-  {
+  defineTool({
     name: "wake",
     label: "Wake-up",
     description: [
@@ -42,7 +42,7 @@ export const wakeGroup: CollarGroup = (daemon) => [
     run: (args, ctx) =>
       Effect.gen(function* () {
         const store = daemon.store;
-        const action = (args.action as string | undefined) ?? "set";
+        const action = args.action ?? "set";
         const now = yield* Clock.currentTimeMillis;
         if (action === "list") {
           const wakes = yield* store.wakes(ctx.bot);
@@ -51,22 +51,22 @@ export const wakeGroup: CollarGroup = (daemon) => [
           return text(`It's ${localTime(now)}. Your wake-ups:\n${lines.join("\n")}`);
         }
         if (action === "cancel") {
-          const id = Number(args.id);
-          if (!Number.isInteger(id)) return { ...text('Say which wake-up to cancel with `id` (see `action: "list"`).'), isError: true };
+          const id = args.id;
+          if (id === undefined) return { ...text('Say which wake-up to cancel with `id` (see `action: "list"`).'), isError: true };
           const cancelled = yield* store.cancelWake(ctx.bot, id);
           yield* daemon.wakes.changed;
           yield* daemon.changed(ctx.bot);
           return cancelled ? text(`Cancelled wake-up ${id}.`) : { ...text(`You have no wake-up ${id} waiting.`), isError: true };
         }
 
-        const note = String(args.note ?? "").trim();
+        const note = (args.note ?? "").trim();
         if (!note) return { ...text("Give the wake-up a `note`: what to do when it goes off."), isError: true };
         let dueAt: number;
         if (args.in_minutes !== undefined) {
-          const minutes = Number(args.in_minutes);
+          const minutes = args.in_minutes;
           if (!Number.isFinite(minutes) || minutes < 0) return { ...text("`in_minutes` must be a number of minutes, 0 or more."), isError: true };
           dueAt = now + minutes * 60_000;
-        } else if (typeof args.at === "string") {
+        } else if (args.at !== undefined) {
           dueAt = Date.parse(args.at);
           if (Number.isNaN(dueAt)) return { ...text(`Can't read the time "${args.at}". Use ISO 8601, such as 2026-11-07T09:00.`), isError: true };
           if (dueAt < now - 60_000) return { ...text(`${localTime(dueAt)} has passed; it's ${localTime(now)} now.`), isError: true };
@@ -84,5 +84,5 @@ export const wakeGroup: CollarGroup = (daemon) => [
           `Wake-up ${wake.id} set for ${localTime(wake.dueAt)}, in ${duration(wake.dueAt - now)}. Your note will come to you as a message then; end your turn when you have nothing else to do.`,
         );
       }),
-  },
+  }),
 ];

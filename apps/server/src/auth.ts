@@ -16,6 +16,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import lockfile from "proper-lockfile";
 
 /** pi's credentials file: `$PI_CODING_AGENT_DIR/auth.json`, else `~/.pi/agent/auth.json`. */
@@ -25,7 +26,20 @@ export const piAuthPath: Effect.Effect<string, Config.ConfigError> = Effect.gen(
   return join(folder, "auth.json");
 });
 
-type AuthFile = Record<string, Credential>;
+/**
+ * The file: provider id → credential. Entries are kept as they are, also ones Top can't read (a newer
+ * pi's), so writing one credential never drops another.
+ */
+type AuthFile = Readonly<Record<string, unknown>>;
+const parseAuthFile = Schema.decodeOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)));
+
+/** What Top checks of a credential before handing it to pi-ai; the rest of it is pi-ai's. */
+const CredentialShape = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("api_key"), key: Schema.optionalKey(Schema.String) }),
+  Schema.Struct({ type: Schema.Literal("oauth"), refresh: Schema.String, access: Schema.String, expires: Schema.Number }),
+]);
+const isCredential = Schema.is(CredentialShape);
+const credentialOf = (value: unknown): Credential | undefined => (isCredential(value) ? value : undefined);
 
 export class PiAuthFile implements CredentialStore {
   readonly path: string;
@@ -37,21 +51,28 @@ export class PiAuthFile implements CredentialStore {
   }
 
   read(providerId: string): Promise<Credential | undefined> {
-    return Effect.runPromise(Effect.map(this.#load, (file) => file[providerId]));
+    return Effect.runPromise(Effect.map(this.#load, (file) => credentialOf(file[providerId])));
   }
 
   list(): Promise<readonly CredentialInfo[]> {
-    return Effect.runPromise(Effect.map(this.#load, (file) => Object.entries(file).map(([providerId, credential]) => ({ providerId, type: credential.type }))));
+    return Effect.runPromise(
+      Effect.map(this.#load, (file) =>
+        Object.entries(file).flatMap(([providerId, value]) => {
+          const credential = credentialOf(value);
+          return credential ? [{ providerId, type: credential.type }] : [];
+        }),
+      ),
+    );
   }
 
   modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
     return Effect.runPromise(
       this.#locked((file) =>
         Effect.map(
-          Effect.promise(() => fn(file[providerId])),
+          Effect.promise(() => fn(credentialOf(file[providerId]))),
           (next) => (next === undefined ? undefined : { ...file, [providerId]: next }),
         ),
-      ).pipe(Effect.andThen(Effect.map(this.#load, (file) => file[providerId]))),
+      ).pipe(Effect.andThen(Effect.map(this.#load, (file) => credentialOf(file[providerId])))),
     );
   }
 
@@ -68,14 +89,7 @@ export class PiAuthFile implements CredentialStore {
   /** The file as it is now; missing or unreadable is empty. */
   get #load(): Effect.Effect<AuthFile> {
     return this.#fs.readFileString(this.path).pipe(
-      Effect.map((text) => {
-        try {
-          const parsed = JSON.parse(text.replace(/^\uFEFF/, "")) as unknown;
-          return parsed && typeof parsed === "object" ? (parsed as AuthFile) : {};
-        } catch {
-          return {};
-        }
-      }),
+      Effect.map((text) => Option.getOrElse(parseAuthFile(text.replace(/^\uFEFF/, "")), (): AuthFile => ({}))),
       Effect.orElseSucceed((): AuthFile => ({})),
     );
   }

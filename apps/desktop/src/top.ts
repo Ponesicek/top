@@ -10,8 +10,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   type BotId,
-  type BotSummary,
-  type ConversationCache,
+  BotSummary,
+  ConversationCache,
   type ConversationSnapshot,
   type ConversationSync,
   TopClient,
@@ -21,6 +21,7 @@ import {
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
+import * as Schema from "effect/Schema";
 
 const params = new URLSearchParams(location.search);
 export const DEFAULT_SERVER = "ws://127.0.0.1:7357";
@@ -73,13 +74,10 @@ function safeSet(key: string, value: string) {
     // quota or disabled storage: the cache is a convenience only
   }
 }
-function safeJson<T>(key: string): T | undefined {
-  try {
-    const raw = safeGet(key);
-    return raw ? (JSON.parse(raw) as T) : undefined;
-  } catch {
-    return undefined;
-  }
+/** A cached value, if it's there and still of the shape `schema` says (an older version's isn't). */
+function cached<A>(key: string, schema: Schema.Decoder<A>): A | undefined {
+  const raw = safeGet(key);
+  return raw ? Option.getOrUndefined(Schema.decodeOption(Schema.fromJsonString(schema))(raw)) : undefined;
 }
 
 // v3 records which daemon the cache came from; v2 didn't, so it can't be trusted and is dropped.
@@ -96,16 +94,22 @@ dropCache("top.cache.v2:");
 
 const cachedServer = safeGet(cacheKey("server")) ?? undefined;
 export const top = new TopClient({ url: serverUrl, ...(cachedServer ? { serverId: cachedServer } : {}) });
-(window as unknown as { __top: TopClient }).__top = top;
+// For `pnpm bench` and `pnpm screenshot` (electron/bench-driver.js).
+declare global {
+  interface Window {
+    __top?: TopClient;
+  }
+}
+window.__top = top;
 
 // ── hydrate from cache before the network answers ──────────────────────────────
 
-const cachedBots = cachedServer ? safeJson<BotSummary[]>(cacheKey("bots")) : undefined;
+const cachedBots = cachedServer ? cached(cacheKey("bots"), Schema.Array(BotSummary)) : undefined;
 if (cachedBots) {
   top.hydrateBots(cachedBots);
   for (const bot of cachedBots) {
-    const cached = safeJson<ConversationCache>(cacheKey(`bot:${bot.id}`));
-    if (cached) top.conversation(bot.id).hydrate(cached);
+    const conversation = cached(cacheKey(`bot:${bot.id}`), ConversationCache);
+    if (conversation) top.conversation(bot.id).hydrate(conversation);
   }
 }
 
@@ -239,7 +243,9 @@ export function useBot(id: BotId | undefined): BotSummary | undefined {
 // ── unread: the newest entry seen per bot, kept locally ─────────────────────────
 
 const seenKey = cacheKey("seen");
-const seenAtom = Atom.make<Record<string, number>>((cachedServer && safeJson<Record<string, number>>(seenKey)) || {}).pipe(Atom.keepAlive);
+const seenAtom = Atom.make<Readonly<Record<string, number>>>((cachedServer && cached(seenKey, Schema.Record(Schema.String, Schema.Number))) || {}).pipe(
+  Atom.keepAlive,
+);
 
 // A different daemon (another --data, or a reset): the client has dropped what it held from the old
 // one, so drop the cache and read marks too. They'd show its transcripts and hide new messages.

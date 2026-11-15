@@ -9,9 +9,10 @@
  * Messages the user sends show up instantly as pending, survive a dropped connection, and are resent
  * with the same `requestId` (applied once by the daemon) until the daemon has them.
  */
-import type { Attachment, BotId, Entry, Gap, HistoryResult, QueuedMessage, Seq, SubmitResult, WhenBusy } from "@top/protocol";
+import { type Attachment, type BotId, Entry, Gap, QueuedMessage, type Seq, type WhenBusy } from "@top/protocol";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type { Connection } from "./connection.ts";
 
 /** Runs a client's Effects, in its scope (closing the client stops what's still running). */
@@ -59,13 +60,14 @@ export type ConversationSnapshot = {
 };
 
 /** What a client keeps on disk per bot, to open instantly and to resume with `after`. */
-export type ConversationCache = {
-  readonly version: 2;
-  readonly entries: readonly Entry[];
-  readonly gaps: readonly Gap[];
-  readonly earlier: boolean;
-  readonly inbox: readonly QueuedMessage[];
-};
+export const ConversationCache = Schema.Struct({
+  version: Schema.Literal(2),
+  entries: Schema.Array(Entry),
+  gaps: Schema.Array(Gap),
+  earlier: Schema.Boolean,
+  inbox: Schema.Array(QueuedMessage),
+});
+export type ConversationCache = typeof ConversationCache.Type;
 
 const PAGE = 50;
 const CACHE_ENTRIES = 200;
@@ -212,7 +214,7 @@ export class ConversationSync {
     const first = this.#entries[0];
     if (!this.#earlier || !first) return Promise.resolve();
     return this.#run.promise(
-      Effect.map(this.#connection.request<HistoryResult>({ t: "history", bot: this.id, before: first.seq, limit: PAGE }), (page) => {
+      Effect.map(this.#connection.request({ t: "history", bot: this.id, before: first.seq, limit: PAGE }), (page) => {
         this.#earlier = page.more;
         this.#merge(page.entries);
         this.#publish();
@@ -222,7 +224,7 @@ export class ConversationSync {
 
   fillGap(gap: Gap): Promise<void> {
     return this.#run.promise(
-      Effect.map(this.#connection.request<HistoryResult>({ t: "history", bot: this.id, before: gap.before, after: gap.after, limit: PAGE }), (page) => {
+      Effect.map(this.#connection.request({ t: "history", bot: this.id, before: gap.before, after: gap.after, limit: PAGE }), (page) => {
         const lowest = page.entries[0]?.seq;
         this.#gaps = this.#gaps.flatMap((g) => {
           if (g.after !== gap.after || g.before !== gap.before) return [g];
@@ -234,9 +236,9 @@ export class ConversationSync {
     );
   }
 
-  /** One entry in full: untruncated tool output, thinking, tool arguments. */
-  detail(seq: Seq): Promise<Entry> {
-    return this.#run.promise(this.#connection.request<Entry>({ t: "detail", bot: this.id, seq }));
+  /** One entry in full: untruncated tool output, thinking, tool arguments. `null` for an entry clients don't see. */
+  detail(seq: Seq): Promise<Entry | null> {
+    return this.#run.promise(this.#connection.request({ t: "detail", bot: this.id, seq }));
   }
 
   // ── actions ───────────────────────────────────────────────────────────────────
@@ -344,7 +346,7 @@ export class ConversationSync {
     const stillPending = () => this.#pending.some((p) => p.requestId === message.requestId);
     this.#run.fork(
       this.#connection
-        .request<SubmitResult>({
+        .request({
           t: "submit",
           bot: this.id,
           requestId: message.requestId,

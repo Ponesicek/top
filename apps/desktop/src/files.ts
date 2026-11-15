@@ -4,7 +4,9 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import type { BotFiles, BotId } from "@top/client";
+import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
+import * as Schema from "effect/Schema";
 import { registry, useClient } from "./top.ts";
 
 export const PANEL_MIN = 300;
@@ -17,13 +19,17 @@ type PanelState = {
   readonly selected: Readonly<Record<BotId, string | undefined>>;
 };
 
+const SavedPanel = Schema.fromJsonString(Schema.Struct({ open: Schema.optionalKey(Schema.Boolean), width: Schema.optionalKey(Schema.Number) }));
+const readSaved = Schema.decodeOption(SavedPanel);
+
 function read(): PanelState {
+  let saved: typeof SavedPanel.Type | undefined;
   try {
-    const saved = JSON.parse(localStorage.getItem("top.filesPanel") ?? "{}") as { open?: boolean; width?: number };
-    return { open: saved.open === true, width: Number(saved.width) || PANEL_DEFAULT, selected: {} };
+    saved = Option.getOrUndefined(readSaved(localStorage.getItem("top.filesPanel") ?? "{}"));
   } catch {
-    return { open: false, width: PANEL_DEFAULT, selected: {} };
+    // disabled storage
   }
+  return { open: saved?.open === true, width: saved?.width || PANEL_DEFAULT, selected: {} };
 }
 
 const panelAtom = Atom.make(read()).pipe(Atom.keepAlive);
@@ -113,4 +119,9 @@ export function formatAgo(at: number, now = Date.now()): string {
 }
 
 // A driver for `pnpm screenshot` and `pnpm bench`, like `__topSelect`.
-(window as unknown as { __topFiles: unknown }).__topFiles = { openFile, showList, togglePanel };
+declare global {
+  interface Window {
+    __topFiles?: { readonly openFile: typeof openFile; readonly showList: typeof showList; readonly togglePanel: typeof togglePanel };
+  }
+}
+window.__topFiles = { openFile, showList, togglePanel };

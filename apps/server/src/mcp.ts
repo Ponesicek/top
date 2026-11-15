@@ -27,15 +27,8 @@ import {
   type Tool,
   toLlmContent,
 } from "@earendil-works/pi-mcp";
-import {
-  adaptOAuthProvider,
-  authorizeMcp,
-  McpOAuthAuthorizationRequiredError,
-  McpOAuthProvider,
-  type McpOAuthState,
-  OAuthCallbackServer,
-} from "@earendil-works/pi-mcp/oauth";
-import { check, MAX_MCP_NAME, type McpSecret, McpServerConfig, McpServerError, type McpServerState, type McpServerView } from "@top/protocol";
+import { adaptOAuthProvider, authorizeMcp, McpOAuthAuthorizationRequiredError, McpOAuthProvider, OAuthCallbackServer } from "@earendil-works/pi-mcp/oauth";
+import { MAX_MCP_NAME, type McpSecret, type McpServerConfig, McpServerError, type McpServerState, type McpServerView } from "@top/protocol";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -44,7 +37,6 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import { COLLAR } from "./collar/names.ts";
 import { Events } from "./events.ts";
 import { Store } from "./store.ts";
@@ -185,12 +177,12 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
           redirectUrl,
           clientMetadata: { client_name: "Top", redirect_uris: [redirectUrl] },
           store: {
-            load: () => runPromise(Effect.map(store.mcpServer(id), (row) => (row?.oauth ? (JSON.parse(row.oauth) as McpOAuthState) : undefined))),
+            load: () => runPromise(Effect.map(store.mcpServer(id), (row) => row?.oauth ?? undefined)),
             save: (state) =>
               runPromise(
                 Effect.gen(function* () {
                   if (!(yield* store.mcpServer(id))) return;
-                  yield* store.setMcpOAuth(id, JSON.stringify(state));
+                  yield* store.setMcpOAuth(id, state);
                   const signedIn = state.tokens !== undefined;
                   if (signedIn === connection.signedIn) return;
                   connection.signedIn = signedIn;
@@ -388,7 +380,7 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
               return Effect.tryPromise({
                 try: () => client.callTool(tool.name, args, { ...(ctx.signal ? { signal: ctx.signal } : {}), timeoutMs: CALL_TIMEOUT_MS }),
                 catch: ToolError.from,
-              }).pipe(Effect.map((result): ToolResult => ({ content: toLlmContent(result), details: {}, isError: result.isError === true }) as ToolResult));
+              }).pipe(Effect.map((result): ToolResult => ({ content: toLlmContent(result), details: {}, isError: result.isError === true })));
             }),
         };
       };
@@ -396,17 +388,16 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
       // The servers set up so far, connected in the background: a slow one mustn't hold up the bots.
       const assignments = yield* store.mcpAssignments;
       for (const row of yield* store.mcpServers) {
-        const oauth = row.oauth ? (JSON.parse(row.oauth) as McpOAuthState) : undefined;
         const connection: Connection = {
           id: row.id,
           name: row.name,
-          config: check(McpServerConfig, JSON.parse(row.config), `saved settings of MCP server ${row.name}`),
+          config: row.config,
           bots: new Set(assignments.get(row.id) ?? []),
           state: "connecting",
           error: undefined,
           tools: [],
           client: undefined,
-          signedIn: oauth?.tokens !== undefined,
+          signedIn: row.oauth?.tokens !== undefined,
           attempts: 0,
         };
         servers.set(row.id, connection);
@@ -434,14 +425,14 @@ export const layer = (options: McpOptions): Layer.Layer<Mcp, never, Store | Even
           if (existing) {
             // Credentials belong to one server: a new URL (or a switch to a program) signs in again.
             const resetOAuth = existing.config.transport !== "http" || clean.transport !== "http" || existing.config.url !== clean.url;
-            yield* store.updateMcpServer(existing.id, name, JSON.stringify(clean), resetOAuth);
+            yield* store.updateMcpServer(existing.id, name, clean, resetOAuth);
             existing.name = name;
             existing.config = clean;
             if (resetOAuth) existing.signedIn = false;
             yield* connect(existing);
             return existing.id;
           }
-          const newId = yield* store.createMcpServer(name, JSON.stringify(clean));
+          const newId = yield* store.createMcpServer(name, clean);
           const connection: Connection = {
             id: newId,
             name,
