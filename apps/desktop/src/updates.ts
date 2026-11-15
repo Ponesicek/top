@@ -104,8 +104,32 @@ export const checkBoth = (updates: Updates) =>
  */
 export async function installBoth(updates: Updates) {
   const server = updates.server?.available;
-  if (server) await top.installUpdate(server.version);
+  if (server) {
+    await top.installUpdate(server.version);
+    if (updates.app?.available) await serverRunning(server.version);
+  }
   if (updates.app?.available) await appUpdates?.install();
+}
+
+/** Resolves when the server is back on `version`; rejects if its update fails or is rolled back. */
+function serverRunning(version: string) {
+  return new Promise<void>((resolve, reject) => {
+    // The state before the install may be an old failure; only one after it has started counts.
+    let started = false;
+    const look = () => {
+      const { server, update } = top.getSnapshot();
+      if (server?.version === version) return done(resolve);
+      if (update?.rolledBack === version) return done(() => reject(new Error(update.error ?? `Top ${version} didn't start.`)));
+      if (update && update.state !== "idle" && update.state !== "failed") started = true;
+      else if (started && update?.state === "failed") done(() => reject(new Error(update.error ?? "The server couldn't update.")));
+    };
+    const done = (settle: () => void) => {
+      unsubscribe();
+      settle();
+    };
+    const unsubscribe = top.subscribe(look);
+    look();
+  });
 }
 
 /** A line saying what the updater is doing, or `undefined` when it's idle. */

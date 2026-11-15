@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync,
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CHECKSUMS, channelOf, compareVersions, daemonArchive, parseVersion, releaseNotes } from "@top/protocol";
@@ -172,6 +173,23 @@ test("installing a release unpacks it beside the running one, moves `current`, b
   // Nothing half-done left behind.
   assert.equal(existsSync(join(layout.versions, `.unpacking-${NIGHTLY}`)), false);
   assert.equal(existsSync(join(layout.downloads, daemonArchive(NIGHTLY))), false);
+});
+
+test("trying an update again after a rollback replaces the old backup, which clients and bots see as a restart", async () => {
+  const { runtime, updates, store, home, restarts } = await setup({ channel: "nightly" });
+  // What the try before left: its backup, kept by the rollback.
+  const backup = join(home, "server", `top.sqlite.before-${NIGHTLY}`);
+  writeFileSync(backup, "the first try's backup");
+  await runtime.runPromise(updates.install(NIGHTLY));
+  assert.equal(restarts(), 1);
+
+  const db = new DatabaseSync(backup, { readOnly: true });
+  const meta = (key: string) => (db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+  // A different daemon to clients, so they drop what the failed version sent; the bots' recovery is planned.
+  assert.ok(meta("id"));
+  assert.notEqual(meta("id"), store.id);
+  assert.equal(meta(`flag:${Store.PLANNED_RESTART}`), "1");
+  db.close();
 });
 
 test("a damaged download is refused, and nothing changes", async () => {

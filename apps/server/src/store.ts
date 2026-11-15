@@ -30,6 +30,7 @@
  * not something a caller can handle, so the store's Effects die on it instead of failing.
  */
 import { randomBytes, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
 import { type Attachment, Attachment as AttachmentSchema, type FileChange, McpServerConfig, MessageSource, ToolOutcome } from "@top/protocol";
 import * as Clock from "effect/Clock";
@@ -388,7 +389,11 @@ export class Store extends Context.Service<
     readonly flag: (key: string) => Effect.Effect<boolean>;
     readonly setFlag: (key: string) => Effect.Effect<void>;
     readonly clearFlag: (key: string) => Effect.Effect<void>;
-    /** Copy the whole database to `path`, consistent as of now (`VACUUM INTO`): what an update keeps to go back to. */
+    /**
+     * The database to go back to if an update won't start: a copy as of now at `path` (replacing one an
+     * earlier try left), under a new id so clients drop what the failed version sent them, and with
+     * PLANNED_RESTART set so the bots' recovery after a rollback isn't counted as a crash.
+     */
     readonly backup: (path: string) => Effect.Effect<void>;
     readonly setRunActive: (bot: number, active: boolean) => Effect.Effect<void>;
     readonly setRestarts: (bot: number, restarts: number) => Effect.Effect<void>;
@@ -609,7 +614,16 @@ const make = Effect.gen(function* () {
       flag: (key) => Effect.map(first(sql`SELECT 1 AS one FROM meta WHERE key = ${`flag:${key}`}`), (row) => row !== undefined),
       setFlag: (key) => Effect.asVoid(q(sql`INSERT OR IGNORE INTO meta (key, value) VALUES (${`flag:${key}`}, '1')`)),
       clearFlag: (key) => Effect.asVoid(q(sql`DELETE FROM meta WHERE key = ${`flag:${key}`}`)),
-      backup: (path) => Effect.asVoid(q(sql`VACUUM INTO ${path}`)),
+      backup: (path) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => rm(path, { force: true }));
+          yield* q(sql`VACUUM INTO ${path}`);
+          yield* q(sql`ATTACH DATABASE ${path} AS backup`);
+          yield* q(sql`UPDATE backup.meta SET value = ${randomUUID()} WHERE key = 'id'`).pipe(
+            Effect.andThen(q(sql`INSERT OR IGNORE INTO backup.meta (key, value) VALUES (${`flag:${PLANNED_RESTART}`}, '1')`)),
+            Effect.ensuring(q(sql`DETACH DATABASE backup`)),
+          );
+        }),
       setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
       setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
       setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),

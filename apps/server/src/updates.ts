@@ -265,12 +265,21 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
           yield* download(release).pipe(Effect.catchTag("UpdateError", (e) => Effect.andThen(set("failed", e.message), Effect.fail(e))));
 
           // From here on the update happens: the database as it is now, kept to go back to, then the switch.
-          yield* store.backup(layout.backup(version));
-          yield* Effect.tryPromise({
-            try: () => writeFile(layout.trial, `${version} ${BUILD.version} 0\n`),
-            catch: failure("Couldn't start the update"),
-          });
-          yield* swapLink(join("versions", version), layout.current).pipe(Effect.mapError((e) => new UpdateError({ message: e.message })));
+          yield* Effect.gen(function* () {
+            yield* store.backup(layout.backup(version));
+            yield* Effect.tryPromise({
+              try: () => writeFile(layout.trial, `${version} ${BUILD.version} 0\n`),
+              catch: failure("Couldn't start the update"),
+            });
+            yield* swapLink(join("versions", version), layout.current).pipe(Effect.mapError((e) => new UpdateError({ message: e.message })));
+          }).pipe(
+            // Not on trial after all: a trial file left behind would roll the running version back to itself.
+            Effect.onError(() =>
+              Effect.promise(() => rm(layout.trial, { force: true })).pipe(
+                Effect.andThen(set("failed", `Couldn't start the update to ${version}. Try again.`)),
+              ),
+            ),
+          );
           yield* store.setFlag(PLANNED_RESTART);
           yield* set("restarting");
           yield* Effect.log(`updating to Top ${version}: restarting`);
