@@ -177,7 +177,8 @@ export async function runBench(win) {
   const lostAt = Date.now();
   await js("window.__benchMsg = window.__top.conversation(window.__top.getSnapshot().bots[2].id).send('sent while the daemon was down').requestId");
   const pendingWhileDown = await js(`window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot().pending.length`);
-  const shownStale = await js("!!document.querySelector('.stale')");
+  // Shown as its last known state while the daemon is down; the sidebar's footer says Reconnecting.
+  const shownStale = await js("window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot().status === 'stale'");
   const rowsWhileDown = await js("document.querySelectorAll('.transcript .row').length");
   out("RESTART");
   await waitFor("RESTARTED");
@@ -201,7 +202,7 @@ export async function runBench(win) {
     offlineMessageAcceptedAfterRestartMs: acceptedAt - restartedAt,
     offlineMessagePlacedAfterRestartMs: deliveredAt - restartedAt,
     pendingWhileDown,
-    staleBannerShown: shownStale,
+    staleShown: shownStale,
     rowsKeptWhileDown: rowsWhileDown,
     copiesOfOfflineMessage: duplicates,
   };
