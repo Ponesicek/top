@@ -68,6 +68,12 @@ export async function runBench(win) {
     throw new Error(`timed out waiting for: ${code}\n  state: ${state}`);
   };
 
+  // A screenshot always shows the page's errors, from the start (one can stop it from rendering at all);
+  // TOP_SHOT_CONSOLE=1 shows the rest of its console too.
+  if (process.env.TOP_BENCH === "screenshot")
+    wc.on("console-message", (event) => {
+      if (event.level === "error" || process.env.TOP_SHOT_CONSOLE) process.stdout.write(`[page ${event.level}] ${event.message}\n`);
+    });
   await new Promise((r) => wc.once("did-finish-load", () => r(undefined)));
   await until("window.__topPerf && window.__topPerf.firstContentAt > 0");
   const t0 = Number(process.env.TOP_BENCH_T0);
@@ -76,10 +82,6 @@ export async function runBench(win) {
   const result = { coldStartMs: firstContentAt - t0 };
 
   if (process.env.TOP_BENCH === "screenshot") {
-    // The page's errors always show; TOP_SHOT_CONSOLE=1 shows the rest of its console too.
-    wc.on("console-message", (event) => {
-      if (event.level === "error" || process.env.TOP_SHOT_CONSOLE) process.stdout.write(`[page ${event.level}] ${event.message}\n`);
-    });
     // Wait for every bot to be live and a couple of them working, then capture the window.
     await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
