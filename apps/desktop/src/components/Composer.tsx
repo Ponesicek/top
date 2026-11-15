@@ -252,8 +252,8 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
         >
           {files.length > 0 && <AttachmentStrip bot={key} drafts={files} />}
           <div className="flex items-end gap-2" data-pad>
-            {/* A typed shell prompt, the same "›" as the logo's "›_": decoration, not a control. The avatar
-              column stays empty otherwise: it is you writing, not the bot. */}
+            {/* A typed shell prompt: decoration, not a control. The avatar column stays empty otherwise: it is
+              you writing, not the bot. */}
             <span
               className="pointer-events-none grid h-9 w-6 flex-none place-items-center font-mono text-[17px] leading-none font-semibold text-link/70 select-none narrow:hidden"
               aria-hidden

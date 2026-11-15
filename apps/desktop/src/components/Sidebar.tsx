@@ -1,6 +1,7 @@
 import type { BotId, BotSummary } from "@top/client";
 import { Plus, Settings, Trash2 } from "lucide-react";
 import { memo, useCallback, useState } from "react";
+import icon from "../../assets/icon.svg";
 import { cn } from "../lib/utils.ts";
 import { serverUrl, useClient, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
@@ -168,27 +169,8 @@ export function Sidebar({
           role="img"
           aria-label="Top"
         >
-          {/* The mark is a shell prompt, "›_": the app is named after the Unix `top`. */}
-          <span
-            className="relative size-6 rounded-md bg-linear-145/srgb from-[#ff9a5c] to-[#ec4d16] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.2)]"
-            aria-hidden
-          >
-            <svg
-              className="block"
-              aria-hidden="true"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#fff"
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M7 8l4 4-4 4" />
-              <path d="M13 16h4.5" />
-            </svg>
-          </span>
+          {/* The app icon: a bot getting a pat on the head. */}
+          <img className="size-6" src={icon} alt="" draggable={false} />
           top
         </span>
         {connection !== "open" && (

@@ -35,6 +35,8 @@ function createWindow() {
     minHeight: 420,
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#141413" : "#fefdfc",
+    // Linux and Windows show this in the taskbar when no launcher supplies an icon; macOS takes its own from the app bundle.
+    icon: join(here, "../assets/icons/512x512.png"),
     titleBarStyle: mac ? "hiddenInset" : "hidden",
     ...(mac ? {} : { titleBarOverlay: overlay() }),
     webPreferences: {
