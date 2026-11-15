@@ -13,6 +13,7 @@
  * `close()` ends them all. The outside stays plain: snapshots and listeners, and Promises.
  */
 import {
+  type AccountView,
   Attachment,
   type BotId,
   type BotSummary,
@@ -37,6 +38,7 @@ import { type ClientRuntime, ConversationSync } from "./conversation.ts";
 const parseAttachment = Schema.decodeOption(Schema.fromJsonString(Attachment));
 
 export type {
+  AccountView,
   Attachment,
   BotId,
   BotStatus,
@@ -58,6 +60,9 @@ export type {
 } from "@top/protocol";
 export {
   BotSummary,
+  CHATGPT_BACKGROUND_NOTICE,
+  CHATGPT_REDIRECT,
+  CHATGPT_USAGE_URL,
   isModelImage,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
@@ -108,6 +113,8 @@ export type TopSnapshot = {
   readonly bots: readonly BotSummary[];
   /** The MCP servers set up on the daemon (empty until it says). */
   readonly mcpServers: readonly McpServerView[];
+  /** What the bots' model requests are signed in with; `undefined` until the daemon says, and on one with fake bots. */
+  readonly account: AccountView | undefined;
   /** The files folders of the bots being watched, once the daemon has listed them. */
   readonly files: Readonly<Record<BotId, BotFiles>>;
   /** Set once the first roster arrived; the UI can render from cache before that. */
@@ -147,6 +154,7 @@ export class TopClient {
       serverId: options.serverId,
       bots: [],
       mcpServers: [],
+      account: undefined,
       files: {},
       ready: false,
       tailnetUrl: undefined,
@@ -246,6 +254,28 @@ export class TopClient {
   /** Forget an MCP server's credentials, to sign in as someone else. */
   mcpSignOut(id: McpServerId): Promise<void> {
     return this.#command({ t: "mcpSignOut", id });
+  }
+
+  /**
+   * Start signing in with ChatGPT; resolves with the page to open. Call it only once the user agreed
+   * that the bots may use their plan in the background (`CHATGPT_BACKGROUND_NOTICE`).
+   */
+  chatgptSignIn(): Promise<string> {
+    return this.#request({ t: "chatgptSignIn", backgroundConsent: true }).then(({ url }) => url);
+  }
+
+  /** Finish the sign-in under way with the address the browser ended on; resolves once the daemon is signed in. */
+  chatgptSignInFinish(url: string): Promise<void> {
+    return this.#command({ t: "chatgptSignInFinish", url });
+  }
+
+  chatgptSignInCancel(): Promise<void> {
+    return this.#command({ t: "chatgptSignInCancel" });
+  }
+
+  /** Forget the ChatGPT sign-in. */
+  chatgptSignOut(): Promise<void> {
+    return this.#command({ t: "chatgptSignOut" });
   }
 
   /** Reconnect to an MCP server now. */
@@ -386,6 +416,9 @@ export class TopClient {
       }
       case "mcpServerRemoved":
         this.#publish({ mcpServers: this.#snapshot.mcpServers.filter((s) => s.id !== frame.id) });
+        return;
+      case "account":
+        this.#publish({ account: frame.account });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);

@@ -38,10 +38,17 @@ pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser 
 Before committing: `pnpm check` (Biome: lint, format, import order; `pnpm fix` applies the safe fixes),
 `pnpm typecheck` (TypeScript 7 with Effect's diagnostics, through `effect-tsgo`) and `pnpm test` (vitest).
 
-The bots sign in through pi, the coding agent: the first time Top needs a provider, it copies pi's
-sign-in from `~/.pi/agent/auth.json` to its own `~/.top/server/auth.json`, so if `pi` works, Top works.
-After that each refreshes its own copy. Not signed in? Run `pi`, then `/login`, and start Top again. An API
-key in the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) works too. Pick another model with
+The bots use your ChatGPT plan through Sign in with ChatGPT, OpenAI's sign-in for open-source and local
+agents. The daemon starts signed out. Sign in from the app (**Continue with ChatGPT** under the
+composer, or in Settings) or with `pnpm login` (`top login`; `top logout` signs out). Top signs in
+under its own name and keeps the tokens in `~/.top/server/auth.json`. It doesn't borrow pi's or the
+Codex CLI's sign-in: OpenAI's terms don't allow that. The browser comes back to `127.0.0.1:1455`. On
+the daemon's computer that finishes the sign-in by itself. From another device, paste the address
+that page ended on into the app (or into `top login` over SSH). Before signing in, you agree that the
+bots use your plan in the background too (wake-ups, background jobs), as OpenAI's terms require. Top
+is for one person: on the tailnet, let in only your own devices, because other people's messages
+would run on your plan, which the terms forbid. An API key in the environment (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, …) works too, and is the only way for providers other than OpenAI. Pick another model with
 `pnpm server --model anthropic/claude-opus-5-5`; `--thinking off|low|medium|high` sets reasoning
 (default medium). ChatGPT sign-ins can't use every model (`gpt-5.5` is refused); `gpt-6.1-sol` works.
 Each real bot owns a folder, `~/.top/bots/<name>`, and works from it: commands start there and relative paths resolve there. Its tools are pi's coding
@@ -53,7 +60,7 @@ Everything Top keeps is in its home, `~/.top` (`TOP_HOME=DIR` or `--home DIR` mo
 
 ```
 ~/.top/
-├── server/        the daemon's: top.sqlite (bots, conversations, MCP servers and their sign-ins), attachments/, auth.json
+├── server/        the daemon's: top.sqlite (bots, conversations, MCP servers and their sign-ins), attachments/, auth.json, chatgpt-host.json
 ├── bots/<name>/   each bot's working folder; files/ is what the Files panel shows
 └── desktop/       the desktop app's profile: its cache and settings (TOP_USER_DATA moves it)
 ```

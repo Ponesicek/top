@@ -286,6 +286,37 @@ export type McpServerView = typeof McpServerView.Type;
 /** The longest MCP server name `saveMcpServer` accepts. */
 export const MAX_MCP_NAME = 40;
 
+// ── the model account ────────────────────────────────────────────────────────────
+//
+// What the bots' model requests are signed in with. With an OpenAI model, the user can sign in with
+// ChatGPT from the app and the bots use their ChatGPT plan. `chatgptSignIn` answers with the page to
+// open. When the user approves, the browser goes to `http://127.0.0.1:1455/auth/callback?…` on the
+// computer it runs on. On the daemon's own computer, the daemon is listening there and the sign-in
+// finishes by itself. Anywhere else, that page fails to load, and the user pastes its address into the
+// app (`chatgptSignInFinish`).
+
+/** The address a ChatGPT sign-in ends on, which the user pastes when it can't reach the daemon. */
+export const CHATGPT_REDIRECT = "http://127.0.0.1:1455/auth/callback";
+/** Where the user sees and limits what apps use of their ChatGPT plan. */
+export const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
+/** What the user agrees to before signing in (the app and `top login` both show it). */
+export const CHATGPT_BACKGROUND_NOTICE =
+  "Your bots work on their own: they wake up when they set themselves to and finish background jobs, also while no app is open. Signed in with ChatGPT, that uses your ChatGPT plan too, within its usage limits. You can see and limit it in ChatGPT's settings.";
+
+export const AccountView = Struct({
+  /** The bots' model, `provider/model-id`. */
+  model: Schema.String,
+  /** How model requests are signed in: with the user's ChatGPT plan, or an API key (stored, or in the daemon's environment). Absent: they aren't. */
+  signedIn: Optional(Schema.Literals(["chatgpt", "apiKey"])),
+  /** The model's provider takes Sign in with ChatGPT. */
+  canSignIn: Schema.Boolean,
+  /** A sign-in is under way; this is the page it opened. */
+  signingIn: Optional(Schema.String),
+  /** Why the last sign-in failed. */
+  error: Optional(Schema.String),
+});
+export type AccountView = typeof AccountView.Type;
+
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
 const req = Schema.Int;
@@ -347,6 +378,17 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("mcpSignOut"), req, id: McpServerId }),
   /** Reconnect to an MCP server now instead of waiting for the next retry. */
   Struct({ t: Schema.Literal("mcpRetry"), req, id: McpServerId }),
+  /**
+   * Start signing in with ChatGPT (see AccountView), dropping any sign-in already under way. Answers
+   * with the page to open. `backgroundConsent`: the user agreed that the bots may use their plan while
+   * nobody is watching (wake-ups, background jobs). OpenAI's terms ask for that before background use.
+   */
+  Struct({ t: Schema.Literal("chatgptSignIn"), req, backgroundConsent: Schema.Literal(true) }),
+  /** Finish the sign-in under way with the address the browser ended on. Answers once the daemon is signed in. */
+  Struct({ t: Schema.Literal("chatgptSignInFinish"), req, url: Schema.String }),
+  Struct({ t: Schema.Literal("chatgptSignInCancel"), req }),
+  /** Forget the ChatGPT sign-in. */
+  Struct({ t: Schema.Literal("chatgptSignOut"), req }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
@@ -374,6 +416,10 @@ export const RequestResult = {
   mcpSignIn: Struct({ url: Schema.String }),
   mcpSignOut: Schema.Null,
   mcpRetry: Schema.Null,
+  chatgptSignIn: Struct({ url: Schema.String }),
+  chatgptSignInFinish: Schema.Null,
+  chatgptSignInCancel: Schema.Null,
+  chatgptSignOut: Schema.Null,
 } as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
 export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
 
@@ -415,6 +461,8 @@ export const ServerFrame = Schema.Union([
   /** One MCP server was added or changed (its settings, bots, state or tools). */
   Struct({ t: Schema.Literal("mcpServer"), server: McpServerView }),
   Struct({ t: Schema.Literal("mcpServerRemoved"), id: McpServerId }),
+  /** What the bots' model requests are signed in with: once per connection (on a daemon with real bots), then whenever it changes. */
+  Struct({ t: Schema.Literal("account"), account: AccountView }),
   /**
    * The answer to `watch`: the entries the client is missing (ascending). When more were missing than
    * fit, the newest ones and a `gap`. `earlier`: older entries exist before the first one sent (only

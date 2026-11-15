@@ -7,7 +7,7 @@
  * slow to keep up is dropped by its connection, which then resyncs on reconnect). Events are counted,
  * so a listener can tell when it has seen everything published up to a moment (see serve.ts).
  */
-import type { BotSummary, McpServerView } from "@top/protocol";
+import type { AccountView, BotSummary, McpServerView } from "@top/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -28,7 +28,9 @@ export type DaemonEvent =
   | { readonly _tag: "Files"; readonly bot: number; readonly folder: string; readonly listing: Listing }
   /** An MCP server was added or changed (settings, bots, state or tools). */
   | { readonly _tag: "McpServer"; readonly view: McpServerView }
-  | { readonly _tag: "McpServerRemoved"; readonly id: number };
+  | { readonly _tag: "McpServerRemoved"; readonly id: number }
+  /** What the bots' model requests are signed in with changed (see chatgpt.ts). */
+  | { readonly _tag: "Account"; readonly view: AccountView };
 
 export class Events extends Context.Service<
   Events,
