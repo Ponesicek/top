@@ -123,6 +123,8 @@
 
 /* Windows under 720px collapse the sidebar to avatars. */
 @custom-variant narrow (@media (max-width: 720px));
+/* The macOS desktop app, whose window buttons sit over the sidebar's top-left corner (main.tsx sets it). */
+@custom-variant mac-window (&:where([data-mac-window] *));
 
 @theme {
   --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;

@@ -13,7 +13,7 @@ import { Button } from "./ui/button.tsx";
 export type Anchor = Element | { getBoundingClientRect(): DOMRect; contextElement?: Element | undefined };
 
 const POPUP =
-  "origin-(--transform-origin) rounded-xl bg-popover shadow-popover transition duration-100 outline-none data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0";
+  "origin-(--transform-origin) rounded-xl bg-popover shadow-popover transition duration-100 outline-none data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0 [-webkit-app-region:no-drag]";
 
 /** The comment box: what's quoted, a field for an optional comment, Cancel and Save. Enter saves. */
 export function CommentPopover({

@@ -34,4 +34,7 @@ These are good defaults, not hard rules. The developer's preferences override an
   a bot runs tools, instead of "No messages yet"". Commits follow the same style.
 - Body: the problem in a sentence or two, then how it's solved. End with the model and harness that did
   the work.
-- UI changes carry before/after images, uploaded to the PR, never committed.
+- UI changes carry before/after images, uploaded to the PR, never committed. GitHub takes image uploads
+  from the CLI now (gh 2.103+): `gh pr create`, `gh pr edit` and `gh pr comment` take
+  `--attach './before.png#Alt text'`, and a body that writes `![alt](./before.png)` gets that reference
+  pointed at the upload.
