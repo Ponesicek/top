@@ -5,8 +5,8 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell } from "electron";
-import { contextMenuTemplate } from "./context-menu.js";
+import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
+import { contextMenuItems, runContextMenuAction } from "./context-menu.js";
 import { startUpdates } from "./updates.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +27,12 @@ const headless = process.env.TOP_BENCH === "screenshot";
  */
 const overlay = () =>
   nativeTheme.shouldUseDarkColors ? { color: "#141413", symbolColor: "#eeedea", height: 40 } : { color: "#fefdfc", symbolColor: "#1a1917", height: 40 };
+
+/**
+ * Each window's latest right-click: the only menu its page can pick an action from.
+ * @type {WeakMap<Electron.WebContents, Electron.ContextMenuParams>}
+ */
+const lastRightClick = new WeakMap();
 
 function createWindow() {
   const mac = process.platform === "darwin";
@@ -93,10 +99,13 @@ function createWindow() {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
-  // Electron opens no right-click menu by itself: spelling fixes, cut, copy, paste and select all.
+  // Electron opens no right-click menu by itself. The page draws it (see context-menu.js) and sends back
+  // the action picked, which runs against the right-click that opened the menu.
   win.webContents.on("context-menu", (_event, params) => {
-    const template = contextMenuTemplate(params, win.webContents);
-    if (template.length) Menu.buildFromTemplate(template).popup({ window: win });
+    const items = contextMenuItems(params);
+    if (!items.length) return;
+    lastRightClick.set(win.webContents, params);
+    win.webContents.send("top:context-menu", { x: params.x, y: params.y, items });
   });
   win.webContents.on("will-navigate", (event, url) => {
     if (url !== win.webContents.getURL()) event.preventDefault();
@@ -180,6 +189,13 @@ async function findTailnetDaemons() {
 }
 
 ipcMain.handle("top:tailnet", findTailnetDaemons);
+
+ipcMain.on("top:context-menu:run", (event, action) => {
+  const params = lastRightClick.get(event.sender);
+  if (!params || event.senderFrame !== event.sender.mainFrame) return;
+  lastRightClick.delete(event.sender);
+  runContextMenuAction(params, action, event.sender);
+});
 
 app.whenReady().then(async () => {
   startUpdates(() => BrowserWindow.getAllWindows().map((w) => w.webContents));

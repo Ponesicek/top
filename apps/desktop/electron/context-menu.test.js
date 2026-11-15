@@ -1,60 +1,83 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { contextMenuTemplate } from "./context-menu.js";
+import { contextMenuItems, runContextMenuAction } from "./context-menu.js";
 
 const flags = { canUndo: true, canRedo: true, canCut: true, canCopy: true, canPaste: true, canDelete: true, canSelectAll: true, canEditRichly: false };
 
 /** A right-click, as Electron describes it, with `over` changed. */
 function click(over = {}) {
-  return { isEditable: true, selectionText: "", misspelledWord: "", dictionarySuggestions: [], editFlags: flags, ...over };
+  return { isEditable: true, selectionText: "", misspelledWord: "", dictionarySuggestions: /** @type {string[]} */ ([]), editFlags: flags, ...over };
 }
 
+/** A page that records which editing command ran. */
 function fakeTarget() {
   /** @type {string[]} */
-  const replaced = [];
-  /** @type {string[]} */
-  const added = [];
+  const ran = [];
+  const record = (/** @type {string} */ name) => () => void ran.push(name);
   return {
-    replaced,
-    added,
-    replaceMisspelling: (/** @type {string} */ word) => void replaced.push(word),
-    session: { addWordToSpellCheckerDictionary: (/** @type {string} */ word) => added.push(word) > 0 },
+    ran,
+    cut: record("cut"),
+    copy: record("copy"),
+    paste: record("paste"),
+    selectAll: record("selectAll"),
+    replaceMisspelling: (/** @type {string} */ word) => void ran.push(`replace ${word}`),
+    session: { addWordToSpellCheckerDictionary: (/** @type {string} */ word) => ran.push(`add ${word}`) > 0 },
   };
 }
 
-/** Each item as a short string: its role or label, `-` for a separator, `(off)` when disabled. */
-const shape = (/** @type {Electron.MenuItemConstructorOptions[]} */ items) =>
-  items.map((i) => (i.type === "separator" ? "-" : `${i.role ?? i.label}${i.enabled === false ? " (off)" : ""}`));
+/** Each item as a short string: its action or label, `-` for a separator, `(off)` when disabled. */
+const shape = (/** @type {import("./context-menu.js").ContextMenuItem[]} */ items) =>
+  items.map((i) => ("separator" in i ? "-" : `${i.label ?? i.action}${i.enabled ? "" : " (off)"}`));
 
 test("an editable field gets cut, copy, paste and select all", () => {
-  assert.deepEqual(shape(contextMenuTemplate(click(), fakeTarget())), ["cut", "copy", "paste", "-", "selectAll"]);
+  assert.deepEqual(shape(contextMenuItems(click())), ["cut", "copy", "paste", "-", "select-all"]);
 });
 
 test("commands the field can't do right now are disabled, not hidden", () => {
-  const items = contextMenuTemplate(click({ editFlags: { ...flags, canCut: false, canCopy: false } }), fakeTarget());
-  assert.deepEqual(shape(items), ["cut (off)", "copy (off)", "paste", "-", "selectAll"]);
+  assert.deepEqual(shape(contextMenuItems(click({ editFlags: { ...flags, canCut: false, canCopy: false } }))), [
+    "cut (off)",
+    "copy (off)",
+    "paste",
+    "-",
+    "select-all",
+  ]);
 });
 
-test("a misspelled word offers its fixes first, and picking one replaces it", () => {
+test("a misspelled word offers up to five fixes first, then adding it to the dictionary", () => {
+  const items = contextMenuItems(click({ misspelledWord: "teh", dictionarySuggestions: ["the", "tech", "ten", "tea", "tee", "toe"] }));
+  assert.deepEqual(shape(items), ["the", "tech", "ten", "tea", "tee", "add-word", "-", "cut", "copy", "paste", "-", "select-all"]);
+});
+
+test("a misspelled word with no fixes says so", () => {
+  assert.deepEqual(shape(contextMenuItems(click({ misspelledWord: "grdfgrdgr" }))).slice(0, 3), ["no-suggestions (off)", "add-word", "-"]);
+});
+
+test("selected text outside a field can be copied; nothing selected opens no menu", () => {
+  assert.deepEqual(shape(contextMenuItems(click({ isEditable: false, selectionText: "hello" }))), ["copy"]);
+  assert.deepEqual(contextMenuItems(click({ isEditable: false, selectionText: "  " })), []);
+});
+
+test("picking a fix replaces the word with that suggestion, and add-word adds the clicked word", () => {
+  const params = click({ misspelledWord: "teh", dictionarySuggestions: ["the", "tech"] });
   const target = fakeTarget();
-  const items = contextMenuTemplate(click({ misspelledWord: "teh", dictionarySuggestions: ["the", "tech", "ten", "tea", "tee", "toe"] }), target);
-  assert.deepEqual(shape(items), ["the", "tech", "ten", "tea", "tee", "Add to dictionary", "-", "cut", "copy", "paste", "-", "selectAll"]);
-  items[1]?.click?.(/** @type {any} */ ({}), undefined, /** @type {any} */ ({}));
-  assert.deepEqual(target.replaced, ["tech"]);
+  assert.equal(runContextMenuAction(params, "replace:1", target), true);
+  assert.equal(runContextMenuAction(params, "add-word", target), true);
+  assert.deepEqual(target.ran, ["replace tech", "add teh"]);
 });
 
-test("a misspelled word with no fixes says so, and can be added to the dictionary", () => {
+test("editing actions run Electron's own commands", () => {
   const target = fakeTarget();
-  const items = contextMenuTemplate(click({ misspelledWord: "grdfgrdgr" }), target);
-  assert.deepEqual(shape(items).slice(0, 3), ["No suggestions (off)", "Add to dictionary", "-"]);
-  items[1]?.click?.(/** @type {any} */ ({}), undefined, /** @type {any} */ ({}));
-  assert.deepEqual(target.added, ["grdfgrdgr"]);
+  for (const action of ["cut", "copy", "paste", "select-all"]) runContextMenuAction(click(), action, target);
+  assert.deepEqual(target.ran, ["cut", "copy", "paste", "selectAll"]);
 });
 
-test("selected text outside a field can be copied", () => {
-  assert.deepEqual(shape(contextMenuTemplate(click({ isEditable: false, selectionText: "hello" }), fakeTarget())), ["copy"]);
-});
-
-test("nothing selected outside a field opens no menu", () => {
-  assert.deepEqual(contextMenuTemplate(click({ isEditable: false, selectionText: "  " }), fakeTarget()), []);
+test("the page can only pick what the menu offered, enabled", () => {
+  const target = fakeTarget();
+  const params = click({ misspelledWord: "teh", dictionarySuggestions: ["the"], editFlags: { ...flags, canPaste: false } });
+  assert.equal(runContextMenuAction(params, "paste", target), false);
+  assert.equal(runContextMenuAction(params, "replace:3", target), false);
+  assert.equal(runContextMenuAction(params, "no-suggestions", target), false);
+  assert.equal(runContextMenuAction(click(), "add-word", target), false);
+  assert.equal(runContextMenuAction(click(), { toString: () => "cut" }, target), false);
+  assert.deepEqual(target.ran, []);
 });
