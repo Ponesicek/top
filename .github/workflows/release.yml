@@ -1,0 +1,97 @@
+# Builds Top for Linux x64 and publishes it as a GitHub release. Started by hand only:
+# Actions → Release → Run workflow, or `gh workflow run release.yml -f channel=nightly`.
+#
+#   stable    builds `main`     v0.2.0                       a release, marked Latest
+#   nightly   builds `nightly`  v0.2.0-nightly.20261114.7    a prerelease (next stable version, UTC date, run number)
+#
+# Each release has the desktop AppImage, the daemon's archive, the app's update feed and SHA256SUMS,
+# which is what installed daemons and apps update from (see packages/protocol/src/release.ts).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Channel: Nightly builds the nightly branch, Stable builds main"
+        type: choice
+        options: [nightly, stable]
+        default: nightly
+
+# One release per channel at a time, and never cancel one half-published.
+concurrency:
+  group: release-${{ inputs.channel }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release ${{ inputs.channel }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      BRANCH: ${{ inputs.channel == 'stable' && 'main' || 'nightly' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.channel == 'stable' && 'main' || 'nightly' }}
+          # All history and tags: the notes list the commits since the channel's last release.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check, typecheck, test
+        run: |
+          pnpm check
+          pnpm typecheck
+          pnpm test
+
+      - name: Version
+        id: version
+        run: node --import tsx scripts/release-version.ts --channel "$CHANNEL" --run "${{ github.run_number }}" --write
+
+      - name: Refuse a version that's already released
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG is already released. Bump the version in package.json on $BRANCH, then run this again."
+            exit 1
+          fi
+
+      - name: Build the daemon
+        run: pnpm build:daemon --channel "$CHANNEL"
+
+      - name: Build the desktop app
+        run: pnpm build:desktop --channel "$CHANNEL"
+
+      - name: Notes and checksums
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          node --import tsx scripts/release-notes.ts --channel "$CHANNEL" --tag "$TAG" > release/notes.md
+          cat release/notes.md
+          cd release
+          sha256sum Top-*.AppImage top-daemon-*.tar.gz *-linux.yml > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd release
+          if [ "$CHANNEL" = nightly ]; then kind=--prerelease; else kind=--latest; fi
+          gh release create "$TAG" \
+            --target "$(git rev-parse HEAD)" \
+            --title "Top $VERSION" \
+            --notes-file notes.md \
+            $kind \
+            Top-*.AppImage top-daemon-*.tar.gz *-linux.yml SHA256SUMS

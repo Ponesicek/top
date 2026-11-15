@@ -62,6 +62,7 @@ Everything Top keeps is in its home, `~/.top` (`TOP_HOME=DIR` or `--home DIR` mo
 ~/.top/
 ├── server/        the daemon's: top.sqlite (bots, conversations, MCP servers and their sign-ins), attachments/, auth.json, chatgpt-host.json
 ├── bots/<name>/   each bot's working folder; files/ is what the Files panel shows
+├── daemon/        the installed daemon (`top install`, see Releases and updates)
 └── desktop/       the desktop app's profile: its cache and settings (TOP_USER_DATA moves it)
 ```
 
@@ -176,6 +177,50 @@ headers or environment variables for keys. Their values stay on the daemon: the 
 **Collar** is Top's own set of tools for managing the app. Every bot always has it, it isn't
 listed among the servers, and no server may be named "Collar". Its tools are named like a server's
 (`collar__<tool>`) but run inside the daemon. It has no tools yet.
+
+## Releases and updates
+
+Top has two channels, each built from its own branch and published as [GitHub releases](https://github.com/Ponesicek/Top/releases),
+for Linux x64 for now:
+
+| Channel | Branch | Version | Release |
+|---|---|---|---|
+| Stable | `main` | `0.2.0`, from `package.json` | marked Latest |
+| Nightly | `nightly` | `0.2.0-nightly.20261114.7`: the next stable version, the UTC date, the run number | a prerelease |
+
+Work lands on `nightly`. To ship it, merge `nightly` into `main` and release Stable, then bump the
+version on `nightly` to the next one. A hotfix goes on `main` (with a version bump) and is merged back.
+Each release has the desktop app (`Top-<version>-x86_64.AppImage`), the daemon
+(`top-daemon-<version>-linux-x64.tar.gz`, with the Node it runs on), the app's update feed
+(`latest-linux.yml` or `nightly-linux.yml`) and `SHA256SUMS`.
+
+**Making a release.** It's manual: Actions → **Release** → Run workflow, pick the channel (or
+`gh workflow run release.yml -f channel=nightly`). It builds the channel's branch, whichever branch
+it was started from, runs the checks and tests, and publishes. It refuses a version that's already
+out: bump `package.json` on `main` before each Stable release. `pnpm build:daemon` and
+`pnpm build:desktop` build the same files locally, in `release/`.
+
+**Installing the daemon.** Unpack the archive and run `bin/top install`. It copies itself to
+`~/.top/daemon/`, follows the channel it came from, and runs under systemd (`systemctl --user …top`,
+logs in `journalctl --user -u top -f`; `loginctl enable-linger` keeps it running while you're logged
+out). Its flags are in `~/.top/daemon/args`, one per line (default `--model openai/gpt-6.1-sol`;
+`top install --tailscale` adds `--tailscale`). `pnpm server` from a checkout never updates itself.
+
+**Updating.** The daemon and the app each follow a channel of their own, since one server serves
+many devices; they check now and then, and when you press **Check now**. A newer release shows a
+popup (**Update** or **Later**) and Settings → **Updates**. Nothing installs until you press Update.
+When the app and the server follow different channels, the app says so.
+
+- **The server** downloads the new version, checks it against `SHA256SUMS`, unpacks it beside the
+  running one, backs up `top.sqlite`, and restarts on it. Bots stop where they are and pick their
+  tasks back up after the restart, like after a crash (this restart doesn't count toward the limit of
+  3). A version that fails to start twice before it has run 30 seconds is rolled back with the
+  database as it was, and the app says so. Switching from Nightly to Stable never goes back: you stay
+  on your nightly until a stable release is newer.
+- **The app** (the AppImage) downloads the new AppImage, then quits and starts it. With both to
+  update, the server goes first.
+- **Older data.** The database has numbered migrations (`store.ts`). A version that finds data a
+  newer version has migrated refuses to start and says so, instead of misreading it.
 
 ## Crash safety
 

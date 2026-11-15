@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
+import { startUpdates } from "./updates.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The profile (cache, settings) lives in Top's home beside the daemon's, not in Electron's default folder.
@@ -163,6 +164,7 @@ async function findTailnetDaemons() {
 ipcMain.handle("top:tailnet", findTailnetDaemons);
 
 app.whenReady().then(async () => {
+  startUpdates(() => BrowserWindow.getAllWindows().map((w) => w.webContents));
   const win = createWindow();
   if (process.env.TOP_BENCH) {
     const { runBench } = await import("./bench-driver.js");

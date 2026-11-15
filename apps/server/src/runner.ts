@@ -78,9 +78,10 @@ export type BotRunner = {
   readonly close: Effect.Effect<void>;
   /**
    * Settle what the last process left unfinished. Run once at startup, before `start`.
-   * Answers with a description of what was done, for the log.
+   * Answers with a description of what was done, for the log. `planned`: the daemon restarted for an
+   * update, which doesn't count toward `RESTART_LIMIT`.
    */
-  readonly recover: Effect.Effect<string | undefined>;
+  readonly recover: (planned: boolean) => Effect.Effect<string | undefined>;
 };
 
 /**
@@ -427,34 +428,38 @@ export const makeRunner = Effect.fnUntraced(function* (
       return outcome;
     });
 
-  const recover = Effect.gen(function* () {
-    const row = (yield* store.bot(id))!;
-    if (!row.runActive) return undefined;
-    const restarts = row.restarts + 1;
-    yield* store.setRestarts(id, restarts);
-    const giveUp = restarts > RESTART_LIMIT;
+  const recover = Effect.fnUntraced(
+    function* (planned: boolean) {
+      const row = (yield* store.bot(id))!;
+      if (!row.runActive) return undefined;
+      // An update's restart is the user's doing, not a task that keeps crashing the daemon: it doesn't count.
+      const restarts = planned ? row.restarts : row.restarts + 1;
+      yield* store.setRestarts(id, restarts);
+      const giveUp = restarts > RESTART_LIMIT;
 
-    let assistantIndex = messages.length - 1;
-    while (assistantIndex >= 0 && messages[assistantIndex]!.role === "toolResult") assistantIndex--;
-    const assistant = messages[assistantIndex];
-    const settled: string[] = [];
-    if (assistant?.role === "assistant") {
-      const seq = yield* store.lastAssistantSeq(id);
-      const done = yield* store.toolResultsAfter(id, seq);
-      for (const call of toolCallsOf(assistant)) {
-        if (done.has(call.id)) continue;
-        const outcome = yield* settle(call, seq, giveUp, restarts);
-        settled.push(`${call.name}: ${outcome}`);
+      let assistantIndex = messages.length - 1;
+      while (assistantIndex >= 0 && messages[assistantIndex]!.role === "toolResult") assistantIndex--;
+      const assistant = messages[assistantIndex];
+      const settled: string[] = [];
+      if (assistant?.role === "assistant") {
+        const seq = yield* store.lastAssistantSeq(id);
+        const done = yield* store.toolResultsAfter(id, seq);
+        for (const call of toolCallsOf(assistant)) {
+          if (done.has(call.id)) continue;
+          const outcome = yield* settle(call, seq, giveUp, restarts);
+          settled.push(`${call.name}: ${outcome}`);
+        }
       }
-    }
-    if (giveUp) {
-      yield* append("notice", { text: `Stopped this task: the daemon restarted ${restarts} times while it ran.` });
-      yield* store.setRunActive(id, false);
-      yield* store.setRestarts(id, 0);
-      yield* setStatus("failed", { error: `Stopped after ${restarts} restarts` });
-    }
-    return `restart ${restarts}${giveUp ? " (task ended)" : ""}${settled.length ? `; ${settled.join(", ")}` : ""}`;
-  }).pipe(Effect.withSpan("Runner.recover", { attributes: { bot: bot.name } }));
+      if (giveUp) {
+        yield* append("notice", { text: `Stopped this task: the daemon restarted ${restarts} times while it ran.` });
+        yield* store.setRunActive(id, false);
+        yield* store.setRestarts(id, 0);
+        yield* setStatus("failed", { error: `Stopped after ${restarts} restarts` });
+      }
+      return `${planned ? "planned restart" : `restart ${restarts}`}${giveUp ? " (task ended)" : ""}${settled.length ? `; ${settled.join(", ")}` : ""}`;
+    },
+    Effect.withSpan("Runner.recover", { attributes: { bot: bot.name } }),
+  );
 
   const runner: BotRunner = {
     id,

@@ -60,6 +60,7 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import type * as Socket from "effect/socket/Socket";
 import { Attachments } from "./attachments.ts";
+import { BUILD } from "./build.ts";
 import { ChatGPT } from "./chatgpt.ts";
 import { Daemon } from "./daemon.ts";
 import { type DaemonEvent, Events } from "./events.ts";
@@ -68,6 +69,7 @@ import { Mcp } from "./mcp.ts";
 import { type FileServing, sendFile } from "./sendFile.ts";
 import { Store, type StoredEntry } from "./store.ts";
 import type { Tailnet } from "./tailscale.ts";
+import { Updates } from "./updates.ts";
 import { toWire } from "./wire.ts";
 
 const DEFAULT_WINDOW = 50;
@@ -117,6 +119,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const events = yield* Events;
   const mcp = Option.getOrUndefined(yield* Effect.serviceOption(Mcp));
   const chatgpt = Option.getOrUndefined(yield* Effect.serviceOption(ChatGPT));
+  const updates = Option.getOrUndefined(yield* Effect.serviceOption(Updates));
   const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
   // Taking the reader completes the handshake; frames written before it would wait for it.
   const reader = yield* socket.reader;
@@ -150,6 +153,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
     t: "welcome",
     serverId: store.id,
     protocol: PROTOCOL_VERSION,
+    version: BUILD.version,
+    ...(BUILD.channel ? { channel: updates ? (yield* updates.view).channel : BUILD.channel } : {}),
     ...(daemon.hasFiles ? { filesPath: `${FILES_PREFIX}${store.filesSecret}` } : {}),
     ...(attachments ? { attachmentsPath: `${ATTACHMENTS_PREFIX}${store.filesSecret}` } : {}),
     ...(where.tailnetUrl ? { tailnetUrl: where.tailnetUrl } : {}),
@@ -158,6 +163,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   yield* send({ t: "bots", bots: daemon.bots() });
   if (mcp) yield* send({ t: "mcpServers", servers: yield* mcp.views });
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
+  if (updates) yield* send({ t: "update", update: yield* updates.view });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -183,6 +189,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "mcpServerRemoved", id: event.id });
       case "Account":
         return send({ t: "account", account: event.view });
+      case "Update":
+        return send({ t: "update", update: event.view });
     }
   };
   yield* Effect.forkScoped(
@@ -207,6 +215,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
     ).pipe(Effect.ensuring(Effect.sync(() => kinds.delete(req))));
   const mcpOf = () => (mcp ? Effect.succeed(mcp) : Effect.fail(new NoMcp()));
   const chatgptOf = () => (chatgpt ? Effect.succeed(chatgpt) : Effect.fail(new NoChatGPT()));
+  const updatesOf = () => (updates ? Effect.succeed(updates) : Effect.fail(new NoUpdates()));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
 
   const watch = (frame: Extract<ClientFrame, { t: "watch" }>) =>
@@ -350,6 +359,22 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(chatgptOf(), (c) => c.signOut),
         );
+      case "checkForUpdate":
+        return answer(
+          frame,
+          Effect.flatMap(updatesOf(), (u) => u.check),
+        );
+      case "installUpdate":
+        // Not awaited by the connection: the daemon restarts at the end, and the answer goes out before.
+        return answer(
+          frame,
+          Effect.flatMap(updatesOf(), (u) => Effect.asVoid(Effect.forkDetach(u.install(frame.version).pipe(Effect.ignoreCause({ log: true }))))),
+        );
+      case "setUpdateChannel":
+        return answer(
+          frame,
+          Effect.flatMap(updatesOf(), (u) => u.setChannel(frame.channel)),
+        );
     }
   };
 
@@ -378,6 +403,15 @@ type Answer<T extends RequestType> = ResultOf<T> extends null ? void : ResultOf<
 class NoMcp extends Data.TaggedError("NoMcp") {
   override get message() {
     return "This daemon has no MCP servers.";
+  }
+}
+
+/** The daemon runs from a checkout, or wasn't installed with `top install`: it doesn't update itself. */
+class NoUpdates extends Data.TaggedError("NoUpdates") {
+  override get message() {
+    return BUILD.channel
+      ? "This server wasn't installed with `top install`, so it can't update itself."
+      : "This server runs from a checkout of Top's code. Update it with git pull.";
   }
 }
 

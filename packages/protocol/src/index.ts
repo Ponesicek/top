@@ -14,8 +14,10 @@
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
+import { CHANNELS } from "./release.ts";
 
 export * from "./errors.ts";
+export * from "./release.ts";
 
 export const PROTOCOL_VERSION = 3;
 export const DEFAULT_PORT = 7357;
@@ -317,6 +319,41 @@ export const AccountView = Struct({
 });
 export type AccountView = typeof AccountView.Type;
 
+// ── updates ──────────────────────────────────────────────────────────────────────
+
+/** Which releases something follows (see release.ts). */
+export const Channel = Schema.Literals(CHANNELS);
+export type Channel = typeof Channel.Type;
+
+/** A release newer than what runs. */
+export const UpdateRelease = Struct({
+  version: Schema.String,
+  /** What changed: the commit subjects since the channel's previous release. */
+  notes: List(Schema.String),
+  /** The release's page on GitHub. */
+  url: Schema.String,
+});
+export type UpdateRelease = typeof UpdateRelease.Type;
+
+/**
+ * The daemon's updates. `state`: `idle`, or what it's doing: `checking`, `downloading` the new version,
+ * or `restarting` on it (the connection drops next). `failed`: the last check or install went wrong; `error` says what.
+ */
+export const UpdateView = Struct({
+  channel: Channel,
+  /** The version that runs. */
+  current: Schema.String,
+  state: Schema.Literals(["idle", "checking", "downloading", "restarting", "failed"]),
+  /** The newest release on the channel, when it's newer than `current`. */
+  available: Optional(UpdateRelease),
+  /** When the daemon last heard from GitHub (ms since the epoch). */
+  checkedAt: Optional(Schema.Number),
+  error: Optional(Schema.String),
+  /** A version that didn't start, so the daemon went back to `current`. */
+  rolledBack: Optional(Schema.String),
+});
+export type UpdateView = typeof UpdateView.Type;
+
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
 const req = Schema.Int;
@@ -330,7 +367,8 @@ export const ClientFrame = Schema.Union([
   Struct({
     t: Schema.Literal("hello"),
     clientId: Schema.String,
-    protocol: Schema.Literal(PROTOCOL_VERSION),
+    /** The client's `PROTOCOL_VERSION`. Any number is accepted, so a daemon can tell an app that's too old or too new. */
+    protocol: Schema.Int,
     serverId: Optional(Schema.String),
   }),
   /** Follow a bot. `after`: the newest entry the client holds; omit it to get the newest `limit`. */
@@ -389,6 +427,12 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("chatgptSignInCancel"), req }),
   /** Forget the ChatGPT sign-in. */
   Struct({ t: Schema.Literal("chatgptSignOut"), req }),
+  /** Look for a newer release on the daemon's channel now (it also looks every few hours). */
+  Struct({ t: Schema.Literal("checkForUpdate"), req }),
+  /** Update the daemon to `version`, the one its `update` frame offers. It restarts on the new version. */
+  Struct({ t: Schema.Literal("installUpdate"), req, version: Schema.String }),
+  /** Which releases the daemon follows from now on. It never goes back to an older version. */
+  Struct({ t: Schema.Literal("setUpdateChannel"), req, channel: Channel }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
@@ -420,6 +464,9 @@ export const RequestResult = {
   chatgptSignInFinish: Schema.Null,
   chatgptSignInCancel: Schema.Null,
   chatgptSignOut: Schema.Null,
+  checkForUpdate: Schema.Null,
+  installUpdate: Schema.Null,
+  setUpdateChannel: Schema.Null,
 } as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
 export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
 
@@ -440,7 +487,12 @@ export const ServerFrame = Schema.Union([
   Struct({
     t: Schema.Literal("welcome"),
     serverId: Schema.String,
-    protocol: Schema.Literal(PROTOCOL_VERSION),
+    /** The daemon's `PROTOCOL_VERSION`. A client with another one can't talk to it, and should say which side to update. */
+    protocol: Schema.Int,
+    /** The daemon's version, e.g. `0.2.0` or `0.2.0-nightly.20261114.7` (a checkout's ends in `-dev`). */
+    version: Optional(Schema.String),
+    /** The releases the daemon follows; absent on one run from a checkout. */
+    channel: Optional(Channel),
     /** Where the bots' files are served on this daemon's address, e.g. `/files/<secret>` (see FileView). */
     filesPath: Optional(Schema.String),
     /** Where attachments are uploaded and served on this daemon's address, e.g. `/attachments/<secret>` (see Attachment). */
@@ -485,6 +537,8 @@ export const ServerFrame = Schema.Union([
   Struct({ t: Schema.Literal("files"), bot: BotId, folder: Schema.String, files: List(FileView), more: Optional(Schema.Literal(true)) }),
   /** A watched bot's queue changed. */
   Struct({ t: Schema.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
+  /** The daemon's updates: once per connection on an installed daemon, then whenever they change. */
+  Struct({ t: Schema.Literal("update"), update: UpdateView }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(true), value: Schema.Unknown }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(false), error: Schema.String }),
   Struct({ t: Schema.Literal("pong"), at: Schema.Number }),
