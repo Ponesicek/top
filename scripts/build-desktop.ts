@@ -52,6 +52,8 @@ await build({
   logLevel: "warning",
 });
 cpSync(join(desktop, "electron/preload.cjs"), join(stage, "electron/preload.cjs"));
+// The window's own icon (electron/main.js reads it), for when no launcher supplies one.
+cpSync(join(desktop, "assets/icons/512x512.png"), join(stage, "assets/icons/512x512.png"));
 writeFileSync(
   join(stage, "package.json"),
   `${JSON.stringify(
@@ -89,12 +91,14 @@ await electronBuilder({
     electronVersion,
     electronDist,
     directories: { output: releaseDir },
-    files: ["electron/**", "dist/**", "package.json"],
+    files: ["electron/**", "dist/**", "assets/**", "package.json"],
     npmRebuild: false,
     nodeGypRebuild: false,
     asar: true,
     linux: {
       category: "Development",
+      // One PNG per size (apps/desktop/scripts/icon.js draws them); electron-builder packs a single picture as it is.
+      icon: join(desktop, "assets/icons"),
       // electron-builder's own placeholders, not a template string.
       // biome-ignore lint/suspicious/noTemplateCurlyInString: see above
       artifactName: "Top-${version}-x86_64.${ext}",
