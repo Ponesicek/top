@@ -33,6 +33,20 @@ async function waitFor(line) {
   }
 }
 
+/**
+ * `promise`, or an error naming `what` once `ms` have passed.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @param {string} what
+ * @returns {Promise<T>}
+ */
+const within = (promise, ms, what) =>
+  Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} took longer than ${ms / 1000}s`)), ms))]);
+
+/** Fonts loaded and two frames painted: late layout has landed. */
+const SETTLE = "document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))";
+
 /** @param {import("electron").BrowserWindow} win */
 export async function runBench(win) {
   const wc = win.webContents;
@@ -54,6 +68,12 @@ export async function runBench(win) {
     throw new Error(`timed out waiting for: ${code}\n  state: ${state}`);
   };
 
+  // A screenshot always shows the page's errors, from the start (one can stop it from rendering at all);
+  // TOP_SHOT_CONSOLE=1 shows the rest of its console too.
+  if (process.env.TOP_BENCH === "screenshot")
+    wc.on("console-message", (event) => {
+      if (event.level === "error" || process.env.TOP_SHOT_CONSOLE) process.stdout.write(`[page ${event.level}] ${event.message}\n`);
+    });
   await new Promise((r) => wc.once("did-finish-load", () => r(undefined)));
   await until("window.__topPerf && window.__topPerf.firstContentAt > 0");
   const t0 = Number(process.env.TOP_BENCH_T0);
@@ -62,8 +82,6 @@ export async function runBench(win) {
   const result = { coldStartMs: firstContentAt - t0 };
 
   if (process.env.TOP_BENCH === "screenshot") {
-    // TOP_SHOT_CONSOLE=1 passes the page's console on to stderr.
-    if (process.env.TOP_SHOT_CONSOLE) wc.on("console-message", (event) => process.stderr.write(`[page] ${event.message}\n`));
     // Wait for every bot to be live and a couple of them working, then capture the window.
     await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
@@ -81,14 +99,19 @@ export async function runBench(win) {
       );
       if (rect) wc.sendInputEvent({ type: "mouseMove", x: Math.round(rect.x), y: Math.round(rect.y) });
     }
-    // TOP_SHOT_JS=code runs in the page before the capture (open a dialog, fill a field).
-    if (process.env.TOP_SHOT_JS) await js(process.env.TOP_SHOT_JS);
+    // TOP_SHOT_JS=code runs in the page before the capture (open a dialog, fill a field); a promise is awaited.
+    if (process.env.TOP_SHOT_JS) await within(js(process.env.TOP_SHOT_JS), 20_000, "TOP_SHOT_JS");
     await sleep(Number(process.env.TOP_SHOT_DELAY ?? 1200));
-    const image = await wc.capturePage(undefined, { stayHidden: true });
+    await within(js(SETTLE), 5_000, "Waiting for the page to settle");
+    // Through the DevTools protocol, which renders a fresh frame: `capturePage` can return parts of the
+    // window as they were (a sidebar row still selected after another was picked).
+    wc.debugger.attach("1.3");
+    const { data } = await within(wc.debugger.sendCommand("Page.captureScreenshot", { format: "png" }), 10_000, "Capturing the window");
+    const image = Buffer.from(data, "base64");
     const { writeFileSync } = await import("node:fs");
     const path = process.env.TOP_SHOT_PATH;
     if (!path) throw new Error("TOP_SHOT_PATH is not set");
-    writeFileSync(path, image.toPNG());
+    writeFileSync(path, image);
     out("RESULT", { ...result, screenshot: path });
     app.quit();
     return;

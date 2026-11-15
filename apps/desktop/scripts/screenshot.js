@@ -41,10 +41,14 @@ const child = spawn(cmd, cmdArgs, {
     TOP_QUERY: `?server=${encodeURIComponent(`ws://127.0.0.1:${port}`)}${process.env.TOP_SHOT_QUERY ?? ""}`,
   },
 });
-await new Promise((r) => child.on("exit", r));
+const code = await new Promise((r) => child.on("exit", r));
 server.kill("SIGKILL");
 // Windows keeps the daemon's files locked until it has exited.
 await new Promise((r) => (server.exitCode !== null || server.signalCode !== null ? r() : server.once("exit", r)));
 rmSync(dataDir, { recursive: true, force: true, maxRetries: 5 });
 rmSync(userData, { recursive: true, force: true });
-console.log(outPath);
+if (code === 0) console.log(outPath);
+else {
+  console.error("No screenshot: the app failed (see BENCH:ERROR above).");
+  process.exitCode = 1;
+}

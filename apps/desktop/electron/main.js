@@ -15,7 +15,7 @@ app.setPath("userData", process.env.TOP_USER_DATA ?? join(topHome, "desktop"));
 if (process.env.TOP_THEME === "dark" || process.env.TOP_THEME === "light") nativeTheme.themeSource = process.env.TOP_THEME;
 const devUrl = process.env.VITE_DEV_SERVER_URL;
 const query = process.env.TOP_QUERY ?? "";
-/** `pnpm screenshot` captures the page without ever putting a window on screen. */
+/** `pnpm screenshot` captures the page without putting a window where anyone sees it. */
 const headless = process.env.TOP_BENCH === "screenshot";
 
 /**
@@ -48,7 +48,7 @@ function createWindow() {
       spellcheck: true,
       // Chromium's PDF viewer, for PDFs in the Files panel.
       plugins: true,
-      // Screenshots render in a window that is never shown, so it must keep painting while hidden.
+      // Screenshots render in a window nobody sees, so it must keep painting as if in front.
       ...(headless ? { backgroundThrottling: false } : {}),
     },
   });
@@ -78,6 +78,15 @@ function createWindow() {
     win.on("closed", () => nativeTheme.off("updated", recolor));
   }
   if (!headless) win.once("ready-to-show", () => win.show());
+  // Electron draws no new frames for a window that has never been shown, so a capture of one shows the
+  // page as it first loaded, not as the screenshot left it. `pnpm screenshot` shows its window instead:
+  // without focus, see-through and off-screen (where there's no display, inside xvfb anyway).
+  else
+    win.once("ready-to-show", () => {
+      win.setOpacity(0);
+      win.setPosition(-20_000, -20_000);
+      win.showInactive();
+    });
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };
@@ -170,7 +179,11 @@ app.whenReady().then(async () => {
   const win = createWindow();
   if (process.env.TOP_BENCH) {
     const { runBench } = await import("./bench-driver.js");
-    await runBench(win);
+    // A failed run has to end the app, or whoever started it waits forever.
+    await runBench(win).catch((/** @type {unknown} */ error) => {
+      process.stdout.write(`BENCH:ERROR ${JSON.stringify(error instanceof Error ? error.message : String(error))}\n`);
+      app.exit(1);
+    });
   }
   app.on("activate", () => BrowserWindow.getAllWindows().length === 0 && createWindow());
 });
