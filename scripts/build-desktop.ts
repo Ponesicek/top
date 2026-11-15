@@ -77,8 +77,13 @@ writeFileSync(
 step("packing the AppImage");
 const [owner, repo] = RELEASE_REPO.split("/") as [string, string];
 const electronDist = join(desktop, "node_modules/electron/dist");
-if (!existsSync(electronDist))
-  throw new Error(`Electron isn't downloaded (${electronDist} is missing). Run: node ${join(desktop, "node_modules/electron/install.js")}`);
+// Electron's postinstall downloads it, but pnpm skips that when it installs Electron from a store
+// that already has it (as CI's cached store does), so fetch it here when it's missing.
+if (!existsSync(electronDist)) {
+  step("downloading Electron");
+  execFileSync(process.execPath, [join(desktop, "node_modules/electron/install.js")], { cwd: join(desktop, "node_modules/electron"), stdio: "inherit" });
+  if (!existsSync(electronDist)) throw new Error(`Electron didn't download (${electronDist} is missing)`);
+}
 const electronVersion = (JSON.parse(readFileSync(join(desktop, "node_modules/electron/package.json"), "utf8")) as { version: string }).version;
 await electronBuilder({
   projectDir: stage,
