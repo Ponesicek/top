@@ -41,7 +41,7 @@ function wakeLabel(at: number): string {
 }
 
 const MENU_POPUP =
-  "min-w-44 origin-(--transform-origin) rounded-xl bg-popover p-1 text-foreground shadow-popover outline-none transition duration-100 data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0 data-instant:duration-0";
+  "min-w-44 origin-(--transform-origin) rounded-xl bg-popover p-1 text-foreground shadow-popover outline-none transition duration-100 data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0 data-instant:duration-0 [-webkit-app-region:no-drag]";
 const MENU_ITEM =
   "flex cursor-default items-center gap-2.5 rounded-lg px-2.5 py-1.75 text-small leading-none font-label outline-none select-none data-highlighted:bg-foreground/7 [&_svg]:text-muted-foreground";
 
