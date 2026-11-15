@@ -11,6 +11,7 @@
     "server:load": "pnpm --filter @top/server start --load --tools --seed 10000",
     "desktop": "pnpm --filter @top/desktop dev",
     "web": "pnpm --filter @top/desktop dev:web",
+    "dev:fake": "node --import tsx scripts/dev-fake.ts",
     "bench": "pnpm --filter @top/desktop bench",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

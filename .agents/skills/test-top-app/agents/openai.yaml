@@ -1,0 +1,4 @@
+interface:
+  display_name: "Top App Testing"
+  short_description: "Check Top's UI in T3's Browser panel against fake bots"
+  default_prompt: "Use $test-top-app to verify the affected flow in a real client."
