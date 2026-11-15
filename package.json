@@ -1,5 +1,6 @@
 {
   "name": "top",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.20.0",
@@ -15,13 +16,16 @@
     "test": "pnpm -r test",
     "check": "biome check .",
     "fix": "biome check --write .",
-    "wire": "node --import tsx scripts/wire.ts"
+    "wire": "node --import tsx scripts/wire.ts",
+    "build:daemon": "node --import tsx scripts/build-daemon.ts",
+    "build:desktop": "node --import tsx scripts/build-desktop.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@effect/language-service": "0.87.5",
     "@effect/tsgo": "0.67.1",
     "@types/node": "^24.19.2",
+    "esbuild": "0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "5.1.0"

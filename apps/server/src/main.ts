@@ -25,6 +25,7 @@ import { join, resolve } from "node:path";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DEFAULT_PORT } from "@top/protocol";
@@ -38,11 +39,13 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Attachments from "./attachments.ts";
 import { AuthFile } from "./auth.ts";
+import { BUILD } from "./build.ts";
 import * as ChatGPT from "./chatgpt.ts";
 import * as Daemon from "./daemon.ts";
 import * as Events from "./events.ts";
 import { BOT_NAMES, FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "./fake-bots.ts";
 import * as Home from "./home.ts";
+import { DEFAULT_MODEL, install, installLayout } from "./installation.ts";
 import { ForegroundMs } from "./jobs.ts";
 import { startLoad } from "./load.ts";
 import * as Logger from "./logger.ts";
@@ -55,6 +58,7 @@ import * as Sqlite from "./sqlite.ts";
 import * as Store from "./store.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
 import { makeFakeTools } from "./tools.ts";
+import * as Updates from "./updates.ts";
 import { botFolder, computerTools, ensureFolder, FILES_FOLDER, workspaceSection } from "./workspace.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
@@ -230,11 +234,18 @@ const program = (args: Args) =>
     // the tailnet, to the daemon's tailnet address, which passes it on).
     const oauthPort = args.port + 1;
     const storeLayer = Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: home.database })));
-    const daemonLayer = Daemon.layer.pipe(
+    // Installed from a release (`top install`; the launcher says where): it updates itself, when the user asks.
+    const installed = BUILD.channel && process.env.TOP_DAEMON_DIR ? installLayout(home.home) : undefined;
+    // TOP_RELEASES_URL: another place to get releases from (a mirror, or a test's stand-in for GitHub).
+    const releasesUrl = process.env.TOP_RELEASES_URL;
+    const updatesLayer = installed
+      ? Updates.layer({ layout: installed, ...(releasesUrl ? { releasesUrl } : {}) }).pipe(Layer.provide(NodeHttpClient.layerUndici))
+      : Layer.empty;
+    const daemonLayer = Layer.merge(Daemon.layer, updatesLayer).pipe(
       Layer.provideMerge(kit),
       Layer.provideMerge(
         Layer.mergeAll(
-          Mcp.layer({ oauthPort, redirectOrigin: tailnet?.origin, clientInfo: { name: "Top", version: "0.0.0" } }),
+          Mcp.layer({ oauthPort, redirectOrigin: tailnet?.origin, clientInfo: { name: "Top", version: BUILD.version } }),
           Attachments.layer(home.server),
         ),
       ),
@@ -286,12 +297,45 @@ const logout = Command.make("logout", { home: homeFlag }, ({ home }) => Effect.f
   Command.withDescription("Forget the ChatGPT sign-in."),
 );
 
+const installCommand = Command.make(
+  "install",
+  {
+    home: homeFlag,
+    model: lastOptional(Flag.String("model").pipe(Flag.withDescription(`The bots' model (default ${DEFAULT_MODEL})`))),
+    tailscale: toggle("tailscale", false),
+    tailscaleAllow: Flag.String("tailscale-allow").pipe(Flag.atLeast(0)),
+    start: toggle("start", true),
+  },
+  ({ home, model, tailscale, tailscaleAllow, start }) =>
+    Effect.gen(function* () {
+      const layout = yield* homeOf(home);
+      // Flags given: the daemon runs with these. None: it keeps the ones it had.
+      const given = Option.isSome(model) || tailscale || tailscaleAllow.length > 0;
+      const args = given
+        ? [
+            "--model",
+            Option.getOrElse(model, () => DEFAULT_MODEL),
+            ...(tailscale || tailscaleAllow.length ? ["--tailscale"] : []),
+            ...tailscaleAllow.flatMap((who) => ["--tailscale-allow", who]),
+          ]
+        : undefined;
+      yield* install({ home: layout.home, args, start }).pipe(
+        Effect.catchTag("InstallError", (error) =>
+          Effect.andThen(
+            Effect.logError(error.message),
+            Effect.sync(() => process.exit(1)),
+          ),
+        ),
+      );
+    }),
+).pipe(Command.withDescription("Install this release of the daemon in Top's home, run it with systemd, and let it update itself."));
+
 const command = Command.make("top", flags, program).pipe(
   Command.withDescription("The Top daemon: runs your bots and serves the apps."),
-  Command.withSubcommands([login, logout]),
+  Command.withSubcommands([login, logout, installCommand]),
 );
 
-Command.run(command, { version: "0.0.0" }).pipe(
+Command.run(command, { version: BUILD.version }).pipe(
   Effect.provide(Layer.mergeAll(NodeServices.layer, Logger.layer)),
   // A second Ctrl-C while shutting down exits at once.
   NodeRuntime.runMain({ disableErrorReporting: false }),

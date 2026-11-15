@@ -30,6 +30,7 @@
  * not something a caller can handle, so the store's Effects die on it instead of failing.
  */
 import { randomBytes, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
 import { type Attachment, Attachment as AttachmentSchema, type FileChange, McpServerConfig, MessageSource, ToolOutcome } from "@top/protocol";
 import * as Clock from "effect/Clock";
@@ -310,6 +311,25 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
   }),
 };
 
+/**
+ * Data a newer Top has migrated can't be read by this one: its tables have changed in ways this build
+ * doesn't know. (The Migrator would skip the unknown migrations and carry on.) Happens after going back to
+ * an older version, e.g. switching a daemon from Nightly to Stable by hand.
+ */
+const refuseNewerData = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const ledger = yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
+  if (ledger.length === 0) return;
+  const known = Math.max(...Object.keys(MIGRATIONS).map((key) => Number.parseInt(key, 10)));
+  const newer = yield* sql<{ migration_id: number; name: string }>`
+    SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id > ${known} ORDER BY migration_id`;
+  if (newer.length === 0) return;
+  return yield* new Migrator.MigrationError({
+    kind: "BadState",
+    message: `This data was written by a newer version of Top (it has migration ${newer.map((m) => `${m.migration_id}_${m.name}`).join(", ")}), so this version can't open it. Update Top, or start the version that wrote it.`,
+  });
+});
+
 type Row = Record<string, unknown>;
 
 // A row that doesn't match its schema is a broken file or a bug, like a failed query. (One argument
@@ -336,6 +356,9 @@ const contextOf = (row: Row): TranscriptMessage => {
   const { kind, message } = contextRow(row);
   return transcriptMessage(kind, message);
 };
+
+/** Set (a store flag) by an update just before the daemon restarts on the new version; see Daemon.start. */
+export const PLANNED_RESTART = "planned_restart";
 
 // ── the service ──────────────────────────────────────────────────────────────────
 
@@ -365,6 +388,13 @@ export class Store extends Context.Service<
     /** A flag kept in the meta table (e.g. that the first bots were made, so deleting them all doesn't bring them back). */
     readonly flag: (key: string) => Effect.Effect<boolean>;
     readonly setFlag: (key: string) => Effect.Effect<void>;
+    readonly clearFlag: (key: string) => Effect.Effect<void>;
+    /**
+     * The database to go back to if an update won't start: a copy as of now at `path` (replacing one an
+     * earlier try left), under a new id so clients drop what the failed version sent them, and with
+     * PLANNED_RESTART set so the bots' recovery after a rollback isn't counted as a crash.
+     */
+    readonly backup: (path: string) => Effect.Effect<void>;
     readonly setRunActive: (bot: number, active: boolean) => Effect.Effect<void>;
     readonly setRestarts: (bot: number, restarts: number) => Effect.Effect<void>;
     /** `provider/model-id`. Takes effect when the daemon next starts. */
@@ -500,6 +530,7 @@ const make = Effect.gen(function* () {
   // Durable before a write returns; foreign keys checked. Outside any transaction, as SQLite requires.
   yield* sql`PRAGMA synchronous = FULL`;
   yield* sql`PRAGMA foreign_keys = ON`;
+  yield* refuseNewerData;
   yield* Migrator.make({})({ loader: Migrator.fromRecord(MIGRATIONS) });
 
   // A failed query is a broken disk or a bug: nothing a caller could do about it.
@@ -582,6 +613,17 @@ const make = Effect.gen(function* () {
       purgeBot,
       flag: (key) => Effect.map(first(sql`SELECT 1 AS one FROM meta WHERE key = ${`flag:${key}`}`), (row) => row !== undefined),
       setFlag: (key) => Effect.asVoid(q(sql`INSERT OR IGNORE INTO meta (key, value) VALUES (${`flag:${key}`}, '1')`)),
+      clearFlag: (key) => Effect.asVoid(q(sql`DELETE FROM meta WHERE key = ${`flag:${key}`}`)),
+      backup: (path) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => rm(path, { force: true }));
+          yield* q(sql`VACUUM INTO ${path}`);
+          yield* q(sql`ATTACH DATABASE ${path} AS backup`);
+          yield* q(sql`UPDATE backup.meta SET value = ${randomUUID()} WHERE key = 'id'`).pipe(
+            Effect.andThen(q(sql`INSERT OR IGNORE INTO backup.meta (key, value) VALUES (${`flag:${PLANNED_RESTART}`}, '1')`)),
+            Effect.ensuring(q(sql`DETACH DATABASE backup`)),
+          );
+        }),
       setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
       setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
       setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),

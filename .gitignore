@@ -5,3 +5,4 @@ out/
 *.sqlite-*
 .data/
 bench-results.json
+release/

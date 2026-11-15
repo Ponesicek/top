@@ -35,7 +35,7 @@ import type { ThinkingLevel } from "./loop.ts";
 import { Mcp } from "./mcp.ts";
 import { type BotRunner, makeRunner } from "./runner.ts";
 import { seedHistory } from "./seed.ts";
-import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
+import { type BotRow, type InboxRow, PLANNED_RESTART, Store, type StoredEntry } from "./store.ts";
 import type { TopTool } from "./tools.ts";
 import { makeWakeClock, type WakeClock } from "./wakes.ts";
 import { textOf } from "./wire.ts";
@@ -402,8 +402,11 @@ const make = Effect.gen(function* () {
     start: Effect.gen(function* () {
       const lost = yield* jobs.recover;
       if (lost) yield* Effect.log(`${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
+      // Restarted for an update (see updates.ts): the bots pick their tasks back up, as after any restart.
+      const planned = yield* store.flag(PLANNED_RESTART);
+      if (planned) yield* store.clearFlag(PLANNED_RESTART);
       for (const live of bots.values()) {
-        const report = yield* live.runner.recover;
+        const report = yield* live.runner.recover(planned);
         if (report) yield* Effect.log(`${live.runner.name}: ${report}`);
       }
       for (const live of bots.values()) yield* live.runner.start;

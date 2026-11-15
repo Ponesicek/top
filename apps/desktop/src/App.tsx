@@ -11,6 +11,7 @@ import { PerfHud } from "./components/PerfHud.tsx";
 import { Settings } from "./components/Settings.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
+import { UpdatePopup } from "./components/UpdatePopup.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { togglePanel, useBotFiles, usePanel } from "./files.ts";
@@ -214,6 +215,8 @@ export function App() {
           }}
         />
         {hud && <PerfHud />}
+        {/* Settings has its own Updates section. */}
+        {!settingsOpen && <UpdatePopup onOpenSettings={openSettings} />}
       </div>
     </TooltipProvider>
   );

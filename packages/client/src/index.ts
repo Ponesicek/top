@@ -17,12 +17,15 @@ import {
   Attachment,
   type BotId,
   type BotSummary,
+  type Channel,
   type FileView,
   type McpServerConfig,
   type McpServerId,
   type McpServerView,
+  PROTOCOL_VERSION,
   type ResultOf,
   type ServerFrame,
+  type UpdateView,
   type Viewer,
 } from "@top/protocol";
 import * as Duration from "effect/Duration";
@@ -42,6 +45,7 @@ export type {
   Attachment,
   BotId,
   BotStatus,
+  Channel,
   Entry,
   FileChange,
   FileView,
@@ -55,14 +59,20 @@ export type {
   Seq,
   ToolCallView,
   ToolOutcome,
+  UpdateRelease,
+  UpdateView,
   Viewer,
   WhenBusy,
 } from "@top/protocol";
 export {
   BotSummary,
+  CHANNELS,
   CHATGPT_BACKGROUND_NOTICE,
   CHATGPT_REDIRECT,
   CHATGPT_USAGE_URL,
+  channelName,
+  channelOf,
+  compareVersions,
   isModelImage,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
@@ -123,6 +133,15 @@ export type TopSnapshot = {
   readonly tailnetUrl: string | undefined;
   /** Who Tailscale says this client is, when it connected over the tailnet. */
   readonly viewer: Viewer | undefined;
+  /** The daemon's version, and the releases it follows (`channel` is absent on one run from a checkout). */
+  readonly server: { readonly version: string | undefined; readonly channel: Channel | undefined } | undefined;
+  /** The daemon's updates; `undefined` on one that doesn't update itself (run from a checkout, or not installed). */
+  readonly update: UpdateView | undefined;
+  /**
+   * The daemon speaks another version of the protocol, so this client can't work with it: `client`
+   * when this client is the older one (update the app), `server` when the daemon is.
+   */
+  readonly outdated: "client" | "server" | undefined;
 };
 
 export class TopClient {
@@ -159,6 +178,9 @@ export class TopClient {
       ready: false,
       tailnetUrl: undefined,
       viewer: undefined,
+      server: undefined,
+      update: undefined,
+      outdated: undefined,
     };
     this.#connection = Effect.runSync(
       makeConnection(
@@ -283,6 +305,21 @@ export class TopClient {
     return this.#command({ t: "mcpRetry", id });
   }
 
+  /** Ask the daemon to look for a newer release on its channel now. */
+  checkForUpdate(): Promise<void> {
+    return this.#command({ t: "checkForUpdate" });
+  }
+
+  /** Update the daemon to `version` (the one `update.available` offers). It restarts, so the connection drops and comes back. */
+  installUpdate(version: string): Promise<void> {
+    return this.#command({ t: "installUpdate", version });
+  }
+
+  /** Which releases the daemon follows. */
+  setUpdateChannel(channel: Channel): Promise<void> {
+    return this.#command({ t: "setUpdateChannel", channel });
+  }
+
   /** A request to the daemon, as a Promise for the UI: it rejects with the protocol's error (a message for the user). */
   #request<F extends RequestFrame>(frame: F): Promise<ResultOf<F["t"]>> {
     return this.#run.promise(this.#connection.request(frame));
@@ -371,6 +408,10 @@ export class TopClient {
   #receive(frame: ServerFrame) {
     switch (frame.t) {
       case "welcome": {
+        const outdated = frame.protocol === PROTOCOL_VERSION ? undefined : frame.protocol > PROTOCOL_VERSION ? "client" : "server";
+        if (outdated !== this.#snapshot.outdated) this.#publish({ outdated });
+        if (frame.version !== this.#snapshot.server?.version || frame.channel !== this.#snapshot.server?.channel)
+          this.#publish({ server: { version: frame.version, channel: frame.channel } });
         this.#filesPath = frame.filesPath;
         this.#attachmentsPath = frame.attachmentsPath;
         if (frame.tailnetUrl !== this.#snapshot.tailnetUrl || JSON.stringify(frame.viewer) !== JSON.stringify(this.#snapshot.viewer))
@@ -419,6 +460,9 @@ export class TopClient {
         return;
       case "account":
         this.#publish({ account: frame.account });
+        return;
+      case "update":
+        this.#publish({ update: frame.update });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);
