@@ -256,6 +256,7 @@ top.subscribe(() => {
   if (currentServer !== undefined) {
     dropCache(cachePrefix);
     registry.set(seenAtom, {});
+    registry.set(pinsAtom, []);
   }
   currentServer = serverId;
   safeSet(cacheKey("server"), serverId);
@@ -271,4 +272,52 @@ export function markSeen(id: BotId, seq: number) {
 
 export function useSeen(): Record<string, number> {
   return useAtomValue(seenAtom);
+}
+
+// ── pins: the bots kept at the top of the sidebar, in the order they were pinned, kept locally ──
+
+const pinsKey = cacheKey("pins");
+const pinsAtom = Atom.make<readonly BotId[]>((cachedServer && cached(pinsKey, Schema.Array(Schema.Int))) || []).pipe(Atom.keepAlive);
+
+function setPins(next: readonly BotId[]) {
+  registry.set(pinsAtom, next);
+  safeSet(pinsKey, JSON.stringify(next));
+}
+
+/** Keep a bot at the top of the sidebar, below the bots pinned before it. */
+export function pin(id: BotId) {
+  const pins = registry.get(pinsAtom);
+  if (!pins.includes(id)) setPins([...pins, id]);
+}
+
+export function unpin(id: BotId) {
+  const pins = registry.get(pinsAtom);
+  if (pins.includes(id)) setPins(pins.filter((p) => p !== id));
+}
+
+// A deleted bot's pin goes with it: its id can come back for a new bot.
+top.subscribe(() => {
+  const { bots, ready } = top.getSnapshot();
+  const pins = registry.get(pinsAtom);
+  if (!ready || pins.length === 0) return;
+  const live = new Set(bots.map((b) => b.id));
+  if (pins.some((id) => !live.has(id))) setPins(pins.filter((id) => live.has(id)));
+});
+
+export function usePins(): readonly BotId[] {
+  return useAtomValue(pinsAtom);
+}
+
+/** The sidebar's two groups: pinned bots in pin order, then the rest in the daemon's order. */
+export function sidebarGroups(bots: readonly BotSummary[], pins: readonly BotId[]): { pinned: BotSummary[]; rest: BotSummary[] } {
+  const byId = new Map(bots.map((b) => [b.id, b]));
+  const pinned = pins.flatMap((id) => byId.get(id) ?? []);
+  const set = new Set(pinned.map((b) => b.id));
+  return { pinned, rest: bots.filter((b) => !set.has(b.id)) };
+}
+
+/** Every bot in the order the sidebar shows them, which Ctrl+1…9 and Alt+↑/↓ follow. */
+export function sidebarOrder(): BotSummary[] {
+  const { pinned, rest } = sidebarGroups(top.getSnapshot().bots, registry.get(pinsAtom));
+  return [...pinned, ...rest];
 }

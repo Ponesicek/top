@@ -17,7 +17,7 @@ import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { togglePanel, useBotFiles, usePanel } from "./files.ts";
 import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
-import { conversation, markSeen, top, useBot, useClient, useRoster } from "./top.ts";
+import { conversation, markSeen, sidebarOrder, top, useBot, useClient, useRoster } from "./top.ts";
 
 // For `pnpm bench` and `pnpm screenshot` (electron/bench-driver.js): select the i-th bot.
 declare global {
@@ -125,13 +125,13 @@ export function App() {
         e.preventDefault();
         setSettingsOpen(false);
       } else if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
-        const target = top.getSnapshot().bots[Number(e.key) - 1];
+        const target = sidebarOrder()[Number(e.key) - 1];
         if (target) {
           e.preventDefault();
           select(target.id);
         }
       } else if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-        const list = top.getSnapshot().bots;
+        const list = sidebarOrder();
         const i = list.findIndex((b) => String(b.id) === String(bot?.id));
         const next = list[(i + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length];
         if (next) {
