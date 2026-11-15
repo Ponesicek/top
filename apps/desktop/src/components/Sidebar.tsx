@@ -1,9 +1,10 @@
+import { ContextMenu } from "@base-ui/react/context-menu";
 import type { BotId, BotSummary } from "@top/client";
-import { Plus, Settings, Trash2 } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
+import { memo, type ReactNode, useCallback, useState } from "react";
 import icon from "../../assets/icon.svg";
 import { cn } from "../lib/utils.ts";
-import { serverUrl, useClient, useSeen } from "../top.ts";
+import { pin, serverUrl, sidebarGroups, unpin, useClient, usePins, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";
 import { StatusDot } from "./StatusDot.tsx";
@@ -39,29 +40,114 @@ function wakeLabel(at: number): string {
   return `Wakes ${when.toLocaleDateString([], { month: "short", day: "numeric" })}`;
 }
 
-const BotItem = memo(function BotItem({
+const MENU_POPUP =
+  "min-w-44 origin-(--transform-origin) rounded-xl bg-popover p-1 text-foreground shadow-popover outline-none transition duration-100 data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0 data-instant:duration-0";
+const MENU_ITEM =
+  "flex cursor-default items-center gap-2.5 rounded-lg px-2.5 py-1.75 text-small leading-none font-label outline-none select-none data-highlighted:bg-foreground/7 [&_svg]:text-muted-foreground";
+
+/** A bot's right-click menu: pin it to the top (or unpin it), or delete it. `children` is what opens it. */
+function BotMenu({
   bot,
-  selected,
-  unread,
-  index,
-  onSelect,
+  pinned,
   onDelete,
+  className,
+  children,
 }: {
+  bot: BotSummary;
+  pinned: boolean;
+  onDelete: (bot: BotSummary) => void;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger className={className}>{children}</ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Positioner className="z-40" collisionPadding={8}>
+          {/* Keys stay in the menu: the app's shortcuts listen on the window. */}
+          <ContextMenu.Popup className={MENU_POPUP} onKeyDown={(e) => e.stopPropagation()}>
+            <ContextMenu.Item className={MENU_ITEM} onClick={() => (pinned ? unpin(bot.id) : pin(bot.id))}>
+              {pinned ? <PinOff size={15} strokeWidth={1.9} /> : <Pin size={15} strokeWidth={1.9} />}
+              {pinned ? "Unpin" : "Pin to top"}
+            </ContextMenu.Item>
+            <ContextMenu.Separator className="mx-1.5 my-1 h-px bg-border" />
+            <ContextMenu.Item
+              className={cn(MENU_ITEM, "text-destructive-foreground data-highlighted:bg-destructive-surface [&_svg]:text-current")}
+              onClick={() => onDelete(bot)}
+            >
+              <Trash2 size={15} strokeWidth={1.9} />
+              Delete…
+            </ContextMenu.Item>
+          </ContextMenu.Popup>
+        </ContextMenu.Positioner>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
+  );
+}
+
+type ItemProps = {
   bot: BotSummary;
   selected: boolean;
   unread: boolean;
   index: number;
   onSelect: (id: BotId) => void;
   onDelete: (bot: BotSummary) => void;
-}) {
+};
+
+const shortcutFor = (index: number) => (index < 9 ? ` (Ctrl+${index + 1})` : "");
+
+/** A pinned bot: a tile in the grid above the list, its avatar large and its name under it. */
+const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
+  const busy = bot.status !== "idle";
+  const fresh = unread && !busy;
+  // Working or something new: the status sits on the avatar's shoulder (a failed bot's red dot is the avatar's own).
+  const mark = (busy && bot.status !== "failed") || fresh;
+  const status = fresh ? "Idle · new messages" : statusLabel(bot);
+  return (
+    <BotMenu bot={bot} pinned onDelete={onDelete} className="flex min-w-0">
+      <button
+        type="button"
+        className={cn(
+          "flex min-w-0 flex-1 flex-col items-center gap-1.5 rounded-2xl px-1 pt-2.5 pb-2 transition duration-90 hover:bg-foreground/5 narrow:rounded-xl narrow:py-2.25",
+          selected
+            ? "bg-sidebar-row-selected shadow-row-selected [--avatar-ring:var(--color-sidebar-row-selected)] hover:bg-sidebar-row-selected"
+            : "[--avatar-ring:var(--color-sidebar)]",
+        )}
+        onClick={() => onSelect(bot.id)}
+        title={`${bot.name}${shortcutFor(index)} · ${status}${bot.description ? `\n${bot.description}` : ""}`}
+        aria-current={selected || undefined}
+      >
+        <span className="relative flex">
+          <Avatar name={bot.name} status={bot.status} size="lg" className="size-12 narrow:size-9" />
+          {mark && (
+            <span className="absolute -top-0.5 -right-0.5 grid size-3.75 place-items-center rounded-full bg-(--avatar-ring)" aria-hidden>
+              <StatusDot status={bot.status} fresh={fresh} />
+            </span>
+          )}
+        </span>
+        <span
+          className={cn(
+            "line-clamp-2 w-full text-center text-small leading-tight tracking-name break-words narrow:hidden",
+            fresh ? "font-heading text-foreground" : "font-label text-secondary-foreground",
+            selected && "text-foreground",
+          )}
+        >
+          {bot.name}
+        </span>
+      </button>
+    </BotMenu>
+  );
+});
+
+const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
   // A working bot shows its work, not "unread"; an idle bot with something new swaps its gray ring for blue.
   const fresh = unread && !busy;
   const failed = bot.status === "failed";
-  const shortcut = index < 9 ? ` (Ctrl+${index + 1})` : "";
+  const shortcut = shortcutFor(index);
   return (
     // Delete shows on hover (or keyboard focus), in place of the status beside the name.
-    <div className="group/bot relative flex flex-col">
+    <BotMenu bot={bot} pinned={false} onDelete={onDelete} className="group/bot relative flex flex-col">
       <button
         type="button"
         className={cn(
@@ -127,7 +213,7 @@ const BotItem = memo(function BotItem({
           <Trash2 size={14} strokeWidth={1.9} />
         </Button>
       </Tooltip>
-    </div>
+    </BotMenu>
   );
 });
 
@@ -153,6 +239,23 @@ export function Sidebar({
   onOpenSettings: () => void;
 }) {
   const bots = useClient((snapshot) => snapshot.bots);
+  const pins = usePins();
+  const { pinned, rest } = sidebarGroups(bots, pins);
+  const item = (Item: typeof BotItem, bot: BotSummary, index: number) => {
+    // While settings fill the main area, no bot is open.
+    const isSelected = !settingsOpen && bot.id === selected;
+    return (
+      <Item
+        key={bot.id}
+        bot={bot}
+        index={index}
+        selected={isSelected}
+        unread={!isSelected && bot.lastSeq > (seen[bot.id] ?? 0)}
+        onSelect={onSelect}
+        onDelete={askDelete}
+      />
+    );
+  };
   const connection = useClient((snapshot) => snapshot.connection);
   const seen = useSeen();
   const [deleting, setDeleting] = useState<BotSummary>();
@@ -180,30 +283,19 @@ export function Sidebar({
           </Badge>
         )}
       </div>
-      <div className="flex items-center justify-between px-5 pt-4 pb-2.5 text-micro font-semibold text-secondary-foreground narrow:hidden">
-        Bots
-        <Tooltip content="New bot">
-          <Button variant="ghost" size="icon-xs" className="-m-1.5" onClick={onNewBot} aria-label="New bot">
-            <Plus size={16} strokeWidth={2} />
-          </Button>
-        </Tooltip>
-      </div>
       <nav className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-0.5 pb-2.5">
-        {bots.map((bot, i) => {
-          // While settings fill the main area, no bot is open.
-          const isSelected = !settingsOpen && bot.id === selected;
-          return (
-            <BotItem
-              key={bot.id}
-              bot={bot}
-              index={i}
-              selected={isSelected}
-              unread={!isSelected && bot.lastSeq > (seen[bot.id] ?? 0)}
-              onSelect={onSelect}
-              onDelete={askDelete}
-            />
-          );
-        })}
+        {/* Pinned bots, as Grok Bot shows them: a grid of large avatars above the list, in the order they were pinned. */}
+        {pinned.length > 0 && <div className="grid grid-cols-3 gap-1 pt-1.5 narrow:grid-cols-1">{pinned.map((bot, i) => item(PinnedTile, bot, i))}</div>}
+        {pinned.length > 0 && rest.length > 0 && <div className="mx-2 my-1.5 hidden h-px bg-border narrow:block" aria-hidden />}
+        <div className="flex items-center justify-between px-2.5 pt-3.5 pb-2 text-micro font-semibold text-secondary-foreground narrow:hidden">
+          Bots
+          <Tooltip content="New bot">
+            <Button variant="ghost" size="icon-xs" className="-m-1.5" onClick={onNewBot} aria-label="New bot">
+              <Plus size={16} strokeWidth={2} />
+            </Button>
+          </Tooltip>
+        </div>
+        {rest.map((bot, i) => item(BotItem, bot, pinned.length + i))}
       </nav>
       {/* Always mounted: a dialog that mounts already open has no closed state to animate in from. */}
       <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />
