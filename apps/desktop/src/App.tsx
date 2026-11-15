@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { type AvatarStyle, applyAvatarStyle, readAvatarStyle } from "./avatarStyle.ts";
 import { type ChatStyle, readChatStyle, readShowTools, saveChatStyle, saveShowTools } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
+import { SignInGate } from "./components/ChatGPT.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
 import { FilesPanel } from "./components/files/FilesPanel.tsx";
@@ -217,6 +218,7 @@ export function App() {
         {hud && <PerfHud />}
         {/* Settings has its own Updates section. */}
         {!settingsOpen && <UpdatePopup onOpenSettings={openSettings} />}
+        <SignInGate />
       </div>
     </TooltipProvider>
   );

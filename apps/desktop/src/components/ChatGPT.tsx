@@ -1,7 +1,7 @@
 /**
- * Sign in with ChatGPT, from the app: the settings section, the dialog that signs in, and the line under
- * the composer that says the bots are using the user's ChatGPT plan (OpenAI's guidelines ask for that
- * line and its "Manage usage" link).
+ * Sign in with ChatGPT, from the app: the settings section (which says the bots are using the user's
+ * ChatGPT plan, with its "Manage usage" link), the dialog that signs in, and the gate that holds the app
+ * until the bots can answer.
  *
  * The browser comes back to 127.0.0.1:1455 on the computer it ran on. On the daemon's computer, the
  * daemon is listening there and the dialog closes by itself. Anywhere else, that page fails to load, and
@@ -28,8 +28,11 @@ function ManageUsage() {
   );
 }
 
-/** The dialog's steps: agree to background use, then sign in (and paste the address, from elsewhere). */
-function SignInForm({ onDone }: { onDone: () => void }) {
+/**
+ * The dialog's steps: agree to background use, then sign in (and paste the address, from elsewhere).
+ * `required`: the gate, which has no Cancel; Back starts over instead.
+ */
+function SignInForm({ onDone, required = false }: { onDone: () => void; required?: boolean }) {
   const account = useAccount();
   const [url, setUrl] = useState<string>();
   const [pasted, setPasted] = useState("");
@@ -81,7 +84,7 @@ function SignInForm({ onDone }: { onDone: () => void }) {
         </p>
         {error && <DialogError>{error}</DialogError>}
         <DialogFooter>
-          <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>
+          {!required && <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>}
           <Button size="wide" disabled={busy} onClick={() => void begin()}>
             {busy ? "Starting…" : "Agree and continue"}
           </Button>
@@ -116,7 +119,24 @@ function SignInForm({ onDone }: { onDone: () => void }) {
         </Field>
         {(error ?? account?.error) && <DialogError>{error ?? account?.error}</DialogError>}
         <DialogFooter>
-          <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>
+          {required ? (
+            <Button
+              variant="outline"
+              size="wide"
+              onClick={() => {
+                // Drop the sign-in, so the daemon's listener on :1455 goes too.
+                void top.chatgptSignInCancel().catch(() => {});
+                started.current = false;
+                setUrl(undefined);
+                setPasted("");
+                setError(undefined);
+              }}
+            >
+              Back
+            </Button>
+          ) : (
+            <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>
+          )}
           <Button type="submit" size="wide" disabled={busy || !pasted.trim()}>
             {busy ? "Signing in…" : "Finish"}
           </Button>
@@ -203,25 +223,17 @@ export function AccountSection() {
   );
 }
 
-/** Under the composer: the bots are using the user's ChatGPT plan, or can't answer until they sign in. */
-export function PlanLine() {
+/**
+ * Not signed in, on a daemon whose model takes Sign in with ChatGPT: the bots can't answer, so the app
+ * asks for it first, in a dialog that doesn't close until they can.
+ */
+export function SignInGate() {
   const account = useAccount();
-  const [dialog, setDialog] = useState(false);
-  if (!account) return null;
-  if (account.signedIn === "chatgpt")
-    return (
-      <span className="flex-none text-muted-foreground">
-        Using ChatGPT plan · <ManageUsage />
-      </span>
-    );
-  if (account.signedIn || !account.canSignIn) return null;
+  const open = !!account && !account.signedIn && account.canSignIn;
   return (
-    <span className="flex-none text-warning-foreground">
-      Not signed in ·{" "}
-      <button type="button" className="text-link underline-offset-2 hover:underline" onClick={() => setDialog(true)}>
-        Continue with ChatGPT
-      </button>
-      <SignInDialog open={dialog} onOpenChange={setDialog} />
-    </span>
+    // Controlled and never closed from inside: Escape and outside clicks ask to close, and nothing listens.
+    <Dialog open={open} disablePointerDismissal>
+      <DialogPopup className="w-125">{open && <SignInForm required onDone={() => {}} />}</DialogPopup>
+    </Dialog>
   );
 }
