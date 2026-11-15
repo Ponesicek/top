@@ -119,9 +119,11 @@ function serverRunning(version: string) {
     const look = () => {
       const { server, update } = top.getSnapshot();
       if (server?.version === version) return done(resolve);
-      if (update?.rolledBack === version) return done(() => reject(new Error(update.error ?? `Top ${version} didn't start.`)));
       if (update && update.state !== "idle" && update.state !== "failed") started = true;
-      else if (started && update?.state === "failed") done(() => reject(new Error(update.error ?? "The server couldn't update.")));
+      else if (!started) return;
+      // The server clears an earlier try's rollback when this one starts.
+      else if (update?.rolledBack === version) done(() => reject(new Error(update.error ?? `Top ${version} didn't start.`)));
+      else if (update?.state === "failed") done(() => reject(new Error(update.error ?? "The server couldn't update.")));
     };
     const done = (settle: () => void) => {
       unsubscribe();

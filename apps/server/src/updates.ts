@@ -166,7 +166,7 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
       let checkedAt: number | undefined;
       let error: string | undefined;
       // The launcher left word that a version didn't start, and went back to this one.
-      const rolledBack = yield* Effect.promise(() =>
+      let rolledBack = yield* Effect.promise(() =>
         readFile(layout.rolledBack, "utf8").then(
           (text) => text.trim() || undefined,
           () => undefined,
@@ -261,6 +261,8 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
           if (release?.version !== version)
             return yield* new UpdateError({ message: `Top ${version} isn't the newest ${channelName(channel)} release any more. Check again.` });
 
+          // A new try: the last one's rollback is history.
+          rolledBack = undefined;
           yield* set("downloading");
           yield* download(release).pipe(Effect.catchTag("UpdateError", (e) => Effect.andThen(set("failed", e.message), Effect.fail(e))));
 

@@ -128,7 +128,7 @@ async function github(work: string, options: { damaged?: boolean } = {}) {
   return { releasesUrl: `${base}/repos/Ponesicek/Top/releases` };
 }
 
-async function setup(options: { damaged?: boolean; channel?: string } = {}) {
+async function setup(options: { damaged?: boolean; channel?: string; rolledBack?: string } = {}) {
   const work = mkdtempSync(join(tmpdir(), "top-updates-"));
   cleanup.push(() => rmSync(work, { recursive: true, force: true }));
   const home = join(work, "home");
@@ -138,6 +138,10 @@ async function setup(options: { damaged?: boolean; channel?: string } = {}) {
   if (options.channel) {
     mkdirSync(layout.dir, { recursive: true });
     writeFileSync(layout.channel, `${options.channel}\n`);
+  }
+  if (options.rolledBack) {
+    mkdirSync(layout.dir, { recursive: true });
+    writeFileSync(layout.rolledBack, `${options.rolledBack}\n`);
   }
   const { releasesUrl } = await github(work, options);
   let restarts = 0;
@@ -176,12 +180,15 @@ test("installing a release unpacks it beside the running one, moves `current`, b
 });
 
 test("trying an update again after a rollback replaces the old backup, which clients and bots see as a restart", async () => {
-  const { runtime, updates, store, home, restarts } = await setup({ channel: "nightly" });
+  const { runtime, updates, store, home, restarts } = await setup({ channel: "nightly", rolledBack: NIGHTLY });
+  assert.equal((await runtime.runPromise(updates.view)).rolledBack, NIGHTLY);
   // What the try before left: its backup, kept by the rollback.
   const backup = join(home, "server", `top.sqlite.before-${NIGHTLY}`);
   writeFileSync(backup, "the first try's backup");
   await runtime.runPromise(updates.install(NIGHTLY));
   assert.equal(restarts(), 1);
+  // This try's outcome, not the last one's, is what the app waits on.
+  assert.equal((await runtime.runPromise(updates.view)).rolledBack, undefined);
 
   const db = new DatabaseSync(backup, { readOnly: true });
   const meta = (key: string) => (db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
