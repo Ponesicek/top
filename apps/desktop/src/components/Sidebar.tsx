@@ -2,7 +2,6 @@ import { ContextMenu } from "@base-ui/react/context-menu";
 import type { BotId, BotSummary } from "@top/client";
 import { Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
 import { memo, type ReactNode, useCallback, useState } from "react";
-import icon from "../../assets/icon.svg";
 import { cn } from "../lib/utils.ts";
 import { pin, serverUrl, sidebarGroups, unpin, useClient, usePins, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
@@ -266,40 +265,15 @@ export function Sidebar({
   }, []);
   return (
     <aside className="flex min-w-0 flex-col border-r bg-sidebar [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
-      <div className="flex h-15 flex-none items-center justify-between pr-4 pl-4.5 narrow:justify-center narrow:p-0">
-        <span
-          className="inline-flex items-center gap-2.25 text-[17px] leading-none font-semibold tracking-[-0.03em] narrow:gap-0 narrow:text-[0px]"
-          role="img"
-          aria-label="Top"
-        >
-          {/* The app icon: a bot getting a pat on the head. */}
-          <img className="size-6" src={icon} alt="" draggable={false} />
-          top
-        </span>
-        {connection !== "open" && (
-          <Badge variant="warning" size="lg" className="narrow:hidden" title={host(serverUrl)}>
-            <i className="size-1.5 animate-blink rounded-full bg-current" />
-            {connection === "connecting" ? "Connecting" : "Reconnecting"}
-          </Badge>
-        )}
-      </div>
-      <nav className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-0.5 pb-2.5">
+      <nav className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-2.5 pb-2.5 mac-window:pt-11">
         {/* Pinned bots, as Grok Bot shows them: a grid of large avatars above the list, in the order they were pinned. */}
-        {pinned.length > 0 && <div className="grid grid-cols-3 gap-1 pt-1.5 narrow:grid-cols-1">{pinned.map((bot, i) => item(PinnedTile, bot, i))}</div>}
+        {pinned.length > 0 && <div className="grid grid-cols-3 gap-1 narrow:grid-cols-1">{pinned.map((bot, i) => item(PinnedTile, bot, i))}</div>}
         {pinned.length > 0 && rest.length > 0 && <div className="mx-2 my-1.5 hidden h-px bg-border narrow:block" aria-hidden />}
-        <div className="flex items-center justify-between px-2.5 pt-3.5 pb-2 text-micro font-semibold text-secondary-foreground narrow:hidden">
-          Bots
-          <Tooltip content="New bot">
-            <Button variant="ghost" size="icon-xs" className="-m-1.5" onClick={onNewBot} aria-label="New bot">
-              <Plus size={16} strokeWidth={2} />
-            </Button>
-          </Tooltip>
-        </div>
         {rest.map((bot, i) => item(BotItem, bot, pinned.length + i))}
       </nav>
       {/* Always mounted: a dialog that mounts already open has no closed state to animate in from. */}
       <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />
-      <div className="flex-none px-3 pt-2 pb-3">
+      <div className="flex flex-none items-center gap-2 px-3 pt-2 pb-3 narrow:flex-col-reverse narrow:px-0">
         <Tooltip content="Settings (Ctrl+,)" side="right">
           <Button
             variant="ghost"
@@ -311,6 +285,23 @@ export function Sidebar({
           >
             <Settings size={16} strokeWidth={1.8} />
             <span className="narrow:hidden">Settings</span>
+          </Button>
+        </Tooltip>
+        {connection !== "open" && (
+          <Badge variant="warning" size="lg" className="narrow:hidden" title={host(serverUrl)}>
+            <i className="size-1.5 animate-blink rounded-full bg-current" />
+            {connection === "connecting" ? "Connecting" : "Reconnecting"}
+          </Badge>
+        )}
+        <Tooltip content="New bot" side="right">
+          <Button
+            variant="outline"
+            size="icon"
+            className="ml-auto size-8 text-secondary-foreground hover:text-foreground narrow:ml-0"
+            onClick={onNewBot}
+            aria-label="New bot"
+          >
+            <Plus size={17} strokeWidth={1.9} />
           </Button>
         </Tooltip>
       </div>
