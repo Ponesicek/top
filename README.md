@@ -208,9 +208,12 @@ out). Its flags are in `~/.top/daemon/args`, one per line (default `--model open
 `top install --tailscale` adds `--tailscale`). `pnpm server` from a checkout never updates itself.
 
 **Updating.** The daemon and the app each follow a channel of their own, since one server serves
-many devices; they check now and then, and when you press **Check now**. A newer release shows a
-popup (**Update** or **Later**) and Settings → **Updates**. Nothing installs until you press Update.
-When the app and the server follow different channels, the app says so.
+many devices; they check now and then, and when you press the update button (in the sidebar, beside
+Settings) or **Check now** in Settings → **Updates**. A newer release turns that button into **Update**,
+which updates the server and then the app; hovering or focusing it shows what's new and how the update
+is going. Nothing installs until you press Update. When the app and the server follow different
+channels, the button's card says so. (`?fakeUpdates=available` in `pnpm dev:fake` pretends there's an
+update, to try it without one.)
 
 - **The server** downloads the new version, checks it against `SHA256SUMS`, unpacks it beside the
   running one, backs up `top.sqlite`, and restarts on it. Bots stop where they are and pick their
