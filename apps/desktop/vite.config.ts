@@ -5,7 +5,8 @@ import { defineConfig, type Plugin } from "vite";
 /**
  * Production builds get a strict CSP; dev skips it because React Refresh injects an inline script.
  * The bots' files come from the daemon over http(s) (see components/files): frames for pages and PDFs,
- * images and media, and fetches for Markdown and text.
+ * images and media, and fetches for Markdown and text. Fonts may be `data:` URLs: Vite inlines the small ones
+ * (JetBrains Mono's Cyrillic-extended subset).
  */
 function csp(): Plugin {
   return {
@@ -14,7 +15,7 @@ function csp(): Plugin {
     transformIndexHtml: (html) =>
       html.replace(
         "<!--csp-->",
-        `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; media-src http: https:; frame-src http: https:; connect-src ws: wss: http: https:">`,
+        `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: http: https:; media-src http: https:; frame-src http: https:; connect-src ws: wss: http: https:">`,
       ),
   };
 }
