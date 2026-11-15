@@ -51,7 +51,7 @@ class Daemon {
     return new Promise((resolveStart, reject) => {
       const child = spawn(
         process.execPath,
-        ["--import", "tsx", serverMain, "--port", String(this.port), "--data", this.dataDir, "--tps", "120", ...this.extra],
+        ["--import", "tsx", serverMain, "--port", String(this.port), "--home", this.dataDir, "--tps", "120", ...this.extra],
         {
           stdio: ["ignore", "pipe", "pipe"],
           env: { ...process.env, TOP_RETRY_DELAYS_MS: "200,200,200" },
@@ -88,7 +88,7 @@ class Daemon {
 
   effects(tool: string, phase: string): number {
     try {
-      return readFileSync(join(this.dataDir, "effects.jsonl"), "utf8")
+      return readFileSync(join(this.dataDir, "server", "effects.jsonl"), "utf8")
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as { tool: string; phase: string })

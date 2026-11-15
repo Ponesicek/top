@@ -247,7 +247,7 @@ const seenAtom = Atom.make<Readonly<Record<string, number>>>((cachedServer && ca
   Atom.keepAlive,
 );
 
-// A different daemon (another --data, or a reset): the client has dropped what it held from the old
+// A different daemon (another --home, or a reset): the client has dropped what it held from the old
 // one, so drop the cache and read marks too. They'd show its transcripts and hide new messages.
 let currentServer = cachedServer;
 top.subscribe(() => {

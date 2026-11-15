@@ -2,12 +2,15 @@
 // same UI runs in a browser (pnpm web) and the main process never sits on the hot path.
 
 import { execFile } from "node:child_process";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
 
 const here = dirname(fileURLToPath(import.meta.url));
-if (process.env.TOP_USER_DATA) app.setPath("userData", process.env.TOP_USER_DATA);
+// The profile (cache, settings) lives in Top's home beside the daemon's, not in Electron's default folder.
+const topHome = process.env.TOP_HOME ? resolve(process.env.TOP_HOME.replace(/^~(?=$|\/)/, homedir())) : join(homedir(), ".top");
+app.setPath("userData", process.env.TOP_USER_DATA ?? join(topHome, "desktop"));
 if (process.env.TOP_THEME === "dark" || process.env.TOP_THEME === "light") nativeTheme.themeSource = process.env.TOP_THEME;
 const devUrl = process.env.VITE_DEV_SERVER_URL;
 const query = process.env.TOP_QUERY ?? "";

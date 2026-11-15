@@ -27,7 +27,7 @@ execSync("pnpm exec vite build --logLevel error", { cwd: desktopDir, stdio: "inh
 let server;
 function startServer(extra = []) {
   return new Promise((resolve, reject) => {
-    server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", ...extra], {
+    server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--home", dataDir, "--load", ...extra], {
       stdio: ["ignore", "pipe", "inherit"],
     });
     server.stdout.on("data", (d) => String(d).includes("listening") && resolve());

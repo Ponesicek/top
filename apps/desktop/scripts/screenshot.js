@@ -18,7 +18,7 @@ const userData = mkdtempSync(join(tmpdir(), "top-shot-profile-"));
 
 // One command string: pnpm is a .cmd shim on Windows, which Node runs only through a shell.
 execSync("pnpm exec vite build --logLevel error", { cwd: desktopDir, stdio: "inherit" });
-const server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--data", dataDir, "--load", "--tools", "--seed", "40"], {
+const server = spawn(process.execPath, ["--import", "tsx", serverMain, "--port", String(port), "--home", dataDir, "--load", "--tools", "--seed", "40"], {
   stdio: ["ignore", "pipe", "inherit"],
 });
 await new Promise((r) => server.stdout.on("data", (d) => String(d).includes("listening") && r()));

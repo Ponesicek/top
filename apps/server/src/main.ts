@@ -2,15 +2,16 @@
  * The Top daemon: runs the bots 24/7 on its own agent loop with its own SQLite storage, and serves any
  * number of desktop and phone clients over one WebSocket each.
  *
- *   node --import tsx src/main.ts --model openai/gpt-6.1-sol [--thinking medium] [--workspace ~]   real bots
+ *   node --import tsx src/main.ts --model openai/gpt-6.1-sol [--thinking medium]   real bots
  *   node --import tsx src/main.ts [--load] [--tools] [--seed N] [--tps 100]          fake bots
- *   common: [--port 7357] [--host 127.0.0.1] [--data DIR] [--reset] [--no-compress]
+ *   common: [--port 7357] [--host 127.0.0.1] [--home DIR] [--reset] [--no-compress]
  *           [--tailscale [--tailscale-allow LOGIN|tag:TAG|DEVICE]... [--tailscale-port 7357]]
  *
- * With `--model`, the bots run on that model, signed in through pi's credentials (see auth.ts) or an
- * API key in the environment. Each works in its own folder, `<workspace>/bots/<name>`, with full access
- * to the computer (see workspace.ts). Without it they run on a scripted fake model with fake tools, for
- * development, tests and benchmarks.
+ * Everything the daemon keeps is in its home, `~/.top` (`$TOP_HOME`, or `--home`; see home.ts). With
+ * `--model`, the bots run on that model, signed in through Top's credentials (imported from pi's; see
+ * auth.ts) or an API key in the environment. Each works in its own folder, `~/.top/bots/<name>`, with
+ * full access to the computer (see workspace.ts). Without it they run on a scripted fake model with
+ * fake tools, for development, tests and benchmarks, in a home of their own (`.data/fake`).
  *
  * With `--tailscale`, the daemon is also at `wss://<device>.<tailnet>.ts.net:7357`, through the
  * computer's own Tailscale, for every device on the tailnet, or only whoever `--tailscale-allow` names
@@ -19,7 +20,6 @@
  * Everything the daemon opens is a scoped resource: on SIGINT or SIGTERM they close in reverse order
  * (load, Tailscale Serve, the listeners, the bots, MCP servers, the database).
  */
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -35,10 +35,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Attachments from "./attachments.ts";
-import { PiAuthFile, piAuthPath } from "./auth.ts";
+import { AuthFile, importFromPi } from "./auth.ts";
 import * as Daemon from "./daemon.ts";
 import * as Events from "./events.ts";
 import { BOT_NAMES, FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "./fake-bots.ts";
+import * as Home from "./home.ts";
 import { ForegroundMs } from "./jobs.ts";
 import { startLoad } from "./load.ts";
 import * as Logger from "./logger.ts";
@@ -81,11 +82,10 @@ const toggle = (name: string, fallback: boolean) => last(Flag.Boolean(name), fal
 const flags = {
   model: lastOptional(Flag.String("model").pipe(Flag.withDescription("Run real bots on this model: provider/model-id"))),
   thinking: last(Flag.Literals("thinking", THINKING_LEVELS), "medium"),
-  workspace: lastOptional(Flag.String("workspace").pipe(Flag.withDescription("Real bots work in <workspace>/bots/<name> (default ~)"))),
   allowOrigin: Flag.String("allow-origin").pipe(Flag.atLeast(0)),
   port: last(Flag.Int("port"), DEFAULT_PORT),
   host: last(Flag.String("host"), "127.0.0.1"),
-  data: lastOptional(Flag.String("data")),
+  home: lastOptional(Flag.String("home").pipe(Flag.withDescription("Keep everything here (default $TOP_HOME or ~/.top; fake bots: .data/fake)"))),
   load: toggle("load", false),
   tools: toggle("tools", false),
   reset: toggle("reset", false),
@@ -100,13 +100,14 @@ const flags = {
 
 type Args = Command.Command.Config.Infer<typeof flags>;
 
-/** What real bots are made of: a model signed in through pi, and the computer's tools in their own folders. */
-const realBots = (args: Args, model: string, workspace: string) =>
+/** What real bots are made of: a signed-in model, and the computer's tools in their own folders. */
+const realBots = (args: Args, model: string, home: Home.Layout) =>
   Effect.gen(function* () {
     const slash = model.indexOf("/");
     if (slash <= 0) return yield* new StartError({ message: `--model takes provider/model-id, e.g. openai/gpt-6.1-sol (got "${model}").` });
     const providerId = model.slice(0, slash);
-    const credentials = new PiAuthFile(yield* piAuthPath, yield* FileSystem.FileSystem);
+    const fs = yield* FileSystem.FileSystem;
+    const credentials = new AuthFile(home.auth, fs);
     const models = builtinModels({ credentials });
     if (!models.getProvider(providerId))
       return yield* new StartError({
@@ -115,10 +116,11 @@ const realBots = (args: Args, model: string, workspace: string) =>
           .map((p) => p.id)
           .join(", ")}.`,
       });
+    if (yield* importFromPi(credentials, providerId, fs)) yield* Effect.log(`copied pi's ${providerId} sign-in to ${credentials.path}`);
     const auth = yield* Effect.promise(() => models.checkAuth(providerId));
     if (!auth)
       return yield* new StartError({
-        message: `Not signed in to ${providerId}. Run \`pi\`, then \`/login\` (Top shares pi's ${credentials.path}), or set the provider's API key in the environment.`,
+        message: `Not signed in to ${providerId}. Run \`pi\`, then \`/login\`, and start Top again (it copies pi's sign-in to ${credentials.path}), or set the provider's API key in the environment.`,
       });
     if (!models.getModel(providerId, model.slice(slash + 1))) {
       yield* Effect.promise(() => models.refresh({ providers: [providerId] }));
@@ -130,10 +132,9 @@ const realBots = (args: Args, model: string, workspace: string) =>
       Daemon.BotKit,
       Effect.gen(function* () {
         const store = yield* Store.Store;
-        const fs = yield* FileSystem.FileSystem;
         // Each bot works in a folder it owns, with pi's tools over the whole computer. The tools are
         // declared to the model on its next request, and the workspace section with its next message.
-        const folderOf = (bot: Store.BotRow) => ensureFolder(botFolder(workspace, bot.name)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+        const folderOf = (bot: Store.BotRow) => ensureFolder(botFolder(home.bots, bot.name)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
         return Daemon.BotKit.of({
           models,
           tools: (bot) => Effect.map(folderOf(bot), computerTools),
@@ -156,7 +157,7 @@ const realBots = (args: Args, model: string, workspace: string) =>
           },
           // One bot to start with; the app makes more.
           firstBots: ["Atlas"],
-          files: (bot) => join(botFolder(workspace, bot.name), FILES_FOLDER),
+          files: (bot) => join(botFolder(home.bots, bot.name), FILES_FOLDER),
           foregroundMs: yield* ForegroundMs,
           retryDelaysMs: yield* RetryDelaysMs,
         });
@@ -165,7 +166,7 @@ const realBots = (args: Args, model: string, workspace: string) =>
   });
 
 /** What fake bots are made of: a scripted model and tools with real (recorded) side effects. */
-const fakeBots = (args: Args, dataDir: string) =>
+const fakeBots = (args: Args, home: Home.Layout) =>
   Layer.effect(
     Daemon.BotKit,
     Effect.gen(function* () {
@@ -173,8 +174,8 @@ const fakeBots = (args: Args, dataDir: string) =>
       const model = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
       const models = createModels();
       models.setProvider((yield* makeFakeModelProvider(args.tps)).provider);
-      const filesOf = (bot: Store.BotRow) => join(botFolder(dataDir, bot.name), FILES_FOLDER);
-      const tools = yield* makeFakeTools(resolve(dataDir, "effects.jsonl"), (id) => Effect.map(store.bot(id), (bot) => bot && filesOf(bot)));
+      const filesOf = (bot: Store.BotRow) => join(botFolder(home.bots, bot.name), FILES_FOLDER);
+      const tools = yield* makeFakeTools(join(home.server, "effects.jsonl"), (id) => Effect.map(store.bot(id), (bot) => bot && filesOf(bot)));
       return Daemon.BotKit.of({
         models,
         tools,
@@ -194,21 +195,21 @@ const program = (args: Args) =>
     const real = Option.isSome(args.model);
     if (real && (args.load || args.tools || args.seed > 0))
       return yield* new StartError({ message: "--load, --tools and --seed drive the fake bots; they can't be combined with --model." });
-    if (!real && Option.isSome(args.workspace))
-      return yield* new StartError({ message: "--workspace is for real bots (--model); the fake ones don't touch the computer." });
     if (args.tailscalePort < 1 || args.tailscalePort > 65_535)
       return yield* new StartError({ message: `--tailscale-port takes a port number (got "${args.tailscalePort}").` });
     if (!args.tailscale && args.tailscaleAllow.length)
       return yield* new StartError({ message: "--tailscale-allow says who may use Top on your tailnet; add --tailscale to put it there." });
 
-    // Where the bots' folders go: <workspace>/bots/<name>.
-    const workspace = resolve(Option.getOrElse(args.workspace, homedir).replace(/^~(?=$|\/)/, homedir()));
-    // Real and fake bots keep separate data, so trying the fake ones never touches real transcripts.
-    const dataDir = resolve(Option.getOrElse(args.data, () => (real ? ".data/bots" : ".data/fake")));
+    // Real and fake bots have separate homes, so trying the fake ones never touches real transcripts.
+    const home = Home.layout(Option.isSome(args.home) ? resolve(Home.expandTilde(args.home.value)) : real ? yield* Home.defaultHome : resolve(".data/fake"));
     const fs = yield* FileSystem.FileSystem;
-    if (args.reset) yield* Effect.orDie(fs.remove(dataDir, { recursive: true, force: true }));
-    yield* Effect.orDie(fs.makeDirectory(dataDir, { recursive: true }));
-    const kit = Option.isSome(args.model) ? yield* realBots(args, args.model.value, workspace) : fakeBots(args, dataDir);
+    // A reset starts the daemon over. Real bots' folders are the user's work, so it leaves them; fake ones go too.
+    if (args.reset) {
+      yield* Effect.orDie(fs.remove(home.server, { recursive: true, force: true }));
+      if (!real) yield* Effect.orDie(fs.remove(home.bots, { recursive: true, force: true }));
+    }
+    yield* Effect.orDie(fs.makeDirectory(home.server, { recursive: true, mode: 0o700 }));
+    const kit = Option.isSome(args.model) ? yield* realBots(args, args.model.value, home) : fakeBots(args, home);
 
     // On the tailnet: who may connect is settled before anything listens.
     let tailnet: Tailnet | undefined;
@@ -221,11 +222,14 @@ const program = (args: Args) =>
     // MCP servers set up in the app. Signing in to one redirects to the port after the daemon's (or, on
     // the tailnet, to the daemon's tailnet address, which passes it on).
     const oauthPort = args.port + 1;
-    const storeLayer = Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: resolve(dataDir, "top.sqlite") })));
+    const storeLayer = Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: home.database })));
     const daemonLayer = Daemon.layer.pipe(
       Layer.provideMerge(kit),
       Layer.provideMerge(
-        Layer.mergeAll(Mcp.layer({ oauthPort, redirectOrigin: tailnet?.origin, clientInfo: { name: "Top", version: "0.0.0" } }), Attachments.layer(dataDir)),
+        Layer.mergeAll(
+          Mcp.layer({ oauthPort, redirectOrigin: tailnet?.origin, clientInfo: { name: "Top", version: "0.0.0" } }),
+          Attachments.layer(home.server),
+        ),
       ),
       Layer.provideMerge(Events.layer),
       Layer.provideMerge(storeLayer),
@@ -249,7 +253,7 @@ const program = (args: Args) =>
       if (args.load) yield* startLoad({ tools: args.tools });
 
       const count = daemon.runners().length;
-      yield* Effect.log(`${count} bot${count === 1 ? "" : "s"}, data in ${dataDir}${real ? `, working in ${resolve(workspace, "bots")}` : ""}`);
+      yield* Effect.log(`${count} bot${count === 1 ? "" : "s"}, home ${home.home}`);
       yield* Effect.log(`listening on ws://${args.host}:${args.port}${args.load ? ` (synthetic load on${args.tools ? ", with tools" : ""})` : ""}`);
       if (tailnet) yield* Effect.log(`on your tailnet at ${tailnet.url}, for ${tailnet.describeAllowed()}`);
       return yield* Effect.never;
