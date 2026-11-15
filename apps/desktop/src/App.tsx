@@ -1,5 +1,6 @@
 import type { BotId } from "@top/client";
 import { useCallback, useEffect, useState } from "react";
+import { type AvatarStyle, applyAvatarStyle, readAvatarStyle } from "./avatarStyle.ts";
 import { type ChatStyle, readChatStyle, readShowTools, saveChatStyle, saveShowTools } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { Composer } from "./components/Composer.tsx";
@@ -68,6 +69,11 @@ export function App() {
   const setShowTools = useCallback((on: boolean) => {
     setShowToolsState(on);
     saveShowTools(on);
+  }, []);
+  const [avatarStyle, setAvatarStyleState] = useState<AvatarStyle>(readAvatarStyle);
+  const setAvatarStyle = useCallback((style: AvatarStyle) => {
+    setAvatarStyleState(style);
+    applyAvatarStyle(style);
   }, []);
   const [scale, setScaleState] = useState<Scale>(readScale);
   const setScale = useCallback((next: Scale) => {
@@ -172,6 +178,8 @@ export function App() {
               onChatStyleChange={setChatStyle}
               showTools={showTools}
               onShowToolsChange={setShowTools}
+              avatarStyle={avatarStyle}
+              onAvatarStyleChange={setAvatarStyle}
               scale={scale}
               onScaleChange={setScale}
             />

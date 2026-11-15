@@ -1,4 +1,5 @@
 import { type ReactNode, useId } from "react";
+import { AVATAR_STYLES, type AvatarStyle } from "../avatarStyle.ts";
 import { CHAT_STYLES, type ChatStyle } from "../chatStyle.ts";
 import { cn } from "../lib/utils.ts";
 import { canScale, SCALES, type Scale } from "../scale.ts";
@@ -86,6 +87,8 @@ export function Settings({
   onChatStyleChange,
   showTools,
   onShowToolsChange,
+  avatarStyle,
+  onAvatarStyleChange,
   scale,
   onScaleChange,
 }: {
@@ -95,6 +98,8 @@ export function Settings({
   onChatStyleChange: (style: ChatStyle) => void;
   showTools: boolean;
   onShowToolsChange: (on: boolean) => void;
+  avatarStyle: AvatarStyle;
+  onAvatarStyleChange: (style: AvatarStyle) => void;
   scale: Scale;
   onScaleChange: (scale: Scale) => void;
 }) {
@@ -112,6 +117,11 @@ export function Settings({
               label="Conversation style"
               description={CHAT_STYLES.find((s) => s.value === chatStyle)?.description}
               control={({ labelId }) => <Segmented value={chatStyle} options={CHAT_STYLES} onChange={onChatStyleChange} labelledBy={labelId} />}
+            />
+            <Row
+              label="Bot avatars"
+              description={AVATAR_STYLES.find((s) => s.value === avatarStyle)?.description}
+              control={({ labelId }) => <Segmented value={avatarStyle} options={AVATAR_STYLES} onChange={onAvatarStyleChange} labelledBy={labelId} />}
             />
             <Row
               label="Show tool calls"
