@@ -5,7 +5,8 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell } from "electron";
+import { contextMenuTemplate } from "./context-menu.js";
 import { startUpdates } from "./updates.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +92,11 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };
+  });
+  // Electron opens no right-click menu by itself: spelling fixes, cut, copy, paste and select all.
+  win.webContents.on("context-menu", (_event, params) => {
+    const template = contextMenuTemplate(params, win.webContents);
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: win });
   });
   win.webContents.on("will-navigate", (event, url) => {
     if (url !== win.webContents.getURL()) event.preventDefault();

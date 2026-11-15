@@ -245,8 +245,10 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
           className="composer flex cursor-text flex-col rounded-bubble border border-input bg-popover p-1.75 shadow-composer transition duration-120 focus-within:shadow-composer-focus"
           onMouseDown={(e) => {
             if (e.target !== e.currentTarget && !(e.target as HTMLElement).hasAttribute("data-pad")) return;
+            // Pressing the padding never takes focus or the selection from the field; only the main button
+            // also moves the caret to the end. A right-click keeps the selection for the right-click menu.
             e.preventDefault();
-            focusEnd(ref.current!);
+            if (e.button === 0) focusEnd(ref.current!);
           }}
         >
           {files.length > 0 && <AttachmentStrip bot={key} drafts={files} />}
