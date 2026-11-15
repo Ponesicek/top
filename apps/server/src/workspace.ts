@@ -1,5 +1,5 @@
 /**
- * Each real bot owns a folder, `<root>/bots/<name>`, and works from it: commands start there and
+ * Each real bot owns a folder, `~/.top/bots/<name>` (see home.ts), and works from it: commands start there and
  * relative paths resolve there. Its tools are pi's coding tools (bash, read, write, edit, grep, find,
  * ls), with the same access to the whole computer as the user running the daemon.
  *
@@ -20,14 +20,14 @@ const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
 /** The folder inside a bot's own where it puts what it makes for the user; the app shows it (see files.ts). */
 export const FILES_FOLDER = "files";
 
-/** `<root>/bots/<name>`, with the name made safe as a folder name. */
-export function botFolder(root: string, name: string): string {
+/** `<bots>/<name>`, with the name made safe as a folder name. */
+export function botFolder(bots: string, name: string): string {
   const safe =
     name
       .trim()
       .replace(/[^\p{L}\p{N}._ -]+/gu, "_")
       .replace(/^\.+/, "_") || "bot";
-  return join(root, "bots", safe);
+  return join(bots, safe);
 }
 
 /** Make the bot's folder if it isn't there. */

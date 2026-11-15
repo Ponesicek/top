@@ -87,7 +87,7 @@ async function startDaemon(extra: string[]): Promise<{ url: string; stop(): Prom
   const dataDir = mkdtempSync(join(tmpdir(), "top-wire-"));
   const child: ChildProcess = spawn(
     process.execPath,
-    ["--import", "tsx", join(tree, "apps/server/src/main.ts"), "--port", String(port), "--data", dataDir, ...extra],
+    ["--import", "tsx", join(tree, "apps/server/src/main.ts"), "--port", String(port), "--home", dataDir, ...extra],
     {
       stdio: ["ignore", "pipe", "inherit"],
       cwd: join(tree, "apps/server"),

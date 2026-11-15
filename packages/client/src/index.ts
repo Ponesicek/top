@@ -101,7 +101,7 @@ export type TopSnapshot = {
   readonly rttMs: number | undefined;
   readonly attempt: number;
   /**
-   * Names the daemon's data. It changes when the client meets a different daemon (another `--data`,
+   * Names the daemon's data. It changes when the client meets a different daemon (another `--home`,
    * or a reset), and everything held from the old one is dropped; a UI should drop its own cache then.
    */
   readonly serverId: string | undefined;

@@ -38,16 +38,27 @@ pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser 
 Before committing: `pnpm check` (Biome: lint, format, import order; `pnpm fix` applies the safe fixes),
 `pnpm typecheck` (TypeScript 7 with Effect's diagnostics, through `effect-tsgo`) and `pnpm test` (vitest).
 
-The bots sign in through pi, the coding agent: Top reads and refreshes pi's `~/.pi/agent/auth.json`
-under pi's own file lock, so if `pi` works, Top works. Not signed in? Run `pi`, then `/login`. An API
+The bots sign in through pi, the coding agent: the first time Top needs a provider, it copies pi's
+sign-in from `~/.pi/agent/auth.json` to its own `~/.top/server/auth.json`, so if `pi` works, Top works.
+After that each refreshes its own copy. Not signed in? Run `pi`, then `/login`, and start Top again. An API
 key in the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) works too. Pick another model with
 `pnpm server --model anthropic/claude-opus-5-5`; `--thinking off|low|medium|high` sets reasoning
 (default medium). ChatGPT sign-ins can't use every model (`gpt-5.5` is refused); `gpt-6.1-sol` works.
-Each real bot owns a folder, `~/bots/<name>` (`--workspace DIR` puts them in `DIR/bots/<name>`),
-and works from it: commands start there and relative paths resolve there. Its tools are pi's coding
+Each real bot owns a folder, `~/.top/bots/<name>`, and works from it: commands start there and relative paths resolve there. Its tools are pi's coding
 tools (`bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`) with full access to the computer, as the
 user running the daemon. After a crash, `read`/`ls`/`grep`/`find`/`write` run again; a cut-off `bash`
-or `edit` is reported as interrupted, never re-run. Conversations live in `apps/server/.data/bots`.
+or `edit` is reported as interrupted, never re-run.
+
+Everything Top keeps is in its home, `~/.top` (`TOP_HOME=DIR` or `--home DIR` moves it):
+
+```
+~/.top/
+├── server/        the daemon's: top.sqlite (bots, conversations, MCP servers and their sign-ins), attachments/, auth.json
+├── bots/<name>/   each bot's working folder; files/ is what the Files panel shows
+└── desktop/       the desktop app's profile: its cache and settings (TOP_USER_DATA moves it)
+```
+
+`--reset` clears `server/` and leaves the bots' folders, which are their work.
 
 Because the bots can run commands, the daemon refuses browser connections from anything but the app
 (`file://` and the dev UI on :5199): browsers let any web page open a WebSocket to localhost.
@@ -65,8 +76,8 @@ pnpm server:fake     # fake bots that answer only when you message them
 
 The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "write a report", "crash",
 or any MCP tool by its full name: `call github_work__search {"query": "top"}`.
-Their data is in `apps/server/.data/fake`. Daemon flags: `--model`, `--thinking`, `--workspace`, `--allow-origin`, `--port`, `--host`,
-`--data`, `--reset`, `--no-compress`, `--tailscale`, `--tailscale-allow`, `--tailscale-port`; fake only: `--load`, `--tools` (load includes tool calls),
+Their home is `apps/server/.data/fake`, laid out like `~/.top` (a reset clears their folders too). Daemon flags: `--model`, `--thinking`, `--allow-origin`, `--port`, `--host`,
+`--home`, `--reset`, `--no-compress`, `--tailscale`, `--tailscale-allow`, `--tailscale-port`; fake only: `--load`, `--tools` (load includes tool calls),
 `--seed N`, `--tps N`.
 
 Real mode starts with one bot, Atlas. Make more with the **+** beside "Bots" (a name, and a
@@ -76,7 +87,7 @@ erases its conversation everywhere; files in its folder stay.
 Attach files with the paperclip, by pasting, or by dropping them on the conversation. They upload as
 soon as they're added. Images are shrunk to 2000 px on their long side first, and a paste over 32 KB
 becomes a text file (`Ctrl+Shift+V` pastes it inline). The bot gets each file's path to open with its
-tools, and PNG, JPEG, GIF and WebP images as images too. They're kept in `<data>/attachments`: an
+tools, and PNG, JPEG, GIF and WebP images as images too. They're kept in `~/.top/server/attachments`: an
 upload no message used goes after a day, the rest go with their bot.
 
 Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
@@ -113,7 +124,7 @@ pnpm server --tailscale --tailscale-allow tag:laptops    # only you, this comput
 
 ### Files
 
-Each bot has a files folder, `~/bots/<name>/files` (fake bots: in the data folder), for what it makes
+Each bot has a files folder, `~/.top/bots/<name>/files` (fake bots: in their home), for what it makes
 for you: pages, reports, charts, images, notes. The bot is told about it. The **Files** button in the
 header opens it beside the conversation: newest first, and the file you pick rendered.
 
@@ -128,7 +139,7 @@ header opens it beside the conversation: newest first, and the file you pick ren
   runs, you in your editor) adds a line under the bot's turn naming the files, each a click away. The
   model never sees these lines. Changes made while the daemon was down show when it starts.
 - **Safety.** Browsers let any web page reach localhost, so links carry a secret no page can guess
-  (made once per data folder, so links keep working across restarts), and pages never pass it on as a
+  (made once per home, so links keep working across restarts), and pages never pass it on as a
   referrer. A bot's page runs with the daemon's address as its origin, which the WebSocket refuses, so
   it can't reach the daemon's controls; in the app it runs in a sandboxed frame that can't touch the
   app or navigate the window. Hidden files (`.env`, `.git`) aren't listed or served.
