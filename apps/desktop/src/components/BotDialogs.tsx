@@ -1,7 +1,7 @@
 import { type BotId, type BotSummary, MAX_BOT_AVATAR, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, OfflineError, TimeoutError } from "@top/client";
 import * as Schema from "effect/Schema";
 import { Shuffle } from "lucide-react";
-import { type FormEvent, useId, useRef, useState } from "react";
+import { type FormEvent, type RefObject, useRef, useState } from "react";
 import { cn } from "../lib/utils.ts";
 import { top } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
@@ -48,56 +48,51 @@ function shuffleAvatars(picked: number): number[] {
 }
 
 /**
- * The bot's icon: a row of drawings of the name as typed (the daemon tidies the name the same way), so the
- * picked one is exactly what the sidebar shows. Shuffle offers more, keeping the picked one.
+ * The bot's icon, first in the form like a profile picture: a tray of drawings of the name as typed (the
+ * daemon tidies the name the same way), so the picked one is exactly what the sidebar shows. Shuffle offers
+ * more, keeping the picked one. The tray is styled like the app's segmented controls, the picked one raised.
  */
 function AvatarPicker({ name, value, onChange }: { name: string; value: number; onChange: (avatar: number) => void }) {
   const [choices, setChoices] = useState(FIRST_CHOICES);
-  const label = useId();
   const drawn = name.trim().replace(/\s+/g, " ") || "Scout";
   return (
-    <div className="flex flex-col gap-1.5">
-      <span id={label} className="text-code leading-tight font-semibold text-secondary-foreground">
-        Icon
-      </span>
-      {/* One row of equal cells at any width: the dialog narrows on a phone, and the row must never wrap. */}
-      <div className="grid grid-cols-9 gap-1">
-        <div role="radiogroup" aria-labelledby={label} className="col-span-8 grid grid-cols-subgrid">
-          {choices.map((avatar, i) => (
-            // biome-ignore lint/a11y/useSemanticElements: a row of pictures to pick from; TODO: Base UI RadioGroup, which adds arrow-key navigation
-            <button
-              key={avatar}
-              type="button"
-              role="radio"
-              aria-checked={avatar === value}
-              aria-label={`Icon ${i + 1}`}
-              onClick={() => onChange(avatar)}
-              className={cn(
-                "grid aspect-square place-items-center rounded-field transition-[background-color,box-shadow] duration-90 hover:bg-secondary focus-visible:shadow-focus focus-visible:outline-none",
-                avatar === value && "bg-secondary inset-ring-2 inset-ring-primary hover:bg-secondary",
-              )}
-            >
-              <Avatar name={drawn} avatar={avatar} className="size-[72%]" />
-            </button>
-          ))}
-        </div>
-        <Tooltip content="More icons">
+    // One row of equal cells at any width: the dialog narrows on a phone, and the row must never wrap.
+    <div className="grid grid-cols-9 gap-0.5 rounded-field bg-secondary p-0.75">
+      <div role="radiogroup" aria-label="Icon" className="col-span-8 grid grid-cols-subgrid">
+        {choices.map((avatar, i) => (
+          // biome-ignore lint/a11y/useSemanticElements: a row of pictures to pick from; TODO: Base UI RadioGroup, which adds arrow-key navigation
           <button
+            key={avatar}
             type="button"
-            aria-label="More icons"
-            onClick={() => setChoices(shuffleAvatars(value))}
-            className="grid aspect-square place-items-center rounded-field text-muted-foreground transition-colors duration-90 hover:bg-secondary hover:text-foreground focus-visible:shadow-focus focus-visible:outline-none"
+            role="radio"
+            aria-checked={avatar === value}
+            aria-label={`Icon ${i + 1}`}
+            onClick={() => onChange(avatar)}
+            className={cn(
+              "grid aspect-square place-items-center rounded-[7px] transition-[background-color,box-shadow] duration-90 hover:bg-popover/60 focus-visible:shadow-focus focus-visible:outline-none",
+              avatar === value && "bg-popover shadow-row-selected inset-ring-2 inset-ring-primary hover:bg-popover",
+            )}
           >
-            <Shuffle size={17} strokeWidth={2} />
+            <Avatar name={drawn} avatar={avatar} className="size-[72%]" />
           </button>
-        </Tooltip>
+        ))}
       </div>
+      <Tooltip content="More icons">
+        <button
+          type="button"
+          aria-label="More icons"
+          onClick={() => setChoices(shuffleAvatars(value))}
+          className="grid aspect-square place-items-center rounded-[7px] text-muted-foreground transition-colors duration-90 hover:bg-popover/60 hover:text-foreground focus-visible:shadow-focus focus-visible:outline-none"
+        >
+          <Shuffle size={17} strokeWidth={2} />
+        </button>
+      </Tooltip>
     </div>
   );
 }
 
 /** The form lives inside the popup, so it starts empty each time the dialog opens. */
-function NewBotForm({ onCreated }: { onCreated: (id: BotId) => void }) {
+function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; nameRef: RefObject<HTMLInputElement | null> }) {
   const [name, setName] = useState("");
   const [avatar, setAvatar] = useState(0);
   const [description, setDescription] = useState("");
@@ -122,9 +117,11 @@ function NewBotForm({ onCreated }: { onCreated: (id: BotId) => void }) {
     <form ref={form} onSubmit={submit}>
       <DialogBody>
         <DialogTitle>New bot</DialogTitle>
+        <AvatarPicker name={name} value={avatar} onChange={setAvatar} />
         <Field>
           <FieldLabel>Name</FieldLabel>
           <Input
+            ref={nameRef}
             value={name}
             maxLength={MAX_BOT_NAME}
             placeholder="Scout"
@@ -135,7 +132,6 @@ function NewBotForm({ onCreated }: { onCreated: (id: BotId) => void }) {
             }}
           />
         </Field>
-        <AvatarPicker name={name} value={avatar} onChange={setAvatar} />
         <Field>
           <FieldLabel>
             Description <FieldHint>optional</FieldHint>
@@ -166,11 +162,13 @@ function NewBotForm({ onCreated }: { onCreated: (id: BotId) => void }) {
   );
 }
 
+/** Focus starts in Name, past the icons above it: most people type a name first. */
 export function NewBotDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (id: BotId) => void }) {
+  const nameRef = useRef<HTMLInputElement>(null);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup>
-        <NewBotForm onCreated={onCreated} />
+      <DialogPopup initialFocus={nameRef}>
+        <NewBotForm onCreated={onCreated} nameRef={nameRef} />
       </DialogPopup>
     </Dialog>
   );
