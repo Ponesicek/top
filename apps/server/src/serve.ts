@@ -164,6 +164,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (mcp) yield* send({ t: "mcpServers", servers: yield* mcp.views });
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
+  yield* send({ t: "permissions", requests: daemon.permissions.pending() });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -191,6 +192,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "account", account: event.view });
       case "Update":
         return send({ t: "update", update: event.view });
+      case "Permissions":
+        return send({ t: "permissions", requests: daemon.permissions.pending() });
     }
   };
   yield* Effect.forkScoped(
@@ -375,6 +378,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(updatesOf(), (u) => u.setChannel(frame.channel)),
         );
+      case "answerPermission":
+        return answer(frame, daemon.permissions.answer(frame.id, frame.bot, frame.allow));
     }
   };
 

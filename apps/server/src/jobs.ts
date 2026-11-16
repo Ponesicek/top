@@ -22,6 +22,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import { ASK_PERMISSION } from "./collar/names.ts";
 import { type InboxRow, type JobRow, Store } from "./store.ts";
 import { duration } from "./time.ts";
 import { stopped, type ToolArguments, type ToolContext, ToolError, type ToolResult, type TopTool, text } from "./tools.ts";
@@ -318,11 +319,17 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
         const lost = yield* store.runningJobs;
         const at = yield* now;
         for (const job of lost) {
+          const head = `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(at - job.startedAt)} after it started`;
+          // A question to the user has no effect to check: it just went unanswered.
+          if (job.tool === ASK_PERMISSION) {
+            yield* store.endJob(job.id, "lost", `${head}, before the user answered. Nothing was allowed: ask again if you still need to.`);
+            continue;
+          }
           const command = job.tool === "bash" ? " The command may even still be running." : "";
           yield* store.endJob(
             job.id,
             "lost",
-            `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(at - job.startedAt)} after it started, so its result is lost. It may have taken effect, fully or partly.${command} Check before running it again.`,
+            `${head}, so its result is lost. It may have taken effect, fully or partly.${command} Check before running it again.`,
           );
         }
         return lost.length;

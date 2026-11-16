@@ -10,6 +10,7 @@ import { Empty, EmptyCard } from "./components/Empty.tsx";
 import { FilesPanel } from "./components/files/FilesPanel.tsx";
 import { Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
+import { PermissionPopup } from "./components/PermissionPopup.tsx";
 import { Settings } from "./components/Settings.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { Transcript } from "./components/Transcript.tsx";
@@ -222,6 +223,7 @@ export function App() {
         {/* Settings has its own Updates section. */}
         {!settingsOpen && <UpdatePopup onOpenSettings={openSettings} />}
         <SignInGate />
+        <PermissionPopup />
         <EditMenu />
       </div>
     </TooltipProvider>

@@ -227,7 +227,14 @@ test("wake-ups can be listed and cancelled, and setting one twice from the same 
 type Result = Effect.Success<ReturnType<TopTool["run"]>>;
 const resultText = (result: Result) => (result.content[0] as { text: string }).text;
 /** What Collar's tools reach in the test's daemon. */
-const collarOf = (h: Harness) => ({ store: h.store, jobs: h.daemon.jobs, wakes: h.daemon.wakes, changed: h.daemon.changed, toolsOf: h.daemon.toolsOf });
+const collarOf = (h: Harness) => ({
+  store: h.store,
+  jobs: h.daemon.jobs,
+  wakes: h.daemon.wakes,
+  permissions: h.daemon.permissions,
+  changed: h.daemon.changed,
+  toolsOf: h.daemon.toolsOf,
+});
 const backgroundOf = (h: Harness) => {
   const tool = backgroundGroup(collarOf(h))[0]!;
   return (args: Record<string, unknown>, key = "k") => h.run(tool.run(args, { key, bot: h.bot }));

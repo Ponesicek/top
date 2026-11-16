@@ -34,6 +34,7 @@ import { type FilesFolder, makeFilesFolder } from "./files.ts";
 import { type Jobs, makeJobs } from "./jobs.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import { Mcp } from "./mcp.ts";
+import { makePermissions, type Permissions } from "./permissions.ts";
 import { type BotRunner, makeRunner } from "./runner.ts";
 import { seedHistory } from "./seed.ts";
 import { type BotRow, type InboxRow, PLANNED_RESTART, Store, type StoredEntry } from "./store.ts";
@@ -183,6 +184,8 @@ export class Daemon extends Context.Service<
     readonly files: (bot: number) => FilesFolder | undefined;
     readonly jobs: Jobs;
     readonly wakes: WakeClock;
+    /** Bots' questions to the user, waiting for an answer. */
+    readonly permissions: Permissions;
   }
 >()("top/Daemon") {}
 
@@ -269,7 +272,8 @@ const make = Effect.gen(function* () {
   const wakes = yield* makeWakeClock(queued);
   const toolsOf = (bot: number) => toolSources.get(bot)?.() ?? [];
   /** Top's own tools, which every bot has (see collar/index.ts). */
-  const collar = collarTools({ store, jobs, wakes, changed, toolsOf });
+  const permissions = makePermissions(events.publish({ _tag: "Permissions" }));
+  const collar = collarTools({ store, jobs, wakes, permissions, changed, toolsOf });
 
   const add = (bot: BotRow): Effect.Effect<LiveBot> =>
     Effect.gen(function* () {
@@ -421,6 +425,7 @@ const make = Effect.gen(function* () {
     files: (bot) => bots.get(bot)?.folder,
     jobs,
     wakes,
+    permissions,
   });
 });
 

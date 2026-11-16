@@ -22,6 +22,7 @@ import {
   type McpServerConfig,
   type McpServerId,
   type McpServerView,
+  type PermissionRequest,
   PROTOCOL_VERSION,
   type ResultOf,
   type ServerFrame,
@@ -55,6 +56,7 @@ export type {
   McpServerId,
   McpServerState,
   McpServerView,
+  PermissionRequest,
   QueuedMessage,
   Seq,
   ToolCallView,
@@ -82,6 +84,8 @@ export {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_EDGE,
   MAX_MCP_NAME,
+  MAX_PERMISSION_ACTION,
+  MAX_PERMISSION_REASON,
   MODEL_IMAGE_TYPES,
 } from "@top/protocol";
 export { type Connection, type ConnectionStatus, makeConnection, OfflineError, RequestError, type RequestFailure, TimeoutError } from "./connection.ts";
@@ -139,6 +143,11 @@ export type TopSnapshot = {
   /** The daemon's updates; `undefined` on one that doesn't update itself (run from a checkout, or not installed). */
   readonly update: UpdateView | undefined;
   /**
+   * Bots' permission requests waiting for an answer, oldest first. Empty while disconnected: they can't
+   * be answered then, and the daemon sends them again on reconnect (minus any answered meanwhile).
+   */
+  readonly permissions: readonly PermissionRequest[];
+  /**
    * The daemon speaks another version of the protocol, so this client can't work with it: `client`
    * when this client is the older one (update the app), `server` when the daemon is.
    */
@@ -181,6 +190,7 @@ export class TopClient {
       viewer: undefined,
       server: undefined,
       update: undefined,
+      permissions: [],
       outdated: undefined,
     };
     this.#connection = Effect.runSync(
@@ -200,7 +210,11 @@ export class TopClient {
           onStatus: () => {
             const status = this.#connection.status();
             if (status !== "open") for (const conversation of this.#conversations.values()) conversation.disconnected();
-            this.#publish({ connection: status, attempt: this.#connection.attempt() });
+            this.#publish({
+              connection: status,
+              attempt: this.#connection.attempt(),
+              ...(status !== "open" && this.#snapshot.permissions.length ? { permissions: [] } : {}),
+            });
           },
         },
       ).pipe(Scope.provide(this.#scope)),
@@ -320,6 +334,14 @@ export class TopClient {
   /** Which releases the daemon follows. */
   setUpdateChannel(channel: Channel): Promise<void> {
     return this.#command({ t: "setUpdateChannel", channel });
+  }
+
+  /**
+   * Answer a bot's permission request. Rejects with a message for the user when it was answered already
+   * (on another device too) or isn't waiting anymore; the daemon takes only the first answer.
+   */
+  answerPermission(request: Pick<PermissionRequest, "id" | "bot">, allow: boolean): Promise<void> {
+    return this.#command({ t: "answerPermission", id: request.id, bot: request.bot, allow });
   }
 
   /** A request to the daemon, as a Promise for the UI: it rejects with the protocol's error (a message for the user). */
@@ -465,6 +487,9 @@ export class TopClient {
         return;
       case "update":
         this.#publish({ update: frame.update });
+        return;
+      case "permissions":
+        this.#publish({ permissions: frame.requests });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);

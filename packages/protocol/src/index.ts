@@ -359,6 +359,30 @@ export const UpdateView = Struct({
 });
 export type UpdateView = typeof UpdateView.Type;
 
+// ── permission requests ──────────────────────────────────────────────────────────
+//
+// A bot can ask the user whether it may do something (Collar's `ask_permission`). The daemon keeps the
+// request until a client answers it, the bot's task is stopped, or the daemon restarts (then the bot is
+// told nobody answered). The first answer wins; any later one is refused. This only carries the
+// question and the answer: it doesn't stop a bot's other tools from running.
+
+export const PermissionRequest = Struct({
+  /** Names this one request; a new one (also after a restart) never reuses it. */
+  id: Schema.String,
+  bot: BotId,
+  /** What the bot wants to do, in its words. */
+  action: Schema.String,
+  /** Why, in its words, when it said. */
+  reason: Optional(Schema.String),
+  /** When it asked (ms since epoch). */
+  at: Schema.Number,
+});
+export type PermissionRequest = typeof PermissionRequest.Type;
+
+/** The longest action and reason a bot may ask with. */
+export const MAX_PERMISSION_ACTION = 500;
+export const MAX_PERMISSION_REASON = 1_000;
+
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
 const req = Schema.Int;
@@ -445,6 +469,11 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("installUpdate"), req, version: Schema.String }),
   /** Which releases the daemon follows from now on. It never goes back to an older version. */
   Struct({ t: Schema.Literal("setUpdateChannel"), req, channel: Channel }),
+  /**
+   * Answer a bot's permission request (see PermissionRequest). `bot` must be the bot that asked. Refused
+   * with a `PermissionError` when it was answered already (on this device or another), or isn't waiting anymore.
+   */
+  Struct({ t: Schema.Literal("answerPermission"), req, id: Schema.String, bot: BotId, allow: Schema.Boolean }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
@@ -479,6 +508,7 @@ export const RequestResult = {
   checkForUpdate: Schema.Null,
   installUpdate: Schema.Null,
   setUpdateChannel: Schema.Null,
+  answerPermission: Schema.Null,
 } as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
 export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
 
@@ -551,6 +581,8 @@ export const ServerFrame = Schema.Union([
   Struct({ t: Schema.Literal("files"), bot: BotId, folder: Schema.String, files: List(FileView), more: Optional(Schema.Literal(true)) }),
   /** A watched bot's queue changed. */
   Struct({ t: Schema.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
+  /** Every permission request waiting for an answer, oldest first: once per connection, then whenever one comes or goes. */
+  Struct({ t: Schema.Literal("permissions"), requests: List(PermissionRequest) }),
   /** The daemon's updates: once per connection on an installed daemon, then whenever they change. */
   Struct({ t: Schema.Literal("update"), update: UpdateView }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(true), value: Schema.Unknown }),

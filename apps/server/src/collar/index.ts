@@ -14,12 +14,14 @@
  */
 import type * as Effect from "effect/Effect";
 import type { Jobs } from "../jobs.ts";
+import type { Permissions } from "../permissions.ts";
 import type { Store } from "../store.ts";
 import type { TopTool } from "../tools.ts";
 import type { WakeClock } from "../wakes.ts";
 import { backgroundGroup } from "./background.ts";
 import { jobsGroup } from "./jobs.ts";
 import { COLLAR } from "./names.ts";
+import { permissionGroup } from "./permission.ts";
 import { wakeGroup } from "./wake.ts";
 
 export { COLLAR };
@@ -29,6 +31,7 @@ export type CollarDaemon = {
   readonly store: Store["Service"];
   readonly jobs: Jobs;
   readonly wakes: WakeClock;
+  readonly permissions: Permissions;
   /** Something a bot's summary shows changed (its wake-ups, its jobs). */
   readonly changed: (bot: number) => Effect.Effect<void>;
   /** A bot's tools as they are now (its own, Collar's, its MCP servers'), as written: no time limit. */
@@ -38,7 +41,7 @@ export type CollarDaemon = {
 /** One part of the app's tools. Called once when the daemon starts; tools reach the daemon when they run. */
 export type CollarGroup = (daemon: CollarDaemon) => readonly TopTool[];
 
-const GROUPS: readonly CollarGroup[] = [wakeGroup, backgroundGroup, jobsGroup];
+const GROUPS: readonly CollarGroup[] = [wakeGroup, backgroundGroup, jobsGroup, permissionGroup];
 
 export function collarTools(daemon: CollarDaemon): TopTool[] {
   const tools = GROUPS.flatMap((group) => group(daemon)).map((tool): TopTool => ({ ...tool, name: `${COLLAR}__${tool.name}` }));

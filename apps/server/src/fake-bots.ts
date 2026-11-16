@@ -1,7 +1,7 @@
 /**
  * Fake bots for development, tests and benchmarks: Pi AI's faux provider, scripted to answer in
  * markdown (prose, lists, code blocks, tables) at a fixed token rate, and to call tools when a message
- * asks for one ("deploy web", "email the team", "check status", "write a report", "crash", or an MCP tool by name:
+ * asks for one ("deploy web", "email the team", "check status", "write a report", "crash", "ask permission to …", or a tool by name:
  * `call echo__echo {"text": "hi"}`). Everything above the model is
  * the real daemon: storage, the agent loop, tools, recovery.
  */
@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import { ASK_PERMISSION } from "./collar/names.ts";
 
 export const FAKE_PROVIDER = "faux";
 export const FAKE_MODEL = "top-fake";
@@ -100,7 +101,10 @@ type JsonObject = Parameters<typeof fauxToolCall>[1];
 const jsonObject = Schema.decodeOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)));
 const call = (name: string, args: JsonObject) => fauxToolCall(name, args, { id: `call_${Date.now().toString(36)}_${++callCounter}` });
 
-/** The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "write a report", "crash", "call server__tool {…}". */
+/**
+ * The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "write a report", "crash",
+ * "ask permission to delete old backups" (Collar's ask_permission, with the rest as the action), "call server__tool {…}".
+ */
 export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
   // An MCP tool by its full name, with JSON arguments.
   const named = /\bcall ([A-Za-z0-9-]+__[A-Za-z0-9_-]+)(?:\s+(\{.*\}))?/s.exec(prompt);
@@ -109,6 +113,9 @@ export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
     const args = named[2] ? Option.getOrElse(jsonObject(named[2]), () => ({})) : {};
     return call(named[1]!, args);
   }
+  // Before the others: the action it asks about ("…to deploy web") mustn't run that tool.
+  const asking = /\bask (?:for )?permission(?: to)?\s+(.+)/is.exec(prompt);
+  if (asking) return call(ASK_PERMISSION, { action: asking[1]!.trim(), reason: "You asked me to check with you first." });
   const text = prompt.toLowerCase();
   const secs = /(\d+(?:\.\d+)?)\s*s\b/.exec(text)?.[1];
   const seconds: Record<string, number> = secs === undefined ? {} : { seconds: Number(secs) };
@@ -135,6 +142,8 @@ export function respond(context: Context) {
   const results = trailingToolResults(context);
   if (results.length) {
     const lines = results.map((r) => `- **${"toolName" in r ? r.toolName : "tool"}**: ${contentText(r)}`).join("\n");
+    // An answer to a question isn't something done: say what the user decided.
+    if (results.every((r) => "toolName" in r && r.toolName === ASK_PERMISSION)) return fauxAssistantMessage(`Got your answer:\n\n${lines}`);
     return fauxAssistantMessage(`Done. Here is what happened:\n\n${lines}\n\n${sentence()}`);
   }
   const prompt = lastUserText(context);
@@ -148,7 +157,10 @@ export function respond(context: Context) {
     return failure();
   }
   const tool = toolFor(prompt);
-  if (tool) return fauxAssistantMessage([fauxText(`On it: ${tool.name.replace("_", " ")}.`), tool], { stopReason: "toolUse" });
+  if (tool) {
+    const said = tool.name === ASK_PERMISSION ? "I'll check with you first." : `On it: ${tool.name.replace("_", " ")}.`;
+    return fauxAssistantMessage([fauxText(said), tool], { stopReason: "toolUse" });
+  }
   return fauxAssistantMessage(fakeAnswer(prompt));
 }
 
