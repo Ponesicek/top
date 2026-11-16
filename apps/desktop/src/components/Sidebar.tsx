@@ -264,7 +264,7 @@ export function Sidebar({
     setDeleteOpen(true);
   }, []);
   return (
-    <aside className="flex min-w-0 flex-col border-r bg-sidebar [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
+    <aside className="flex min-w-0 flex-col border-r bg-sidebar">
       <nav className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-2.5 pb-2.5 mac-window:pt-11">
         {/* Pinned bots, as Grok Bot shows them: a grid of large avatars above the list, in the order they were pinned. */}
         {pinned.length > 0 && <div className="grid grid-cols-3 gap-1 narrow:grid-cols-1">{pinned.map((bot, i) => item(PinnedTile, bot, i))}</div>}

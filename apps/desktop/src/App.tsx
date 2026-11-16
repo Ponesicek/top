@@ -172,6 +172,8 @@ export function App() {
       <div className={cn("grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]", filesOpen && "grid-cols-[280px_1fr_auto]")}>
         <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
         <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
+          {/* The sidebar doesn't drag the window, so without a header the top of this column does. */}
+          {!settingsOpen && !(bot && sync) && <div className="h-15 flex-none [-webkit-app-region:drag]" aria-hidden />}
           {settingsOpen ? (
             <Settings
               perfHud={hud}

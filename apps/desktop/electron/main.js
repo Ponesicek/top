@@ -19,9 +19,10 @@ const query = process.env.TOP_QUERY ?? "";
 const headless = process.env.TOP_BENCH === "screenshot";
 
 /**
- * No title bar: the app's own header and sidebar are the window's drag areas. macOS keeps its traffic
- * lights inset; Windows and Linux keep their window buttons, drawn over the header's top-right corner
- * in the app's own background (`--background` in styles.css) and text colors.
+ * No title bar: the top of the main column (its header) is the window's drag area. The sidebar isn't
+ * one: it takes clicks like any other content. macOS keeps its traffic lights inset; Windows and Linux keep their window
+ * buttons, drawn over the header's top-right corner in the app's own background (`--background` in
+ * styles.css) and text colors.
  */
 const overlay = () =>
   nativeTheme.shouldUseDarkColors ? { color: "#141413", symbolColor: "#eeedea", height: 40 } : { color: "#fefdfc", symbolColor: "#1a1917", height: 40 };
