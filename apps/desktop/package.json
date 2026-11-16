@@ -9,10 +9,9 @@
     "dev:web": "vite",
     "build": "vite build",
     "start": "electron .",
-    "test": "node --test electron/context-menu.test.js",
     "bench": "node scripts/bench.js",
     "screenshot": "node scripts/screenshot.js",
-    "test": "vitest run",
+    "test": "vitest run && node --test electron/context-menu.test.js",
     "icon": "node scripts/icon.js",
     "typecheck": "effect-tsgo tsc -p . && effect-tsgo tsc -p electron"
   },
