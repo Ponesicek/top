@@ -7,7 +7,7 @@ import { TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { appUpdates } from "../bridge.ts";
 import { top } from "../top.ts";
-import { appActivity, checkBoth, mismatchText, serverActivity, useAgo, useUpdates } from "../updates.ts";
+import { appActivity, checkBoth, mismatchText, serverActivity, sources, useAgo, useUpdates } from "../updates.ts";
 import { Row, Section, Segmented } from "./SettingsSection.tsx";
 import { Button } from "./ui/button.tsx";
 
@@ -72,7 +72,7 @@ export function UpdateSettings() {
                 size="xs"
                 className="px-2.5"
                 disabled={server.state !== "idle" && server.state !== "failed"}
-                onClick={() => act(() => top.installUpdate(server.available!.version))}
+                onClick={() => act(() => sources.installServer(server.available!.version))}
               >
                 Update
               </Button>
@@ -90,7 +90,7 @@ export function UpdateSettings() {
           control={({ labelId }) => (
             <span className="flex flex-none items-center gap-2">
               {app.available && (
-                <Button size="xs" className="px-2.5" disabled={app.state !== "idle" && app.state !== "failed"} onClick={() => act(() => appUpdates!.install())}>
+                <Button size="xs" className="px-2.5" disabled={app.state !== "idle" && app.state !== "failed"} onClick={() => act(() => sources.installApp!())}>
                   Update
                 </Button>
               )}

@@ -7,6 +7,7 @@ import { pin, serverUrl, sidebarGroups, unpin, useClient, usePins, useSeen } fro
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";
 import { StatusDot } from "./StatusDot.tsx";
+import { UpdateButton } from "./UpdateButton.tsx";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { Tooltip } from "./ui/tooltip.tsx";
@@ -273,7 +274,7 @@ export function Sidebar({
       </nav>
       {/* Always mounted: a dialog that mounts already open has no closed state to animate in from. */}
       <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />
-      <div className="flex flex-none items-center gap-2 px-3 pt-2 pb-3 narrow:flex-col-reverse narrow:px-0">
+      <div className="relative flex flex-none items-center gap-2 px-3 pt-2 pb-3 narrow:flex-col-reverse narrow:px-0">
         <Tooltip content="Settings (Ctrl+,)" side="right">
           <Button
             variant="ghost"
@@ -293,17 +294,14 @@ export function Sidebar({
             {connection === "connecting" ? "Connecting" : "Reconnecting"}
           </Badge>
         )}
-        <Tooltip content="New bot" side="right">
-          <Button
-            variant="outline"
-            size="icon"
-            className="ml-auto size-8 text-secondary-foreground hover:text-foreground narrow:ml-0"
-            onClick={onNewBot}
-            aria-label="New bot"
-          >
-            <Plus size={17} strokeWidth={1.9} />
-          </Button>
-        </Tooltip>
+        <span className="ml-auto flex items-center gap-1.5 narrow:ml-0 narrow:flex-col-reverse">
+          <UpdateButton onOpenSettings={onOpenSettings} />
+          <Tooltip content="New bot" side="right">
+            <Button variant="outline" size="icon" className="size-8 text-secondary-foreground hover:text-foreground" onClick={onNewBot} aria-label="New bot">
+              <Plus size={17} strokeWidth={1.9} />
+            </Button>
+          </Tooltip>
+        </span>
       </div>
     </aside>
   );
