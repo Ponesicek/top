@@ -26,14 +26,16 @@ test("bots from before icons could be picked keep the drawing of their name, and
   const filename = join(dir, "top.sqlite");
   await withStore(filename, (store) => store.createBot("Atlas", "You are Atlas.", "fake/model", "Watches the build."));
 
-  // Back to the file a build without `2_bot_avatar` left: no avatar column, and that migration not run.
+  // Back to the file a build without `2_bot_avatar` left: no avatar column, and neither it nor a later migration run.
   const db = new DatabaseSync(filename);
-  db.exec("ALTER TABLE bots DROP COLUMN avatar; DELETE FROM effect_sql_migrations WHERE migration_id = 2;");
+  db.exec("ALTER TABLE bots DROP COLUMN avatar; DROP TABLE permissions; DELETE FROM effect_sql_migrations WHERE migration_id >= 2;");
   db.close();
 
   const bots = await withStore(filename, (store) =>
     Effect.gen(function* () {
       yield* store.createBot("Lark", "You are Lark.", "fake/model", "", 42);
+      // `3_permissions` ran too.
+      assert.equal((yield* store.ask(1, "1:2:call_1", "deploy web", undefined)).state, "pending");
       return yield* store.bots;
     }),
   );

@@ -7,7 +7,6 @@ import type { JobState } from "../store.ts";
 import { duration } from "../time.ts";
 import { defineTool, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
-import { ASK_PERMISSION } from "./names.ts";
 
 const parameters = Type.Object(
   {
@@ -73,11 +72,6 @@ export const jobsGroup: CollarGroup = (daemon) => [
             );
           }
           case "wait": {
-            // Its answer comes as a message, which the app shows too; waiting would take it twice.
-            if (found.live.tool === ASK_PERMISSION)
-              return text(
-                `Job ${id} is waiting for the user to answer your permission request. Their answer will come to you as a message: end your turn until it does.`,
-              );
             const limit = jobs.foregroundMs;
             const ms = Math.min(Math.max(0, (args.seconds ?? limit / 1000) * 1000), limit);
             const outcome = yield* jobs.wait(id, ms, ctx.signal);

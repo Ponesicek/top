@@ -1,5 +1,5 @@
 import { ContextMenu } from "@base-ui/react/context-menu";
-import { ASK_PERMISSION, type BotId, type BotSummary } from "@top/client";
+import type { BotId, BotSummary } from "@top/client";
 import { Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
 import { memo, type ReactNode, useCallback, useState } from "react";
 import { cn } from "../lib/utils.ts";
@@ -18,12 +18,12 @@ const SHORT: Record<BotSummary["status"], string> = { idle: "", thinking: "Think
 export function statusLabel(bot: BotSummary): string {
   switch (bot.status) {
     case "idle":
-      return "Idle";
+      // Its permission requests are in its conversation, waiting for an answer.
+      return bot.approvals ? "Waiting for your approval" : "Idle";
     case "thinking":
       return "Thinking";
     case "tool":
-      // Its permission request is in its conversation, waiting for an answer.
-      return bot.tool === ASK_PERMISSION ? "Waiting for your approval" : `Running ${bot.tool ?? "a tool"}`;
+      return `Running ${bot.tool ?? "a tool"}`;
     case "retrying":
       return "Retrying";
     case "failed":
@@ -178,6 +178,15 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
             {bot.queued > 0 && (
               <Badge className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible" title={`${bot.queued} queued`}>
                 {bot.queued} queued
+              </Badge>
+            )}
+            {!!bot.approvals && (
+              <Badge
+                variant="warning"
+                className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible"
+                title={`${bot.approvals} permission request${bot.approvals === 1 ? "" : "s"} waiting for your answer`}
+              >
+                Needs approval
               </Badge>
             )}
             {!!bot.background && (

@@ -22,7 +22,6 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
-import { ASK_PERMISSION } from "./collar/names.ts";
 import { type InboxRow, type JobRow, Store } from "./store.ts";
 import { duration } from "./time.ts";
 import { stopped, type ToolArguments, type ToolContext, ToolError, type ToolResult, type TopTool, text } from "./tools.ts";
@@ -134,8 +133,9 @@ export type Jobs = {
   /**
    * At startup, before the bots start: jobs the last process was running were lost with it. Each bot
    * is told (its next task starts with the message), so it can check what happened and run it again.
+   * `toolOf` finds a job's tool, for what it says about calls cut off (`TopTool.cutOff`).
    */
-  readonly recover: Effect.Effect<number>;
+  readonly recover: (toolOf: (bot: number, name: string) => TopTool | undefined) => Effect.Effect<number>;
 };
 
 /** The daemon's background jobs. Calls run in the scope this is made in, so they outlive the task that started them. */
@@ -249,15 +249,11 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
         ? `Still running after ${duration(options.foregroundMs)}, so it moved to the background as job ${id}`
         : `Started as background job ${id}`;
     const limit = options.stopAfterMs === undefined ? "" : ` It will be stopped if it's still running ${duration(options.stopAfterMs)} after it started.`;
-    return {
-      ...text(
-        `${started} and keeps running.${limit} ` +
-          "Its result will come to you as a message when it ends, so don't wait or check on it: carry on, or end your turn if there's nothing else to do. " +
-          "To see its output so far, wait for it, or stop it, use collar__jobs.",
-      ),
-      // So clients can tie the job's message (request id `job:<id>:…`) back to this call.
-      details: { job: id },
-    };
+    return text(
+      `${started} and keeps running.${limit} ` +
+        "Its result will come to you as a message when it ends, so don't wait or check on it: carry on, or end your turn if there's nothing else to do. " +
+        "To see its output so far, wait for it, or stop it, use collar__jobs.",
+    );
   });
 
   const view = (job: Live): JobView => ({ id: job.id, tool: job.tool, summary: job.summary, note: job.note, startedAt: job.startedAt });
@@ -318,28 +314,24 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
           job.controller.abort();
         }
       }),
-    recover: Effect.withSpan(
-      Effect.gen(function* () {
-        const lost = yield* store.runningJobs;
-        const at = yield* now;
-        for (const job of lost) {
-          const head = `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(at - job.startedAt)} after it started`;
-          // A question to the user has no effect to check: it just went unanswered.
-          if (job.tool === ASK_PERMISSION) {
-            yield* store.endJob(job.id, "lost", `${head}, before the user answered. Nothing was allowed: ask again if you still need to.`);
-            continue;
+    recover: (toolOf) =>
+      Effect.withSpan(
+        Effect.gen(function* () {
+          const lost = yield* store.runningJobs;
+          const at = yield* now;
+          for (const job of lost) {
+            const head = `[Background job ${job.id} was cut off] ${label(job)}: the daemon restarted while it ran in the background, ${duration(at - job.startedAt)} after it started`;
+            const cutOff = toolOf(job.bot, job.tool)?.cutOff;
+            yield* store.endJob(
+              job.id,
+              "lost",
+              `${head}, so its result is lost. It may have taken effect, fully or partly.${cutOff ? ` ${cutOff}` : ""} Check before running it again.`,
+            );
           }
-          const command = job.tool === "bash" ? " The command may even still be running." : "";
-          yield* store.endJob(
-            job.id,
-            "lost",
-            `${head}, so its result is lost. It may have taken effect, fully or partly.${command} Check before running it again.`,
-          );
-        }
-        return lost.length;
-      }),
-      "Jobs.recover",
-    ),
+          return lost.length;
+        }),
+        "Jobs.recover",
+      ),
   };
   return jobs;
 });

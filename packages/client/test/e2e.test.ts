@@ -187,7 +187,7 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
     const s = bot.getSnapshot();
     const b = top.getSnapshot().bots.find((x) => x.id === id);
     throw new Error(
-      `${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "files" ? e.files.length : e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`,
+      `${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "files" ? e.files.length : e.kind === "permission" ? e.answer : e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`,
     );
   });
   assert.deepEqual(
@@ -560,35 +560,32 @@ test("no MCP server may take the name of Top's own tools (Collar)", async () => 
   );
 });
 
-test("a bot's permission request reaches every client; the first answer wins, and a restart ends it unanswered", async () => {
+test("a bot's permission request reaches every client; the first answer wins, and what came of it syncs like any entry, across a restart", async () => {
   const daemon = new Daemon();
   await daemon.start();
   const a = await connect(daemon, 0);
   const b = await connect(daemon, 0);
-  const asked = (top: TopClient) =>
+  const waiting = (top: TopClient, n = 1) =>
     until(
       top.subscribe,
       () => top.getSnapshot().permissions,
-      (p) => p.length === 1,
-      "the request",
+      (p) => p.length === n,
+      `${n} waiting`,
     );
+  const answerOf = (s: ConversationSnapshot, id: number) => ofKind(s, "permission").find((e) => e.request === id)?.answer;
 
   a.bot.send("ask permission to rotate the API keys");
-  const [request] = await asked(a.top);
-  assert.equal(request!.bot, a.id);
-  assert.equal(request!.action, "rotate the API keys");
-  // The app shows it where the bot asked: the call it came from, in that bot's conversation.
-  const call = (await untilBot(a.bot, (x) => ofKind(x, "assistant").some((e) => e.tools?.length), "the call")).items
-    .flatMap((i) => (i.kind === "entry" && i.entry.kind === "assistant" ? (i.entry.tools ?? []) : []))
-    .at(-1)!;
-  assert.equal(call.id, request!.toolCallId);
-  assert.deepEqual(call.permission, { action: "rotate the API keys", reason: "You asked me to check with you first." });
-  assert.deepEqual((await asked(b.top))[0], request, "the other device sees the same request");
+  const [request] = await waiting(a.top);
+  assert.deepEqual(request, { id: request!.id, bot: a.id, action: "rotate the API keys", reason: "You asked me to check with you first." });
+  // The app shows it where the bot asked: the call's result names the request.
+  let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "tool").some((e) => e.permission), "the call's result");
+  assert.deepEqual(ofKind(s, "tool").at(-1)!.permission, { id: request!.id, action: "rotate the API keys", reason: "You asked me to check with you first." });
+  assert.deepEqual((await waiting(b.top))[0], request, "the other device sees the same request");
 
   // A client that connects (or reconnects) while it waits is sent it too.
   const late = new TopClient({ url: daemon.url });
   cleanup.push(() => late.close());
-  assert.equal((await asked(late))[0]!.id, request!.id);
+  assert.equal((await waiting(late))[0]!.id, request!.id);
 
   await b.top.answerPermission(request!, false);
   await assert.rejects(
@@ -596,31 +593,47 @@ test("a bot's permission request reaches every client; the first answer wins, an
     (error: Error) => error.name === "PermissionError" && /already answered/.test(error.message),
     "a later Allow is refused",
   );
-  for (const top of [a.top, b.top, late])
-    await until(
-      top.subscribe,
-      () => top.getSnapshot().permissions,
-      (p) => p.length === 0,
-      "the request gone",
-    );
-  let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "assistant").length >= 2, "the bot's answer");
-  assert.equal(ofKind(s, "tool").at(-1)!.text, "Denied by the user: rotate the API keys. Don't do it.");
-  assert.equal(ofKind(s, "tool").at(-1)!.permission, "denied");
+  for (const top of [a.top, b.top, late]) await waiting(top, 0);
+  // Both devices' conversations get the one entry that settles it, and the bot hears once.
+  for (const sync of [a.bot, b.bot]) await untilBot(sync, (x) => answerOf(x, request!.id) === "denied", "the answer's entry");
+  s = await untilBot(
+    a.bot,
+    (x) => settled(x) && ofKind(x, "user").filter((e) => e.source === "permission").length === 1 && ofKind(x, "assistant").length >= 3,
+    "the bot's reply",
+  );
+  assert.equal(ofKind(s, "user").find((e) => e.source === "permission")!.text, "[Permission] The user denied: rotate the API keys. Don't do it.");
 
-  // Killed while a request waits: after the restart nobody is asked again, and the call says it got no answer.
+  // Killed while a request waits: after the restart it's still waiting, asked once, and the answer gets through once.
   a.bot.send("ask permission to purge the cache");
-  await asked(a.top);
+  const [second] = await waiting(a.top);
+  await untilBot(a.bot, (x) => ofKind(x, "tool").some((e) => e.permission?.id === second!.id), "the second call's result");
   await daemon.kill();
   await until(
     a.top.subscribe,
-    () => a.top.getSnapshot().permissions,
-    (p) => p.length === 0,
-    "the request cleared while offline",
+    () => a.top.getSnapshot(),
+    (x) => x.connection !== "open" && x.permissions.length === 0,
+    "the list dropped while offline: it can't be answered then",
   );
   await daemon.start();
-  s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "tool").length >= 2 && ofKind(x, "assistant").length >= 4, "the bot after the restart");
-  const cut = ofKind(s, "tool").at(-1)!;
-  assert.equal(cut.outcome, "not_run");
-  assert.doesNotMatch(cut.text, /Allowed/);
-  assert.deepEqual(a.top.getSnapshot().permissions, [], "not asked again");
+  assert.deepEqual((await waiting(a.top))[0], second, "still waiting after the restart");
+  await a.top.answerPermission(second!, true);
+  s = await untilBot(
+    a.bot,
+    (x) => settled(x) && answerOf(x, second!.id) === "allowed" && ofKind(x, "user").filter((e) => e.source === "permission").length === 2,
+    "the second answer",
+  );
+  assert.equal(ofKind(s, "tool").filter((e) => e.permission).length, 2, "not asked again");
+
+  // Stop withdraws: every client, also one that loads the conversation afresh, sees it as withdrawn.
+  a.bot.send("ask permission to reboot the router");
+  const [third] = await waiting(a.top);
+  await a.bot.abort();
+  await waiting(a.top, 0);
+  const fresh = new TopClient({ url: daemon.url });
+  cleanup.push(() => fresh.close());
+  await until(fresh.subscribe, fresh.getSnapshot, (x) => x.ready, "the roster");
+  const reloaded = fresh.conversation(a.id);
+  reloaded.retain();
+  await untilBot(reloaded, (x) => x.status === "live" && answerOf(x, third!.id) === "withdrawn", "the withdrawal, after a reload");
+  assert.equal(ofKind(reloaded.getSnapshot(), "user").filter((e) => e.source === "permission").length, 2, "nothing reached the bot about it");
 });

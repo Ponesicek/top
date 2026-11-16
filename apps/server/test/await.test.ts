@@ -3,6 +3,7 @@
  * message, wake-ups bring a bot's note back when due, and both survive what a restart does to them.
  */
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import Type from "typebox";
@@ -12,8 +13,9 @@ import { wakeGroup } from "../src/collar/wake.ts";
 import { makeJobs } from "../src/jobs.ts";
 import { textOf as textOfContent } from "../src/messages.ts";
 import type { InboxRow, StoredEntry } from "../src/store.ts";
-import { fromPromise, type TopTool, text } from "../src/tools.ts";
+import { defineTool, fromPromise, sleep, type TopTool, text } from "../src/tools.ts";
 import { toWire } from "../src/wire.ts";
+import { computerTools } from "../src/workspace.ts";
 import { type Harness, harness, idle, until } from "./harness.ts";
 
 const FOREGROUND_MS = 150;
@@ -57,7 +59,8 @@ function slowTool() {
 
 const setup = (tools: TopTool[] = [], dir?: string) => harness({ tools, foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS, ...(dir ? { dir } : {}) });
 
-const textOf = (entry: StoredEntry) => (entry.kind === "notice" ? entry.message.text : entry.kind === "files" ? "" : textOfContent(entry.message.content));
+const textOf = (entry: StoredEntry) =>
+  entry.kind === "notice" ? entry.message.text : entry.kind === "files" || entry.kind === "permission" ? "" : textOfContent(entry.message.content);
 const fromTop = async (h: Harness, source: "wake" | "job") => (await h.entries()).filter((e) => e.kind === "user" && e.source === source);
 const lastIsAnswer = async (h: Harness) => (await h.entries()).at(-1)?.kind === "assistant" && (await idle(h));
 const messagesFrom = (h: Harness, source: "wake" | "job") => async () => {
@@ -93,7 +96,6 @@ test("a tool call that outruns the limit moves to the background, and its result
     text: textOf(message!),
     requestId: message!.requestId!,
     source: "job",
-    job: 1,
   });
   // The bot took it like any message and answered.
   await until("the answer to the job's message", () => lastIsAnswer(h));
@@ -160,19 +162,43 @@ test("waiting for a job takes its result, and then no message is sent about it",
 });
 
 test("a job cut off by a restart is reported to its bot when the daemon starts again", async () => {
-  const first = await setup();
+  // The real bash, which says its command may outlive the daemon (`cutOff`).
+  const bash = computerTools(tmpdir()).filter((tool) => tool.name === "bash");
+  const first = await setup(bash);
   const { dir, bot } = first;
   const job = await first.run(first.store.startJob(bot, "1:2:call_x", "bash", "command: npm test", "", Date.now() - 90_000));
   await first.close();
 
   // A new daemon on the same data: the old process (and the job in it) is gone.
-  const h = await setup([], dir);
+  const h = await setup(bash, dir);
   await h.run(h.daemon.start);
   const [message] = await until("the cut-off message", messagesFrom(h, "job"));
   assert.match(textOf(message!), new RegExp(`^\\[Background job ${job} was cut off\\] bash \\(command: npm test\\)`));
   assert.match(textOf(message!), /may even still be running/);
   assert.equal((await h.run(h.store.job(job)))?.state, "lost");
   await until("the bot to answer it", () => lastIsAnswer(h));
+});
+
+test("a call a restart cut off in the task says what its tool says about that", async () => {
+  const slow = defineTool({
+    name: "test__slow",
+    label: "Slow",
+    description: "Takes a minute.",
+    parameters: Type.Object({}),
+    cutOff: "Its process may still be running.",
+    run: (_args, ctx) => Effect.as(sleep(60_000, ctx.signal), text("done")),
+  });
+  const first = await harness({ tools: [slow], foregroundMs: 60_000 });
+  await first.run(first.daemon.start);
+  await first.run(first.daemon.submit(first.bot, "r1", "call test__slow", "followUp", null));
+  await until("the call to start", async () => (await first.run(first.daemon.runner(first.bot))).status().status === "tool");
+  await first.close();
+
+  const h = await harness({ tools: [slow], foregroundMs: 60_000, dir: first.dir });
+  await h.run(h.daemon.start);
+  const result = await until("the call to be settled", async () => (await h.entries()).find((e) => e.kind === "tool"));
+  assert.equal(result.kind === "tool" && result.outcome, "interrupted");
+  assert.match(textOf(result), /may or may not have taken effect\. Its process may still be running\. Check before/);
 });
 
 test("a wake-up the bot sets brings its note back when due", async () => {

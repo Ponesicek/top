@@ -223,7 +223,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           thinkingLevel: options.thinkingLevel ?? "off",
           messages,
           tools: toolList,
-          toolContext: (toolCallId) => ({ key: key(assistantSeq, toolCallId), bot: id, toolCallId }),
+          toolContext: (toolCallId) => ({ key: key(assistantSeq, toolCallId), bot: id }),
           signal,
           stopped: () => abortRequested,
           // Messages that queue up while the bot works reach it together, at one step.
@@ -384,7 +384,7 @@ export const makeRunner = Effect.fnUntraced(function* (
     Effect.gen(function* () {
       const record = yield* store.toolCall(seq, call.id);
       const tool = tools.get(call.name);
-      const ctx = { key: key(seq, call.id), bot: id, toolCallId: call.id };
+      const ctx = { key: key(seq, call.id), bot: id };
       const args = record ? record.args : call.arguments;
       let result: ToolResult;
       let isError = true;
@@ -418,7 +418,10 @@ export const makeRunner = Effect.fnUntraced(function* (
           );
         } else {
           outcome = "interrupted";
-          result = text("Interrupted: the daemon restarted while this tool was running. It may or may not have taken effect. Check before calling it again.");
+          const cutOff = tool?.cutOff ? ` ${tool.cutOff}` : "";
+          result = text(
+            `Interrupted: the daemon restarted while this tool was running. It may or may not have taken effect.${cutOff} Check before calling it again.`,
+          );
         }
       }
       const message = toolResultMessage(call.id, call.name, result, isError, yield* now);

@@ -7,7 +7,7 @@
  * slow to keep up is dropped by its connection, which then resyncs on reconnect). Events are counted,
  * so a listener can tell when it has seen everything published up to a moment (see serve.ts).
  */
-import type { AccountView, BotSummary, McpServerView, UpdateView } from "@top/protocol";
+import type { AccountView, BotSummary, McpServerView, PermissionRequest, UpdateView } from "@top/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -31,8 +31,8 @@ export type DaemonEvent =
   | { readonly _tag: "McpServerRemoved"; readonly id: number }
   /** What the bots' model requests are signed in with changed (see chatgpt.ts). */
   | { readonly _tag: "Account"; readonly view: AccountView }
-  /** A permission request came or went (see permissions.ts). */
-  | { readonly _tag: "Permissions" }
+  /** A permission request came or went (see permissions.ts): the ones waiting now. */
+  | { readonly _tag: "Permissions"; readonly waiting: readonly PermissionRequest[] }
   /** The daemon's updates changed: a check, a download, a restart, or another channel (see updates.ts). */
   | { readonly _tag: "Update"; readonly view: UpdateView };
 

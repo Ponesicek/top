@@ -170,7 +170,7 @@ export class Daemon extends Context.Service<
       clientId: string | null,
       attachmentIds?: readonly string[],
     ) => Effect.Effect<{ duplicate: boolean }, UnknownBotError | BusyError | AttachmentError>;
-    /** The user's Stop: the bot's task ends, and so do its background jobs. Its wake-ups stay. */
+    /** The user's Stop: the bot's task ends, and so do its background jobs and its permission requests. Its wake-ups stay. */
     readonly stop: (bot: number) => Effect.Effect<void, UnknownBotError>;
     /** Settle whatever the last process left unfinished, then start every bot, then the wake-up clock. */
     readonly start: Effect.Effect<void>;
@@ -184,7 +184,7 @@ export class Daemon extends Context.Service<
     readonly files: (bot: number) => FilesFolder | undefined;
     readonly jobs: Jobs;
     readonly wakes: WakeClock;
-    /** Bots' questions to the user, waiting for an answer. */
+    /** What bots asked the user's permission for (see permissions.ts). */
     readonly permissions: Permissions;
   }
 >()("top/Daemon") {}
@@ -209,12 +209,13 @@ const make = Effect.gen(function* () {
   const seeded = (yield* store.bots)[0];
   if (kit.seed && seeded) yield* seedHistory(seeded.id, kit.seed);
 
-  /** What the bot is waiting on: jobs in the background, its next wake-up. */
-  const waiting = (bot: number): Effect.Effect<{ background?: number; wakeAt?: number }> =>
+  /** What the bot is waiting on: jobs in the background, the user's answers, its next wake-up. */
+  const waiting = (bot: number): Effect.Effect<{ background?: number; approvals?: number; wakeAt?: number }> =>
     Effect.gen(function* () {
       const background = jobs.count(bot);
+      const approvals = (yield* store.waitingOf(bot)).length;
       const wakeAt = (yield* store.wakes(bot))[0]?.dueAt;
-      return { ...(background ? { background } : {}), ...(wakeAt !== undefined ? { wakeAt } : {}) };
+      return { ...(background ? { background } : {}), ...(approvals ? { approvals } : {}), ...(wakeAt !== undefined ? { wakeAt } : {}) };
     });
 
   const summarize = (bot: number, runner: BotRunner | undefined): Effect.Effect<BotSummary> =>
@@ -271,8 +272,13 @@ const make = Effect.gen(function* () {
   const jobs: Jobs = yield* makeJobs({ deliver: queued, changed }, kit.foregroundMs);
   const wakes = yield* makeWakeClock(queued);
   const toolsOf = (bot: number) => toolSources.get(bot)?.() ?? [];
+  const permissions = makePermissions(store, {
+    // Its bot may be gone (deleted meanwhile): then nothing is announced.
+    entry: (entry) => (bots.has(entry.bot) ? Effect.andThen(events.publish({ _tag: "Entry", entry }), touch(entry.bot)) : Effect.void),
+    deliver: queued,
+    changed: (bot, waiting) => Effect.andThen(events.publish({ _tag: "Permissions", waiting }), changed(bot)),
+  });
   /** Top's own tools, which every bot has (see collar/index.ts). */
-  const permissions = makePermissions(events.publish({ _tag: "Permissions" }));
   const collar = collarTools({ store, jobs, wakes, permissions, changed, toolsOf });
 
   const add = (bot: BotRow): Effect.Effect<LiveBot> =>
@@ -373,6 +379,8 @@ const make = Effect.gen(function* () {
       yield* store.markDeleted(id);
       yield* wakes.changed;
       yield* events.publish({ _tag: "BotRemoved", bot: id });
+      // Its requests went with it (markDeleted).
+      yield* events.publish({ _tag: "Permissions", waiting: yield* permissions.waiting });
       if (mcp) yield* mcp.botRemoved(id);
       const { runner } = live;
       yield* runner.close;
@@ -405,9 +413,10 @@ const make = Effect.gen(function* () {
       const runner = yield* runnerOf(bot);
       yield* runner.abort;
       yield* jobs.stopAll(bot);
+      yield* permissions.withdraw(bot);
     }),
     start: Effect.gen(function* () {
-      const lost = yield* jobs.recover;
+      const lost = yield* jobs.recover((bot, name) => toolsOf(bot).find((tool) => tool.name === name));
       if (lost) yield* Effect.log(`${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
       // Restarted for an update (see updates.ts): the bots pick their tasks back up, as after any restart.
       const planned = yield* store.flag(PLANNED_RESTART);

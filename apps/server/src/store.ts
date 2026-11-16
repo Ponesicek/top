@@ -20,6 +20,8 @@
  *   the same transaction, so a wake-up arrives once, also across restarts.
  * - `jobs`: tool calls that outran the time limit and went on in the background (see jobs.ts). Ending
  *   one puts its result in the inbox in the same transaction.
+ * - `permissions`: what bots asked the user's permission for (see permissions.ts). Settling one appends
+ *   the `permission` entry saying what came of it and queues the bot's message, in one transaction.
  * - `attachments`: files the user uploaded (see attachments.ts, which keeps the bytes on disk). One with
  *   no `bot` is waiting for a message to claim it; claiming it is part of accepting the message.
  *
@@ -46,6 +48,7 @@ import {
   type EntryBody,
   FilesView,
   NoticeView,
+  PermissionView,
   SystemView,
   ToolResultView,
   type TranscriptMessage,
@@ -63,7 +66,7 @@ const Text = Schema.String;
 const NullableText = Schema.NullOr(Schema.String);
 const Source = Schema.NullOr(MessageSource);
 
-export const EntryKind = Schema.Literals(["system", "user", "assistant", "tool", "notice", "files"]);
+export const EntryKind = Schema.Literals(["system", "user", "assistant", "tool", "notice", "files", "permission"]);
 export type EntryKind = typeof EntryKind.Type;
 
 /** A file in a bot's files folder, as last seen. */
@@ -91,6 +94,7 @@ export const StoredEntry = Schema.Union([
   entryOf_("tool", ToolResultView),
   entryOf_("notice", NoticeView),
   entryOf_("files", FilesView),
+  entryOf_("permission", PermissionView),
 ]);
 export type StoredEntry = typeof StoredEntry.Type;
 
@@ -151,6 +155,16 @@ export const JobRow = Schema.Struct({
   state: JobState,
 }).pipe(Schema.encodeKeys({ startedAt: "started_at" }));
 export type JobRow = typeof JobRow.Type;
+
+export const PermissionState = Schema.Literals(["pending", "allowed", "denied", "withdrawn"]);
+export const PermissionRow = Schema.Struct({
+  id: Int,
+  bot: Int,
+  action: Text,
+  reason: NullableText,
+  state: PermissionState,
+});
+export type PermissionRow = typeof PermissionRow.Type;
 
 /**
  * pi-mcp's saved sign-in. Top checks what it reads of it (that it has tokens); the rest is pi-mcp's,
@@ -312,6 +326,20 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     yield* addColumn("jobs", "note", "TEXT NOT NULL DEFAULT ''");
   }),
   "2_bot_avatar": addColumn("bots", "avatar", "INTEGER NOT NULL DEFAULT 0"),
+  "3_permissions": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // `key` names the tool call that asked (see tools.ts): the same call asks once.
+    yield* sql`CREATE TABLE permissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot INTEGER NOT NULL REFERENCES bots(id),
+      key TEXT NOT NULL UNIQUE,
+      action TEXT NOT NULL,
+      reason TEXT,
+      state TEXT NOT NULL DEFAULT 'pending',
+      at INTEGER NOT NULL
+    )`;
+    yield* sql`CREATE INDEX permissions_pending ON permissions(state, bot)`;
+  }),
 };
 
 /**
@@ -350,6 +378,7 @@ const inboxOf = (row: Row): InboxRow => {
 const attachmentOf = decoder(Schema.decodeUnknownSync(AttachmentRow));
 const wakeOf = decoder(Schema.decodeUnknownSync(WakeRow));
 const jobOf = decoder(Schema.decodeUnknownSync(JobRow));
+const permissionOf = decoder(Schema.decodeUnknownSync(PermissionRow));
 const mcpServerOf = decoder(Schema.decodeUnknownSync(McpServerRow));
 const botOf = decoder(Schema.decodeUnknownSync(BotRow));
 const toolCallOf = decoder(Schema.decodeUnknownSync(ToolCallRow));
@@ -494,6 +523,27 @@ export class Store extends Context.Service<
      */
     readonly endJob: (id: number, state: Exclude<JobState, "running">, text?: string) => Effect.Effect<InboxRow | undefined>;
 
+    // permission requests
+    /** Record a request. `key` is the call's that asked: asking again returns the same request, whatever came of it. */
+    readonly ask: (bot: number, key: string, action: string, reason: string | undefined) => Effect.Effect<PermissionRow>;
+    /** The request a call made, if it got as far as asking. */
+    readonly askedBy: (key: string) => Effect.Effect<PermissionRow | undefined>;
+    /** Requests waiting for an answer, oldest first (of bots that aren't deleted). */
+    readonly waiting: Effect.Effect<PermissionRow[]>;
+    /** A bot's requests waiting for an answer. */
+    readonly waitingOf: (bot: number) => Effect.Effect<PermissionRow[]>;
+    /**
+     * Settle a waiting request of `bot`: the `permission` entry saying so and, with `text`, the bot's
+     * message about it, atomically. `undefined` (and nothing written) unless it was waiting: the first
+     * answer wins.
+     */
+    readonly settle: (
+      bot: number,
+      id: number,
+      answer: Exclude<PermissionRow["state"], "pending">,
+      text?: string,
+    ) => Effect.Effect<{ entry: StoredEntry; message: InboxRow | undefined } | undefined>;
+
     // tool calls
     readonly toolStarted: (bot: number, assistantSeq: number, toolCallId: string, name: string, args: Readonly<Record<string, unknown>>) => Effect.Effect<void>;
     /** A tool's result and the end of its call record, atomically. */
@@ -526,7 +576,7 @@ const traced = (store: Store["Service"]): Store["Service"] => {
 
 const VISIBLE = "kind != 'system'";
 /** Entries the model sees: not the ones only clients show. */
-const CONTEXT = "kind NOT IN ('notice', 'files')";
+const CONTEXT = "kind NOT IN ('notice', 'files', 'permission')";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -581,7 +631,7 @@ const make = Effect.gen(function* () {
   const purgeBot = (bot: number) =>
     transaction(
       Effect.gen(function* () {
-        for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files", "wakes", "jobs", "attachments"])
+        for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files", "wakes", "jobs", "permissions", "attachments"])
           yield* q(sql.unsafe(`DELETE FROM ${table} WHERE bot = ?`, [bot]));
         yield* q(sql`DELETE FROM bots WHERE id = ${bot}`);
       }),
@@ -613,6 +663,7 @@ const make = Effect.gen(function* () {
             yield* q(sql`DELETE FROM bot_mcp WHERE bot = ${bot}`);
             yield* q(sql`UPDATE wakes SET state = 'cancelled' WHERE bot = ${bot} AND state = 'pending'`);
             yield* q(sql`UPDATE jobs SET state = 'stopped' WHERE bot = ${bot} AND state = 'running'`);
+            yield* q(sql`UPDATE permissions SET state = 'withdrawn' WHERE bot = ${bot} AND state = 'pending'`);
           }),
         ),
       purgeBot,
@@ -814,6 +865,25 @@ const make = Effect.gen(function* () {
             const row = yield* first(sql`UPDATE jobs SET state = ${state}, finished_at = ${at} WHERE id = ${job} AND state = 'running' RETURNING bot`);
             if (!row || text === undefined) return undefined;
             return yield* queueEvent(Number(row.bot), `job:${job}:${at}`, text, "job");
+          }),
+        ),
+
+      ask: (bot, key, action, reason) =>
+        Effect.gen(function* () {
+          yield* q(sql`INSERT OR IGNORE INTO permissions (bot, key, action, reason, at) VALUES (${bot}, ${key}, ${action}, ${reason ?? null}, ${yield* now})`);
+          return permissionOf((yield* first(sql`SELECT * FROM permissions WHERE key = ${key}`))!);
+        }),
+      askedBy: (key) => Effect.map(first(sql`SELECT * FROM permissions WHERE key = ${key}`), (row) => row && permissionOf(row)),
+      waiting: Effect.map(rows(sql`SELECT * FROM permissions WHERE state = 'pending' ORDER BY id`), (r) => r.map(permissionOf)),
+      waitingOf: (bot) => Effect.map(rows(sql`SELECT * FROM permissions WHERE bot = ${bot} AND state = 'pending' ORDER BY id`), (r) => r.map(permissionOf)),
+      settle: (bot, id, answer, text) =>
+        transaction(
+          Effect.gen(function* () {
+            const settled = yield* rows(sql`UPDATE permissions SET state = ${answer} WHERE id = ${id} AND bot = ${bot} AND state = 'pending' RETURNING id`);
+            if (!settled.length) return undefined;
+            const entry = yield* append(bot, "permission", { request: id, answer });
+            const message = text === undefined ? undefined : yield* queueEvent(bot, `permission:${id}`, text, "permission");
+            return { entry, message };
           }),
         ),
 
