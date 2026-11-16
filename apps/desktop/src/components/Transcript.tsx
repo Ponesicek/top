@@ -248,6 +248,7 @@ export const Transcript = memo(function Transcript({
                   row={row}
                   name={name}
                   queued={row.job === undefined ? undefined : snapshot.inbox.find((m) => m.job === row.job)}
+                  live={snapshot.status === "live"}
                   className={look.files}
                 />
               ) : (

@@ -35,12 +35,15 @@ export const PermissionCard = memo(function PermissionCard({
   row,
   name,
   queued,
+  live,
   className,
 }: {
   row: PermissionRow;
   name: string;
   /** Its job's message, while it waits in the bot's queue (a background request's answer). */
   queued: QueuedMessage | undefined;
+  /** The conversation is caught up with the daemon (not a cached or loading one that may lack the answer). */
+  live: boolean;
   className?: string;
 }) {
   const request = useClient((s) => (row.answer ? undefined : s.permissions.find((p) => p.bot === row.bot && p.toolCallId === row.toolCallId)));
@@ -57,7 +60,7 @@ export const PermissionCard = memo(function PermissionCard({
   // A background request gone from the list with no answer on its way: it was withdrawn. Sure at once when
   // the bot has no background jobs left (its count drops only after an answer is delivered); otherwise after
   // a moment, since another job of the bot's may be what's still running.
-  const missing = row.job !== undefined && !row.answer && !queued && !sent && synced && !request;
+  const missing = row.job !== undefined && !row.answer && !queued && !sent && synced && live && !request;
   const jobsLeft = useClient((s) => s.bots.find((b) => b.id === row.bot)?.background ?? 0);
   const [waited, setWaited] = useState(false);
   const withdrawn = missing && (jobsLeft === 0 || waited);
