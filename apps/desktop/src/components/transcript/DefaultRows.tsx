@@ -102,12 +102,14 @@ const UserRow = memo(function UserRow({ row, ctx }: { row: UserRowData; ctx: Row
 const AssistantRow = memo(function AssistantRow({
   row,
   name,
+  avatar,
   cont,
   turn,
   end,
 }: {
   row: AssistantRowData;
   name: string;
+  avatar: number | undefined;
   cont: boolean;
   turn: string;
   end: boolean;
@@ -116,7 +118,7 @@ const AssistantRow = memo(function AssistantRow({
   return (
     <div data-turn={turn}>
       <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
-        {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" title={name} />}
+        {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} avatar={avatar} size="sm" className="-mt-0.5" title={name} />}
         <div className="min-w-0 flex-1">
           {row.text && <Markdown html={html} answer={row.seq} />}
           {row.error && <AnswerError error={row.error} />}
@@ -143,7 +145,7 @@ const ToolGroupLine = memo(function ToolGroupLine({
   return (
     <div data-turn={turn}>
       <div className={cn("flex gap-3", cont ? "pt-1" : "pt-2.25")}>
-        {cont ? <span className="w-7 flex-none" /> : <Avatar name={ctx.name} size="sm" className="-mt-0.5" title={ctx.name} />}
+        {cont ? <span className="w-7 flex-none" /> : <Avatar name={ctx.name} avatar={ctx.avatar} size="sm" className="-mt-0.5" title={ctx.name} />}
         <ToolGroup row={row} sync={ctx.sync} className="min-w-0 flex-1 py-0.5" />
       </div>
       {end && <TurnTime at={row.at} turn={turn} align="start" />}
@@ -152,12 +154,12 @@ const ToolGroupLine = memo(function ToolGroupLine({
 });
 
 /** What the bot is doing right now, with how long it has been at it. */
-function WorkingRow({ name, bot, cont }: { name: string; bot: BotSummary | undefined; cont: boolean }) {
+function WorkingRow({ name, avatar, bot, cont }: { name: string; avatar: number | undefined; bot: BotSummary | undefined; cont: boolean }) {
   const seconds = useElapsed(bot);
   const tool = bot?.status === "tool";
   return (
     <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
-      {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} size="sm" className="-mt-0.5" />}
+      {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} avatar={avatar} size="sm" className="-mt-0.5" />}
       <div className="min-w-0 flex-1">
         <div className={cn("inline-flex items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
           {/* Amber while thinking, blue while a tool runs. */}
@@ -188,11 +190,11 @@ export const renderDefaultRow: RowRenderer = (rows, index, ctx, bot) => {
     row.kind === "user" ? (
       <UserRow row={row} ctx={ctx} />
     ) : row.kind === "assistant" ? (
-      <AssistantRow row={row} name={ctx.name} cont={cont} turn={turnOf(rows, index)} end={end} />
+      <AssistantRow row={row} name={ctx.name} avatar={ctx.avatar} cont={cont} turn={turnOf(rows, index)} end={end} />
     ) : row.kind === "toolgroup" ? (
       <ToolGroupLine row={row} ctx={ctx} cont={cont} turn={turnOf(rows, index)} end={end} />
     ) : row.kind === "working" ? (
-      <WorkingRow name={ctx.name} bot={bot} cont={cont} />
+      <WorkingRow name={ctx.name} avatar={ctx.avatar} bot={bot} cont={cont} />
     ) : null;
   return (
     <>

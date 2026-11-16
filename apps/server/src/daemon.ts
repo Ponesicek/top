@@ -11,6 +11,7 @@ import {
   type BotSummary,
   BusyError,
   MAX_ATTACHMENTS,
+  MAX_BOT_AVATAR,
   MAX_BOT_DESCRIPTION,
   MAX_BOT_NAME,
   UnknownBotError,
@@ -110,13 +111,13 @@ export class BotKit extends Context.Service<
 >()("top/BotKit") {}
 
 /** Add a bot to the store. Its transcript begins with its system message. */
-const addBot = (name: string, description: string, newBot: NewBot) =>
+const addBot = (name: string, description: string, newBot: NewBot, avatar = 0) =>
   Effect.gen(function* () {
     const store = yield* Store;
     const instructions = newBot.instructions(name, description);
     return yield* store.transaction(
       Effect.gen(function* () {
-        const id = yield* store.createBot(name, instructions, newBot.model, description);
+        const id = yield* store.createBot(name, instructions, newBot.model, description, avatar);
         const system = createInitialSystemMessage(instructions, newBot.declare.map(toToolDeclaration));
         if (system) yield* store.append(id, "system", system);
         return id;
@@ -150,7 +151,7 @@ export class Daemon extends Context.Service<
     readonly runner: (bot: number) => Effect.Effect<BotRunner, UnknownBotError>;
     readonly runners: () => BotRunner[];
     /** Make a bot and announce it. Fails with a `BotError` the user can read when the name is empty or taken. */
-    readonly createBot: (name: string, description: string) => Effect.Effect<number, BotError>;
+    readonly createBot: (name: string, description: string, avatar?: number) => Effect.Effect<number, BotError>;
     /**
      * Delete a bot and its transcript. It leaves the roster at once; whatever it was doing is stopped,
      * and its rows are removed once it has. Files it made in its folder stay.
@@ -222,6 +223,7 @@ const make = Effect.gen(function* () {
         id: bot,
         name: row.name,
         description: row.description,
+        ...(row.avatar ? { avatar: row.avatar } : {}),
         status: status.status,
         ...(status.tool ? { tool: status.tool } : {}),
         ...(status.error ? { error: status.error } : {}),
@@ -340,7 +342,7 @@ const make = Effect.gen(function* () {
     has: (bot) => bots.has(bot),
     runner: runnerOf,
     runners: () => [...bots.values()].map((live) => live.runner),
-    createBot: Effect.fn("Daemon.createBot")(function* (rawName, rawDescription) {
+    createBot: Effect.fn("Daemon.createBot")(function* (rawName, rawDescription, avatar = 0) {
       const newBot = kit.newBot;
       if (!newBot) return yield* new BotError({ message: "This daemon can't make bots." });
       const name = rawName.trim().replace(/\s+/g, " ");
@@ -349,10 +351,11 @@ const make = Effect.gen(function* () {
       if (name.length > MAX_BOT_NAME) return yield* new BotError({ message: `Keep the name under ${MAX_BOT_NAME + 1} characters.` });
       if (description.length > MAX_BOT_DESCRIPTION)
         return yield* new BotError({ message: `Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.` });
+      if (avatar < 0 || avatar > MAX_BOT_AVATAR) return yield* new BotError({ message: "That icon doesn't exist." });
       // Case-insensitive: a real bot's folder is named after it, and Windows and macOS folders ignore case.
       const taken = [...bots.values()].some((live) => live.runner.name.toLowerCase() === name.toLowerCase());
       if (taken) return yield* new BotError({ message: `There's already a bot named ${name}.` });
-      const id = yield* addBot(name, description, newBot).pipe(Effect.provideService(Store, store));
+      const id = yield* addBot(name, description, newBot, avatar).pipe(Effect.provideService(Store, store));
       const live = yield* add((yield* store.bot(id))!);
       yield* events.publish({ _tag: "Bot", summary: live.summary });
       return id;

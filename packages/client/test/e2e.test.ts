@@ -442,6 +442,15 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   await untilSummary(b.top, id, () => true, "the new bot on the other client");
   await assert.rejects(a.top.createBot("scout", ""), /already a bot named scout/);
   await assert.rejects(a.top.createBot("   ", ""), /Give the bot a name/);
+  assert.equal(made?.avatar, undefined, "the name's own drawing unless another was picked");
+
+  // The icon picked in the New bot dialog: every client gets it, and out-of-range ones are refused.
+  const iconId = await a.top.createBot("Lark", "", 42);
+  assert.equal(a.top.getSnapshot().bots.find((bot) => bot.id === iconId)?.avatar, 42);
+  await untilSummary(b.top, iconId, (bot) => bot.avatar === 42, "the picked icon on the other client");
+  await assert.rejects(a.top.createBot("Wren", "", -1), /icon doesn't exist/);
+  await assert.rejects(a.top.createBot("Wren", "", 1.5), /Expected an integer/);
+  await assert.rejects(a.top.createBot("Wren", "", 10_000), /icon doesn't exist/);
 
   // The new bot works like the first ones.
   const scout = a.top.conversation(id);
@@ -467,8 +476,12 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   const c = new TopClient({ url: daemon.url });
   cleanup.push(() => c.close());
   const roster = (await until(c.subscribe, c.getSnapshot, (s) => s.ready, "the roster after restart")).bots;
-  assert.equal(roster.length, seeded);
-  assert.ok(roster.some((bot) => bot.id === id && bot.name === "Scout"));
+  assert.equal(roster.length, seeded + 1);
+  assert.ok(roster.some((bot) => bot.id === id && bot.name === "Scout" && bot.avatar === undefined));
+  assert.ok(
+    roster.some((bot) => bot.id === iconId && bot.avatar === 42),
+    "the picked icon kept across a restart",
+  );
   assert.ok(!roster.some((bot) => bot.id === a.id));
 
   // Deleting every bot doesn't bring the first ones back on the next start.

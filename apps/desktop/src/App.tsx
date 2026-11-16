@@ -189,13 +189,13 @@ export function App() {
             />
           ) : bot && sync ? (
             <>
-              <Header sync={sync} name={bot.name} filesOpen={filesOpen} />
+              <Header sync={sync} name={bot.name} avatar={bot.avatar} filesOpen={filesOpen} />
               {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}
               <div
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
                 aria-hidden
               />
-              <Transcript key={String(bot.id)} sync={sync} name={bot.name} style={chatStyle} showTools={showTools} />
+              <Transcript key={String(bot.id)} sync={sync} name={bot.name} avatar={bot.avatar} style={chatStyle} showTools={showTools} />
               <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
             </>
           ) : ready ? (

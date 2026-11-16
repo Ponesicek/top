@@ -47,7 +47,17 @@ function FilesToggle({ bot, open }: { bot: BotId; open: boolean }) {
 }
 
 /** The header shares the transcript's column: its avatar sits on the avatar rail. */
-export const Header = memo(function Header({ sync, name, filesOpen }: { sync: ConversationSync; name: string; filesOpen: boolean }) {
+export const Header = memo(function Header({
+  sync,
+  name,
+  avatar,
+  filesOpen,
+}: {
+  sync: ConversationSync;
+  name: string;
+  avatar: number | undefined;
+  filesOpen: boolean;
+}) {
   const bot = useBot(sync.id);
   const working = isWorking(bot?.status);
   const status = useAtomValue(conversationAtom(sync), (snapshot) => snapshot.status);
@@ -62,7 +72,7 @@ export const Header = memo(function Header({ sync, name, filesOpen }: { sync: Co
         )}
       >
         <div className="flex min-w-0 items-center gap-2.75">
-          <Avatar name={name} size="sm" />
+          <Avatar name={name} avatar={avatar} size="sm" />
           <div className="flex min-w-0 flex-col">
             <h1 className="m-0 text-base leading-tight font-heading tracking-name">{name}</h1>
             <span

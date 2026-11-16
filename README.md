@@ -88,8 +88,9 @@ Their home is `apps/server/.data/fake`, laid out like `~/.top` (a reset clears t
 `--home`, `--reset`, `--no-compress`, `--tailscale`, `--tailscale-allow`, `--tailscale-port`; fake only: `--load`, `--tools` (load includes tool calls),
 `--seed N`, `--tps N`.
 
-Real mode starts with one bot, Atlas. Make more with the **+** beside "Bots" (a name, and a
-description the bot reads as part of its instructions); hover over a bot to delete it. Deleting
+Real mode starts with one bot, Atlas. Make more with the **+** beside "Bots" (a name, an icon
+drawn from the name, with more to shuffle through, and a description the bot reads as part of its
+instructions); hover over a bot to delete it. Deleting
 erases its conversation everywhere; files in its folder stay.
 
 Attach files with the paperclip, by pasting, or by dropping them on the conversation. They upload as

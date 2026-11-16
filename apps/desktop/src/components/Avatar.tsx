@@ -18,6 +18,13 @@ const HUES = {
 } as const;
 const NAMES = Object.keys(HUES) as (keyof typeof HUES)[];
 
+/**
+ * What a bot's drawing is seeded with: its name, and for any other than the name's own drawing (`avatar`
+ * 0), the number picked when it was made (see BotSummary's `avatar`). Joined by a line break, which no
+ * bot's name has (the daemon turns whitespace into spaces), so no name draws another bot's pick.
+ */
+export const avatarSeed = (name: string, avatar = 0) => (avatar ? `${name}\n${avatar}` : name);
+
 export function botHue(name: string): keyof typeof HUES {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
@@ -127,12 +134,13 @@ function draw(name: string): Look {
   return { body: shape.body, eyes: { kind, xs: [n(x - gap), n(x + gap)], y: n(shape.face[1] + lookY), size } };
 }
 
-// A handful of bots, each drawn once.
+// A handful of bots, each drawn once. The New bot picker draws a few per keystroke, so the cache is capped.
 const looks = new Map<string, Look>();
 function lookFor(name: string): Look {
   let look = looks.get(name);
   if (!look) {
     look = draw(name);
+    if (looks.size >= 256) looks.clear();
     looks.set(name, look);
   }
   return look;
@@ -165,30 +173,34 @@ const SIZES = {
 } as const;
 
 /**
- * The bot's outline in its color with two eyes. In the Mono style (Settings → Appearance, `data-avatars` on
+ * The bot's outline in its color with two eyes, drawn from its name and `avatar`. In the Mono style (Settings → Appearance, `data-avatars` on
  * the root) the outline is ink and only the eyes keep the color. A failed bot gets a red presence dot, ringed
  * in `--avatar-ring` (the color behind the avatar) so it reads as cut out of the shape.
  */
 export const Avatar = memo(function Avatar({
   name,
+  avatar,
   status,
   size = "md",
   title,
   className,
 }: {
   name: string;
+  /** Which drawing of the name (BotSummary's `avatar`); absent or 0 is the name's own. */
+  avatar?: number | undefined;
   status?: BotStatus;
   size?: keyof typeof SIZES;
   title?: string;
   className?: string;
 }) {
-  const { body, eyes } = lookFor(name);
+  const seed = avatarSeed(name, avatar);
+  const { body, eyes } = lookFor(seed);
   return (
     <span
       className={cn(
         "relative flex-none select-none [--avatar-body:var(--hue)] [--avatar-eye:#fff] [filter:var(--avatar-filter)] in-data-[avatars=mono]:[--avatar-body:var(--color-foreground)] in-data-[avatars=mono]:[--avatar-eye:var(--hue)]",
         SIZES[size],
-        HUES[botHue(name)],
+        HUES[botHue(seed)],
         className,
       )}
       aria-hidden

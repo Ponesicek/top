@@ -58,6 +58,11 @@ export const BotSummary = Struct({
   name: Schema.String,
   /** What the bot is for, as given when it was made. Empty when none was given. */
   description: Schema.String,
+  /**
+   * Which of the drawings for its name the bot wears (see `createBot`). Absent for the first one, the
+   * drawing of the name alone, which is every bot made before this could be picked.
+   */
+  avatar: Optional(Schema.Int),
   status: BotStatus,
   /** The running tool's name while `status` is `tool`. */
   tool: Optional(Schema.String),
@@ -392,7 +397,14 @@ export const ClientFrame = Schema.Union([
   }),
   Struct({ t: Schema.Literal("abort"), req, bot: BotId }),
   /** Make a bot. Answers with its id; every client gets its summary in a `bot` frame first. */
-  Struct({ t: Schema.Literal("createBot"), req, name: Schema.String, description: Schema.String }),
+  Struct({
+    t: Schema.Literal("createBot"),
+    req,
+    name: Schema.String,
+    description: Schema.String,
+    /** Which drawing of the name to wear, 0 to `MAX_BOT_AVATAR` (see BotSummary). Absent means 0. */
+    avatar: Optional(Schema.Int),
+  }),
   /** Delete a bot and its whole transcript. Every client gets `botRemoved`. */
   Struct({ t: Schema.Literal("deleteBot"), req, bot: BotId }),
   /** Add an MCP server (no `id`) or change one. Answers with its id; every client gets an `mcpServer` frame. */
@@ -479,6 +491,8 @@ export type McpSignInResult = ResultOf<"mcpSignIn">;
 /** The longest bot name and description `createBot` accepts. */
 export const MAX_BOT_NAME = 40;
 export const MAX_BOT_DESCRIPTION = 2_000;
+/** The highest avatar `createBot` accepts: plenty of drawings to pick from, and a number that stays short. */
+export const MAX_BOT_AVATAR = 9_999;
 
 // ── daemon → client ──────────────────────────────────────────────────────────────
 

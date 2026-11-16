@@ -61,11 +61,13 @@ function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: bo
 export const Transcript = memo(function Transcript({
   sync,
   name,
+  avatar,
   style = "default",
   showTools = false,
 }: {
   sync: ConversationSync;
   name: string;
+  avatar?: number | undefined;
   style?: ChatStyle;
   showTools?: boolean;
 }) {
@@ -186,7 +188,7 @@ export const Transcript = memo(function Transcript({
   const onClick = useCallback((event: React.MouseEvent) => void copyCode(event), []);
 
   const loadEarlier = useCallback(() => sync.loadEarlier(), [sync]);
-  const ctx = useMemo<RowContext>(() => ({ sync, name }), [sync, name]);
+  const ctx = useMemo<RowContext>(() => ({ sync, name, avatar }), [sync, name, avatar]);
 
   // The default style shows a turn's time under it while the pointer is anywhere in the turn (which
   // spans several rows): one unlayered rule shows the hovered turn's time, without re-rendering rows.
@@ -249,9 +251,9 @@ export const Transcript = memo(function Transcript({
       {rows.length === 0 && (
         <Empty>
           {snapshot.status === "loading" ? (
-            <EmptyCard visual={<Avatar name={name} size="lg" />}>Connecting to {name}…</EmptyCard>
+            <EmptyCard visual={<Avatar name={name} avatar={avatar} size="lg" />}>Connecting to {name}…</EmptyCard>
           ) : (
-            <EmptyCard visual={<Avatar name={name} size="lg" />} title={name}>
+            <EmptyCard visual={<Avatar name={name} avatar={avatar} size="lg" />} title={name}>
               No messages yet. Say hi and give {name} something to do.
             </EmptyCard>
           )}

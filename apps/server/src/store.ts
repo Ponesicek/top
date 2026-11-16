@@ -98,6 +98,8 @@ export const BotRow = Schema.Struct({
   id: Int,
   name: Text,
   description: Text,
+  /** Which drawing of its name the bot wears; 0 is the name's own. */
+  avatar: Int,
   instructions: Text,
   model: Text,
   runActive: Schema.BooleanFromBit,
@@ -309,6 +311,7 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     yield* addColumn("inbox", "attachments", "TEXT");
     yield* addColumn("jobs", "note", "TEXT NOT NULL DEFAULT ''");
   }),
+  "2_bot_avatar": addColumn("bots", "avatar", "INTEGER NOT NULL DEFAULT 0"),
 };
 
 /**
@@ -377,7 +380,7 @@ export class Store extends Context.Service<
     readonly bots: Effect.Effect<BotRow[]>;
     /** One bot, also while it is being deleted. */
     readonly bot: (id: number) => Effect.Effect<BotRow | undefined>;
-    readonly createBot: (name: string, instructions: string, model: string, description?: string) => Effect.Effect<number>;
+    readonly createBot: (name: string, instructions: string, model: string, description?: string, avatar?: number) => Effect.Effect<number>;
     /**
      * First half of deleting a bot: it leaves the roster, its queue is dropped and its name is free for a
      * new bot, but its rows stay so a step it is finishing can still be written. `purgeBot` removes them.
@@ -595,9 +598,11 @@ const make = Effect.gen(function* () {
 
       bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY id`), (r) => r.map(botOf)),
       bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
-      createBot: (name, instructions, model, description = "") =>
+      createBot: (name, instructions, model, description = "", avatar = 0) =>
         Effect.map(
-          first(sql`INSERT INTO bots (name, description, instructions, model) VALUES (${name}, ${description}, ${instructions}, ${model}) RETURNING id`),
+          first(
+            sql`INSERT INTO bots (name, description, avatar, instructions, model) VALUES (${name}, ${description}, ${avatar}, ${instructions}, ${model}) RETURNING id`,
+          ),
           (row) => Number(row!.id),
         ),
       markDeleted: (bot) =>

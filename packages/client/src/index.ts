@@ -76,6 +76,7 @@ export {
   isModelImage,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  MAX_BOT_AVATAR,
   MAX_BOT_DESCRIPTION,
   MAX_BOT_NAME,
   MAX_IMAGE_BYTES,
@@ -239,10 +240,11 @@ export class TopClient {
 
   /**
    * Make a bot. Resolves with its id once it is in the roster; rejects with a message for the user when
-   * the daemon refuses it (an empty or taken name) or isn't reachable.
+   * the daemon refuses it (an empty or taken name) or isn't reachable. `avatar` picks which drawing of the
+   * name it wears (see BotSummary); 0, the default, is the name's own.
    */
-  createBot(name: string, description: string): Promise<BotId> {
-    return this.#request({ t: "createBot", name, description }).then(({ id }) => id);
+  createBot(name: string, description: string, avatar = 0): Promise<BotId> {
+    return this.#request({ t: "createBot", name, description, ...(avatar ? { avatar } : {}) }).then(({ id }) => id);
   }
 
   /** Delete a bot and its whole transcript, on the daemon and for every client. */
