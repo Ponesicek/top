@@ -109,7 +109,9 @@ function ApprovalMark({ className }: { className?: string }) {
 /** A pinned bot: a tile in the grid above the list, its avatar large and its name under it. */
 const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
-  const fresh = unread && !busy;
+  // Waiting for your approval says more than "something new": it wins the shoulder and the tooltip.
+  const asking = !busy && !!bot.approvals;
+  const fresh = unread && !busy && !asking;
   // Working or something new: the status sits on the avatar's shoulder (a failed bot's red dot is the avatar's own).
   const mark = (busy && bot.status !== "failed") || fresh;
   const status = fresh ? "Idle · new messages" : statusLabel(bot);
@@ -134,7 +136,7 @@ const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSe
               <StatusDot status={bot.status} fresh={fresh} />
             </span>
           ) : (
-            !!bot.approvals && <ApprovalMark />
+            asking && <ApprovalMark />
           )}
         </span>
         <span
