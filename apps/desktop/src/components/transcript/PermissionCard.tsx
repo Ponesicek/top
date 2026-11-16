@@ -54,17 +54,21 @@ export const PermissionCard = memo(function PermissionCard({
   const card = useRef<HTMLElement>(null);
   const titleId = useId();
 
-  // A background request gone from the list with no answer on its way, for a moment: it was withdrawn.
+  // A background request gone from the list with no answer on its way: it was withdrawn. Sure at once when
+  // the bot has no background jobs left (its count drops only after an answer is delivered); otherwise after
+  // a moment, since another job of the bot's may be what's still running.
   const missing = row.job !== undefined && !row.answer && !queued && !sent && synced && !request;
-  const [withdrawn, setWithdrawn] = useState(false);
+  const jobsLeft = useClient((s) => s.bots.find((b) => b.id === row.bot)?.background ?? 0);
+  const [waited, setWaited] = useState(false);
+  const withdrawn = missing && (jobsLeft === 0 || waited);
   useEffect(() => {
-    setWithdrawn(false);
+    setWaited(false);
     if (!missing) return;
-    const timer = setTimeout(() => setWithdrawn(true), WITHDRAWN_AFTER_MS);
+    const timer = setTimeout(() => setWaited(true), WITHDRAWN_AFTER_MS);
     return () => clearTimeout(timer);
   }, [missing]);
 
-  const answer = row.answer ?? (queued ? (queued.permission ?? "restarted") : undefined) ?? sent ?? (missing && withdrawn ? "stopped" : undefined);
+  const answer = row.answer ?? (queued ? (queued.permission ?? "restarted") : undefined) ?? sent ?? (withdrawn ? "stopped" : undefined);
   const settled = answer ? SETTLED[answer] : undefined;
 
   const decide = async (allow: boolean) => {
