@@ -35,7 +35,7 @@ export type PermissionsEvents = {
   /** A message was queued for its bot (an answer). */
   readonly deliver: (row: InboxRow) => Effect.Effect<void>;
   /** The waiting requests changed: `bot`'s came or went. */
-  readonly changed: (bot: number, waiting: readonly PermissionRequest[]) => Effect.Effect<void>;
+  readonly changed: (bot: number) => Effect.Effect<void>;
 };
 
 const NOT_WAITING = "That request was already answered, or isn't waiting anymore.";
@@ -53,7 +53,7 @@ const answerText = (allow: boolean, action: string) =>
 
 export function makePermissions(store: Store["Service"], events: PermissionsEvents): Permissions {
   const waiting = Effect.map(store.waiting, (rows) => rows.map(requestOf));
-  const announce = (bot: number) => Effect.flatMap(waiting, (now) => events.changed(bot, now));
+  const announce = events.changed;
 
   const settle = (bot: number, id: number, answer: "allowed" | "denied" | "withdrawn", text?: string) =>
     Effect.gen(function* () {

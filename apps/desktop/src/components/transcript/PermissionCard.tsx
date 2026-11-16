@@ -31,29 +31,28 @@ export const PermissionCard = memo(function PermissionCard({ row, name, classNam
   const waiting = useClient((s) => s.permissions.some((p) => p.id === id));
   const online = useClient((s) => s.connection === "open");
   const [error, setError] = useState<string>();
+  // The daemon answers only after it has sent this client the entry and the new waiting list, so once
+  // the answer is in, the card has settled (or, the entry in a part not loaded, its buttons are off).
   const [busy, setBusy] = useState(false);
-  /** Answered from here: the buttons stay off until the daemon's record of it arrives. */
-  const [sent, setSent] = useState(false);
   const card = useRef<HTMLElement>(null);
   const titleId = useId();
   const settled = row.answer ? SETTLED[row.answer] : undefined;
 
   const decide = async (allow: boolean) => {
-    if (!waiting || busy || sent) return;
+    if (!waiting || busy) return;
     // The buttons go disabled, then away as it settles: keep focus on the card rather than dropping it to the page.
     if (card.current?.contains(document.activeElement)) card.current.focus();
     setBusy(true);
     setError(undefined);
     try {
       await top.answerPermission({ id, bot: row.bot }, allow);
-      setSent(true);
     } catch (err) {
       setError(messageOf(err));
     } finally {
       setBusy(false);
     }
   };
-  const off = !waiting || busy || sent;
+  const off = !waiting || busy;
 
   return (
     <div className={cn("py-1.5", className)}>

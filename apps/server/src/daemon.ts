@@ -276,7 +276,7 @@ const make = Effect.gen(function* () {
     // Its bot may be gone (deleted meanwhile): then nothing is announced.
     entry: (entry) => (bots.has(entry.bot) ? Effect.andThen(events.publish({ _tag: "Entry", entry }), touch(entry.bot)) : Effect.void),
     deliver: queued,
-    changed: (bot, waiting) => Effect.andThen(events.publish({ _tag: "Permissions", waiting }), changed(bot)),
+    changed: (bot) => Effect.andThen(events.publish({ _tag: "Permissions" }), changed(bot)),
   });
   /** Top's own tools, which every bot has (see collar/index.ts). */
   const collar = collarTools({ store, jobs, wakes, permissions, changed, toolsOf });
@@ -380,7 +380,7 @@ const make = Effect.gen(function* () {
       yield* wakes.changed;
       yield* events.publish({ _tag: "BotRemoved", bot: id });
       // Its requests went with it (markDeleted).
-      yield* events.publish({ _tag: "Permissions", waiting: yield* permissions.waiting });
+      yield* events.publish({ _tag: "Permissions" });
       if (mcp) yield* mcp.botRemoved(id);
       const { runner } = live;
       yield* runner.close;

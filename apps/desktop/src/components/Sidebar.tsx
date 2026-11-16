@@ -97,6 +97,15 @@ type ItemProps = {
 
 const shortcutFor = (index: number) => (index < 9 ? ` (Ctrl+${index + 1})` : "");
 
+/** On a bot's avatar where its name and badges don't show (a pinned tile, the narrow sidebar): it waits for your approval. */
+function ApprovalMark({ className }: { className?: string }) {
+  return (
+    <span className={cn("absolute -top-0.5 -right-0.5 grid size-3.75 place-items-center rounded-full bg-(--avatar-ring)", className)} aria-hidden>
+      <i className="size-1.75 rounded-full bg-warning ring-2 ring-warning-surface" />
+    </span>
+  );
+}
+
 /** A pinned bot: a tile in the grid above the list, its avatar large and its name under it. */
 const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
@@ -120,10 +129,12 @@ const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSe
       >
         <span className="relative flex">
           <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} size="lg" className="size-12 narrow:size-9" />
-          {mark && (
+          {mark ? (
             <span className="absolute -top-0.5 -right-0.5 grid size-3.75 place-items-center rounded-full bg-(--avatar-ring)" aria-hidden>
               <StatusDot status={bot.status} fresh={fresh} />
             </span>
+          ) : (
+            !!bot.approvals && <ApprovalMark />
           )}
         </span>
         <span
@@ -158,10 +169,14 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
             : "[--avatar-ring:var(--color-sidebar)]",
         )}
         onClick={() => onSelect(bot.id)}
-        title={bot.description ? `${bot.name}${shortcut}\n${bot.description}` : `${bot.name}${shortcut}`}
+        title={`${bot.name}${shortcut}${bot.approvals ? " · Waiting for your approval" : ""}${bot.description ? `\n${bot.description}` : ""}`}
         aria-current={selected || undefined}
       >
-        <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} />
+        <span className="relative flex">
+          <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} />
+          {/* Wide, the badge beside the name says so. */}
+          {!!bot.approvals && <ApprovalMark className="hidden narrow:grid" />}
+        </span>
         <span className="flex min-w-0 flex-1 flex-col gap-px narrow:hidden">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className={cn("min-w-0 flex-1 truncate text-body leading-snug tracking-name", fresh ? "font-heading" : "font-label")}>{bot.name}</span>

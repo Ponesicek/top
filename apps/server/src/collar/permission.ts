@@ -40,6 +40,8 @@ export const permissionGroup: CollarGroup = (daemon) => [
       "Nothing enforces the answer: your tools work either way, so it's up to you to respect it. Don't do it unless it's allowed.",
     ].join(" "),
     parameters,
+    // It returns at once; and its result, which carries the request, must be the call's own, not a job's message.
+    background: false,
     // A restart between asking and the result: the request it made, if it got that far (asked once, never twice).
     recover: (_args, ctx) => Effect.map(daemon.permissions.askedBy(ctx.key), (row) => (row ? asked(row) : false)),
     run: (args, ctx) =>
@@ -47,6 +49,8 @@ export const permissionGroup: CollarGroup = (daemon) => [
         // Its own words, without a closing full stop, so it reads well after "The user allowed:".
         const action = args.action.trim().replace(/\.+$/, "");
         if (!action) return { ...text("Say what you want to do in `action`."), isError: true };
+        // Stopped (or deleted) just before this ran: don't leave a request behind the withdrawal.
+        if (ctx.signal?.aborted) return { ...text("Not asked: stopped by the user."), isError: true };
         return asked(yield* daemon.permissions.ask(ctx.bot, ctx.key, action, args.reason?.trim() || undefined));
       }),
   }),

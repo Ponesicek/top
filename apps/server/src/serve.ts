@@ -193,7 +193,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       case "Update":
         return send({ t: "update", update: event.view });
       case "Permissions":
-        return send({ t: "permissions", requests: event.waiting });
+        return Effect.flatMap(daemon.permissions.waiting, (requests) => send({ t: "permissions", requests }));
     }
   };
   yield* Effect.forkScoped(

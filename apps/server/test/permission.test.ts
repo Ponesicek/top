@@ -175,3 +175,23 @@ test("deleting a bot takes its waiting requests with it", async () => {
   await h.run(h.daemon.deleteBot(atlas));
   assert.deepEqual(await waiting(h), [kept]);
 });
+
+test("a call that runs after Stop asks nothing, and asking can't be moved to the background", async () => {
+  const h = await harness({ bots: ["Atlas", "Juniper"] });
+  const [atlas, juniper] = h.bots as [number, number];
+  const tool = (name: string) => h.daemon.toolsOf(atlas).find((t) => t.name === name)!;
+  const signal = AbortSignal.abort();
+  const late = await h.run(tool("collar__ask_permission").run({ action: "deploy web" }, { key: `${atlas}:3:call_1`, bot: atlas, signal }));
+  assert.equal(late.isError, true);
+  assert.deepEqual(await waiting(h), []);
+
+  const moved = await h.run(tool("collar__background").run({ tool: "collar__ask_permission", arguments: { action: "deploy web" } }, { key: "k", bot: atlas }));
+  assert.match((moved.content[0] as { text: string }).text, /can't run in the background/);
+  assert.deepEqual(await waiting(h), []);
+
+  // One that landed for a bot being deleted isn't listed for clients.
+  await h.run(h.daemon.permissions.ask(juniper, `${juniper}:4:call_1`, "archive the tickets", undefined));
+  await h.run(h.store.markDeleted(juniper));
+  await h.run(h.daemon.permissions.ask(juniper, `${juniper}:5:call_1`, "archive the logs", undefined));
+  assert.deepEqual(await waiting(h), []);
+});

@@ -874,7 +874,12 @@ const make = Effect.gen(function* () {
           return permissionOf((yield* first(sql`SELECT * FROM permissions WHERE key = ${key}`))!);
         }),
       askedBy: (key) => Effect.map(first(sql`SELECT * FROM permissions WHERE key = ${key}`), (row) => row && permissionOf(row)),
-      waiting: Effect.map(rows(sql`SELECT * FROM permissions WHERE state = 'pending' ORDER BY id`), (r) => r.map(permissionOf)),
+      waiting: Effect.map(
+        rows(
+          sql`SELECT permissions.* FROM permissions JOIN bots ON bots.id = permissions.bot WHERE state = 'pending' AND bots.deleted = 0 ORDER BY permissions.id`,
+        ),
+        (r) => r.map(permissionOf),
+      ),
       waitingOf: (bot) => Effect.map(rows(sql`SELECT * FROM permissions WHERE bot = ${bot} AND state = 'pending' ORDER BY id`), (r) => r.map(permissionOf)),
       settle: (bot, id, answer, text) =>
         transaction(
