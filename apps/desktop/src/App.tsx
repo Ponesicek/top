@@ -5,6 +5,7 @@ import { type ChatStyle, readChatStyle, readShowTools, saveChatStyle, saveShowTo
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { SignInGate } from "./components/ChatGPT.tsx";
 import { Composer } from "./components/Composer.tsx";
+import { EditMenu } from "./components/EditMenu.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
 import { FilesPanel } from "./components/files/FilesPanel.tsx";
 import { Header } from "./components/Header.tsx";
@@ -221,6 +222,7 @@ export function App() {
         {/* Settings has its own Updates section. */}
         {!settingsOpen && <UpdatePopup onOpenSettings={openSettings} />}
         <SignInGate />
+        <EditMenu />
       </div>
     </TooltipProvider>
   );

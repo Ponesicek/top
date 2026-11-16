@@ -103,10 +103,10 @@ try {
   row(`Scroll: frames over 33 ms`, String(s.framesOver33ms), "0", s.framesOver33ms === 0);
   const r = full.reconnect;
   row(
-    `kill -9: stale banner, transcript kept`,
-    `${r.staleBannerShown ? "yes" : "no"}, ${r.rowsKeptWhileDown} rows`,
+    `kill -9: last known state kept`,
+    `${r.staleShown ? "yes" : "no"}, ${r.rowsKeptWhileDown} rows`,
     "no blank screen",
-    r.staleBannerShown && r.rowsKeptWhileDown > 0,
+    r.staleShown && r.rowsKeptWhileDown > 0,
   );
   row(`Reconnect after daemon restart`, `${fmt(r.reconnectAfterRestartMs)} ms`, "< 1000 ms", r.reconnectAfterRestartMs < 1000);
   row(

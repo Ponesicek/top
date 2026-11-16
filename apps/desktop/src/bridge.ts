@@ -39,12 +39,28 @@ export const AppUpdates = Schema.Struct({
 });
 export type AppUpdates = typeof AppUpdates.Type;
 
+/** One row of the right-click menu (see electron/context-menu.js): an action to send back, or a separator. */
+export const ContextMenuItem = Schema.Union([
+  Schema.Struct({ separator: Schema.Literal(true) }),
+  Schema.Struct({ action: Schema.String, label: Schema.optionalKey(Schema.String), enabled: Schema.Boolean }),
+]);
+export type ContextMenuItem = typeof ContextMenuItem.Type;
+
+/** A right-click's menu, at the click in CSS pixels. */
+export const ContextMenu = Schema.Struct({ x: Schema.Number, y: Schema.Number, items: Schema.Array(ContextMenuItem) });
+export type ContextMenu = typeof ContextMenu.Type;
+
 /** `window.topDesktop`, as preload.cjs makes it. */
 export type TopDesktop = {
   /** Zoom the whole window (0.5 to 3), as Ctrl+/Ctrl- does in a browser. */
   readonly setZoomFactor: (factor: number) => void;
   /** Ask this computer's Tailscale for Top daemons on the tailnet; the answer is unchecked (see `findTailnetDaemons`). */
   readonly findTailnetDaemons: () => Promise<unknown>;
+  /** The right-click menu: each right-click's menu (unchecked: see `contextMenu`), and the action picked from it. */
+  readonly contextMenu: {
+    readonly onOpen: (listener: (menu: unknown) => void) => () => void;
+    readonly run: (action: string) => void;
+  };
   /** The app's own updates; every answer is the state after it (unchecked: see `appUpdates`). */
   readonly updates: {
     readonly state: () => Promise<unknown>;
@@ -83,5 +99,16 @@ export const appUpdates = desktop
       setChannel: (channel: "stable" | "nightly") => desktop.updates.setChannel(channel),
       onChange: (listener: (state: AppUpdates) => void) =>
         desktop.updates.onChange((s) => Option.match(decodeAppUpdates(s), { onNone: () => {}, onSome: listener })),
+    }
+  : undefined;
+
+const decodeContextMenu = Schema.decodeUnknownOption(ContextMenu);
+
+/** The right-click menu Electron asks the page to draw; `undefined` in a browser, which has its own. */
+export const contextMenu = desktop
+  ? {
+      onOpen: (listener: (menu: ContextMenu) => void) =>
+        desktop.contextMenu.onOpen((m) => Option.match(decodeContextMenu(m), { onNone: () => {}, onSome: listener })),
+      run: (action: string) => desktop.contextMenu.run(action),
     }
   : undefined;

@@ -245,8 +245,10 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
           className="composer flex cursor-text flex-col rounded-bubble border border-input bg-popover p-1.75 shadow-composer transition duration-120 focus-within:shadow-composer-focus"
           onMouseDown={(e) => {
             if (e.target !== e.currentTarget && !(e.target as HTMLElement).hasAttribute("data-pad")) return;
+            // Pressing the padding never takes focus or the selection from the field; only the main button
+            // also moves the caret to the end. A right-click keeps the selection for the right-click menu.
             e.preventDefault();
-            focusEnd(ref.current!);
+            if (e.button === 0) focusEnd(ref.current!);
           }}
         >
           {files.length > 0 && <AttachmentStrip bot={key} drafts={files} />}
@@ -310,8 +312,8 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
             <Actions empty={empty && !files.length} uploading={uploading} running={running} onSend={onSend} onStop={onStop} />
           </div>
         </div>
-        {/* Only the working state's keys need explaining (idle is the usual Enter / Shift+Enter). The line
-            sits in the padding under the box, so the transcript doesn't jump when a bot starts or stops. */}
+        {/* Send and upload notices. The line sits in the padding under the box, so the transcript doesn't jump
+            when one appears. */}
         <div
           className={cn(
             "absolute inset-x-8 bottom-0.5 h-4 truncate pr-3 pl-10 text-meta leading-4 narrow:inset-x-4 narrow:pl-3",
@@ -319,7 +321,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
           )}
           aria-live="polite"
         >
-          {notice ? notice.text : running ? "Enter queues · Ctrl+Enter steers · Esc stops" : ""}
+          {notice?.text}
         </div>
       </div>
       {dropping && (

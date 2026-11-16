@@ -8,5 +8,5 @@
     "lib": ["ES2023", "DOM"],
     "types": ["node"]
   },
-  "include": ["main.js", "preload.cjs", "bench-driver.js", "updates.js", "globals.d.ts"]
+  "include": ["main.js", "preload.cjs", "bench-driver.js", "updates.js", "context-menu.js", "context-menu.test.js", "globals.d.ts"]
 }
