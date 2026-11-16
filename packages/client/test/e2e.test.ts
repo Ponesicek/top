@@ -585,7 +585,11 @@ test("a bot's permission request reaches every client; the first answer wins, an
   assert.equal((await asked(late))[0]!.id, request!.id);
 
   await b.top.answerPermission(request!, false);
-  await assert.rejects(a.top.answerPermission(request!, true), /already answered/, "a later Allow is refused");
+  await assert.rejects(
+    a.top.answerPermission(request!, true),
+    (error: Error) => error.name === "PermissionError" && /already answered/.test(error.message),
+    "a later Allow is refused",
+  );
   for (const top of [a.top, b.top, late])
     await until(
       top.subscribe,
