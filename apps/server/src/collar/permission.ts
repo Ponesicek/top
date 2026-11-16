@@ -4,6 +4,22 @@ import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { defineTool, stopped, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
+import { ASK_PERMISSION } from "./names.ts";
+
+/** How the result starts, for the model and for clients reading a background job's message (`answerIn`). */
+const ALLOWED = "Allowed by the user: ";
+const DENIED = "Denied by the user: ";
+
+/**
+ * The answer in a background job's message about this tool, if it got one. The message is a header
+ * line naming the call (its arguments squeezed onto that one line), a blank line, then the result.
+ */
+export function answerIn(message: string): "allowed" | "denied" | undefined {
+  const [head = "", ...rest] = message.split("\n");
+  if (!/^\[Background job \d+ finished\]/.test(head) || !head.includes(ASK_PERMISSION)) return undefined;
+  const result = rest.join("\n").trimStart();
+  return result.startsWith(ALLOWED) ? "allowed" : result.startsWith(DENIED) ? "denied" : undefined;
+}
 
 const parameters = Type.Object(
   {
@@ -35,10 +51,13 @@ export const permissionGroup: CollarGroup = (daemon) => [
         // Its own words, without a closing full stop, so it reads well after "Allowed by the user:".
         const action = args.action.trim().replace(/\.+$/, "");
         if (!action) return { ...text("Say what you want to do in `action`."), isError: true };
-        const allowed = yield* Effect.raceFirst(daemon.permissions.ask(ctx.bot, action, args.reason?.trim() || undefined), stopped(ctx.signal));
+        const allowed = yield* Effect.raceFirst(
+          daemon.permissions.ask(ctx.bot, ctx.toolCallId ?? ctx.key, action, args.reason?.trim() || undefined),
+          stopped(ctx.signal),
+        );
         return allowed
-          ? { ...text(`Allowed by the user: ${action}.`), details: { permission: "allowed" } }
-          : { ...text(`Denied by the user: ${action}. Don't do it.`), details: { permission: "denied" } };
+          ? { ...text(`${ALLOWED}${action}.`), details: { permission: "allowed" } }
+          : { ...text(`${DENIED}${action}. Don't do it.`), details: { permission: "denied" } };
       }),
   }),
 ];

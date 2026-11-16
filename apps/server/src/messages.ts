@@ -75,6 +75,8 @@ export const ToolResultView = Schema.Struct({
   toolName: Schema.String,
   content: Schema.Array(Schema.Union([Text, Image])),
   isError: Schema.Boolean,
+  /** What the tool told clients besides its text (a permission's answer, a background job's number). */
+  details: Schema.optionalKey(Schema.Unknown),
   timestamp: Schema.Number,
 });
 export const NoticeView = Schema.Struct({ text: Schema.String });

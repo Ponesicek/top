@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import { test } from "vitest";
 import { textOf as textOfContent } from "../src/messages.ts";
 import type { StoredEntry } from "../src/store.ts";
+import { toWire } from "../src/wire.ts";
 import { type Harness, harness, idle, until } from "./harness.ts";
 
 const textOf = (entry: StoredEntry) => (entry.kind === "notice" ? entry.message.text : entry.kind === "files" ? "" : textOfContent(entry.message.content));
@@ -23,12 +24,18 @@ test("a bot asks, the user allows, and the bot gets the answer as its tool's res
   assert.equal(request.bot, h.bot);
   assert.equal(request.action, "delete the 3 old backups");
   assert.equal(request.reason, "You asked me to check with you first.");
+  // Clients show it where the bot asked: the call it came from, with what it asks.
+  const asked = toWire((await h.entries()).find((e) => e.kind === "assistant")!);
+  const call = asked?.kind === "assistant" ? asked.tools?.[0] : undefined;
+  assert.equal(call?.id, request.toolCallId);
+  assert.deepEqual(call?.permission, { action: "delete the 3 old backups", reason: "You asked me to check with you first." });
 
   assert.equal((await answer(h, request.id, h.bot, true))._tag, "Success");
   await until("the bot's answer", () => lastIsAnswer(h));
   const [result] = await toolResults(h);
   assert.equal(result?.kind === "tool" && result.message.toolName, "collar__ask_permission");
   assert.equal(textOf(result!), "Allowed by the user: delete the 3 old backups.");
+  assert.equal((toWire(result!) as { permission?: string }).permission, "allowed");
   assert.deepEqual(h.daemon.permissions.pending(), []);
 });
 
@@ -53,6 +60,7 @@ test("a denial is the answer too; a second answer, or one naming another bot, is
   const results = await toolResults(h, atlas);
   assert.equal(results.length, 1, "one result: the late Allow changed nothing");
   assert.equal(textOf(results[0]!), "Denied by the user: deploy web. Don't do it.");
+  assert.equal((toWire(results[0]!) as { permission?: string }).permission, "denied");
   assert.deepEqual(await h.entries(juniper), [], "Juniper wasn't involved");
 });
 
@@ -68,6 +76,7 @@ test("Stop withdraws the request: no answer is taken after it", async () => {
   const results = await toolResults(h);
   assert.equal(results.length, 1);
   assert.doesNotMatch(textOf(results[0]!), /Allowed/);
+  assert.equal((toWire(results[0]!) as { permission?: string }).permission, undefined, "no answer for clients either");
 });
 
 test("a slow answer moves to the background: the bot answers other messages meanwhile, and gets the answer by message", async () => {
@@ -91,6 +100,10 @@ test("a slow answer moves to the background: the bot answers other messages mean
   const message = await until("the answer's message", async () => (await h.entries()).find((e) => e.kind === "user" && e.source === "job"));
   assert.match(textOf(message), /^\[Background job 1 finished\] collar__ask_permission/);
   assert.match(textOf(message), /Allowed by the user: email the customer list\./);
+  // Clients tie the message back to the call by its job, and read the answer from it.
+  const moved = (await toolResults(h)).find((e) => /moved to the background/.test(textOf(e)))!;
+  assert.equal((toWire(moved) as { job?: number }).job, 1);
+  assert.deepEqual([(toWire(message) as { job?: number }).job, (toWire(message) as { permission?: string }).permission], [1, "allowed"]);
   await until("the bot to take it", () => lastIsAnswer(h));
 });
 
@@ -124,4 +137,7 @@ test("a request that waited in the background and was cut off by a restart says 
   assert.match(textOf(message), new RegExp(`^\\[Background job ${job} was cut off\\] collar__ask_permission`));
   assert.match(textOf(message), /before the user answered\. Nothing was allowed/);
   assert.doesNotMatch(textOf(message), /may have taken effect/);
+  const wired = toWire(message) as { job?: number; permission?: string };
+  assert.equal(wired.job, job);
+  assert.equal(wired.permission, undefined, "cut off: no answer");
 });

@@ -249,11 +249,15 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
         ? `Still running after ${duration(options.foregroundMs)}, so it moved to the background as job ${id}`
         : `Started as background job ${id}`;
     const limit = options.stopAfterMs === undefined ? "" : ` It will be stopped if it's still running ${duration(options.stopAfterMs)} after it started.`;
-    return text(
-      `${started} and keeps running.${limit} ` +
-        "Its result will come to you as a message when it ends, so don't wait or check on it: carry on, or end your turn if there's nothing else to do. " +
-        "To see its output so far, wait for it, or stop it, use collar__jobs.",
-    );
+    return {
+      ...text(
+        `${started} and keeps running.${limit} ` +
+          "Its result will come to you as a message when it ends, so don't wait or check on it: carry on, or end your turn if there's nothing else to do. " +
+          "To see its output so far, wait for it, or stop it, use collar__jobs.",
+      ),
+      // So clients can tie the job's message (request id `job:<id>:…`) back to this call.
+      details: { job: id },
+    };
   });
 
   const view = (job: Live): JobView => ({ id: job.id, tool: job.tool, summary: job.summary, note: job.note, startedAt: job.startedAt });

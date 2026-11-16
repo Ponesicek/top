@@ -22,7 +22,7 @@ export type Permissions = {
    * Ask, and wait for the answer: `true` allowed, `false` denied. Interrupting the wait (the call's
    * signal) withdraws the request.
    */
-  readonly ask: (bot: number, action: string, reason: string | undefined) => Effect.Effect<boolean>;
+  readonly ask: (bot: number, toolCallId: string, action: string, reason: string | undefined) => Effect.Effect<boolean>;
   /** A client's answer. Fails when the request isn't waiting (answered already, withdrawn) or isn't that bot's. */
   readonly answer: (id: string, bot: number, allow: boolean) => Effect.Effect<void, PermissionError>;
 };
@@ -34,9 +34,9 @@ export function makePermissions(changed: Effect.Effect<void>): Permissions {
   const waiting = new Map<string, { readonly request: PermissionRequest; readonly answer: Deferred.Deferred<boolean> }>();
   return {
     pending: () => [...waiting.values()].map((entry) => entry.request),
-    ask: (bot, action, reason) =>
+    ask: (bot, toolCallId, action, reason) =>
       Effect.gen(function* () {
-        const request: PermissionRequest = { id: randomUUID(), bot, action, ...(reason ? { reason } : {}), at: yield* Clock.currentTimeMillis };
+        const request: PermissionRequest = { id: randomUUID(), bot, toolCallId, action, ...(reason ? { reason } : {}), at: yield* Clock.currentTimeMillis };
         const answer = yield* Deferred.make<boolean>();
         waiting.set(request.id, { request, answer });
         yield* changed;

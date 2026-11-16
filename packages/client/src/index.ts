@@ -56,6 +56,8 @@ export type {
   McpServerId,
   McpServerState,
   McpServerView,
+  PermissionAnswer,
+  PermissionAsk,
   PermissionRequest,
   QueuedMessage,
   Seq,

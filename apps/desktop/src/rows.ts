@@ -7,10 +7,14 @@ import type {
   FileChange,
   Gap,
   PendingMessage,
+  PermissionAsk,
   QueuedMessage,
   ToolCallView,
   TranscriptItem,
 } from "@top/client";
+
+/** Collar's tool for asking the user's permission. Its calls show as a permission row, not as a tool step. */
+export const ASK_PERMISSION = "collar__ask_permission";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -39,6 +43,22 @@ export type Row =
     }
   | { readonly kind: "tool"; readonly key: string; readonly entry: ToolEntry }
   | { readonly kind: "notice"; readonly key: string; readonly text: string }
+  /**
+   * A bot asked the user's permission, shown where it asked. `answer` once it's settled: what the
+   * call's result (or, after it moved to the background, its job's message) says. Until then the
+   * request is answered from the row while the daemon still holds it.
+   */
+  | {
+      readonly kind: "permission";
+      readonly key: string;
+      readonly bot: number;
+      readonly toolCallId: string;
+      readonly ask: PermissionAsk;
+      readonly at: number;
+      readonly answer?: "allowed" | "denied" | "stopped" | "restarted" | "unanswered";
+      /** It moved to the background as this job: its answer comes in the job's message. */
+      readonly job?: number;
+    }
   /** Files in the bot's folder changed. */
   | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
@@ -98,16 +118,69 @@ function rowForEntry(entry: Entry): Row {
 
 const itemRowsCache = new WeakMap<readonly TranscriptItem[], Row[]>();
 
+type PermissionRow = Extract<Row, { kind: "permission" }>;
+const permissionRows = new Map<string, PermissionRow>();
+
+/** Where each permission call stands, from its result and its job's message (if it moved to the background). */
+function permissionAnswer(
+  call: ToolCallView,
+  results: ReadonlyMap<string, ToolEntry>,
+  jobs: ReadonlyMap<number, Extract<Entry, { kind: "user" }>>,
+): Pick<PermissionRow, "answer" | "job"> {
+  const result = results.get(call.id);
+  if (!result) return {};
+  if (result.permission) return { answer: result.permission };
+  if (result.job !== undefined) {
+    const message = jobs.get(result.job);
+    // No message yet: still waiting (or stopped, which sends none: the row tells by the request being gone).
+    if (!message) return { job: result.job };
+    return { answer: message.permission ?? "unanswered", job: result.job };
+  }
+  // Ended without an answer: stopped, or cut off by a restart.
+  return { answer: result.outcome ? "restarted" : "stopped" };
+}
+
 /** Rows for the transcript; recomputed only when `items` changes (entries arrived or loaded). */
 export function committedRows(items: readonly TranscriptItem[]): Row[] {
   let rows = itemRowsCache.get(items);
   if (rows) return rows;
   rows = [];
+  // A permission call's row needs what came after it: its result, and its job's message.
+  const results = new Map<string, ToolEntry>();
+  const jobs = new Map<number, Extract<Entry, { kind: "user" }>>();
+  for (const item of items) {
+    if (item.kind !== "entry") continue;
+    const { entry } = item;
+    if (entry.kind === "tool" && entry.name === ASK_PERMISSION) results.set(entry.toolCallId, entry);
+    else if (entry.kind === "user" && entry.job !== undefined) jobs.set(entry.job, entry);
+  }
   for (const item of items) {
     if (item.kind === "earlier") rows.push({ kind: "earlier", key: "earlier" });
     else if (item.kind === "gap") rows.push({ kind: "gap", key: `gap${item.gap.after}`, gap: item.gap });
-    else if (!(item.entry.kind === "user" && hidden(item.entry.source))) rows.push(rowForEntry(item.entry));
+    else if (item.entry.kind === "user" && hidden(item.entry.source)) continue;
+    // Shown by its permission row instead.
+    else if (item.entry.kind === "tool" && item.entry.name === ASK_PERMISSION) continue;
+    else {
+      const { entry } = item;
+      rows.push(rowForEntry(entry));
+      if (entry.kind !== "assistant") continue;
+      for (const call of entry.tools ?? []) {
+        if (!call.permission) continue;
+        const state = permissionAnswer(call, results, jobs);
+        const key = `p${entry.bot}:${call.id}`;
+        const prev = permissionRows.get(key);
+        // The same object while nothing about it changed, so the row doesn't re-render.
+        if (prev && prev.answer === state.answer && prev.job === state.job) {
+          rows.push(prev);
+          continue;
+        }
+        const row: PermissionRow = { kind: "permission", key, bot: entry.bot, toolCallId: call.id, ask: call.permission, at: entry.at, ...state };
+        permissionRows.set(key, row);
+        rows.push(row);
+      }
+    }
   }
+  if (permissionRows.size > 2_000) permissionRows.clear();
   itemRowsCache.set(items, rows);
   return rows;
 }
@@ -172,7 +245,7 @@ export type FilesRow = Extract<Row, { kind: "files" }>;
 /** Who a row speaks for, in the styles that group messages by author. */
 export function author(row: DisplayRow): "user" | "bot" | undefined {
   if (row.kind === "user") return "user";
-  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working") return "bot";
+  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working" || row.kind === "permission") return "bot";
   return undefined;
 }
 

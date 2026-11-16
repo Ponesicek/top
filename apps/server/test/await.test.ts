@@ -93,6 +93,7 @@ test("a tool call that outruns the limit moves to the background, and its result
     text: textOf(message!),
     requestId: message!.requestId!,
     source: "job",
+    job: 1,
   });
   // The bot took it like any message and answered.
   await until("the answer to the job's message", () => lastIsAnswer(h));

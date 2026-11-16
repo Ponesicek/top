@@ -577,6 +577,12 @@ test("a bot's permission request reaches every client; the first answer wins, an
   const [request] = await asked(a.top);
   assert.equal(request!.bot, a.id);
   assert.equal(request!.action, "rotate the API keys");
+  // The app shows it where the bot asked: the call it came from, in that bot's conversation.
+  const call = (await untilBot(a.bot, (x) => ofKind(x, "assistant").some((e) => e.tools?.length), "the call")).items
+    .flatMap((i) => (i.kind === "entry" && i.entry.kind === "assistant" ? (i.entry.tools ?? []) : []))
+    .at(-1)!;
+  assert.equal(call.id, request!.toolCallId);
+  assert.deepEqual(call.permission, { action: "rotate the API keys", reason: "You asked me to check with you first." });
   assert.deepEqual((await asked(b.top))[0], request, "the other device sees the same request");
 
   // A client that connects (or reconnects) while it waits is sent it too.
@@ -599,6 +605,7 @@ test("a bot's permission request reaches every client; the first answer wins, an
     );
   let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "assistant").length >= 2, "the bot's answer");
   assert.equal(ofKind(s, "tool").at(-1)!.text, "Denied by the user: rotate the API keys. Don't do it.");
+  assert.equal(ofKind(s, "tool").at(-1)!.permission, "denied");
 
   // Killed while a request waits: after the restart nobody is asked again, and the call says it got no answer.
   a.bot.send("ask permission to purge the cache");

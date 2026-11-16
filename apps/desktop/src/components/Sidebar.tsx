@@ -3,6 +3,7 @@ import type { BotId, BotSummary } from "@top/client";
 import { Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
 import { memo, type ReactNode, useCallback, useState } from "react";
 import { cn } from "../lib/utils.ts";
+import { ASK_PERMISSION } from "../rows.ts";
 import { pin, serverUrl, sidebarGroups, unpin, useClient, usePins, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";
@@ -22,7 +23,8 @@ export function statusLabel(bot: BotSummary): string {
     case "thinking":
       return "Thinking";
     case "tool":
-      return `Running ${bot.tool ?? "a tool"}`;
+      // Its permission request is in its conversation, waiting for an answer.
+      return bot.tool === ASK_PERMISSION ? "Waiting for your approval" : `Running ${bot.tool ?? "a tool"}`;
     case "retrying":
       return "Retrying";
     case "failed":

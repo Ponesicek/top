@@ -70,7 +70,7 @@ import { type FileServing, sendFile } from "./sendFile.ts";
 import { Store, type StoredEntry } from "./store.ts";
 import type { Tailnet } from "./tailscale.ts";
 import { Updates } from "./updates.ts";
-import { toWire } from "./wire.ts";
+import { jobMessage, toWire } from "./wire.ts";
 
 const DEFAULT_WINDOW = 50;
 const MAX_WINDOW = 200;
@@ -98,6 +98,7 @@ const inboxOf = (store: Store["Service"], bot: number) =>
         mode: row.mode,
         at: row.at,
         ...(row.source ? { source: row.source } : {}),
+        ...(row.source === "job" ? jobMessage(row.requestId, row.text) : {}),
         ...(row.attachments.length ? { attachments: row.attachments } : {}),
       }),
     ),

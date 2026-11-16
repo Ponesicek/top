@@ -83,11 +83,19 @@ export const BotSummary = Struct({
 });
 export type BotSummary = typeof BotSummary.Type;
 
+/** What a bot asked permission for, and whether the user allowed it (see PermissionRequest). */
+export const PermissionAsk = Struct({ action: Schema.String, reason: Optional(Schema.String) });
+export type PermissionAsk = typeof PermissionAsk.Type;
+export const PermissionAnswer = Schema.Literals(["allowed", "denied"]);
+export type PermissionAnswer = typeof PermissionAnswer.Type;
+
 export const ToolCallView = Struct({
   id: Schema.String,
   name: Schema.String,
   /** The arguments, shortened to one line. */
   summary: Schema.String,
+  /** A call asking the user's permission: what for. Its answer is on the call's result, or its job's message. */
+  permission: Optional(PermissionAsk),
 });
 export type ToolCallView = typeof ToolCallView.Type;
 
@@ -158,6 +166,10 @@ export const Entry = Schema.Union([
     attachments: Optional(List(Attachment)),
     requestId: Optional(Schema.String),
     source: Optional(MessageSource),
+    /** A background job's message: which job (the `job` of the tool result that started it). */
+    job: Optional(Schema.Int),
+    /** The job asked the user's permission, and this is their answer. */
+    permission: Optional(PermissionAnswer),
   }),
   Struct({
     ...entryBase,
@@ -181,6 +193,10 @@ export const Entry = Schema.Union([
     truncated: Optional(Schema.Literal(true)),
     isError: Optional(Schema.Literal(true)),
     outcome: Optional(ToolOutcome),
+    /** The call asked the user's permission, and this is their answer. */
+    permission: Optional(PermissionAnswer),
+    /** The call moved to the background as this job; its result comes as a message with the same `job`. */
+    job: Optional(Schema.Int),
   }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),
   /** Files in the bot's files folder were added, changed or removed (by the bot or anyone else). Not part of the model's context. */
@@ -202,6 +218,9 @@ export const QueuedMessage = Struct({
   mode: Schema.Literals(["steer", "followUp"]),
   at: Schema.Number,
   source: Optional(MessageSource),
+  /** As on a user entry: a background job's message, and a permission's answer in it. */
+  job: Optional(Schema.Int),
+  permission: Optional(PermissionAnswer),
 });
 export type QueuedMessage = typeof QueuedMessage.Type;
 
@@ -370,6 +389,8 @@ export const PermissionRequest = Struct({
   /** Names this one request; a new one (also after a restart) never reuses it. */
   id: Schema.String,
   bot: BotId,
+  /** The tool call that asked, as in the bot's transcript (ToolCallView's `id`), so a client shows the request there. */
+  toolCallId: Schema.String,
   /** What the bot wants to do, in its words. */
   action: Schema.String,
   /** Why, in its words, when it said. */

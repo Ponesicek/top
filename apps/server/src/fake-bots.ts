@@ -143,7 +143,8 @@ export function respond(context: Context) {
   if (results.length) {
     const lines = results.map((r) => `- **${"toolName" in r ? r.toolName : "tool"}**: ${contentText(r)}`).join("\n");
     // An answer to a question isn't something done: say what the user decided.
-    if (results.every((r) => "toolName" in r && r.toolName === ASK_PERMISSION)) return fauxAssistantMessage(`Got your answer:\n\n${lines}`);
+    if (results.every((r) => "toolName" in r && r.toolName === ASK_PERMISSION && / by the user: /.test(contentText(r))))
+      return fauxAssistantMessage(`Got your answer:\n\n${lines}`);
     return fauxAssistantMessage(`Done. Here is what happened:\n\n${lines}\n\n${sentence()}`);
   }
   const prompt = lastUserText(context);
