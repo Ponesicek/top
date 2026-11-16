@@ -10,6 +10,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ConversationSnapshot, ConversationSync } from "@top/client";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { ChatStyle } from "../chatStyle.ts";
+import { openFile } from "../files.ts";
 import { copyCode } from "../lib/copyCode.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
@@ -186,8 +187,17 @@ export const Transcript = memo(function Transcript({
     if (shown) perf.markFirstContent();
   }, [shown]);
 
-  // Copy buttons inside rendered markdown (one delegated listener).
-  const onClick = useCallback((event: React.MouseEvent) => void copyCode(event), []);
+  // Copy buttons and links to the bot's files inside rendered markdown (one delegated listener).
+  const onClick = useCallback(
+    (event: React.MouseEvent) => {
+      if (copyCode(event)) return;
+      const link = (event.target as HTMLElement).closest<HTMLElement>("a[data-file]");
+      if (!link) return;
+      event.preventDefault();
+      openFile(sync.id, link.dataset.file!);
+    },
+    [sync],
+  );
 
   const loadEarlier = useCallback(() => sync.loadEarlier(), [sync]);
   const ctx = useMemo<RowContext>(() => ({ sync, name, avatar }), [sync, name, avatar]);

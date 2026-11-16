@@ -1,11 +1,13 @@
 /** Pieces every transcript style shares: times, tool steps, the folded tool group, notes. */
 
-import type { BotSummary, ConversationSync, ToolOutcome } from "@top/client";
+import type { BotId, BotSummary, ConversationSync, ToolOutcome } from "@top/client";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { cn } from "../../lib/utils.ts";
+import { withBotFiles } from "../../markdown.ts";
 import { jumpTo, messageParts } from "../../quotes.ts";
 import type { DisplayRow, Row, ToolEntry, ToolGroupRow } from "../../rows.ts";
+import { top, useClient } from "../../top.ts";
 import { Badge } from "../ui/badge.tsx";
 import { Button } from "../ui/button.tsx";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible.tsx";
@@ -273,10 +275,15 @@ export function RetryNote({ bot }: { bot: BotSummary | undefined }) {
 /**
  * HTML from markdown.ts: model text rendered with raw HTML off, so it is escaped; the one place it
  * enters the DOM. `answer` is the seq of the bot's answer it shows, which makes its text quotable (Quotes.tsx).
+ * `bot` is the bot that wrote it: its `files/…` images and links load from that bot's files.
  */
-export function Markdown({ html, answer }: { html: string; answer?: number }) {
+export function Markdown({ html, answer, bot }: { html: string; answer?: number; bot?: BotId }) {
+  // From cache, a transcript shows before the daemon says where files are: resolve again once it has.
+  const hasFiles = useClient((snapshot) => snapshot.hasFiles);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasFiles changes what top.fileUrl returns
+  const shown = useMemo(() => (bot === undefined ? html : withBotFiles(html, (path) => top.fileUrl(bot, path))), [html, bot, hasFiles]);
   // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown.ts escapes the text (markdown-it with html: false, hljs)
-  return <div className="md" data-answer={answer} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div className="md" data-answer={answer} dangerouslySetInnerHTML={{ __html: shown }} />;
 }
 
 /**

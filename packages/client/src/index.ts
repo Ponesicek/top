@@ -132,6 +132,8 @@ export type TopSnapshot = {
   readonly account: AccountView | undefined;
   /** The files folders of the bots being watched, once the daemon has listed them. */
   readonly files: Readonly<Record<BotId, BotFiles>>;
+  /** Whether `fileUrl` gives links: the daemon said where its bots' files are. */
+  readonly hasFiles: boolean;
   /** Set once the first roster arrived; the UI can render from cache before that. */
   readonly ready: boolean;
   /** Where the daemon is on the user's tailnet, if it's there (`--tailscale`). */
@@ -185,6 +187,7 @@ export class TopClient {
       mcpServers: [],
       account: undefined,
       files: {},
+      hasFiles: false,
       ready: false,
       tailnetUrl: undefined,
       viewer: undefined,
@@ -438,6 +441,7 @@ export class TopClient {
           this.#publish({ server: { version: frame.version, channel: frame.channel } });
         this.#filesPath = frame.filesPath;
         this.#attachmentsPath = frame.attachmentsPath;
+        if ((frame.filesPath !== undefined) !== this.#snapshot.hasFiles) this.#publish({ hasFiles: frame.filesPath !== undefined });
         if (frame.tailnetUrl !== this.#snapshot.tailnetUrl || JSON.stringify(frame.viewer) !== JSON.stringify(this.#snapshot.viewer))
           this.#publish({ tailnetUrl: frame.tailnetUrl, viewer: frame.viewer });
         if (frame.serverId === this.#snapshot.serverId) return;
