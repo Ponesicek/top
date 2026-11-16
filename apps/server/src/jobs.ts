@@ -153,7 +153,8 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
       const head = `[Background job ${job.id} timed out] ${label(job)}: stopped after ${ran}, the time you allowed it`;
       const row = yield* store.endJob(job.id, "stopped", `${head}\n\n${outcomeText(outcome).text}`);
       if (row) yield* events.deliver(row);
-    } else if (job.stopping || job.waiters > 0) {
+    } else if (job.stopping || (job.waiters > 0 && job.tool !== ASK_PERMISSION)) {
+      // (A permission's answer is always sent: the app shows it from the message, also when the bot waited for it.)
       // Stopped by the bot or the user, or its result went to a `wait`: nobody needs a message about it.
       yield* store.endJob(job.id, job.stopping ? "stopped" : "finished");
     } else {

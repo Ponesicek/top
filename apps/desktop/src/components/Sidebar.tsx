@@ -1,9 +1,8 @@
 import { ContextMenu } from "@base-ui/react/context-menu";
-import type { BotId, BotSummary } from "@top/client";
+import { ASK_PERMISSION, type BotId, type BotSummary } from "@top/client";
 import { Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
 import { memo, type ReactNode, useCallback, useState } from "react";
 import { cn } from "../lib/utils.ts";
-import { ASK_PERMISSION } from "../rows.ts";
 import { pin, serverUrl, sidebarGroups, unpin, useClient, usePins, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";

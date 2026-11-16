@@ -83,6 +83,9 @@ export const BotSummary = Struct({
 });
 export type BotSummary = typeof BotSummary.Type;
 
+/** The tool a bot asks the user's permission with (Collar's, see PermissionRequest). */
+export const ASK_PERMISSION = "collar__ask_permission";
+
 /** What a bot asked permission for, and whether the user allowed it (see PermissionRequest). */
 export const PermissionAsk = Struct({ action: Schema.String, reason: Optional(Schema.String) });
 export type PermissionAsk = typeof PermissionAsk.Type;
@@ -395,8 +398,6 @@ export const PermissionRequest = Struct({
   action: Schema.String,
   /** Why, in its words, when it said. */
   reason: Optional(Schema.String),
-  /** When it asked (ms since epoch). */
-  at: Schema.Number,
 });
 export type PermissionRequest = typeof PermissionRequest.Type;
 

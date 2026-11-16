@@ -69,6 +69,7 @@ export type {
   WhenBusy,
 } from "@top/protocol";
 export {
+  ASK_PERMISSION,
   BotSummary,
   CHANNELS,
   CHATGPT_BACKGROUND_NOTICE,
@@ -86,8 +87,6 @@ export {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_EDGE,
   MAX_MCP_NAME,
-  MAX_PERMISSION_ACTION,
-  MAX_PERMISSION_REASON,
   MODEL_IMAGE_TYPES,
 } from "@top/protocol";
 export { type Connection, type ConnectionStatus, makeConnection, OfflineError, RequestError, type RequestFailure, TimeoutError } from "./connection.ts";
@@ -149,6 +148,8 @@ export type TopSnapshot = {
    * be answered then, and the daemon sends them again on reconnect (minus any answered meanwhile).
    */
   readonly permissions: readonly PermissionRequest[];
+  /** `permissions` is the daemon's list for this connection (false while offline and until it arrives). */
+  readonly permissionsSynced: boolean;
   /**
    * The daemon speaks another version of the protocol, so this client can't work with it: `client`
    * when this client is the older one (update the app), `server` when the daemon is.
@@ -193,6 +194,7 @@ export class TopClient {
       server: undefined,
       update: undefined,
       permissions: [],
+      permissionsSynced: false,
       outdated: undefined,
     };
     this.#connection = Effect.runSync(
@@ -215,7 +217,9 @@ export class TopClient {
             this.#publish({
               connection: status,
               attempt: this.#connection.attempt(),
-              ...(status !== "open" && this.#snapshot.permissions.length ? { permissions: [] } : {}),
+              ...(status !== "open" && (this.#snapshot.permissions.length || this.#snapshot.permissionsSynced)
+                ? { permissions: [], permissionsSynced: false }
+                : {}),
             });
           },
         },
@@ -491,7 +495,7 @@ export class TopClient {
         this.#publish({ update: frame.update });
         return;
       case "permissions":
-        this.#publish({ permissions: frame.requests });
+        this.#publish({ permissions: frame.requests, permissionsSynced: true });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);

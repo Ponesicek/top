@@ -2,9 +2,9 @@
  * A bot's permission request shows as one row where it asked, and settles to what came of it: the
  * call's result, or (after it moved to the background) its job's message. Never a tool step as well.
  */
-import type { Entry, TranscriptItem } from "@top/client";
+import { ASK_PERMISSION, type Entry, type TranscriptItem } from "@top/client";
 import { describe, expect, it } from "vitest";
-import { ASK_PERMISSION, committedRows, displayRows } from "../src/rows.ts";
+import { committedRows, displayRows } from "../src/rows.ts";
 
 const BOT = 3;
 let seq = 0;
@@ -52,7 +52,12 @@ describe("permission rows", () => {
     expect(rows[1]).toMatchObject({ answer: "allowed", job: 7 });
 
     const cutOff = [...moved, entry({ kind: "user", text: "[Background job 7 was cut off] …", source: "job", requestId: "job:7:2", job: 7 })];
-    expect(permissionRows(cutOff)[0]).toMatchObject({ answer: "unanswered" });
+    expect(permissionRows(cutOff)[0]).toMatchObject({ answer: "restarted" });
+  });
+
+  it("a call refused before anyone was asked (bad arguments) is an ordinary failed tool step, not a request", () => {
+    const rows = displayRows(committedRows([ask("v"), result("v", { isError: true, text: "Say what you want to do in `action`." })]));
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
   });
 
   it("keeps the same row object while nothing about it changes, so it doesn't re-render", () => {

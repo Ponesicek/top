@@ -11,7 +11,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { PermissionError, type PermissionRequest } from "@top/protocol";
-import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 
@@ -36,7 +35,7 @@ export function makePermissions(changed: Effect.Effect<void>): Permissions {
     pending: () => [...waiting.values()].map((entry) => entry.request),
     ask: (bot, toolCallId, action, reason) =>
       Effect.gen(function* () {
-        const request: PermissionRequest = { id: randomUUID(), bot, toolCallId, action, ...(reason ? { reason } : {}), at: yield* Clock.currentTimeMillis };
+        const request: PermissionRequest = { id: randomUUID(), bot, toolCallId, action, ...(reason ? { reason } : {}) };
         const answer = yield* Deferred.make<boolean>();
         waiting.set(request.id, { request, answer });
         yield* changed;

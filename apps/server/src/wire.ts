@@ -34,7 +34,7 @@ const isAnswer = (value: unknown): value is PermissionAnswer => value === "allow
 function permissionAsk(args: unknown): ToolCallView["permission"] {
   const action = detail(args, "action");
   const reason = detail(args, "reason");
-  if (typeof action !== "string") return undefined;
+  if (typeof action !== "string" || !action.trim()) return undefined;
   return { action: action.trim().replace(/\.+$/, ""), ...(typeof reason === "string" && reason.trim() ? { reason: reason.trim() } : {}) };
 }
 
@@ -65,18 +65,11 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       const message = stored.message;
       const parts = typeof message.content === "string" ? [] : message.content;
       const thinking = parts.flatMap((p) => (p.type === "thinking" ? [p.thinking] : [])).join("\n");
-      const tools: ToolCallView[] = parts.flatMap((p) =>
-        p.type === "toolCall"
-          ? [
-              {
-                id: p.id,
-                name: p.name,
-                summary: full ? JSON.stringify(p.arguments ?? {}) : summarize(p.arguments),
-                ...(p.name === ASK_PERMISSION && permissionAsk(p.arguments) ? { permission: permissionAsk(p.arguments)! } : {}),
-              },
-            ]
-          : [],
-      );
+      const tools: ToolCallView[] = parts.flatMap((p) => {
+        if (p.type !== "toolCall") return [];
+        const permission = p.name === ASK_PERMISSION ? permissionAsk(p.arguments) : undefined;
+        return [{ id: p.id, name: p.name, summary: full ? JSON.stringify(p.arguments ?? {}) : summarize(p.arguments), ...(permission ? { permission } : {}) }];
+      });
       const failed = message.stopReason === "error" || message.stopReason === "aborted";
       return {
         ...base,

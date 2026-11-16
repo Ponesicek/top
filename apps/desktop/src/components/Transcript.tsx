@@ -244,7 +244,12 @@ export const Transcript = memo(function Transcript({
               ) : row.kind === "files" ? (
                 <FilesLine row={row} bot={sync.id} className={look.files} />
               ) : row.kind === "permission" ? (
-                <PermissionCard row={row} name={name} inbox={snapshot.inbox} className={look.files} />
+                <PermissionCard
+                  row={row}
+                  name={name}
+                  queued={row.job === undefined ? undefined : snapshot.inbox.find((m) => m.job === row.job)}
+                  className={look.files}
+                />
               ) : (
                 look.render(rows, item.index, ctx, bot)
               )}

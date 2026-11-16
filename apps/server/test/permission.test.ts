@@ -141,3 +141,19 @@ test("a request that waited in the background and was cut off by a restart says 
   assert.equal(wired.job, job);
   assert.equal(wired.permission, undefined, "cut off: no answer");
 });
+
+test("an answer the bot waited for in the background still reaches the transcript, so the app can show it", async () => {
+  const h = await harness({ foregroundMs: 150, gatherMs: 50 });
+  await h.run(h.daemon.start);
+  await h.run(h.daemon.submit(h.bot, "r1", "ask permission to archive the old tickets", "followUp", null));
+  const request = await until("the request", pending(h));
+  await until("the call to move to the background", async () => (await toolResults(h)).some((e) => /moved to the background as job/.test(textOf(e))));
+
+  // As `collar__jobs wait` does: the bot waits on the job while the user answers.
+  const waited = h.run(h.daemon.jobs.wait(1, 5_000));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal((await answer(h, request.id, h.bot, false))._tag, "Success");
+  assert.ok(await waited, "the wait got the answer");
+  const message = await until("the answer's message", async () => (await h.entries()).find((e) => e.kind === "user" && e.source === "job"));
+  assert.equal((toWire(message) as { permission?: string }).permission, "denied");
+});
