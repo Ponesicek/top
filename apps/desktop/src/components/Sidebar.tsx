@@ -257,6 +257,7 @@ export function Sidebar({
     );
   };
   const connection = useClient((snapshot) => snapshot.connection);
+  const connecting = connection === "connecting" ? "Connecting" : "Reconnecting";
   const seen = useSeen();
   const [deleting, setDeleting] = useState<BotSummary>();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -274,6 +275,7 @@ export function Sidebar({
       </nav>
       {/* Always mounted: a dialog that mounts already open has no closed state to animate in from. */}
       <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />
+      {/* The sidebar's width is fixed: if the row still doesn't fit (a larger font), the badge's word gives way, never a button. */}
       <div className="relative flex flex-none items-center gap-2 px-3 pt-2 pb-3 narrow:flex-col-reverse narrow:px-0">
         <Tooltip content="Settings (Ctrl+,)" side="right">
           <Button
@@ -285,16 +287,17 @@ export function Sidebar({
             aria-current={settingsOpen ? "page" : undefined}
           >
             <Settings size={16} strokeWidth={1.8} />
-            <span className="narrow:hidden">Settings</span>
+            {/* Beside a connection badge there's no room for the word too; the icon, its tooltip and its label stay. */}
+            <span className={cn("narrow:hidden", connection !== "open" && "hidden")}>Settings</span>
           </Button>
         </Tooltip>
         {connection !== "open" && (
-          <Badge variant="warning" size="lg" className="narrow:hidden" title={host(serverUrl)}>
-            <i className="size-1.5 animate-blink rounded-full bg-current" />
-            {connection === "connecting" ? "Connecting" : "Reconnecting"}
+          <Badge variant="warning" size="lg" className="min-w-0 shrink narrow:hidden" title={`${connecting} to ${host(serverUrl)}`}>
+            <i className="size-1.5 flex-none animate-blink rounded-full bg-current" />
+            <span className="truncate">{connecting}</span>
           </Badge>
         )}
-        <span className="ml-auto flex items-center gap-1.5 narrow:ml-0 narrow:flex-col-reverse">
+        <span className="ml-auto flex flex-none items-center gap-1.5 narrow:ml-0 narrow:flex-col-reverse">
           <UpdateButton onOpenSettings={onOpenSettings} />
           <Tooltip content="New bot" side="right">
             <Button variant="outline" size="icon" className="size-8 text-secondary-foreground hover:text-foreground" onClick={onNewBot} aria-label="New bot">
