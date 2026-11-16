@@ -196,7 +196,7 @@ export function App() {
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
                 aria-hidden
               />
-              <Transcript key={String(bot.id)} sync={sync} name={bot.name} avatar={bot.avatar} style={chatStyle} showTools={showTools} />
+              <Transcript key={String(bot.id)} sync={sync} style={chatStyle} showTools={showTools} />
               <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
             </>
           ) : ready ? (

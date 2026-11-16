@@ -1,13 +1,14 @@
-/** Pieces every transcript style shares: times, tool steps, the folded tool group, notes. */
+/** Pieces every transcript style shares: the bot it shows, times, tool steps, the folded tool group, notes. */
 
-import type { BotId, BotSummary, ConversationSync, ToolOutcome } from "@top/client";
+import type { BotSummary, ConversationSync, ToolOutcome } from "@top/client";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { type ComponentProps, createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { cn } from "../../lib/utils.ts";
 import { withBotFiles } from "../../markdown.ts";
 import { jumpTo, messageParts } from "../../quotes.ts";
 import type { DisplayRow, Row, ToolEntry, ToolGroupRow } from "../../rows.ts";
-import { top, useClient } from "../../top.ts";
+import { top, useBot, useClient } from "../../top.ts";
+import { Avatar } from "../Avatar.tsx";
 import { Badge } from "../ui/badge.tsx";
 import { Button } from "../ui/button.tsx";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible.tsx";
@@ -15,10 +16,36 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 export type UserRowData = Extract<Row, { kind: "user" }>;
 export type AssistantRowData = Extract<Row, { kind: "assistant" }>;
 
-/** What every style's rows get from the transcript; stable while the conversation is open, so rows memoize. */
-export type RowContext = { sync: ConversationSync; name: string; avatar: number | undefined };
-/** `bot` changes with every status update; only the working row reads it. */
-export type RowRenderer = (rows: readonly DisplayRow[], index: number, ctx: RowContext, bot: BotSummary | undefined) => React.ReactNode;
+/**
+ * The bot a transcript shows: its conversation, name and drawing. Transcript.tsx provides it, the same
+ * object while those stay the same, and the pieces that need it read it here (its avatar, its files'
+ * links, a retry), instead of every style handing it down through its rows. Not what the bot is doing:
+ * that changes all the time, and only the row showing it subscribes to it (`useBotStatus`).
+ */
+export type BotIdentity = { readonly sync: ConversationSync; readonly name: string; readonly avatar: number | undefined };
+
+const Identity = createContext<BotIdentity | undefined>(undefined);
+export const IdentityProvider = Identity.Provider;
+
+export function useIdentity(): BotIdentity {
+  const identity = useContext(Identity);
+  if (!identity) throw new Error("useIdentity outside a transcript");
+  return identity;
+}
+
+/** The transcript's bot as it is now, for the row that says what it's doing; re-renders that row alone. */
+export function useBotStatus(): BotSummary | undefined {
+  return useBot(useIdentity().sync.id);
+}
+
+/** The transcript's bot's avatar; `titled` names it on hover. */
+export function BotAvatar({ titled, ...props }: Omit<ComponentProps<typeof Avatar>, "name" | "avatar" | "title"> & { titled?: boolean }) {
+  const { name, avatar } = useIdentity();
+  return <Avatar name={name} avatar={avatar} {...(titled ? { title: name } : {})} {...props} />;
+}
+
+/** One style's rendering of the row at `index`. The bot comes from `useIdentity`. */
+export type RowRenderer = (rows: readonly DisplayRow[], index: number) => React.ReactNode;
 
 export function time(at: number | undefined): string {
   return at ? new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -108,7 +135,8 @@ export function StepIcon({ className, children }: { className: string; children:
 const failedStep = (entry: ToolEntry) => !!entry.isError || entry.outcome === "interrupted" || entry.outcome === "stopped";
 
 /** One finished tool call on one line; truncated output opens below. */
-const ToolStep = memo(function ToolStep({ entry, sync }: { entry: ToolEntry; sync: ConversationSync }) {
+const ToolStep = memo(function ToolStep({ entry }: { entry: ToolEntry }) {
+  const { sync } = useIdentity();
   const [full, setFull] = useState<string | undefined>();
   const failed = failedStep(entry);
   return (
@@ -169,13 +197,11 @@ function toolNames(entries: readonly ToolEntry[]): string {
  */
 export const ToolGroup = memo(function ToolGroup({
   row,
-  sync,
   className,
   trigger,
   panel,
 }: {
   row: ToolGroupRow;
-  sync: ConversationSync;
   className?: string;
   trigger?: string;
   panel?: string;
@@ -198,7 +224,7 @@ export const ToolGroup = memo(function ToolGroup({
       </CollapsibleTrigger>
       <CollapsiblePanel className={cn("mt-1 border-l-2 border-border pl-3", panel)}>
         {row.entries.map((entry) => (
-          <ToolStep key={entry.seq} entry={entry} sync={sync} />
+          <ToolStep key={entry.seq} entry={entry} />
         ))}
       </CollapsiblePanel>
     </Collapsible>
@@ -214,7 +240,8 @@ const USER_STATE: Record<NonNullable<UserRowData["state"]>, string> = {
 };
 
 /** A pending message's state ("Queued", "Not sent · Retry · Discard"), or nothing once it's in. */
-export function UserState({ row, sync, className }: { row: UserRowData; sync: ConversationSync; className?: string }) {
+export function UserState({ row, className }: { row: UserRowData; className?: string }) {
+  const { sync } = useIdentity();
   if (!row.state) return null;
   const failed = row.state === "failed";
   return (
@@ -275,9 +302,11 @@ export function RetryNote({ bot }: { bot: BotSummary | undefined }) {
 /**
  * HTML from markdown.ts: model text rendered with raw HTML off, so it is escaped; the one place it
  * enters the DOM. `answer` is the seq of the bot's answer it shows, which makes its text quotable (Quotes.tsx).
- * `bot` is the bot that wrote it: its `files/…` images and links load from that bot's files.
+ * In a transcript, its `files/…` images and links load from its bot's files (elsewhere, as in the Files
+ * panel, there's no bot to load them from).
  */
-export function Markdown({ html, answer, bot }: { html: string; answer?: number; bot?: BotId }) {
+export function Markdown({ html, answer }: { html: string; answer?: number }) {
+  const bot = useContext(Identity)?.sync.id;
   // From cache, a transcript shows before the daemon says where files are: resolve again once it has.
   const hasFiles = useClient((snapshot) => snapshot.hasFiles);
   // biome-ignore lint/correctness/useExhaustiveDependencies: hasFiles changes what top.fileUrl returns
@@ -290,7 +319,8 @@ export function Markdown({ html, answer, bot }: { html: string; answer?: number;
  * What you sent. Passages you quoted (quotes.ts) show where you put them, each with your comment on
  * it, and take you back to the answer they came from. Its parent keeps line breaks.
  */
-export function UserText({ text, bot }: { text: string; bot: string }) {
+export function UserText({ text }: { text: string }) {
+  const bot = String(useIdentity().sync.id);
   const parts = useMemo(() => messageParts(text), [text]);
   if (!parts) return text;
   return parts.map((part, i) =>

@@ -4,23 +4,21 @@
  * under it while you point anywhere in it.
  */
 
-import type { BotId, BotSummary } from "@top/client";
 import { Loader2 } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderCached } from "../../markdown.ts";
 import { author, type DisplayRow, type ToolGroupRow } from "../../rows.ts";
-import { Avatar } from "../Avatar.tsx";
 import { statusLabel } from "../Sidebar.tsx";
 import { MessageAttachments } from "./MessageAttachments.tsx";
 import {
   AnswerError,
   type AssistantRowData,
+  BotAvatar,
   Dots,
   Markdown,
   prevTime,
   RetryNote,
-  type RowContext,
   type RowRenderer,
   StepIcon,
   ToolGroup,
@@ -29,6 +27,7 @@ import {
   type UserRowData,
   UserState,
   UserText,
+  useBotStatus,
   useElapsed,
 } from "./parts.tsx";
 
@@ -73,7 +72,7 @@ function TurnTime({ at, turn, align }: { at: number | undefined; turn: string; a
   );
 }
 
-const UserRow = memo(function UserRow({ row, ctx }: { row: UserRowData; ctx: RowContext }) {
+const UserRow = memo(function UserRow({ row }: { row: UserRowData }) {
   return (
     <div className="flex flex-col items-end pt-3" data-turn={row.key}>
       {row.attachments && (
@@ -90,39 +89,23 @@ const UserRow = memo(function UserRow({ row, ctx }: { row: UserRowData; ctx: Row
             row.state && USER_BUBBLE_STATE[row.state],
           )}
         >
-          <UserText text={row.text} bot={String(ctx.sync.id)} />
+          <UserText text={row.text} />
         </div>
       )}
-      {row.state ? <UserState row={row} sync={ctx.sync} className="mt-1.25 mb-1" /> : <TurnTime at={row.at} turn={row.key} align="end" />}
+      {row.state ? <UserState row={row} className="mt-1.25 mb-1" /> : <TurnTime at={row.at} turn={row.key} align="end" />}
     </div>
   );
 });
 
 /** An answer right after another answer or a tool group continues the same turn: no second avatar. */
-const AssistantRow = memo(function AssistantRow({
-  row,
-  bot,
-  name,
-  avatar,
-  cont,
-  turn,
-  end,
-}: {
-  row: AssistantRowData;
-  bot: BotId;
-  name: string;
-  avatar: number | undefined;
-  cont: boolean;
-  turn: string;
-  end: boolean;
-}) {
+const AssistantRow = memo(function AssistantRow({ row, cont, turn, end }: { row: AssistantRowData; cont: boolean; turn: string; end: boolean }) {
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
     <div data-turn={turn}>
       <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
-        {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} avatar={avatar} size="sm" className="-mt-0.5" title={name} />}
+        {cont ? <span className="w-7 flex-none" /> : <BotAvatar size="sm" className="-mt-0.5" titled />}
         <div className="min-w-0 flex-1">
-          {row.text && <Markdown html={html} answer={row.seq} bot={bot} />}
+          {row.text && <Markdown html={html} answer={row.seq} />}
           {row.error && <AnswerError error={row.error} />}
         </div>
       </div>
@@ -131,24 +114,12 @@ const AssistantRow = memo(function AssistantRow({
   );
 });
 
-const ToolGroupLine = memo(function ToolGroupLine({
-  row,
-  ctx,
-  cont,
-  turn,
-  end,
-}: {
-  row: ToolGroupRow;
-  ctx: RowContext;
-  cont: boolean;
-  turn: string;
-  end: boolean;
-}) {
+const ToolGroupLine = memo(function ToolGroupLine({ row, cont, turn, end }: { row: ToolGroupRow; cont: boolean; turn: string; end: boolean }) {
   return (
     <div data-turn={turn}>
       <div className={cn("flex gap-3", cont ? "pt-1" : "pt-2.25")}>
-        {cont ? <span className="w-7 flex-none" /> : <Avatar name={ctx.name} avatar={ctx.avatar} size="sm" className="-mt-0.5" title={ctx.name} />}
-        <ToolGroup row={row} sync={ctx.sync} className="min-w-0 flex-1 py-0.5" />
+        {cont ? <span className="w-7 flex-none" /> : <BotAvatar size="sm" className="-mt-0.5" titled />}
+        <ToolGroup row={row} className="min-w-0 flex-1 py-0.5" />
       </div>
       {end && <TurnTime at={row.at} turn={turn} align="start" />}
     </div>
@@ -156,12 +127,13 @@ const ToolGroupLine = memo(function ToolGroupLine({
 });
 
 /** What the bot is doing right now, with how long it has been at it. */
-function WorkingRow({ name, avatar, bot, cont }: { name: string; avatar: number | undefined; bot: BotSummary | undefined; cont: boolean }) {
+function WorkingRow({ cont }: { cont: boolean }) {
+  const bot = useBotStatus();
   const seconds = useElapsed(bot);
   const tool = bot?.status === "tool";
   return (
     <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
-      {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} avatar={avatar} size="sm" className="-mt-0.5" />}
+      {cont ? <span className="w-7 flex-none" /> : <BotAvatar size="sm" className="-mt-0.5" />}
       <div className="min-w-0 flex-1">
         <div className={cn("inline-flex items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
           {/* Amber while thinking, blue while a tool runs. */}
@@ -177,7 +149,7 @@ function WorkingRow({ name, avatar, bot, cont }: { name: string; avatar: number 
   );
 }
 
-export const renderDefaultRow: RowRenderer = (rows, index, ctx, bot) => {
+export const renderDefaultRow: RowRenderer = (rows, index) => {
   const row = rows[index]!;
   const prev = rows[index - 1];
   const next = rows[index + 1];
@@ -190,13 +162,13 @@ export const renderDefaultRow: RowRenderer = (rows, index, ctx, bot) => {
   const divider = !!at && (before === undefined || at - before > NEW_STRETCH_MS);
   const body =
     row.kind === "user" ? (
-      <UserRow row={row} ctx={ctx} />
+      <UserRow row={row} />
     ) : row.kind === "assistant" ? (
-      <AssistantRow row={row} bot={ctx.sync.id} name={ctx.name} avatar={ctx.avatar} cont={cont} turn={turnOf(rows, index)} end={end} />
+      <AssistantRow row={row} cont={cont} turn={turnOf(rows, index)} end={end} />
     ) : row.kind === "toolgroup" ? (
-      <ToolGroupLine row={row} ctx={ctx} cont={cont} turn={turnOf(rows, index)} end={end} />
+      <ToolGroupLine row={row} cont={cont} turn={turnOf(rows, index)} end={end} />
     ) : row.kind === "working" ? (
-      <WorkingRow name={ctx.name} avatar={ctx.avatar} bot={bot} cont={cont} />
+      <WorkingRow cont={cont} />
     ) : null;
   return (
     <>
