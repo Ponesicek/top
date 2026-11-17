@@ -12,6 +12,9 @@
  * - A job is in memory only. If the daemon restarts while one runs, the bot is told it was cut off and
  *   may have taken effect (a command may even still be running).
  * - A tool marked `background: false` keeps the run waiting however long it takes.
+ * - A job can repeat (`collar__background`'s `repeat_while`): while its result contains the bot's text,
+ *   such as a wait on another agent that timed out, the call runs again and the bot isn't told. It hears
+ *   once, when the result is something else. Waiting on an agent costs no turns until it's done.
  */
 
 import * as Cause from "effect/Cause";
@@ -24,7 +27,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import { type InboxRow, type JobRow, Store } from "./store.ts";
 import { duration } from "./time.ts";
-import { stopped, type ToolArguments, type ToolContext, ToolError, type ToolResult, type TopTool, text } from "./tools.ts";
+import { sleep, stopped, type ToolArguments, type ToolContext, ToolError, type ToolResult, type TopTool, text } from "./tools.ts";
 import { summarize } from "./wire.ts";
 
 /** How long a tool call may keep a task waiting before it moves to the background (`TOP_TOOL_FOREGROUND_MS`). */
@@ -38,6 +41,10 @@ const STARTUP_GRACE_MS = 1_000;
 const RESULT_CHARS = 30_000;
 /** How long `stop` waits for a stopped job to wind down before answering. */
 const STOP_GRACE_MS = 5_000;
+/** A repeating call starts again no sooner than this after its last start, so one that answers at once isn't run in a tight loop. */
+export const REPEAT_GAP_MS = 30_000;
+/** A repeating job with no `stopAfterMs` stops after this long. */
+export const REPEAT_LIMIT_MS = 24 * 60 * 60 * 1000;
 
 export type Outcome = { readonly ok: true; readonly result: ToolResult } | { readonly ok: false; readonly error: unknown };
 
@@ -59,6 +66,8 @@ type Live = {
   stopping: boolean;
   /** It ran past the time the bot allowed and was stopped for that: the bot hears about it. */
   timedOut: boolean;
+  /** How many times a repeating call has run. */
+  readonly runs: { count: number };
 };
 
 export type JobView = { readonly id: number; readonly tool: string; readonly summary: string; readonly note: string; readonly startedAt: number };
@@ -71,6 +80,8 @@ export type JobOptions = {
   readonly stopAfterMs?: number;
   /** What the call is for; it heads the messages about the job. */
   readonly note?: string;
+  /** Run the call again, without telling the bot, while its result contains this text (see the top of this file). */
+  readonly repeatWhile?: string;
 };
 
 /** The text of a tool result; parts that aren't text are named. */
@@ -139,7 +150,7 @@ export type Jobs = {
 };
 
 /** The daemon's background jobs. Calls run in the scope this is made in, so they outlive the task that started them. */
-export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregroundMs: number) {
+export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregroundMs: number, repeatGapMs = REPEAT_GAP_MS) {
   const store = yield* Store;
   const scope = yield* Effect.scope;
   const live = new Map<number, Live>();
@@ -147,7 +158,7 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
 
   const end = Effect.fnUntraced(function* (job: Live, outcome: Outcome) {
     live.delete(job.id);
-    const ran = duration((yield* now) - job.startedAt);
+    const ran = duration((yield* now) - job.startedAt) + (job.runs.count > 1 ? ` and ${job.runs.count} runs` : "");
     if (job.timedOut && !job.stopping) {
       // It ran past the time the bot allowed: it hears so, with what the job had done.
       const head = `[Background job ${job.id} timed out] ${label(job)}: stopped after ${ran}, the time you allowed it`;
@@ -177,7 +188,8 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
     const progress: { latest?: ToolResult } = {};
     const timing: { job: Live | undefined; timedOut: boolean } = { job: undefined, timedOut: false };
     const outcome = yield* Deferred.make<Outcome>();
-    const call = tool
+    const runs = { count: 0 };
+    const once = tool
       .run(args, {
         ...ctx,
         signal: controller.signal,
@@ -186,15 +198,31 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
           ctx.onUpdate?.(partial);
         },
       })
-      .pipe(
-        Effect.exit,
-        Effect.flatMap((exit) => Deferred.succeed(outcome, outcomeOf(exit))),
-      );
+      .pipe(Effect.exit, Effect.map(outcomeOf));
+    const repeatWhile = options.repeatWhile;
+    /** A result that means "not yet": run the call again instead of reporting it. */
+    const again = (result: Outcome) =>
+      repeatWhile !== undefined && result.ok && result.result.isError !== true && !controller.signal.aborted && resultText(result.result).includes(repeatWhile);
+    const call = Effect.gen(function* () {
+      for (;;) {
+        const began = yield* now;
+        runs.count++;
+        const result = yield* once;
+        if (!again(result)) return yield* Deferred.succeed(outcome, result);
+        // `jobs output` shows the last "not yet".
+        if (result.ok) progress.latest = result.result;
+        const gap = repeatGapMs - ((yield* now) - began);
+        if (gap > 0 && (yield* Effect.result(sleep(gap, controller.signal)))._tag === "Failure")
+          // Stopped between runs: what it last came to is the outcome.
+          return yield* Deferred.succeed(outcome, result);
+      }
+    });
     // The call runs in the jobs' scope, not the task's: it may outlive this tool call.
+    const stopAfterMs = options.stopAfterMs ?? (repeatWhile === undefined ? undefined : REPEAT_LIMIT_MS);
     const deadline =
-      options.stopAfterMs === undefined
+      stopAfterMs === undefined
         ? Effect.void
-        : Effect.sleep(Duration.millis(options.stopAfterMs)).pipe(
+        : Effect.sleep(Duration.millis(stopAfterMs)).pipe(
             Effect.andThen(
               Effect.sync(() => {
                 timing.timedOut = true;
@@ -236,6 +264,7 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
       waiters: 0,
       stopping: false,
       timedOut: timing.timedOut,
+      runs,
     };
     timing.job = job;
     live.set(id, job);
@@ -248,9 +277,13 @@ export const makeJobs = Effect.fnUntraced(function* (events: JobsEvents, foregro
       options.foregroundMs > 0
         ? `Still running after ${duration(options.foregroundMs)}, so it moved to the background as job ${id}`
         : `Started as background job ${id}`;
-    const limit = options.stopAfterMs === undefined ? "" : ` It will be stopped if it's still running ${duration(options.stopAfterMs)} after it started.`;
+    const limit = stopAfterMs === undefined ? "" : ` It will be stopped if it's still running ${duration(stopAfterMs)} after it started.`;
+    const repeats =
+      repeatWhile === undefined
+        ? ""
+        : ` While its result contains ${JSON.stringify(repeatWhile)}, it runs again without telling you; you hear once, when it doesn't.`;
     return text(
-      `${started} and keeps running.${limit} ` +
+      `${started} and keeps running.${repeats}${limit} ` +
         "Its result will come to you as a message when it ends, so don't wait or check on it: carry on, or end your turn if there's nothing else to do. " +
         "To see its output so far, wait for it, or stop it, use collar__jobs.",
     );

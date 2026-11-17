@@ -21,7 +21,8 @@ import * as Effect from "effect/Effect";
 import * as FiberHandle from "effect/FiberHandle";
 import * as Latch from "effect/Latch";
 import { type Attachments, userContent, withImageData } from "./attachments.ts";
-import { runLoop, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
+import { contextTokens, kTokens, summaryMessage, WINDOW_SHARE } from "./compaction.ts";
+import { type Compact, runLoop, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
 import type { EntryBody, TopUserMessage, TranscriptMessage, UserText } from "./messages.ts";
 import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
 import { type ToolResult, type TopTool, text } from "./tools.ts";
@@ -54,7 +55,12 @@ export type RunnerOptions = {
   readonly attachments?: Attachments["Service"] | undefined;
   /** Backoff before each retry of a failed model request. */
   readonly retryDelaysMs?: readonly number[] | undefined;
+  /** Compact the bot's transcript when it's longer than this many tokens (see compaction.ts); without it, never. */
+  readonly compactAtTokens?: number | undefined;
 };
+
+/** A bot's prompt cache key (see `LoopOptions.sessionId`): one per bot, kept across restarts. */
+export const cacheKey = (bot: number) => `top-bot-${bot}`;
 
 /** See `RunnerOptions.gatherMs`. */
 const GATHER_MS = 2_000;
@@ -148,6 +154,30 @@ export const makeRunner = Effect.fnUntraced(function* (
 
   const key = (seq: number, toolCallId: string) => `${id}:${seq}:${toolCallId}`;
 
+  // Never past most of the model's window, whatever was asked: a request that doesn't fit fails.
+  const window = model.contextWindow > 0 ? Math.floor(model.contextWindow * WINDOW_SHARE) : Number.POSITIVE_INFINITY;
+  const compactAt = options.compactAtTokens && options.compactAtTokens > 0 ? Math.min(options.compactAtTokens, window) : undefined;
+  const compact: Compact | undefined =
+    compactAt === undefined
+      ? undefined
+      : {
+          atTokens: compactAt,
+          save: (summary, keep, answer, tokensBefore) =>
+            Effect.gen(function* () {
+              const at = yield* now;
+              const cut = messages.length - keep;
+              const after = contextTokens([...messages.slice(0, cut).filter((m) => m.role === "system"), summaryMessage(summary, at), ...messages.slice(cut)]);
+              const notice = yield* store.compact(
+                id,
+                keep,
+                { summary, tokensBefore, usage: answer.usage, timestamp: at },
+                `Compacted the conversation to save tokens: about ${kTokens(tokensBefore)} → ${kTokens(after)}.`,
+              );
+              yield* events.entry(notice);
+              return yield* store.context(id);
+            }),
+        };
+
   const setStatus = (next: BotStatus, extra: { tool?: string | undefined; error?: string | undefined } = {}) =>
     Effect.gen(function* () {
       if (status.status === next && status.tool === extra.tool && status.error === extra.error) return;
@@ -232,6 +262,8 @@ export const makeRunner = Effect.fnUntraced(function* (
           models,
           model,
           thinkingLevel: options.thinkingLevel ?? "off",
+          sessionId: cacheKey(id),
+          compact,
           messages,
           tools: toolList,
           toolContext: (toolCallId) => ({ key: key(assistantSeq, toolCallId), bot: id }),

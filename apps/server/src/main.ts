@@ -41,6 +41,7 @@ import * as Attachments from "./attachments.ts";
 import { AuthFile } from "./auth.ts";
 import { BUILD } from "./build.ts";
 import * as ChatGPT from "./chatgpt.ts";
+import { CompactAtTokens } from "./compaction.ts";
 import * as Daemon from "./daemon.ts";
 import * as Events from "./events.ts";
 import { BOT_NAMES, FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "./fake-bots.ts";
@@ -73,6 +74,20 @@ const QUOTES_SECTION = [
   "The user can quote passages of your earlier answers. A quote appears in their message as a link: [Quote](top-quote://v1/<seq>?text=<passage>&comment=<comment>), URL-encoded (+ is a space).",
   "`text` is the passage they quoted from your answer, `seq` that answer's entry number, and `comment`, when present, what they say about that passage specifically. The text around the links is the rest of their message; where they put each quote in it matters.",
   "</quotes>",
+].join("\n");
+
+/**
+ * How a bot should wait. Each turn reads the whole transcript again, so a bot that checks on a timer
+ * (a wake-up every few minutes, a short wait started again each time it times out) spends the user's
+ * plan on turns where nothing happened. `repeat_while` lets it wait for an agent in one turn.
+ */
+const WAITING_SECTION = [
+  "<waiting>",
+  "Every turn you take reads this whole conversation again, and the user pays for each one. Take turns to act, not to check on things.",
+  "- To wait for another agent or a long task, run its wait tool through collar__background with `repeat_while` set to what its result says while the work is still going (for example '\"timedOut\":true'), then end your turn. You get one message, when it's done.",
+  "- Set wake-ups for things due at a time, such as a reminder or a deadline, not to see whether work is finished.",
+  "- Something that can't tell you when it's done: check it at most every 30 minutes.",
+  "</waiting>",
 ].join("\n");
 
 /** Given more than once, the last one counts (as `node:util`'s parseArgs had it, and scripts rely on). */
@@ -153,7 +168,11 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           sections: (bot) =>
             Effect.gen(function* () {
               const prompt = getCurrentSystemPrompt(yield* store.context(bot.id));
-              return { workspace: workspaceSection(yield* folderOf(bot), prompt.includes("You have no tools yet")), quotes: QUOTES_SECTION };
+              return {
+                workspace: workspaceSection(yield* folderOf(bot), prompt.includes("You have no tools yet")),
+                quotes: QUOTES_SECTION,
+                waiting: WAITING_SECTION,
+              };
             }),
           // Real bots' tools are declared on their first request, so their first system message holds only instructions.
           newBot: {
@@ -172,6 +191,7 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           skills: skillsOf(home),
           foregroundMs: yield* ForegroundMs,
           retryDelaysMs: yield* RetryDelaysMs,
+          compactAtTokens: yield* CompactAtTokens,
         });
       }),
     );
@@ -200,6 +220,8 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         skills: skillsOf(home),
         foregroundMs: yield* ForegroundMs,
         retryDelaysMs: yield* RetryDelaysMs,
+        // The fake model's answers are short: `TOP_COMPACT_AT_TOKENS=3000 pnpm dev:fake` shows compaction quickly.
+        compactAtTokens: yield* CompactAtTokens,
       });
     }),
   );

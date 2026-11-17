@@ -111,6 +111,10 @@ export class BotKit extends Context.Service<
     readonly gatherMs?: number | undefined;
     /** Backoff before each retry of a failed model request. */
     readonly retryDelaysMs?: readonly number[] | undefined;
+    /** The least time between two runs of a repeating background call (see jobs.ts). */
+    readonly repeatGapMs?: number | undefined;
+    /** Compact a bot's transcript when it's longer than this many tokens (see compaction.ts); without it, never. */
+    readonly compactAtTokens?: number | undefined;
   }
 >()("top/BotKit") {}
 
@@ -274,7 +278,7 @@ const make = Effect.gen(function* () {
     });
 
   const changed = (bot: number): Effect.Effect<void> => (bots.has(bot) ? touch(bot) : Effect.void);
-  const jobs: Jobs = yield* makeJobs({ deliver: queued, changed }, kit.foregroundMs);
+  const jobs: Jobs = yield* makeJobs({ deliver: queued, changed }, kit.foregroundMs, kit.repeatGapMs);
   const wakes = yield* makeWakeClock(queued);
   const toolsOf = (bot: number) => toolSources.get(bot)?.() ?? [];
   const permissions = makePermissions(store, {
@@ -325,6 +329,7 @@ const make = Effect.gen(function* () {
           gatherMs: kit.gatherMs,
           attachments,
           retryDelaysMs: kit.retryDelaysMs,
+          compactAtTokens: kit.compactAtTokens,
         },
       ).pipe(Scope.provide(botScope));
       const live: LiveBot = { runner, scope: botScope, folder: undefined, summary: yield* summarize(bot.id, runner) };

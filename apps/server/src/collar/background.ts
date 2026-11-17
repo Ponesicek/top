@@ -28,6 +28,12 @@ const parameters = Type.Object(
     stop_after_minutes: Type.Optional(
       Type.Number({ description: "Stop it if it's still running this many minutes after it started; you're told it timed out. Default: no limit." }),
     ),
+    repeat_while: Type.Optional(
+      Type.String({
+        description:
+          "Run the call again, without telling you, each time its result contains this text, such as '\"timedOut\":true' for a wait on another agent that timed out. You hear once, when the result doesn't contain it (or the call fails). Use it for any wait or status check you would otherwise repeat yourself. It stops after a day unless stop_after_minutes says otherwise.",
+      }),
+    ),
     note: Type.Optional(
       Type.String({
         description: 'What it\'s for, in a few words ("review of PR 12"). It heads the message you get when it ends, so you can tell your jobs apart.',
@@ -81,6 +87,7 @@ export const backgroundGroup: CollarGroup = (daemon) => [
     description: [
       "Run one of your tools as a background job: start it, then do other work or end your turn. Its result comes to you as a message when it ends, even when you're idle, so you never need to poll.",
       "Use it to run several slow things at once, such as other agents you delegate to, builds or long commands, and to set how long to wait (`wait_seconds`) and when to give up (`stop_after_minutes`).",
+      "To wait on another agent until it's done, call its wait tool with `repeat_while` set to what its result says when the wait timed out: you hear back once, when the agent finishes.",
       "Start each job in its own call; one message can hold several. Calling a tool directly works too: a call still running after the time limit moves to the background by itself, but this one lets you decide.",
       "See, wait for or stop jobs with collar__jobs.",
     ].join(" "),
@@ -110,11 +117,15 @@ export const backgroundGroup: CollarGroup = (daemon) => [
           if (stopAfterMs > MAX_STOP_AFTER_MS) return Effect.succeed(failed(`\`stop_after_minutes\` can be at most ${duration(MAX_STOP_AFTER_MS)}.`));
         }
         const note = args.note?.slice(0, 200);
+        const repeatWhile = args.repeat_while;
+        if (repeatWhile !== undefined && !repeatWhile.trim())
+          return Effect.succeed(failed("`repeat_while` can't be empty: give the text a result has while it should run again."));
         // The call to `background` is the job's call: its key names the job.
         return daemon.jobs.run(tool, callArgs, ctx, {
           foregroundMs: waitMs,
           ...(stopAfterMs !== undefined ? { stopAfterMs } : {}),
           ...(note ? { note } : {}),
+          ...(repeatWhile !== undefined ? { repeatWhile } : {}),
         });
       }),
   }),
