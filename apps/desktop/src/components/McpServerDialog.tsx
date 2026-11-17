@@ -11,14 +11,12 @@ import { Field, FieldHint, FieldLabel, Input } from "./ui/field.tsx";
 
 type Kind = McpServerConfig["transport"];
 
-/** One variable or header being edited. `stored`: the daemon holds a value for this name, so an empty field keeps it. */
 type SecretRow = { readonly key: number; name: string; value: string; readonly storedName?: string };
 
 let nextKey = 1;
 const rowsOf = (secrets: readonly McpSecret[]): SecretRow[] => secrets.map((s) => ({ key: nextKey++, name: s.name, value: "", storedName: s.name }));
 const isStored = (row: SecretRow) => row.storedName !== undefined && row.storedName === row.name.trim();
 
-/** What to send: a stored secret left empty goes without a value, which keeps it. */
 const secretsOf = (rows: readonly SecretRow[]): McpSecret[] =>
   rows.filter((r) => r.name.trim()).map((r) => (isStored(r) && !r.value ? { name: r.name.trim() } : { name: r.name.trim(), value: r.value }));
 
@@ -84,7 +82,6 @@ function SecretList({
   );
 }
 
-/** The form lives inside the popup, so it starts from the server's settings (or empty) each time. */
 function McpServerForm({ server, onDone }: { server: McpServerView | undefined; onDone: () => void }) {
   const config = server?.config;
   const [name, setName] = useState(server?.name ?? "");
@@ -248,7 +245,6 @@ function McpServerForm({ server, onDone }: { server: McpServerView | undefined; 
   );
 }
 
-/** Add a server (`server` undefined) or edit one. */
 export function McpServerDialog({ open, onOpenChange, server }: { open: boolean; onOpenChange: (open: boolean) => void; server: McpServerView | undefined }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

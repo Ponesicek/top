@@ -1,4 +1,3 @@
-/** `--seed N`: give the first bot an N-message history, to test cold start and scrolling on long transcripts. */
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -8,7 +7,7 @@ import { Store } from "./store.ts";
 export const seedHistory = (bot: number, count: number) =>
   Effect.gen(function* () {
     const store = yield* Store;
-    if ((yield* store.lastSeq(bot)) > 0) return; // only seed a fresh bot
+    if ((yield* store.lastSeq(bot)) > 0) return;
     const start = (yield* Clock.currentTimeMillis) - count * 60_000;
     yield* store.transaction(
       Effect.gen(function* () {

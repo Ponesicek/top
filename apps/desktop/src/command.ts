@@ -1,7 +1,3 @@
-/**
- * A command line as one string in the UI, a program and its arguments on the daemon. Quotes ("…" or '…')
- * group words with spaces; backslashes are kept as they are, so Windows paths survive.
- */
 export function splitCommand(line: string): string[] {
   const words: string[] = [];
   let word = "";

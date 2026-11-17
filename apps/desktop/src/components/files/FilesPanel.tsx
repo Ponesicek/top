@@ -1,9 +1,3 @@
-/**
- * The Files panel, beside the transcript: the open bot's files folder, newest first, and the file you
- * opened, rendered. Each file can be handed elsewhere: its path on the daemon's computer (for agents
- * there, which can read and edit it) or its link on the address this app reaches the daemon at (for
- * a browser, or anything on another machine, over Tailscale or a tunnel too).
- */
 import type { BotFiles, BotId, FileView } from "@top/client";
 import { Check, ChevronLeft, Copy, ExternalLink, FolderOpen, Link, X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
@@ -30,7 +24,6 @@ import { Tooltip } from "../ui/tooltip.tsx";
 import { FileIcon } from "./FileIcon.tsx";
 import { Notice, VIEWERS } from "./viewers.tsx";
 
-/** "Copied" for a moment after `copy` runs. */
 function useCopy(): [string | undefined, (what: string, text: string) => void] {
   const [copied, setCopied] = useState<string>();
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -55,11 +48,6 @@ function IconAction({ label, onClick, children, className }: { label: string; on
   );
 }
 
-/**
- * The panel's top bar, the height of the transcript's header. On Windows and Linux the window buttons
- * sit over its right end, so everything here stays at the left, clear of them: no second close button
- * beside the window's, and nothing at a slightly different height next to them.
- */
 function PanelHeader({ children }: { children: React.ReactNode }) {
   return (
     <header className="flex h-15 flex-none items-center gap-1 border-b pr-3 pl-2 [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
@@ -68,7 +56,6 @@ function PanelHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Closes the panel where it covers the whole window (narrow ones); elsewhere the header's Files button does. */
 function NarrowClose() {
   return (
     <IconAction label="Close files" onClick={closePanel} className="hidden narrow:inline-flex">
@@ -77,14 +64,12 @@ function NarrowClose() {
   );
 }
 
-/** Drag the panel's left edge to resize it; double-click to put it back. */
 function ResizeHandle({ width }: { width: number }) {
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
     const startX = event.clientX;
-    // Pages in frames would swallow the pointer while dragging over them.
     document.documentElement.classList.add("resizing");
     const move = (e: PointerEvent) => setPanelWidth(Math.min(Math.max(PANEL_MIN, width + startX - e.clientX), innerWidth * 0.75));
     const up = () => {
@@ -106,8 +91,6 @@ function ResizeHandle({ width }: { width: number }) {
     />
   );
 }
-
-// ── the list ──────────────────────────────────────────────────────────────────
 
 const FileRow = memo(function FileRow({ bot, file, now }: { bot: BotId; file: FileView; now: number }) {
   const dir = dirOf(file.path);
@@ -134,7 +117,6 @@ const FileRow = memo(function FileRow({ bot, file, now }: { bot: BotId; file: Fi
 
 function FileList({ bot, name, files }: { bot: BotId; name: string; files: BotFiles | undefined }) {
   const [copied, copy] = useCopy();
-  // Times are relative; refresh them now and then.
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -187,8 +169,6 @@ function FileList({ bot, name, files }: { bot: BotId; name: string; files: BotFi
     </>
   );
 }
-
-// ── one file ──────────────────────────────────────────────────────────────────
 
 function FileViewer({ bot, path, files }: { bot: BotId; path: string; files: BotFiles | undefined }) {
   const [copied, copy] = useCopy();
@@ -264,7 +244,6 @@ export const FilesPanel = memo(function FilesPanel({ bot, name }: { bot: BotId; 
   );
 });
 
-/** For the header's toggle: how many files the bot has, or `undefined` when this daemon has no files. */
 export function useFileCount(bot: BotId | undefined): number | undefined {
   return useBotFiles(bot)?.files.length;
 }

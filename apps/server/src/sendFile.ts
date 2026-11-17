@@ -1,4 +1,3 @@
-/** Sending a file over HTTP, with one byte range (for seeking in video and audio) and ETag revalidation. */
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -7,20 +6,16 @@ import type * as HttpPlatform from "effect/http/HttpPlatform";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
-/** What serving files needs from the HTTP server it runs in. */
 export type FileServing = FileSystem.FileSystem | Etag.Generator | HttpPlatform.HttpPlatform;
 
-/** There's no file at the path (or it's a folder). */
 export class NotFound extends Data.TaggedError("NotFound")<{ readonly path: string }> {}
 
-/** `If-None-Match` against the file's ETag, compared weakly (as RFC 9110 has it for this header). */
 const matches = (header: string | undefined, etag: string) => {
   if (!header) return false;
   const bare = (tag: string) => tag.trim().replace(/^W\//, "");
   return header.split(",").some((tag) => tag.trim() === "*" || bare(tag) === bare(etag));
 };
 
-/** The file at `path`, or the byte range the request asks for; a `304` when the client's copy is current. */
 export const sendFile = (
   request: HttpServerRequest.HttpServerRequest,
   path: string,
@@ -32,7 +27,6 @@ export const sendFile = (
     if (info.type !== "File") return yield* new NotFound({ path });
     const etag = Etag.toString(yield* (yield* Etag.Generator).fromFileInfo(info));
     const size = Number(info.size);
-    // `file` sets the ETag itself (from the same generator); the answers without a body set it here.
     const headers: Record<string, string> = {
       ...extra,
       "Accept-Ranges": "bytes",

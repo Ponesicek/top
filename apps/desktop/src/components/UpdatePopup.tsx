@@ -1,9 +1,3 @@
-/**
- * The one thing about updates the app says without being asked, in the bottom-right corner: the app and
- * the server speak different versions of the protocol, so nothing works until one of them is updated.
- * Everything else (an update that's ready, its notes, mismatched channels) is in the sidebar's update
- * button, and opens only when asked. Nothing installs until the user presses Update.
- */
 import { TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { useClient } from "../top.ts";

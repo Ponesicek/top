@@ -1,8 +1,3 @@
-/**
- * Waiting, on Effect's test clock: wake-ups and background jobs keep time with Effect's Clock, so these
- * run hours of it in an instant, and exactly. (The daemon tests in await.test.ts drive pi's model,
- * which runs on real timers, so they keep real time.)
- */
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -18,7 +13,6 @@ import { makeWakeClock } from "../src/wakes.ts";
 
 const store = Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: ":memory:" })));
 
-/** A bot, and the messages Top queues for it. */
 const setup = Effect.gen(function* () {
   const store = yield* StoreService;
   const bot = yield* store.createBot("Atlas", "", "fake/model");
@@ -30,10 +24,8 @@ const setup = Effect.gen(function* () {
   return { store, bot, delivered, deliver };
 });
 
-/** Let forked fibers run what the clock allows. */
 const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }));
 
-/** A tool that takes `minutes` of the clock, or stops when its signal says so. */
 const slow = (minutes: number): TopTool => ({
   name: "slow__tool",
   label: "Slow",
@@ -51,7 +43,6 @@ describe("wake-ups", () => {
       yield* clock.start;
       yield* settle;
 
-      // Longer than the clock sleeps at once (an hour): it looks again, and waits on.
       yield* TestClock.adjust("2 hours");
       yield* settle;
       yield* TestClock.adjust("59 minutes");
@@ -120,7 +111,6 @@ describe("background jobs", () => {
       const started = yield* Effect.forkChild(
         jobs.run(slow(24 * 60), {}, { key: "k", bot }, { foregroundMs: 0, stopAfterMs: 10 * 60_000, note: "nightly build" }),
       );
-      // Even started straight in the background, a call gets a second to fail or end.
       yield* TestClock.adjust("1 second");
       assert.match(((yield* Fiber.join(started)).content[0] as { text: string }).text, /^Started as background job 1 .*stopped if it's still running 10m/);
 

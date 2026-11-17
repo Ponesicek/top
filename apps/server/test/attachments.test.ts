@@ -1,7 +1,3 @@
-/**
- * Attachments: uploads over HTTP, what the daemon decides each file is, a message claiming them, what
- * the bot gets (its text, a path per file, images as images) and what clients see, and cleanup.
- */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +18,6 @@ after(async () => {
   for (const fn of cleanup.reverse()) await fn();
 });
 
-/** A 1×1 PNG. */
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
 async function setup(names = ["Atlas"]) {
@@ -47,27 +42,21 @@ test("an upload is stored under its own name, and an image type is believed only
   assert.deepEqual(readFileSync(attachments.path(image)), PNG);
   assert.ok(attachments.path(image).endsWith(`${image.id}/shot.png`));
 
-  // Not a PNG, whatever it says: never given to a model as an image.
   const fake = (await upload("fake.png", "image/png", Buffer.from("not a png at all"))).body as Attachment;
   assert.equal(fake.mimeType, "application/octet-stream");
-  // No type, but the bytes are a PNG.
   assert.equal(((await upload("paste", "", PNG)).body as Attachment).mimeType, "image/png");
-  // A name can't leave its folder.
   const sneaky = (await upload("../../etc/passwd", "text/plain", Buffer.from("x"))).body as Attachment;
   assert.equal(sneaky.name, "_.._etc_passwd");
 
-  // Served with its type, cached for good, and sandboxed.
   const served = await fetch(`${base}/${image.id}`);
   assert.equal(served.headers.get("content-type"), "image/png");
   assert.match(served.headers.get("content-security-policy") ?? "", /sandbox/);
   assert.match(served.headers.get("cache-control") ?? "", /immutable/);
   assert.deepEqual(Buffer.from(await served.arrayBuffer()), PNG);
-  // Unknown types download instead of rendering.
   const blob = (await upload("data.bin", "application/x-thing", Buffer.from([1, 2, 3]))).body as Attachment;
   const download = await fetch(`${base}/${blob.id}`);
   assert.equal(download.headers.get("content-type"), "application/octet-stream");
   assert.match(download.headers.get("content-disposition") ?? "", /^attachment;/);
-  // A wrong secret finds nothing.
   assert.equal((await fetch(`${base.replace(/[^/]+$/, "nope")}/${image.id}`)).status, 404);
 });
 
@@ -76,7 +65,6 @@ test("uploads that are empty or too large are refused", async () => {
   const empty = await upload("empty.txt", "text/plain", Buffer.alloc(0));
   assert.equal(empty.status, 400);
   assert.match(String(empty.body), /empty/);
-  // Refused from its length alone, before any bytes are read.
   const { request } = await import("node:http");
   const status = await new Promise<number>((resolve, reject) => {
     const req = request(`${base}/upload?name=big.bin`, { method: "POST", headers: { "Content-Length": String(MAX_ATTACHMENT_BYTES + 1) } }, (res) => {
@@ -96,17 +84,14 @@ test("a message with attachments gives the bot their paths and the images, and c
   const image = (await upload("shot.png", "image/png", PNG)).body as Attachment;
   const notes = (await upload("notes.txt", "text/plain", Buffer.from("hello"))).body as Attachment;
   await h.run(daemon.submit(bot, "r1", "What is in these?", "followUp", null, [image.id, notes.id]));
-  // Queued: the inbox keeps them, so they survive a restart.
   const placed = await until("the message to reach the bot", async () => (await h.entries()).find((e) => e.kind === "user"));
   await until("the answer", async () => (await h.entries()).some((e) => e.kind === "assistant"));
 
-  // Clients see the text and the attachments, not the note for the bot.
   const wire = toWire(placed);
   assert.equal(wire?.kind, "user");
   assert.equal(wire?.kind === "user" && wire.text, "What is in these?");
   assert.deepEqual(wire?.kind === "user" && wire.attachments, [image, notes]);
 
-  // The stored message holds the image by id only; each request reads its bytes in.
   const message = (await h.run(h.store.context(bot))).find((m) => m.role === "user");
   assert(message?.role === "user" && typeof message.content !== "string");
   const [said, note, picture] = message.content;
@@ -119,8 +104,6 @@ test("a message with attachments gives the bot their paths and the images, and c
   assert(hydrated?.role === "user" && typeof hydrated.content !== "string");
   assert.deepEqual(hydrated.content[2], { type: "image", mimeType: "image/png", data: PNG.toString("base64"), attachment: image.id });
 
-  // An image whose file is gone becomes a note rather than a broken image (to an attachments service
-  // that hasn't cached it).
   rmSync(join(attachments.root, image.id), { recursive: true });
   const runtime = ManagedRuntime.make(
     Attachments.layer(join(attachments.root, "..")).pipe(Layer.provide(Layer.mergeAll(Layer.succeed(Store.Store, h.store), NodeServices.layer))),

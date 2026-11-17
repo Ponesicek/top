@@ -1,11 +1,5 @@
 @import "tailwindcss";
 
-/* ── tokens ──────────────────────────────────────────────────────────────────
-   Light is the default; dark follows the OS. One warm brand color (tangerine), one color per bot,
-   and semantic colors for status. Names follow shadcn/ui (as t3code does) so Tailwind utilities read
-   `bg-primary`, `text-muted-foreground`, … Text steps: foreground (body), secondary-foreground
-   (secondary), muted-foreground (meta). */
-
 :root {
   --background: #fefdfc;
   --foreground: #1a1917;
@@ -55,7 +49,6 @@
   --syn-type: #0f7a85;
   --syn-comment: #706d65;
   --syn-punct: #69665f;
-  /* The chat style: warm grey bubbles from the bot, peach ones from you, flat on the page. */
   --chat-in: #f0eeea;
   --chat-out: #ffe4d4;
   --chat-out-foreground: #2a1a12;
@@ -121,29 +114,23 @@
   }
 }
 
-/* Windows under 720px collapse the sidebar to avatars. */
 @custom-variant narrow (@media (max-width: 720px));
-/* The macOS desktop app, whose window buttons sit over the sidebar's top-left corner (main.tsx sets it). */
 @custom-variant mac-window (&:where([data-mac-window] *));
 
 @theme {
   --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* The app's type scale, beside Tailwind's: registered with tailwind-merge in lib/utils.ts. */
   --text-micro: 11.5px;
   --text-micro--line-height: 1;
   --text-meta: 12.5px;
   --text-meta--line-height: 1.35;
-  /* No line height of its own: it keeps its context's (body text is 1.6). */
   --text-small: 13.5px;
   --text-body: 15px;
   --text-body--line-height: 1.6;
-  /* Monospace UI text: tool names, tool output, field labels. */
   --text-code: 13px;
   --text-code--line-height: 1.4;
 
-  /* Inter's in-between weights: 450 for quiet notes, 550 for labels, 650 for names and titles. */
   --font-weight-book: 450;
   --font-weight-label: 550;
   --font-weight-heading: 650;
@@ -151,7 +138,6 @@
   --tracking-title: -0.02em;
   --tracking-name: -0.01em;
 
-  /* The composer and message bubbles share one soft corner; fields are a step tighter. */
   --radius-bubble: 18px;
   --radius-field: 10px;
 
@@ -237,8 +223,6 @@
   --color-overlay: rgba(20, 16, 12, 0.32);
 }
 
-/* ── base ────────────────────────────────────────────────────────────────── */
-
 @layer base {
   *,
   ::before,
@@ -276,11 +260,9 @@
     background: var(--color-ring);
   }
 
-  /* Text being quoted (Quotes.tsx) still looks selected while its comment box has the focus. */
   ::highlight(quote) {
     background: var(--color-ring);
   }
-  /* The passage a sent quote jumped to. */
   ::highlight(quote-found) {
     background: color-mix(in srgb, var(--color-warning) 34%, transparent);
   }
@@ -301,16 +283,12 @@
   }
 }
 
-/* ── rendered markdown ───────────────────────────────────────────────────────
-   markdown.ts emits plain HTML (no React), so its styles stay here rather than in utilities. */
-
 @layer components {
   .md {
     overflow-wrap: anywhere;
     color: var(--color-foreground);
   }
 
-  /* Prose keeps a comfortable measure; code and tables may use the full column. */
   .md > :is(p, ul, ol, blockquote, h1, h2, h3, h4) {
     max-width: 576px;
   }
@@ -394,7 +372,6 @@
     margin: 1.2em 0;
   }
 
-  /* Tables and code blocks share one 12px rhythm (in px: em would follow each block's own font size). */
   .md table {
     margin: 12px 0;
     min-width: 320px;
@@ -465,11 +442,8 @@
 
   .code pre {
     margin: 0;
-    /* The 8px scrollbar track is always reserved (overflow-x: scroll, invisible until hover), so every
-       block has the same 13px above and below. */
     padding: 13px 16px 5px;
     overflow-x: scroll;
-    /* Scroll hint: the cover travels with the content's end and hides the edge shade unless the line overflows. */
     background:
       linear-gradient(to left, var(--color-code) 50%, transparent) right / 44px 100% no-repeat local,
       linear-gradient(to left, color-mix(in srgb, var(--color-foreground) 7%, transparent), transparent) right top / 30px calc(100% - 8px) no-repeat scroll;
@@ -481,7 +455,6 @@
     border-width: 2px;
     background-color: transparent;
   }
-  /* Horizontal scroll shows itself when you point at the code, not as a permanent rule. */
   .code:hover pre::-webkit-scrollbar-thumb {
     background-color: var(--scrollbar);
   }
@@ -502,7 +475,6 @@
     font-variant-ligatures: none;
   }
 
-  /* The chat style's tables and code blocks, standing between the bubbles. */
   .chat-block .md > :is(table, .code) {
     margin: 0;
     border-radius: 12px;
@@ -511,7 +483,6 @@
     min-width: 280px;
   }
 
-  /* Text in a bubble: a messenger's size and rhythm, not a document's. */
   .chat-bubble {
     font-size: 14.5px;
     line-height: 1.42;
@@ -539,7 +510,6 @@
     padding: 1px 4px;
     background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
   }
-  /* Keeps room at the end of the last line for the time, which sits over it at the bubble's corner. */
   .stamp-space {
     display: inline-block;
     visibility: hidden;
@@ -548,7 +518,6 @@
     line-height: 1;
   }
 
-  /* syntax colors (highlight.js classes) */
   .hljs-keyword,
   .hljs-literal,
   .hljs-meta .hljs-keyword,
@@ -593,12 +562,6 @@
   }
 }
 
-/*
- * Windows and Linux draw the window buttons over the top-right corner (see electron/main.js).
- * `--titlebar-inset` is their width (0 in a browser and on macOS). A header with this class keeps
- * its content clear of them: its own 2rem of side padding, or more when its centered column (as wide
- * as `--column`) reaches under the buttons.
- */
 :root {
   --titlebar-inset: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
 }
@@ -606,7 +569,6 @@
   padding-right: max(2rem, calc(var(--titlebar-inset) + var(--controls-gap, 0.5rem) - max(0px, (100% - var(--column)) / 2)));
 }
 
-/* While the Files panel is being resized, pages in frames mustn't catch the pointer. */
 .resizing {
   cursor: col-resize;
   user-select: none;
@@ -615,7 +577,6 @@
   pointer-events: none;
 }
 
-/* Behind images, so transparent ones read as transparent. */
 .checkerboard {
   background-color: var(--color-muted);
   background-image: conic-gradient(var(--color-secondary) 25%, transparent 0 50%, var(--color-secondary) 0 75%, transparent 0);
@@ -660,9 +621,6 @@
   }
 }
 
-/* ── quote chips in the composer ─────────────────────────────────────────────
-   Built as plain DOM inside the editable field (composerEditor.ts), so styled here. */
-
 @layer components {
   .quote-chip {
     display: inline-flex;
@@ -672,8 +630,6 @@
     height: 22px;
     margin: 0 1px;
     padding: 0 2px 0 6px;
-    /* Centered on the line's text (measured: its middle sits on the text's middle), and within the line,
-       so a chip doesn't make its line taller. */
     vertical-align: -1px;
     border-radius: 7px;
     background: var(--color-secondary);

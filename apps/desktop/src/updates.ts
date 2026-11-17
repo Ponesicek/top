@@ -1,17 +1,9 @@
-/**
- * Updates as the UI sees them: the server's (from the daemon, through the client) and this app's own
- * (from electron/updates.js). Each follows a channel of its own: one server has many devices.
- *
- * Nothing installs until the user presses Update (the sidebar's update button, or Settings → Updates).
- */
 import { type Channel, type ConnectionStatus, channelName, type UpdateView } from "@top/client";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { type AppUpdates, appUpdates } from "./bridge.ts";
 import { fakeUpdates } from "./devUpdates.ts";
 import { top, useClient } from "./top.ts";
 import { installBoth, type UpdateDeps, type UpdateJob, type UpdatePlan } from "./updateFlow.ts";
-
-// ── this app ─────────────────────────────────────────────────────────────────────
 
 let appState: AppUpdates | undefined;
 const appListeners = new Set<() => void>();
@@ -24,7 +16,6 @@ if (appUpdates) {
   appUpdates.onChange(publishApp);
 }
 
-/** This app's updates; `undefined` outside the desktop app (or until it answers). */
 export function useAppUpdates(): AppUpdates | undefined {
   return useSyncExternalStore(
     (listener) => {
@@ -35,9 +26,6 @@ export function useAppUpdates(): AppUpdates | undefined {
   );
 }
 
-// ── where updates come from ─────────────────────────────────────────────────────
-
-/** The server's and this app's updaters: the real ones, or in development the pretend ones of `?fakeUpdates`. */
 export const sources = fakeUpdates
   ? {
       checkServer: fakeUpdates.checkServer,
@@ -64,8 +52,6 @@ const flowDeps: UpdateDeps = fakeUpdates
       installApp: sources.installApp,
     };
 
-// ── the update the user started ──────────────────────────────────────────────────
-
 let job: UpdateJob = { state: "idle" };
 const jobListeners = new Set<() => void>();
 const setJob = (next: UpdateJob) => {
@@ -83,7 +69,6 @@ export function useUpdateJob(): UpdateJob {
   );
 }
 
-/** Update what `plan` names, the server first. One at a time; the job says how it's going, and how it failed. */
 export function startUpdate(plan: UpdatePlan) {
   if (job.state === "running" || (!plan.server && !plan.app)) return;
   setJob({ state: "running", step: plan.server ? "server" : "app", plan });
@@ -93,21 +78,16 @@ export function startUpdate(plan: UpdatePlan) {
   );
 }
 
-/** Forget a failed update (a new check or try starts clean). */
 export const clearUpdateJob = () => {
   if (job.state === "failed") setJob({ state: "idle" });
 };
 
-// ── both ─────────────────────────────────────────────────────────────────────────
-
 export type Updates = {
   readonly server: UpdateView | undefined;
   readonly app: AppUpdates | undefined;
-  /** The server's version and channel, also when it doesn't update itself. */
   readonly serverVersion: string | undefined;
   readonly serverChannel: Channel | undefined;
   readonly connection: ConnectionStatus;
-  /** The app and the server follow different channels. */
   readonly mismatch: { readonly app: Channel; readonly server: Channel } | undefined;
 };
 
@@ -134,7 +114,6 @@ export function useUpdates(): Updates {
   };
 }
 
-/** Look for updates to both now. */
 export const checkBoth = (updates: Updates) => {
   clearUpdateJob();
   return Promise.allSettled([
@@ -143,7 +122,6 @@ export const checkBoth = (updates: Updates) => {
   ]);
 };
 
-/** A line saying what the updater is doing, or `undefined` when it's idle. */
 export function serverActivity(update: UpdateView | undefined): string | undefined {
   switch (update?.state) {
     case "checking":
@@ -177,7 +155,6 @@ export function appActivity(app: AppUpdates | undefined): string | undefined {
 export const mismatchText = (mismatch: NonNullable<Updates["mismatch"]>) =>
   `This app gets ${channelName(mismatch.app)} updates, but your server gets ${channelName(mismatch.server)} ones, so some things may not work together.`;
 
-/** "3 minutes ago", for when the last check was. */
 export function useAgo(at: number | undefined): string | undefined {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

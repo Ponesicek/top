@@ -1,11 +1,3 @@
-/**
- * How each kind of file shows in the Files panel. Pages, PDFs and media load straight from the
- * daemon's file link; Markdown, tables and text are fetched and rendered here, in the app's theme.
- *
- * An HTML page runs in a sandboxed frame with the daemon's address as its origin: its scripts run, but
- * it can't reach the app (another origin), navigate the window, or use the daemon's WebSocket (which
- * refuses that origin).
- */
 import type { BotId } from "@top/client";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extOf, type FileKind, formatSize, openFile } from "../../files.ts";
@@ -15,9 +7,7 @@ import { highlight, renderMarkdown } from "../../markdown.ts";
 import { top } from "../../top.ts";
 import { Markdown } from "../transcript/parts.tsx";
 
-/** Bigger text files aren't fetched: the panel would stall on them. */
 const MAX_TEXT = 2 * 1024 * 1024;
-/** Highlighting is for code you read, not for megabytes of it. */
 const MAX_HIGHLIGHT = 200 * 1024;
 const MAX_TABLE_ROWS = 1_000;
 
@@ -25,14 +15,12 @@ export type ViewerProps = {
   readonly bot: BotId;
   readonly path: string;
   readonly url: string;
-  /** Changes when the file does, to load it again. */
   readonly version: number;
   readonly size: number;
 };
 
 type Loaded = { state: "loading" } | { state: "ok"; text: string } | { state: "error"; error: string };
 
-/** The file's text, fetched again whenever `version` changes. */
 function useText(url: string, version: number, size: number): Loaded {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   // biome-ignore lint/correctness/useExhaustiveDependencies: `version` is the file's mtime; a new one means new content at the same URL
@@ -63,12 +51,9 @@ function Status({ loaded }: { loaded: Exclude<Loaded, { state: "ok" }> }) {
   return <Notice>{loaded.state === "loading" ? "Loading…" : loaded.error}</Notice>;
 }
 
-// ── pages, PDFs, media ────────────────────────────────────────────────────────
-
 const HtmlView = memo(function HtmlView({ url, version, path }: ViewerProps) {
   return (
     <iframe
-      // A new version reloads the page (the daemon says "no-cache", so it's fetched again).
       key={version}
       title={path}
       src={url}
@@ -79,7 +64,6 @@ const HtmlView = memo(function HtmlView({ url, version, path }: ViewerProps) {
   );
 });
 
-// Chromium's PDF viewer doesn't run in a sandboxed frame; a PDF can't script the page anyway.
 const PdfView = memo(function PdfView({ url, version, path }: ViewerProps) {
   return <iframe key={version} title={path} src={url} className="size-full border-0" />;
 });
@@ -106,13 +90,10 @@ const AudioView = memo(function AudioView({ url, version }: ViewerProps) {
   );
 });
 
-// ── Markdown, with Mermaid diagrams ───────────────────────────────────────────
-
 type Mermaid = typeof import("mermaid")["default"];
 let mermaid: Promise<Mermaid> | undefined;
 let diagrams = 0;
 
-/** Replace the `mermaid` code blocks under `root` with their diagrams. Mermaid loads the first time one is needed. */
 async function renderDiagrams(root: HTMLElement) {
   const blocks = [...root.querySelectorAll<HTMLElement>(".code")].filter((block) => block.querySelector(".code-head span")?.textContent === "mermaid");
   if (!blocks.length) return;
@@ -131,7 +112,6 @@ async function renderDiagrams(root: HTMLElement) {
     if (!block.isConnected) continue;
     const source = block.querySelector("code")?.textContent ?? "";
     try {
-      // `parse` throws on a mistake without leaving an error diagram in the page, as `render` would.
       await lib.parse(source);
       const { svg } = await lib.render(`top-mermaid-${++diagrams}`, source);
       if (!block.isConnected) continue;
@@ -152,10 +132,6 @@ function diagramError(text: string): HTMLElement {
   return note;
 }
 
-/**
- * Markdown rendered as the transcript renders it. Relative images load from the bot's folder, and a
- * relative link to another of its files opens that file here.
- */
 function rewriteLinks(html: string, url: string, bot: BotId): string {
   const template = document.createElement("template");
   template.innerHTML = html;
@@ -198,7 +174,6 @@ const MarkdownView = memo(function MarkdownView({ bot, url, version, size }: Vie
   );
   if (loaded.state !== "ok") return <Status loaded={loaded} />;
   return (
-    // Delegated: the copy buttons in code blocks and links to other files are real buttons and links.
     // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: delegation, see above
     <div ref={ref} className="file-md mx-auto max-w-200 px-7 pt-5 pb-10" onClick={onClick}>
       <Markdown html={html} />
@@ -206,9 +181,6 @@ const MarkdownView = memo(function MarkdownView({ bot, url, version, size }: Vie
   );
 });
 
-// ── tables and text ───────────────────────────────────────────────────────────
-
-/** CSV or TSV rows: quoted fields may hold separators, quotes ("") and line breaks. */
 export function parseTable(text: string, separator: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];

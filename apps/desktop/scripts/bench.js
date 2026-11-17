@@ -1,10 +1,3 @@
-// pnpm bench: measure the desktop app against the UX bar, end to end, with the real daemon.
-//
-//   daemon: fresh data, 5 bots under synthetic load (100 tok/s each), one bot seeded with 10,000 messages
-//   app:    production build in Electron, driven with real input events
-//
-// Prints a table and writes bench-results.json.
-
 import { execSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -21,7 +14,6 @@ const dataDir = mkdtempSync(join(tmpdir(), "top-bench-data-"));
 const userData = mkdtempSync(join(tmpdir(), "top-bench-profile-"));
 
 console.log("[bench] building renderer…");
-// One command string: pnpm is a .cmd shim on Windows, which Node runs only through a shell.
 execSync("pnpm exec vite build --logLevel error", { cwd: desktopDir, stdio: "inherit" });
 
 let server;

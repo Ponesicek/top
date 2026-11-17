@@ -1,14 +1,3 @@
-/**
- * End to end against the real daemon (Top's agent loop, SQLite storage, fake model with real tools),
- * killed with SIGKILL at the worst moments:
- *
- * - mid-answer, with a message sent while it was down: nothing lost, nothing doubled;
- * - mid-tool, for each recovery policy: a tool that may have taken effect is never run twice;
- * - in a crash loop: the task ends instead of restarting forever;
- * - a resent message is applied once; a long absence resumes with only the new entries plus a gap;
- * - a client that meets a different daemon on the same address drops what it held from the old one.
- */
-
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -23,7 +12,6 @@ after(async () => {
   for (const fn of cleanup.reverse()) await fn();
 });
 
-// Every daemon stays up until the suite ends, so give each its own port instead of a random one.
 let nextPort = 7400 + Math.floor(Math.random() * 50) * 10;
 
 class Daemon {
@@ -156,7 +144,6 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
   await daemon.start();
   const { top, bot, id } = await connect(daemon, 0);
 
-  // Optimistic: pending immediately, before any round trip.
   const sent = bot.send("hello from the e2e test");
   assert.equal(bot.getSnapshot().pending[0]!.requestId, sent.requestId);
   await untilBot(bot, (s) => s.pending.length === 0 && ofKind(s, "user").length === 1, "the message to land");
@@ -167,7 +154,6 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
   const stale = await untilBot(bot, (s) => s.status === "stale", "the stale state");
   assert.equal(ofKind(stale, "user").length, 1, "what we had stays on screen");
 
-  // Sent while the daemon is down: shows as pending, goes out on reconnect.
   bot.send("sent while offline");
   assert.equal(bot.getSnapshot().pending.length, 1);
 
@@ -201,11 +187,9 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
     "in order",
   );
   assert.equal(new Set(seqs).size, seqs.length, "no duplicates");
-  // The interrupted answer is simply asked again: one answer per message, no half answers.
   assert.equal(ofKind(done.s, "assistant").length, 2);
 });
 
-/** Ask for a tool, kill the daemon while it runs, restart, and return the settled transcript. */
 async function killDuringTool(prompt: string, tool: string) {
   const daemon = new Daemon();
   await daemon.start();
@@ -255,13 +239,12 @@ test("a task that keeps crashing the daemon is ended, not restarted forever", as
   const { bot } = await connect(daemon, 2);
   bot.send("crash");
   let restarts = 0;
-  // The tool kills the daemon; every restart replays it (it says it's safe to), until the limit.
   for (; restarts < 8; restarts++) {
     await daemon.exited();
     if (daemon.output.includes("task ended")) break;
     await daemon.start().catch(() => {});
     await Promise.race([daemon.exited(), new Promise((r) => setTimeout(r, 3_000))]);
-    if (daemon.process!.exitCode === null && daemon.process!.signalCode === null) break; // stayed up
+    if (daemon.process!.exitCode === null && daemon.process!.signalCode === null) break;
   }
   const s = await untilBot(bot, (s) => s.status === "live" && ofKind(s, "notice").length === 1, "the stop notice", 20_000);
   assert.match(ofKind(s, "notice")[0]!.text, /restarted 4 times/);
@@ -289,7 +272,6 @@ test("Stop during a tool ends the task; the next queued message still runs", asy
   const result = ofKind(s, "tool")[0]!;
   assert.equal(result.isError, true);
   assert.match(result.text, /Stopped/);
-  // No model request after the stop: the tool call, its stopped result, a note, then the next message.
   assert.deepEqual(
     entries(s).map((e) => e.kind),
     ["user", "assistant", "tool", "notice", "user", "assistant"],
@@ -345,7 +327,6 @@ test("reconnecting sends only what's new; a long absence leaves a gap that loads
   const cache = first.bot.exportCache()!;
   first.top.close();
 
-  // Back with a warm cache and nothing new: the sync carries no entries at all.
   const warm = new TopClient({ url: daemon.url });
   cleanup.push(() => warm.close());
   const warmBot = warm.conversation(first.id);
@@ -362,7 +343,6 @@ test("reconnecting sends only what's new; a long absence leaves a gap that loads
   assert.equal(synced, 0, "nothing re-sent");
   assert.equal(entries(warmBot.getSnapshot()).length, 50);
 
-  // Back after missing ~390 entries: the newest 50 and a gap, never the whole history.
   const stale = new TopClient({ url: daemon.url });
   cleanup.push(() => stale.close());
   const staleBot = stale.conversation(first.id);
@@ -391,7 +371,6 @@ test("a different daemon on the same address: the old one's transcript is droppe
   const cache = bot.exportCache()!;
   await a.kill();
 
-  // Fresh data on the same port. Its sequence numbers start again from 1, below what the client holds.
   const b = new Daemon([], a.port);
   await b.start();
   await until(top.subscribe, top.getSnapshot, (x) => x.serverId !== aId && x.connection === "open", "the new daemon");
@@ -403,7 +382,6 @@ test("a different daemon on the same address: the old one's transcript is droppe
   assert.equal(entries(s)[0]!.kind, "user");
   assert.equal((entries(s)[0] as Extract<Entry, { kind: "user" }>).text, "after the switch", "the new message is first, not above old ones");
 
-  // Its id survives a restart, so the client keeps what it has and resumes.
   const bId = top.getSnapshot().serverId;
   const held = entries(bot.getSnapshot()).length;
   await b.kill();
@@ -413,7 +391,6 @@ test("a different daemon on the same address: the old one's transcript is droppe
   assert.equal(top.getSnapshot().serverId, bId);
   assert.equal(entries(bot.getSnapshot()).length, held);
 
-  // Cold start from the old daemon's cache: dropped as soon as the new daemon says who it is.
   const cold = new TopClient({ url: b.url, serverId: aId });
   cleanup.push(() => cold.close());
   const coldBot = cold.conversation(bot.id);
@@ -444,7 +421,6 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   await assert.rejects(a.top.createBot("   ", ""), /Give the bot a name/);
   assert.equal(made?.avatar, undefined, "the name's own drawing unless another was picked");
 
-  // The icon picked in the New bot dialog: every client gets it, and out-of-range ones are refused.
   const iconId = await a.top.createBot("Lark", "", 42);
   assert.equal(a.top.getSnapshot().bots.find((bot) => bot.id === iconId)?.avatar, 42);
   await untilSummary(b.top, iconId, (bot) => bot.avatar === 42, "the picked icon on the other client");
@@ -452,14 +428,12 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   await assert.rejects(a.top.createBot("Wren", "", 1.5), /Expected an integer/);
   await assert.rejects(a.top.createBot("Wren", "", 10_000), /icon doesn't exist/);
 
-  // The new bot works like the first ones.
   const scout = a.top.conversation(id);
   scout.retain();
   await untilBot(scout, (s) => s.status === "live", "the new bot's first sync");
   scout.send("hello");
   await untilBot(scout, (s) => settled(s) && ofKind(s, "assistant").length === 1, "the new bot's answer");
 
-  // Deleting a bot mid-task stops it and removes it everywhere.
   a.bot.send("deploy web 5s");
   await untilSummary(a.top, a.id, (bot) => bot.status === "tool", "the first bot running a tool");
   await a.top.deleteBot(a.id);
@@ -470,7 +444,6 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   await until(b.top.subscribe, b.top.getSnapshot, (s) => !s.bots.some((bot) => bot.id === a.id), "the deleted bot gone on the other client");
   await assert.rejects(a.top.deleteBot(a.id), /Unknown bot/);
 
-  // After a restart: the new bot is still there, the deleted one isn't.
   await daemon.kill();
   await daemon.start();
   const c = new TopClient({ url: daemon.url });
@@ -484,7 +457,6 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   );
   assert.ok(!roster.some((bot) => bot.id === a.id));
 
-  // Deleting every bot doesn't bring the first ones back on the next start.
   for (const bot of roster) await c.deleteBot(bot.id);
   await daemon.kill();
   await daemon.start();
@@ -515,7 +487,6 @@ test("MCP servers set up from the app: every client sees them, bots get them onl
   assert.deepEqual(seen!.bots, [], "no bot has it until it's given one");
   assert.deepEqual(seen!.config, { ...config, env: [{ name: "TOKEN" }] }, "the secret stays on the daemon");
 
-  // Before it's assigned, the bot can't call it.
   a.bot.send('call echo__echo {"text": "before"}');
   let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "assistant").length >= 2, "the unassigned call");
   assert.match(ofKind(s, "tool").at(-1)!.text, /not found/i);
@@ -529,7 +500,6 @@ test("MCP servers set up from the app: every client sees them, bots get them onl
   );
   await assert.rejects(a.top.assignMcp(id, 9_999, true), /Unknown bot/);
 
-  // From its next message, it can: the call goes through the agent loop to the server and back.
   a.bot.send('call echo__echo {"text": "after"}');
   s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "assistant").length >= 4, "the assigned call");
   const result = ofKind(s, "tool").at(-1)!;
@@ -537,7 +507,6 @@ test("MCP servers set up from the app: every client sees them, bots get them onl
   assert.equal(result.text, "echo: after");
   assert.equal(result.isError, undefined);
 
-  // Assignments are kept across a restart, and the server reconnects by itself.
   await daemon.kill();
   await daemon.start();
   const c = new TopClient({ url: daemon.url });
@@ -578,7 +547,6 @@ test("skills from the app: found in the home and the bot's folder, switched on p
     "no bot has a skill until it's switched on",
   );
 
-  // One added to the bot's own folder shows once the folders are read again.
   skill(join(daemon.dataDir, "bots", name, ".agents", "skills"), "notes", "Keep notes.");
   await a.top.rescanSkills();
   await until(
@@ -644,12 +612,10 @@ test("a bot's permission request reaches every client; the first answer wins, an
   a.bot.send("ask permission to rotate the API keys");
   const [request] = await waiting(a.top);
   assert.deepEqual(request, { id: request!.id, bot: a.id, action: "rotate the API keys", reason: "You asked me to check with you first." });
-  // The app shows it where the bot asked: the call's result names the request.
   let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "tool").some((e) => e.permission), "the call's result");
   assert.deepEqual(ofKind(s, "tool").at(-1)!.permission, { id: request!.id, action: "rotate the API keys", reason: "You asked me to check with you first." });
   assert.deepEqual((await waiting(b.top))[0], request, "the other device sees the same request");
 
-  // A client that connects (or reconnects) while it waits is sent it too.
   const late = new TopClient({ url: daemon.url });
   cleanup.push(() => late.close());
   assert.equal((await waiting(late))[0]!.id, request!.id);
@@ -661,7 +627,6 @@ test("a bot's permission request reaches every client; the first answer wins, an
     "a later Allow is refused",
   );
   for (const top of [a.top, b.top, late]) await waiting(top, 0);
-  // Both devices' conversations get the one entry that settles it, and the bot hears once.
   for (const sync of [a.bot, b.bot]) await untilBot(sync, (x) => answerOf(x, request!.id) === "denied", "the answer's entry");
   s = await untilBot(
     a.bot,
@@ -670,7 +635,6 @@ test("a bot's permission request reaches every client; the first answer wins, an
   );
   assert.equal(ofKind(s, "user").find((e) => e.source === "permission")!.text, "[Permission] The user denied: rotate the API keys. Don't do it.");
 
-  // Killed while a request waits: after the restart it's still waiting, asked once, and the answer gets through once.
   a.bot.send("ask permission to purge the cache");
   const [second] = await waiting(a.top);
   await untilBot(a.bot, (x) => ofKind(x, "tool").some((e) => e.permission?.id === second!.id), "the second call's result");
@@ -691,7 +655,6 @@ test("a bot's permission request reaches every client; the first answer wins, an
   );
   assert.equal(ofKind(s, "tool").filter((e) => e.permission).length, 2, "not asked again");
 
-  // Stop withdraws: every client, also one that loads the conversation afresh, sees it as withdrawn.
   a.bot.send("ask permission to reboot the router");
   const [third] = await waiting(a.top);
   await a.bot.abort();
@@ -710,7 +673,6 @@ test("a bot's files have links once the daemon says where they are", async () =>
   await daemon.start();
   const top = new TopClient({ url: daemon.url });
   cleanup.push(() => top.close());
-  // Before the daemon answers (a transcript shown from cache), there are no links yet.
   assert.equal(top.getSnapshot().hasFiles, false);
   assert.equal(top.fileUrl(1, "a.png"), undefined);
   await until(top.subscribe, top.getSnapshot, (s) => s.hasFiles && s.ready, "the files path");
@@ -722,7 +684,6 @@ test("a bot's files have links once the daemon says where they are", async () =>
   const response = await fetch(top.fileUrl(bot.id, "shots dir/inline narrow.png")!);
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "png bytes");
-  // Another bot's link doesn't reach this bot's files.
   const other = top.getSnapshot().bots[1]!;
   assert.equal((await fetch(top.fileUrl(other.id, "shots dir/inline narrow.png")!)).status, 404);
 });

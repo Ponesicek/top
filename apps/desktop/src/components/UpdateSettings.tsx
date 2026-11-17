@@ -1,7 +1,3 @@
-/**
- * Settings → Updates: which releases the server and this app follow, what each runs, and updating
- * either now. They have a channel each, since one server serves many devices.
- */
 import { CHANNELS, type Channel, channelName } from "@top/client";
 import { TriangleAlert } from "lucide-react";
 import { useState } from "react";

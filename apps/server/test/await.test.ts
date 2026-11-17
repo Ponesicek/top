@@ -1,7 +1,3 @@
-/**
- * Waiting on work: tool calls that outrun the time limit move to the background and report back by
- * message, wake-ups bring a bot's note back when due, and both survive what a restart does to them.
- */
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import * as Clock from "effect/Clock";
@@ -20,10 +16,8 @@ import { computerTools } from "../src/workspace.ts";
 import { type Harness, harness, idle, until } from "./harness.ts";
 
 const FOREGROUND_MS = 150;
-/** How long Top's messages to an idle bot wait for others (see runner.ts): short, for quick tests. */
 const GATHER_MS = 100;
 
-/** A tool that runs until the test lets it finish, or its signal stops it. */
 function slowTool() {
   let finish: (value: string) => void = () => {};
   let stopped = false;
@@ -80,7 +74,6 @@ test("a tool call that outruns the limit moves to the background, and its result
   await h.run(daemon.start);
   await h.run(daemon.submit(bot, "r1", "call slow__tool {}", "followUp", null));
 
-  // The task isn't held up: the call returns "moved to the background" and the bot finishes its turn.
   const moved = await until("the call to move to the background", async () =>
     (await h.entries()).find((e) => e.kind === "tool" && textOf(e).includes("moved to the background as job")),
   );
@@ -102,7 +95,6 @@ test("a tool call that outruns the limit moves to the background, and its result
     requestId: message!.requestId!,
     source: "job",
   });
-  // The bot took it like any message and answered.
   await until("the answer to the job's message", () => lastIsAnswer(h));
   assert.equal(daemon.jobs.count(bot), 0);
   assert.equal((await h.run(store.job(1)))?.state, "finished");
@@ -138,7 +130,6 @@ test("Stop ends the bot's background jobs, without a message about them", async 
 test("waiting for a job takes its result, and then no message is sent about it", async () => {
   const h = await setup();
   const delivered: InboxRow[] = [];
-  // Jobs on their own, in a scope that lasts the test.
   const scope = await h.run(Scope.make());
   const jobs = await h.run(
     makeJobs(
@@ -167,14 +158,12 @@ test("waiting for a job takes its result, and then no message is sent about it",
 });
 
 test("a job cut off by a restart is reported to its bot when the daemon starts again", async () => {
-  // The real bash, which says its command may outlive the daemon (`cutOff`).
   const bash = computerTools(tmpdir()).filter((tool) => tool.name === "bash");
   const first = await setup(bash);
   const { dir, bot } = first;
   const job = await first.run(first.store.startJob(bot, "1:2:call_x", "bash", "command: npm test", "", Date.now() - 90_000));
   await first.close();
 
-  // A new daemon on the same data: the old process (and the job in it) is gone.
   const h = await setup(bash, dir);
   await h.run(h.daemon.start);
   const [message] = await until("the cut-off message", messagesFrom(h, "job"));
@@ -254,11 +243,8 @@ test("wake-ups can be listed and cancelled, and setting one twice from the same 
   assert.deepEqual(await h.run(h.store.wakes(h.bot)), []);
 });
 
-// ── collar__background: the bot runs a tool as a job on purpose ──────────────────
-
 type Result = Effect.Success<ReturnType<TopTool["run"]>>;
 const resultText = (result: Result) => (result.content[0] as { text: string }).text;
-/** What Collar's tools reach in the test's daemon. */
 const collarOf = (h: Harness) => ({
   store: h.store,
   jobs: h.daemon.jobs,
@@ -282,7 +268,6 @@ test("a bot can start a tool in the background at once, and hears back by messag
   );
   assert.ok(started);
   await until("the bot to go idle", () => idle(h));
-  // It didn't wait for the time limit: the job is listed with its note.
   assert.deepEqual(
     h.daemon.jobs.running(h.bot).map((j) => [j.id, j.tool, j.note]),
     [[1, "slow__tool", "review of PR 12"]],
@@ -327,7 +312,6 @@ test("with wait_seconds, a call that ends in time is an ordinary result", async 
   const background = backgroundOf(h);
   assert.equal(resultText(await background({ tool: "soon__tool", arguments: { value: "x" }, wait_seconds: 5 })), "got x");
   assert.equal(h.daemon.jobs.count(h.bot), 0);
-  // Started straight in the background, a call this quick still answers: it gets a second to fail or end.
   assert.equal(resultText(await background({ tool: "soon__tool", arguments: { value: "y" } }, "k2")), "got y");
   assert.equal(h.daemon.jobs.count(h.bot), 0);
 });
@@ -345,7 +329,6 @@ test("stop_after_minutes stops a job that runs too long, and the bot is told it 
   assert.equal((await h.run(h.store.job(1)))?.state, "stopped");
 });
 
-/** A wait on another agent: "timed out, still running" until the test says it's done. Each call takes `ms`. */
 function agentWait(ms = 0) {
   const state = { done: false, fail: false, starts: [] as number[] };
   const tool: TopTool = {
@@ -374,7 +357,6 @@ test("with repeat_while, a wait that times out runs again without telling the bo
   await until("a few runs", () => wait.state.starts.length >= 4);
   assert.deepEqual(await fromTop(h, "job"), [], "no message while it only timed out");
   assert.equal(h.daemon.jobs.count(h.bot), 1);
-  // A call that answers sooner than the gap waits out the rest of it before running again.
   const gaps = wait.state.starts.slice(1).map((at, i) => at - wait.state.starts[i]!);
   assert.ok(
     gaps.every((gap) => gap >= 55),
@@ -395,7 +377,6 @@ test("a repeating call that fails is reported at once, even when its result has 
   wait.state.fail = true;
   const h = await harness({ tools: [wait.tool], foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS, repeatGapMs: 60 });
   const result = await backgroundOf(h)({ tool: "agent__wait", repeat_while: '"timedOut":true' });
-  // It failed within its first second, so it's an ordinary failed result, not a job.
   assert.match(resultText(result), /no such thread/);
   assert.equal(result.isError, true);
   assert.equal(wait.state.starts.length, 1);
@@ -447,7 +428,6 @@ test("jobs that end together while the bot is idle reach it in one task", async 
   await background({ tool: "other__tool" }, "k2");
   assert.equal(h.daemon.jobs.count(h.bot), 2);
 
-  // A moment apart, as two agents finish: the first doesn't start a task of its own.
   a.finish("first done");
   await new Promise((resolve) => setTimeout(resolve, GATHER_MS / 2));
   b.finish("second done");

@@ -1,8 +1,3 @@
-/**
- * Quoting the bot: select text in an answer and a "Quote" button appears beside it; it asks for an
- * optional comment, then puts the quote in the composer as a chip where the caret was (Composer.tsx).
- * The format a quote travels in is in quotes.ts.
- */
 import { Popover } from "@base-ui/react/popover";
 import { TextQuote } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
@@ -15,7 +10,6 @@ export type Anchor = Element | { getBoundingClientRect(): DOMRect; contextElemen
 const POPUP =
   "origin-(--transform-origin) rounded-xl bg-popover shadow-popover transition duration-100 outline-none data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0 [-webkit-app-region:no-drag]";
 
-/** The comment box: what's quoted, a field for an optional comment, Cancel and Save. Enter saves. */
 export function CommentPopover({
   anchor,
   quote,
@@ -38,7 +32,6 @@ export function CommentPopover({
             <blockquote className="line-clamp-3 border-l-2 border-ring pl-2.5 text-meta whitespace-pre-wrap text-secondary-foreground [overflow-wrap:anywhere]">
               {quote}
             </blockquote>
-            {/* Opened from code, not a trigger, so Base UI won't move the focus: the field takes it as it mounts. */}
             <textarea
               // biome-ignore lint/a11y/noAutofocus: the box opens because you asked to comment
               autoFocus
@@ -71,12 +64,10 @@ export function CommentPopover({
   );
 }
 
-/** Where a selection ends on screen: its last line, so the button sits by where the pointer let go. */
 function rangeAnchor(range: Range, context: Element | null): Anchor {
   let last: DOMRect | undefined;
   return {
     getBoundingClientRect() {
-      // Rows scrolled far away leave the DOM; the popup then stays where it last was.
       if (range.startContainer.isConnected) {
         const rects = range.getClientRects();
         last = rects[rects.length - 1] ?? range.getBoundingClientRect();
@@ -87,10 +78,6 @@ function rangeAnchor(range: Range, context: Element | null): Anchor {
   };
 }
 
-/**
- * Shows `range` as highlighted (the CSS Custom Highlight API): `quote` while its comment box has the
- * focus, `quote-found` for a passage a sent quote jumped to.
- */
 export function highlight(name: "quote" | "quote-found", range: Range | null) {
   if (!("highlights" in CSS)) return;
   if (range) CSS.highlights.set(name, new Highlight(range));
@@ -99,10 +86,6 @@ export function highlight(name: "quote" | "quote-found", range: Range | null) {
 
 type Picked = { range: Range; seq: number; text: string; anchor: Anchor };
 
-/**
- * The transcript's quote button: it follows text selected inside one answer (`[data-answer]`, which
- * holds the answer's seq) and opens the comment box. `bot` is the composer's key, which gets the quote.
- */
 export function QuoteMenu({ bot, container }: { bot: string; container: RefObject<HTMLElement | null> }) {
   const [picked, setPicked] = useState<Picked | null>(null);
   const [commenting, setCommenting] = useState(false);
@@ -125,7 +108,6 @@ export function QuoteMenu({ bot, container }: { bot: string; container: RefObjec
       const kept = range.cloneRange();
       setPicked({ range: kept, seq, text, anchor: rangeAnchor(kept, root) });
     };
-    // After the browser settles the selection (a double or triple click finishes on mouseup).
     const later = () => requestAnimationFrame(check);
     const onKey = (e: KeyboardEvent) => {
       if (e.shiftKey || e.key === "Shift") later();
@@ -143,7 +125,6 @@ export function QuoteMenu({ bot, container }: { bot: string; container: RefObjec
     };
   }, [container]);
 
-  // The button goes once its answer scrolls out of the DOM (the transcript is virtualized).
   useEffect(() => {
     const el = container.current;
     if (!picked || commenting || !el) return;
@@ -184,10 +165,8 @@ export function QuoteMenu({ bot, container }: { bot: string; container: RefObjec
               variant="ghost"
               size="xs"
               className="px-2 text-secondary-foreground"
-              // Keep the selection: the click must not start a new one.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
-                // Before the selection goes: clearing it fires `selectionchange`, which must see this.
                 commentingRef.current = true;
                 setCommenting(true);
                 highlight("quote", picked.range);

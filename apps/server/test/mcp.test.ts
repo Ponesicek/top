@@ -38,7 +38,6 @@ async function setup() {
   };
 }
 
-/** Resolves with the server's view once `ready(view)` holds. */
 async function until(h: Harness, id: number, ready: (view: McpServerView) => boolean, timeoutMs = 10_000): Promise<McpServerView> {
   const end = Date.now() + timeoutMs;
   for (;;) {
@@ -81,7 +80,6 @@ test("a bot gets a server's tools only once it's assigned, and they run", async 
   );
   assert.deepEqual(mcp.toolsFor(other), []);
   assert.match(tools[0]!.description, /MCP server "Echo"/);
-  // Read-only tools run again after a restart; the rest are reported as interrupted.
   assert.deepEqual(
     tools.map((t) => t.replay),
     ["safe", "never", "never"],
@@ -111,7 +109,6 @@ test("secrets never leave the daemon, and an empty value keeps the stored one", 
     ).then(textOf);
   assert.equal(await env(), "s3cret");
 
-  // Saved again without a value (as the app does when it isn't changed): reconnects with the old one.
   await save(id, "Echo", stdio([{ name: "TOKEN" }]));
   view = await until(h, id, (v) => v.state === "ready");
   assert.equal(await env(), "s3cret");
@@ -171,7 +168,6 @@ test("a server that won't start says why, and removing one takes its tools away"
   const removed = (await h.run(PubSub.takeAll(subscription))).flatMap((e) => (e._tag === "McpServerRemoved" ? [e.id] : []));
   assert.deepEqual(removed, [id]);
   assert.deepEqual(mcp.toolsFor(bot), []);
-  // A call the model made just before: an error result, not a crash.
   await assert.rejects(run(tool, { text: "hi" }), /isn't connected/);
 });
 

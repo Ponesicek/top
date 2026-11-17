@@ -2,12 +2,6 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-/**
- * Production builds get a strict CSP; dev skips it because React Refresh injects an inline script.
- * The bots' files come from the daemon over http(s) (see components/files): frames for pages and PDFs,
- * images and media, and fetches for Markdown and text. Fonts may be `data:` URLs: Vite inlines the small ones
- * (JetBrains Mono's Cyrillic-extended subset).
- */
 function csp(): Plugin {
   return {
     name: "top-csp",

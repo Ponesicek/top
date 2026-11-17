@@ -1,7 +1,6 @@
 import { type ReactNode, useId } from "react";
 import { cn } from "../lib/utils.ts";
 
-/** A titled card of settings rows; `action` sits at the right of the title. */
 export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-2.5">
@@ -14,7 +13,6 @@ export function Section({ title, action, children }: { title: string; action?: R
   );
 }
 
-/** One setting: a label and a line about it on the left, its control on the right. */
 export function Row({
   label,
   description,
@@ -43,7 +41,6 @@ export function Row({
   );
 }
 
-/** A bot's chip in a list of bots something is switched on for: filled while `on`. */
 export function BotChip({
   on,
   disabled,
@@ -75,7 +72,6 @@ export function BotChip({
   );
 }
 
-/** A few buttons in a track, the chosen one raised. */
 export function Segmented<T extends string>({
   value,
   options,

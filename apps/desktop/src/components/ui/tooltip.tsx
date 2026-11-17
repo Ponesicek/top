@@ -4,7 +4,6 @@ import { cn } from "../../lib/utils.ts";
 
 const TooltipProvider = TooltipPrimitive.Provider;
 
-/** A hover/focus label for an icon-only control. `children` is the trigger element itself. */
 function Tooltip({
   content,
   children,

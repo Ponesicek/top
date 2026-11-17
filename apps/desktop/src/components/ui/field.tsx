@@ -17,7 +17,6 @@ function FieldLabel({ className, ...props }: FieldPrimitive.Label.Props) {
   );
 }
 
-/** A quiet note beside a label ("optional"). */
 function FieldHint({ className, ...props }: ComponentProps<"span">) {
   return <span className={cn("font-book text-muted-foreground", className)} data-slot="field-hint" {...props} />;
 }

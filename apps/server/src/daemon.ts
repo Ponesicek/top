@@ -1,8 +1,3 @@
-/**
- * The daemon's parts wired together: storage, one runner per bot, the sidebar summaries, background
- * jobs and wake-ups. The WebSocket layer (serve.ts) and the load driver go through this service and
- * listen to the event bus (events.ts).
- */
 import { createInitialSystemMessage, type Models, toToolDeclaration } from "@earendil-works/pi-ai";
 import {
   type Attachment,
@@ -46,11 +41,6 @@ import { textOf } from "./wire.ts";
 
 const SUMMARY_DELAY_MS = 100;
 
-/**
- * The answer's last line of prose, for the sidebar: code fences and table rows are skipped, and only
- * Markdown syntax is removed (list/heading/quote markers, emphasis, backticks), so text like
- * "follow-up" or "kill -9" survives intact.
- */
 export function lastLine(text: string): string {
   const prose: string[] = [];
   let fenced = false;
@@ -71,57 +61,38 @@ export function lastLine(text: string): string {
   return "";
 }
 
-/** How new bots are made: the same for the first ones and for those made from the app. */
 export type NewBot = {
-  /** `provider/model-id`. */
   readonly model: string;
-  /** The instructions that open the bot's first system message. */
   readonly instructions: (name: string, description: string) => string;
-  /** Tools declared in that message. Real bots declare theirs on their first request instead. */
   readonly declare: readonly TopTool[];
 };
 
 export const defaultInstructions = (name: string, description: string) =>
   [`You are ${name}, one of the user's bots.`, ...(description ? [purpose(description)] : [])].join("\n");
 
-/** The line of a bot's instructions that carries the description it was made with. */
 export const purpose = (description: string) => `What the user made you for: ${description}`;
 
-/** What the daemon's bots are made of: real ones on a model with the computer's tools, or fake ones. */
 export class BotKit extends Context.Service<
   BotKit,
   {
     readonly models: Models;
-    /** The bots' own tools; per bot when they differ (each real bot works in its own folder, made first). */
     readonly tools: readonly TopTool[] | ((bot: BotRow) => Effect.Effect<readonly TopTool[]>);
     readonly thinking: ThinkingLevel;
-    /** Named system prompt sections each bot should have (see runner.ts). */
     readonly sections?: ((bot: BotRow) => Effect.Effect<Readonly<Record<string, string>>>) | undefined;
-    /** How bots are made, and the first ones (made once). Without it, bots can't be made from the app. */
     readonly newBot?: NewBot | undefined;
     readonly firstBots?: readonly string[] | undefined;
-    /** Give the first bot a history this long (`--seed`). */
     readonly seed?: number | undefined;
-    /** Each bot's files folder (see files.ts). Without it, bots have none. */
     readonly files?: ((bot: BotRow) => string) | undefined;
-    /** Where skills are found (see skills.ts). Without it, bots have none. */
     readonly skills?: SkillsConfig | undefined;
-    /** How long a tool call may run before it moves to the background (see jobs.ts). */
     readonly foregroundMs: number;
-    /** How long Top's own messages to an idle bot wait for others before starting a task (see runner.ts). */
     readonly gatherMs?: number | undefined;
-    /** Backoff before each retry of a failed model request. */
     readonly retryDelaysMs?: readonly number[] | undefined;
-    /** The least time between two runs of a repeating background call (see jobs.ts). */
     readonly repeatGapMs?: number | undefined;
-    /** Compact a bot's transcript when it's longer than this many tokens (see compaction.ts); without it, never. */
     readonly compactAtTokens?: number | undefined;
-    /** The bots' model takes OpenAI's web search (see websearch.ts), so each bot can be let use it. */
     readonly webSearch?: boolean | undefined;
   }
 >()("top/BotKit") {}
 
-/** Add a bot to the store. Its transcript begins with its system message. */
 const addBot = (name: string, description: string, newBot: NewBot, avatar = 0) =>
   Effect.gen(function* () {
     const store = yield* Store;
@@ -136,7 +107,6 @@ const addBot = (name: string, description: string, newBot: NewBot, avatar = 0) =
     );
   });
 
-/** Create the first bots, once: a user who deletes them all doesn't get them back on the next start. */
 export const ensureBots = (names: readonly string[], newBot: NewBot) =>
   Effect.gen(function* () {
     const store = yield* Store;
@@ -147,7 +117,6 @@ export const ensureBots = (names: readonly string[], newBot: NewBot) =>
 
 type LiveBot = {
   readonly runner: BotRunner;
-  /** Everything the bot runs (its task, its gather timer, its files watcher) lives here. */
   readonly scope: Scope.Closeable;
   folder: FilesFolder | undefined;
   summary: BotSummary;
@@ -156,24 +125,13 @@ type LiveBot = {
 export class Daemon extends Context.Service<
   Daemon,
   {
-    /** Every bot's summary, for the sidebar. */
     readonly bots: () => BotSummary[];
     readonly has: (bot: number) => boolean;
     readonly runner: (bot: number) => Effect.Effect<BotRunner, UnknownBotError>;
     readonly runners: () => BotRunner[];
-    /** Make a bot and announce it. Fails with a `BotError` the user can read when the name is empty or taken. */
     readonly createBot: (name: string, description: string, avatar?: number) => Effect.Effect<number, BotError>;
-    /** Let a bot search the web, from its next message. Fails with a `BotError` when its model can't. */
     readonly setWebSearch: (bot: number, on: boolean) => Effect.Effect<void, UnknownBotError | BotError>;
-    /**
-     * Delete a bot and its transcript. It leaves the roster at once; whatever it was doing is stopped,
-     * and its rows are removed once it has. Files it made in its folder stay.
-     */
     readonly deleteBot: (id: number) => Effect.Effect<void, UnknownBotError>;
-    /**
-     * Accept a message, with the attachments it names (uploaded already). Durable once this has run; a
-     * repeated `requestId` changes nothing.
-     */
     readonly submit: (
       bot: number,
       requestId: string,
@@ -182,23 +140,15 @@ export class Daemon extends Context.Service<
       clientId: string | null,
       attachmentIds?: readonly string[],
     ) => Effect.Effect<{ duplicate: boolean }, UnknownBotError | BusyError | AttachmentError>;
-    /** The user's Stop: the bot's task ends, and so do its background jobs and its permission requests. Its wake-ups stay. */
     readonly stop: (bot: number) => Effect.Effect<void, UnknownBotError>;
-    /** Settle whatever the last process left unfinished, then start every bot, then the wake-up clock. */
     readonly start: Effect.Effect<void>;
-    /** Something about a bot changed that its summary shows (wake-ups, jobs). */
     readonly changed: (bot: number) => Effect.Effect<void>;
-    /** A bot's tools as they are now (its own, Collar's, its MCP servers'), as written: no time limit. */
     readonly toolsOf: (bot: number) => readonly TopTool[];
-    /** Whether bots have files folders here. */
     readonly hasFiles: boolean;
-    /** A bot's files folder, once it has been listed. */
     readonly files: (bot: number) => FilesFolder | undefined;
     readonly jobs: Jobs;
     readonly wakes: WakeClock;
-    /** What bots asked the user's permission for (see permissions.ts). */
     readonly permissions: Permissions;
-    /** The skills found, and which bots have which (see skills.ts); absent when bots have none here. */
     readonly skills: Skills | undefined;
   }
 >()("top/Daemon") {}
@@ -212,18 +162,14 @@ const make = Effect.gen(function* () {
   const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
   const scope = yield* Effect.scope;
   const bots = new Map<number, LiveBot>();
-  /** Each bot's tools as they are now, without the time limit (see `toolsOf`). */
   const toolSources = new Map<number, () => readonly TopTool[]>();
-  /** Summaries waiting to be recomputed (see `touch`). */
   const dirty = yield* FiberMap.make<number>();
 
   if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot);
-  // One model for every bot for now; switching `--model` moves the existing bots over.
   if (kit.newBot) for (const bot of yield* store.bots) if (bot.model !== kit.newBot.model) yield* store.setModel(bot.id, kit.newBot.model);
   const seeded = (yield* store.bots)[0];
   if (kit.seed && seeded) yield* seedHistory(seeded.id, kit.seed);
 
-  /** What the bot is waiting on: jobs in the background, the user's answers, its next wake-up. */
   const waiting = (bot: number): Effect.Effect<{ background?: number; approvals?: number; wakeAt?: number }> =>
     Effect.gen(function* () {
       const background = jobs.count(bot);
@@ -255,7 +201,6 @@ const make = Effect.gen(function* () {
       } satisfies BotSummary;
     });
 
-  /** Recompute one bot's summary soon, and announce it only if it changed. */
   const touch = (bot: number): Effect.Effect<void> =>
     Effect.asVoid(
       FiberMap.run(
@@ -274,7 +219,6 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** A message is in a bot's inbox (from the user, a wake-up or a job): announce it and hand it to the bot. */
   const queued = (row: InboxRow): Effect.Effect<void> =>
     Effect.gen(function* () {
       const live = bots.get(row.bot);
@@ -289,12 +233,10 @@ const make = Effect.gen(function* () {
   const wakes = yield* makeWakeClock(queued);
   const toolsOf = (bot: number) => toolSources.get(bot)?.() ?? [];
   const permissions = makePermissions(store, {
-    // Its bot may be gone (deleted meanwhile): then nothing is announced.
     entry: (entry) => (bots.has(entry.bot) ? Effect.andThen(events.publish({ _tag: "Entry", entry }), touch(entry.bot)) : Effect.void),
     deliver: queued,
     changed: (bot) => Effect.andThen(events.publish({ _tag: "Permissions" }), changed(bot)),
   });
-  /** Top's own tools, which every bot has (see collar/index.ts). */
   const collar = collarTools({ store, jobs, wakes, permissions, changed, toolsOf });
   const skills = kit.skills
     ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
@@ -303,21 +245,17 @@ const make = Effect.gen(function* () {
   const add = (bot: BotRow): Effect.Effect<LiveBot> =>
     Effect.gen(function* () {
       const botScope = yield* Scope.fork(scope);
-      // A deleted bot may still be finishing a step; nothing it does after that is announced.
       const isLive = () => bots.get(bot.id)?.scope === botScope;
       const announce = (entry: StoredEntry) =>
         Effect.suspend(() => {
           if (!isLive()) return Effect.void;
           return Effect.andThen(events.publish({ _tag: "Entry", entry }), entry.kind !== "system" ? touch(bot.id) : Effect.void);
         });
-      // The bot's own tools and Collar are fixed; MCP tools are asked for again at each run. Any of
-      // them that runs too long moves to the background.
       const own = [...(typeof kit.tools === "function" ? yield* kit.tools(bot) : kit.tools), ...collar];
       const plain = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
       toolSources.set(bot.id, plain);
       const wrapped = own.map(jobs.wrap);
       const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map(jobs.wrap)] : () => wrapped;
-      // The kit's sections are made once; the skills and web search sections are read again before each message the bot takes.
       const fixed = kit.sections ? yield* kit.sections(bot) : undefined;
       const searchOn = Effect.map(store.bot(bot.id), (row) => row?.webSearch === true);
       const changing = [
@@ -352,7 +290,6 @@ const make = Effect.gen(function* () {
       bots.set(bot.id, live);
       if (kit.files) {
         const path = kit.files(bot);
-        // Listed in the background: a big folder mustn't hold up the daemon's start.
         yield* makeFilesFolder(bot.id, path, (listing, entry) =>
           Effect.gen(function* () {
             if (!isLive()) return;
@@ -395,7 +332,6 @@ const make = Effect.gen(function* () {
       if (description.length > MAX_BOT_DESCRIPTION)
         return yield* new BotError({ message: `Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.` });
       if (avatar < 0 || avatar > MAX_BOT_AVATAR) return yield* new BotError({ message: "That icon doesn't exist." });
-      // Case-insensitive: a real bot's folder is named after it, and Windows and macOS folders ignore case.
       const taken = [...bots.values()].some((live) => live.runner.name.toLowerCase() === name.toLowerCase());
       if (taken) return yield* new BotError({ message: `There's already a bot named ${name}.` });
       const id = yield* addBot(name, description, newBot, avatar).pipe(Effect.provideService(Store, store));
@@ -422,7 +358,6 @@ const make = Effect.gen(function* () {
       yield* store.markDeleted(id);
       yield* wakes.changed;
       yield* events.publish({ _tag: "BotRemoved", bot: id });
-      // Its requests went with it (markDeleted).
       yield* events.publish({ _tag: "Permissions" });
       if (mcp) yield* mcp.botRemoved(id);
       if (skills) yield* skills.rescan;
@@ -430,7 +365,6 @@ const make = Effect.gen(function* () {
       yield* runner.close;
       yield* runner.abort;
       yield* jobs.stopAll(id);
-      // Its rows go once it has stopped: a step it was finishing can still be written meanwhile.
       yield* Effect.forkIn(
         Effect.gen(function* () {
           yield* runner.waitForIdle;
@@ -462,7 +396,6 @@ const make = Effect.gen(function* () {
     start: Effect.gen(function* () {
       const lost = yield* jobs.recover((bot, name) => toolsOf(bot).find((tool) => tool.name === name));
       if (lost) yield* Effect.log(`${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
-      // Restarted for an update (see updates.ts): the bots pick their tasks back up, as after any restart.
       const planned = yield* store.flag(PLANNED_RESTART);
       if (planned) yield* store.clearFlag(PLANNED_RESTART);
       for (const live of bots.values()) {
@@ -483,5 +416,4 @@ const make = Effect.gen(function* () {
   });
 });
 
-/** The daemon, running its bots until the layer closes. */
 export const layer: Layer.Layer<Daemon, never, Store | Events | BotKit | FileSystem.FileSystem> = Layer.effect(Daemon, make);

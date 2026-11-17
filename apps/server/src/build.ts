@@ -1,7 +1,3 @@
-/**
- * Which Top this is. A release build (scripts/build-daemon.ts) has its version and channel compiled in;
- * run from a checkout, it's the checkout's version with `-dev`, follows no channel, and never updates.
- */
 import { readFileSync } from "node:fs";
 import { CHANNELS, type Channel } from "@top/protocol";
 

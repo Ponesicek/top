@@ -2,10 +2,6 @@ import type { BotStatus } from "@top/client";
 import { memo } from "react";
 import { cn } from "../lib/utils.ts";
 
-/**
- * Each bot keeps one color everywhere: picked from its name, so it survives restarts and reorders.
- * Eight distinct families; amber, red and orange are left out because they mean thinking, stop and accent.
- */
 const HUES = {
   cocoa: "[--hue:#b07a55]",
   sky: "[--hue:#4f8af0]",
@@ -18,11 +14,6 @@ const HUES = {
 } as const;
 const NAMES = Object.keys(HUES) as (keyof typeof HUES)[];
 
-/**
- * What a bot's drawing is seeded with: its name, and for any other than the name's own drawing (`avatar`
- * 0), the number picked when it was made (see BotSummary's `avatar`). Joined by a line break, which no
- * bot's name has (the daemon turns whitespace into spaces), so no name draws another bot's pick.
- */
 export const avatarSeed = (name: string, avatar = 0) => (avatar ? `${name}\n${avatar}` : name);
 
 export function botHue(name: string): keyof typeof HUES {
@@ -31,7 +22,6 @@ export function botHue(name: string): keyof typeof HUES {
   return NAMES[h % NAMES.length]!;
 }
 
-/** A seeded PRNG (FNV-1a into mulberry32): the same name always draws the same avatar. */
 function random(name: string, salt: number): () => number {
   let a = 2166136261 ^ salt;
   for (const c of name) {
@@ -51,12 +41,10 @@ const n = (v: number) => Math.round(v * 10) / 10;
 
 type Body =
   | { kind: "path"; d: string }
-  /** A polygon stroked fat with round joins, which rounds its corners. */
   | { kind: "poly"; points: string; join: number }
   | { kind: "circles"; circles: readonly (readonly [number, number, number])[] };
 type Shape = { body: Body; face: readonly [number, number]; gap: number };
 
-/** A closed outline from a radius at each angle, in a 100×100 box. */
 function polar(radius: (t: number) => number, rotate = 0): Body {
   const points: string[] = [];
   for (let i = 0; i < 96; i++) {
@@ -80,7 +68,6 @@ function polygon(sides: number, radius: number, rotate: number, join: number): B
   return { kind: "poly", points: points.join(" "), join };
 }
 
-/** The outlines a bot can have. The order is part of the hash: append, don't reorder. */
 const SHAPES: readonly ((r: () => number) => Shape)[] = [
   () => ({ body: polar(() => 44), face: [50, 50], gap: 11 }),
   () => ({ body: polar(superellipse(43, 43, 4.2)), face: [50, 51], gap: 12 }),
@@ -121,7 +108,6 @@ const SHAPES: readonly ((r: () => number) => Shape)[] = [
 type Eyes = { kind: "pill" | "dot" | "happy"; xs: readonly [number, number]; y: number; size: number };
 type Look = { body: Body; eyes: Eyes };
 
-/** A flat outline and two eyes; the name picks the outline, the eyes' kind, size, spacing and gaze. */
 function draw(name: string): Look {
   const r = random(name, 11);
   const shape = pick(r, SHAPES)(r);
@@ -134,7 +120,6 @@ function draw(name: string): Look {
   return { body: shape.body, eyes: { kind, xs: [n(x - gap), n(x + gap)], y: n(shape.face[1] + lookY), size } };
 }
 
-// A handful of bots, each drawn once. The New bot picker draws a few per keystroke, so the cache is capped.
 const looks = new Map<string, Look>();
 function lookFor(name: string): Look {
   let look = looks.get(name);
@@ -172,11 +157,6 @@ const SIZES = {
   lg: "size-14",
 } as const;
 
-/**
- * The bot's outline in its color with two eyes, drawn from its name and `avatar`. In the Mono style (Settings → Appearance, `data-avatars` on
- * the root) the outline is ink and only the eyes keep the color. A failed bot gets a red presence dot, ringed
- * in `--avatar-ring` (the color behind the avatar) so it reads as cut out of the shape.
- */
 export const Avatar = memo(function Avatar({
   name,
   avatar,
@@ -186,7 +166,6 @@ export const Avatar = memo(function Avatar({
   className,
 }: {
   name: string;
-  /** Which drawing of the name (BotSummary's `avatar`); absent or 0 is the name's own. */
   avatar?: number | undefined;
   status?: BotStatus;
   size?: keyof typeof SIZES;

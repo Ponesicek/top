@@ -1,7 +1,3 @@
-/**
- * Markdown for model output. Raw HTML is off (model text is untrusted), links open outside the app,
- * and finished messages are rendered once and cached by entry ID.
- */
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import css from "highlight.js/lib/languages/css";
@@ -17,7 +13,6 @@ import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import MarkdownIt from "markdown-it";
 
-// A handful of languages the bots actually write; anything else stays plain.
 for (const [name, lang] of Object.entries({ bash, css, diff, go, javascript, json, python, rust, sql, typescript, xml, yaml }))
   hljs.registerLanguage(name, lang);
 hljs.registerAliases(["sh", "shell", "zsh", "console"], { languageName: "bash" });
@@ -28,20 +23,16 @@ hljs.registerAliases(["rs"], { languageName: "rust" });
 hljs.registerAliases(["html", "svg"], { languageName: "xml" });
 hljs.registerAliases(["yml"], { languageName: "yaml" });
 
-/** Highlighted HTML (hljs escapes the text), or escaped plain text for unknown languages. */
 export function highlight(code: string, lang: string): string {
   if (lang && hljs.getLanguage(lang)) {
     try {
       return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
-    } catch {
-      // fall through to plain text
-    }
+    } catch {}
   }
   return md.utils.escapeHtml(code);
 }
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
-// Bare emails stay text, as they do in tool steps; URLs still link.
 md.linkify.set({ fuzzyEmail: false });
 
 const defaultLink = md.renderer.rules.link_open ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
@@ -58,7 +49,6 @@ md.renderer.rules.fence = (tokens, idx) => {
   return `<div class="code"><div class="code-head"><span>${lang || "text"}</span><button class="copy" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>Copy</span></button></div><pre><code>${code}</code></pre></div>`;
 };
 
-// Numeric table columns (all body cells like "12", "6.1 ms", "41%") are right-aligned with tabular digits.
 const NUMERIC = /^[-+]?[\d.,]+\s*(%|ms|s|x|kb|mb|gb)?$/i;
 md.core.ruler.push("numeric_columns", (state) => {
   const tokens = state.tokens;
@@ -83,12 +73,6 @@ md.core.ruler.push("numeric_columns", (state) => {
   }
 });
 
-/**
- * The path in a bot's files folder that a link or image in its answer names, or `undefined` if it
- * names none. Bots are told to name their files `files/report.html`, relative to their working folder;
- * anything with a scheme, an absolute or protocol-relative path, or a step outside the folder (`..`,
- * hidden files, encoded slashes) is not one.
- */
 export function botFilePath(ref: string): string | undefined {
   if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) return undefined;
   const path = ref.split(/[?#]/, 1)[0]!.replace(/^(?:\.\/)+/, "");
@@ -101,12 +85,6 @@ export function botFilePath(ref: string): string | undefined {
   }
 }
 
-/**
- * Rendered markdown with its relative images and links pointed at the bot's own files (`fileUrl`, the
- * daemon's link for one), never at the app's own address: there, `files/x.png` would load from the web
- * server or, in the desktop app, from `file://`. Relative images that aren't the bot's files show
- * their alt text; links to its files carry `data-file`, for opening them in the Files panel.
- */
 export function withBotFiles(html: string, fileUrl: (path: string) => string | undefined): string {
   if (!html.includes("<img") && !html.includes("<a")) return html;
   const template = document.createElement("template");
@@ -135,7 +113,6 @@ export function renderMarkdown(text: string): string {
   return md.render(text);
 }
 
-/** Immutable text (a committed entry): rendered once. */
 export function renderCached(key: string, text: string): string {
   let html = cache.get(key);
   if (html === undefined) {
@@ -149,10 +126,6 @@ export function renderCached(key: string, text: string): string {
 export type Segment = { readonly kind: "prose" | "block"; readonly html: string };
 const segmentCache = new Map<string, Segment[]>();
 
-/**
- * A rendered answer cut into runs of prose and the tables and code blocks between them, for styles
- * that put prose in bubbles and let wide blocks stand on their own.
- */
 export function renderSegments(key: string, text: string): Segment[] {
   let segments = segmentCache.get(key);
   if (segments) return segments;

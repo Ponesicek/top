@@ -1,12 +1,3 @@
-/**
- * Wake-ups: a bot asks to be woken later (Collar's `wake`), and when it's due, the note it left comes
- * to it as a message (an inbox row with source `wake`), which starts a task if the bot was idle or
- * waits for the end of the one running.
- *
- * Wake-ups live in the store, so they survive restarts: one that came due while the daemon was down
- * goes off as soon as it starts, saying how late it is. A timer is set for the soonest one only, and
- * set again whenever wake-ups change.
- */
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -14,14 +5,10 @@ import * as Queue from "effect/Queue";
 import { type InboxRow, Store, type WakeRow } from "./store.ts";
 import { duration, localTime } from "./time.ts";
 
-/** Sleeps this long or longer are cut to this and the clock looks again. */
 const MAX_WAIT_MS = 60 * 60 * 1000;
-/** A wake-up this much later than due says so. */
 const LATE_MS = 60 * 1000;
-/** After a wake-up couldn't be delivered, wait at least this long before trying again. */
 const RETRY_MS = 5_000;
 
-/** The message a wake-up brings. */
 export function wakeText(wake: WakeRow, now: number): string {
   const lines = [`[Wake-up] ${wake.note}`, "", `You set this wake-up at ${localTime(wake.createdAt)} for ${localTime(wake.dueAt)}. The user didn't send it.`];
   if (now - wake.dueAt > LATE_MS) lines.push(`It's ${localTime(now)} now, ${duration(now - wake.dueAt)} late: the daemon wasn't running when it was due.`);
@@ -29,19 +16,15 @@ export function wakeText(wake: WakeRow, now: number): string {
 }
 
 export type WakeClock = {
-  /** Begin firing wake-ups, those already due first. After the bots have started. */
   readonly start: Effect.Effect<void>;
-  /** Wake-ups were added or removed: look at the soonest one again. */
   readonly changed: Effect.Effect<void>;
 };
 
-/** The clock that fires wake-ups, running in the scope it's made in. `deliver` hands a fired one's message to its bot. */
 export const makeWakeClock = Effect.fnUntraced(function* (deliver: (row: InboxRow) => Effect.Effect<void>) {
   const store = yield* Store;
   const scope = yield* Effect.scope;
   const changes = yield* Queue.sliding<void>(1);
 
-  /** Fire every due wake-up; true if one couldn't be delivered. */
   const fire = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     let failed = false;

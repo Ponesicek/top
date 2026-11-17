@@ -1,11 +1,3 @@
-/**
- * The sidebar's update button, beside Settings and New bot. Up to date, it checks for updates; with one
- * ready, it updates the server and then this app (`startUpdate`), and says how that's going.
- *
- * What's in the update (versions, notes, progress, what failed) is in a card that opens while the
- * pointer rests on the button, while it has keyboard focus, or on a tap on a touch screen (where a tap
- * opens the card instead of acting, so nothing installs from a stray tap). It never opens on its own.
- */
 import { channelName } from "@top/client";
 import { Download, LoaderCircle, RefreshCw, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -51,7 +43,6 @@ export function UpdateButton({ onOpenSettings }: { onOpenSettings: () => void })
   }, []);
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  // A tap or click elsewhere closes it, and so does Escape wherever focus is (hover and focus close it on their own).
   useEffect(() => {
     if (!open) return;
     const away = (e: PointerEvent) => {
@@ -84,7 +75,6 @@ export function UpdateButton({ onOpenSettings }: { onOpenSettings: () => void })
     status.kind === "failed" ? "bg-destructive" : status.kind === "available" ? "bg-primary" : mismatch && status.kind !== "working" ? "bg-warning" : undefined;
   const pill = status.kind === "available" && updates.connection === "open";
   const Icon = status.kind === "working" ? LoaderCircle : status.kind === "available" ? Download : RefreshCw;
-  // Steps, not every percent of a download.
   const announce = status.error ?? status.progress.at(-1)?.replace(/ \(\d+%\)/, "") ?? (status.kind === "unavailable" ? "" : TITLE[status.kind]);
 
   return (
@@ -106,7 +96,6 @@ export function UpdateButton({ onOpenSettings }: { onOpenSettings: () => void })
         if (e.target.matches(":focus-visible")) now(true);
       }}
       onBlur={(e) => {
-        // Clicking text in the card takes focus away from the button; the pointer is still on it.
         if (!hovered.current && !e.currentTarget.contains(e.relatedTarget as Node | null)) now(false);
       }}
     >
@@ -126,7 +115,6 @@ export function UpdateButton({ onOpenSettings }: { onOpenSettings: () => void })
           lastPointer.current = e.pointerType;
         }}
         onClick={() => {
-          // On a touch screen the card is the only way to see what an update does: a tap opens it.
           if (lastPointer.current === "touch" || status.action === "none" || disconnected) return now(!open);
           lastPointer.current = "mouse";
           act();
@@ -143,7 +131,6 @@ export function UpdateButton({ onOpenSettings }: { onOpenSettings: () => void })
         <section
           id={cardId}
           aria-label={TITLE[status.kind]}
-          // The footer is the anchor, so the card stays put while the button changes width.
           className="absolute bottom-full left-2 z-50 pb-1 [-webkit-app-region:no-drag] narrow:left-1"
           onPointerEnter={(e) => {
             if (e.pointerType === "mouse") now(true);

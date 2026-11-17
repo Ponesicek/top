@@ -1,4 +1,3 @@
-// A tiny MCP server over stdio, for the tests: `echo` (read-only), `env` (reads a variable) and `fail`.
 import { createInterface } from "node:readline";
 
 const tools = [
@@ -21,7 +20,7 @@ const text = (value, isError) => ({ content: [{ type: "text", text: value }], ..
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
-  if (message.id === undefined) return; // notifications
+  if (message.id === undefined) return;
   switch (message.method) {
     case "initialize":
       return reply(message.id, {

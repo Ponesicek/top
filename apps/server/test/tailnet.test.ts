@@ -30,15 +30,12 @@ after(async () => {
 const parseStatus = (json: string) => Effect.runSync(parseStatusEffect(json));
 const tailnetOf = (options: Omit<TailnetOptions, "cli"> & Partial<Pick<TailnetOptions, "cli">>) =>
   Effect.runSync(makeTailnet({ cli: () => Effect.succeed(""), ...options }));
-/** Expose in a scope of its own, and close it (which takes Top off the tailnet again). */
 const exposed = async (tailnet: ReturnType<typeof tailnetOf>, port: number) => {
   const scope = Scope.makeUnsafe();
   await Effect.runPromise(tailnet.expose(port).pipe(Scope.provide(scope)));
   return () => Effect.runPromise(Scope.close(scope, Exit.void));
 };
 const exposing = (tailnet: ReturnType<typeof tailnetOf>, port: number) => Effect.runPromise(Effect.scoped(tailnet.expose(port)));
-
-// ── what the CLI says ────────────────────────────────────────────────────────────
 
 const status = (self: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -106,8 +103,6 @@ test("without --tailscale-allow the whole tailnet may connect; with it, the owne
   assert.equal(tailnetOf({ self: owned.self, allow: [], port: 443 }).url, "wss://box.tail1234.ts.net");
 });
 
-// ── setting up Serve ─────────────────────────────────────────────────────────────
-
 function fakeCli(serveStatus: object, fail?: string) {
   const calls: string[][] = [];
   const cli = (args: readonly string[]) =>
@@ -131,7 +126,6 @@ test("Serve is pointed at the tailnet listener, and never takes over someone els
   await unexpose();
   assert.deepEqual(fresh.calls.at(-1), ["serve", "--https=7357", "off"]);
 
-  // Already ours (left by a run that crashed): set it again.
   const ours = fakeCli({ TCP: { 7357: { HTTPS: true } }, Web: { [host]: { Handlers: { "/": { Proxy: "http://127.0.0.1:7359" } } } } });
   await exposing(tailnetOf({ self, allow: [], cli: ours.cli }), 7359);
   assert.equal(ours.calls.at(-2)?.[1], "--bg", "then taken off again when its scope closed");
@@ -153,8 +147,6 @@ test("Serve is pointed at the tailnet listener, and never takes over someone els
   const denied = fakeCli({}, "Access denied: serve config denied");
   await assert.rejects(exposing(tailnetOf({ self, allow: [], cli: denied.cli }), 7359), /tailscale set --operator=\$USER/);
 });
-
-// ── the tailnet listener ─────────────────────────────────────────────────────────
 
 const callers: Record<string, Caller> = {
   "100.64.0.1": { stableId: "nPHONE", device: "phone", dnsName: "phone.tail1234.ts.net", tags: [], login: "you@example.com", name: "You" },
@@ -178,7 +170,6 @@ async function setup(allow: readonly string[] = ["tag:laptops"]) {
         return callers[address];
       }),
   });
-  // Stands in for MCP's sign-in redirect server.
   const oauth = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk: Buffer) => (body += chunk));
@@ -201,7 +192,6 @@ async function setup(allow: readonly string[] = ["tag:laptops"]) {
   return { store: h.store, bot: h.bot, port: h.port, tsPort: h.tailnetPort!, lookups, oauth };
 }
 
-/** Open the WebSocket and answer with its `welcome`, or the HTTP status it was refused with. */
 function welcome(url: string, headers: Record<string, string> = {}, origin?: string) {
   return new Promise<Extract<ServerFrame, { t: "welcome" }> | number>((resolve, reject) => {
     const socket = new WebSocket(url, { headers, ...(origin ? { origin } : {}) });
@@ -232,21 +222,17 @@ test("the tailnet port lets in only the people and devices allowed, and tells ea
   assert.ok(typeof tagged === "object");
   assert.deepEqual(tagged.viewer, { device: "laptop", tags: ["tag:laptops"] });
 
-  // This computer itself, through its own tailnet name.
   assert.equal(typeof (await welcome(ts, from("100.64.0.9"))), "object");
 
   assert.equal(await welcome(ts, from("100.64.0.3")), 403, "another person on the tailnet");
   assert.equal(await welcome(ts, from("100.64.0.4")), 403, "a tagged device without an allowed tag");
   assert.equal(await welcome(ts, from("203.0.113.7")), 403, "not on the tailnet (Funnel)");
   assert.equal(await welcome(ts), 403, "not through Serve");
-  // A web page on an allowed device still can't open it.
   assert.equal(await welcome(ts, from("100.64.0.1"), "https://evil.example"), 403);
   assert.equal(typeof (await welcome(ts, from("100.64.0.1"), "file://")), "object");
 
-  // Lookups are reused for a while.
   assert.equal(lookups.filter((a) => a === "100.64.0.1").length, 1);
 
-  // The local port is unchanged: no identity needed, and it says where the daemon is on the tailnet.
   const local = await welcome(`ws://127.0.0.1:${port}`);
   assert.ok(typeof local === "object");
   assert.equal(local.viewer, undefined);

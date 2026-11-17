@@ -1,15 +1,3 @@
-/**
- * One bot: Top's agent loop (loop.ts), with every step saved before anything else happens.
- *
- * - A message from the inbox becomes an entry when the model takes it (one transaction moves it).
- * - An answer is saved when it ends, before any of its tool calls start.
- * - A tool call is recorded right before the tool runs; its result is saved the moment it returns.
- * - A failed model request is retried with backoff; only the final failure is kept.
- *
- * After a crash, `recover()` settles every tool call left without a result according to the tool's
- * policy (see tools.ts) and the task continues. If the daemon keeps dying during one task, the task is
- * ended instead of looping forever.
- */
 import { type AssistantMessage, getCurrentSystemMessage, type Models, type SystemMessage, type ToolCall } from "@earendil-works/pi-ai";
 import type { BotStatus, ToolOutcome } from "@top/protocol";
 import * as Cause from "effect/Cause";
@@ -28,9 +16,7 @@ import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts"
 import { type ToolResult, type TopTool, text } from "./tools.ts";
 import { permanentFailure } from "./websearch.ts";
 
-/** A task may survive this many daemon restarts; the next one ends it. */
 export const RESTART_LIMIT = 3;
-/** Backoff before each retry of a failed model request (`TOP_RETRY_DELAYS_MS=100,100,100` shortens it for tests). */
 export const RetryDelaysMs = Config.String("TOP_RETRY_DELAYS_MS").pipe(
   Config.map((value) => value.split(",").map(Number)),
   Config.withDefault([1_000, 4_000, 15_000]),
@@ -40,42 +26,23 @@ export type RunnerStatus = {
   readonly status: BotStatus;
   readonly tool?: string | undefined;
   readonly error?: string | undefined;
-  /** While thinking: OpenAI is searching the web for the answer (websearch.ts). */
   readonly searching?: boolean | undefined;
   readonly since: number;
 };
 
 export type RunnerOptions = {
   readonly thinkingLevel?: ThinkingLevel | undefined;
-  /**
-   * Named system prompt sections the bot should have (`null`: none by that name), asked for again before
-   * each message the bot takes between tasks. A change is saved just before that message.
-   */
   readonly sections?: Effect.Effect<Readonly<Record<string, string | null>>> | undefined;
-  /** Something to add to a message from the user when the bot takes it: the skill its `/<name>` asks for (see skills.ts). */
   readonly note?: ((text: string) => Effect.Effect<UserText | undefined>) | undefined;
-  /**
-   * How long a message from Top itself (a job's result, a wake-up) waits before it starts a task for
-   * an idle bot, so ones that come close together start one task, not one each.
-   */
   readonly gatherMs?: number | undefined;
-  /** Where the user's attachments are; without it, messages have none. */
   readonly attachments?: Attachments["Service"] | undefined;
-  /** Backoff before each retry of a failed model request. */
   readonly retryDelaysMs?: readonly number[] | undefined;
-  /** Compact the bot's transcript when it's longer than this many tokens (see compaction.ts); without it, never. */
   readonly compactAtTokens?: number | undefined;
-  /**
-   * The model takes OpenAI's web search (websearch.ts); this says whether the user lets the bot use it,
-   * asked again at the start of every run. Absent: the model can't search.
-   */
   readonly webSearch?: Effect.Effect<boolean> | undefined;
 };
 
-/** A bot's prompt cache key (see `LoopOptions.sessionId`): one per bot, kept across restarts. */
 export const cacheKey = (bot: number) => `top-bot-${bot}`;
 
-/** See `RunnerOptions.gatherMs`. */
 const GATHER_MS = 2_000;
 
 export type RunnerEvents = {
@@ -87,32 +54,17 @@ export type RunnerEvents = {
 export type BotRunner = {
   readonly id: number;
   readonly name: string;
-  /** The bot's current system prompt, as the model will see it (with any pending update). */
   readonly systemPrompt: () => SystemMessage | undefined;
   readonly status: () => RunnerStatus;
-  /** Running a task, or about to. */
   readonly busy: () => boolean;
   readonly waitForIdle: Effect.Effect<void>;
-  /** Start working: after `recover`, and whenever a message arrives. */
   readonly start: Effect.Effect<void>;
-  /** A message was accepted into the inbox. */
   readonly submitted: (row: InboxRow) => Effect.Effect<void>;
   readonly abort: Effect.Effect<void>;
-  /** Start nothing more on its own: the daemon is shutting down, or the bot is being deleted. */
   readonly close: Effect.Effect<void>;
-  /**
-   * Settle what the last process left unfinished. Run once at startup, before `start`.
-   * Answers with a description of what was done, for the log. `planned`: the daemon restarted for an
-   * update, which doesn't count toward `RESTART_LIMIT`.
-   */
   readonly recover: (planned: boolean) => Effect.Effect<string | undefined>;
 };
 
-/**
- * One bot, running in the scope it's made in. `tools` is asked again at the start of every run, so
- * tools that come and go (an MCP server given to the bot, or one that connected) reach the model from
- * its next message. The loop declares the difference in a system message, which is saved like any other.
- */
 export const makeRunner = Effect.fnUntraced(function* (
   bot: BotRow,
   models: Models,
@@ -130,46 +82,31 @@ export const makeRunner = Effect.fnUntraced(function* (
 
   let busy = false;
   const idle = yield* Latch.make(true);
-  /** The transcript, as the model sees it. */
   const messages: TranscriptMessage[] = yield* store.context(id);
-  /** The loop is running: a message that comes now is handed to it, not left for the next run. */
   let looping = false;
-  /** Messages for the loop's next turn, and for when it would finish. */
   let steering: TranscriptMessage[] = [];
   let followUps: TranscriptMessage[] = [];
-  /** requestId of each message object handed to the loop. */
   const requestIds = new WeakMap<object, string>();
-  /** requestIds handed to the loop in the current run. */
   const delivered = new Set<string>();
-  /** Calls of the current answer that haven't ended. */
   let runningTools = 0;
-  /** The saved assistant message whose tool calls are running. */
   let assistantSeq = 0;
-  /** A failed model request, held back until we know whether a retry succeeds. */
   let pendingError: AssistantMessage | undefined;
   let abortRequested = false;
-  /** Tells the current run's model request and tools to stop. */
   let stopRun: AbortController | undefined;
-  /** Ends the wait before a retry early: the user stopped the bot. */
   let wakeRetry: Deferred.Deferred<void> | undefined;
   let status: RunnerStatus = { status: "idle", since: yield* now };
-  /** Prompt sections that changed since the transcript last said; saved with the next message taken. */
   let systemUpdate: SystemMessage | undefined;
   let toolList: readonly TopTool[] = [];
-  /** The bot may search the web in this run (see `RunnerOptions.webSearch`). */
   let searchOn = false;
   let tools = new Map<string, TopTool>();
-  /** A task waiting to start on messages from Top, in case more come (see `RunnerOptions.gatherMs`). */
   const gather = yield* FiberHandle.make();
 
-  // Split at the first slash only: model ids can contain one too (OpenRouter's "anthropic/claude-…").
   const slash = bot.model.indexOf("/");
   const model = models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
   if (!model) return yield* Effect.die(new Error(`Bot ${bot.name}: unknown model ${bot.model}`));
 
   const key = (seq: number, toolCallId: string) => `${id}:${seq}:${toolCallId}`;
 
-  // Never past most of the model's window, whatever was asked: a request that doesn't fit fails.
   const window = model.contextWindow > 0 ? Math.floor(model.contextWindow * WINDOW_SHARE) : Number.POSITIVE_INFINITY;
   const compactAt = options.compactAtTokens && options.compactAtTokens > 0 ? Math.min(options.compactAtTokens, window) : undefined;
   const compact: Compact | undefined =
@@ -205,7 +142,6 @@ export const makeRunner = Effect.fnUntraced(function* (
 
   const userMessage = (row: InboxRow): Effect.Effect<TopUserMessage> =>
     Effect.gen(function* () {
-      // Only the user's own messages ask for skills; Top's (a job's result, a wake-up) are what they are.
       const note = !row.source && options.note ? yield* options.note(row.text) : undefined;
       const message: TopUserMessage =
         row.attachments.length && attachments
@@ -224,7 +160,6 @@ export const makeRunner = Effect.fnUntraced(function* (
     Effect.gen(function* () {
       if (delivered.has(row.requestId)) return;
       const message = yield* userMessage(row);
-      // Checked again after reading a skill: a run that started meanwhile may have taken it already.
       if (delivered.has(row.requestId)) return;
       delivered.add(row.requestId);
       if (row.mode === "steer") steering.push(message);
@@ -252,14 +187,13 @@ export const makeRunner = Effect.fnUntraced(function* (
           return;
         }
         case "toolResult":
-          return; // saved the moment the tool returned (toolEnd)
+          return;
         case "system":
           yield* append("system", message);
           return;
       }
     });
 
-  /** Take the bot's tools as they are now. Between runs only: a run keeps the tools it started with. */
   const refreshTools = () => {
     toolList = toolSource();
     tools = new Map(toolList.map((tool) => [tool.name, tool]));
@@ -268,7 +202,6 @@ export const makeRunner = Effect.fnUntraced(function* (
 
   const take = <A>(queue: A[]) => queue.splice(0);
 
-  /** One pass of the loop: from `prompts`, or on from where the transcript ends. */
   const loop = (signal: AbortSignal, prompts?: readonly TranscriptMessage[]) =>
     Effect.gen(function* () {
       looping = true;
@@ -284,10 +217,8 @@ export const makeRunner = Effect.fnUntraced(function* (
           toolContext: (toolCallId) => ({ key: key(assistantSeq, toolCallId), bot: id }),
           signal,
           stopped: () => abortRequested,
-          // Messages that queue up while the bot works reach it together, at one step.
           steering: () => take(steering),
           followUps: () => take(followUps),
-          // Images are stored as their attachment's id; each request reads them in (attachments.ts).
           transformContext: attachments ? (context) => withImageData(context, attachments) : undefined,
           webSearch: options.webSearch ? { offer: searchOn } : undefined,
           hooks: {
@@ -297,17 +228,14 @@ export const makeRunner = Effect.fnUntraced(function* (
               runningTools++;
               return setStatus("tool", { tool: call.name });
             },
-            // Recorded before it runs: after a crash, a call with this record and no result may have taken effect.
             toolRunning: (call, args) => store.toolStarted(id, assistantSeq, call.id, call.name, args),
             toolEnd: (result, ran) =>
               Effect.gen(function* () {
                 const stored = yield* store.toolFinished(id, assistantSeq, result.toolCallId, result);
-                // A tool that really ran to completion is progress; settled-after-crash results are not.
                 if (ran) yield* store.setRestarts(id, 0);
                 yield* events.entry(stored);
                 if (--runningTools === 0) yield* setStatus("thinking");
               }),
-            // Only while it's waiting on the model: the search is part of the request.
             searching: (on) => (status.status === "thinking" ? setStatus("thinking", on ? { searching: true } : {}) : Effect.void),
           },
         },
@@ -322,7 +250,6 @@ export const makeRunner = Effect.fnUntraced(function* (
       ),
     );
 
-  /** Compare the sections the bot should have with what its transcript says, and hold any change for the next message it takes. */
   const updateSections = Effect.gen(function* () {
     if (!options.sections) return;
     const wanted = yield* options.sections;
@@ -332,14 +259,12 @@ export const makeRunner = Effect.fnUntraced(function* (
   });
   yield* updateSections;
 
-  /** Set by `saveMessage` while the loop runs, so read it through a call TypeScript can't narrow. */
   const takePendingError = (): AssistantMessage | undefined => {
     const failed = pendingError;
     pendingError = undefined;
     return failed;
   };
 
-  /** One run of the agent loop, with retries. False if something unexpected broke and driving should stop. */
   const run = (prompts: readonly TranscriptMessage[] | undefined, queued: readonly InboxRow[], prompted: readonly InboxRow[] = []) =>
     Effect.gen(function* () {
       refreshTools();
@@ -360,13 +285,11 @@ export const makeRunner = Effect.fnUntraced(function* (
           const failed = takePendingError();
           if (!failed) break;
           const delay = retryDelays[attempt];
-          // OpenAI saying this account can't use what the request asks for (a model, web search) won't change on a retry.
           if (abortRequested || delay === undefined || permanentFailure(failed.errorMessage)) {
             yield* append("assistant", failed);
             yield* setStatus("failed", { error: failed.errorMessage ?? "The model request failed" });
             break;
           }
-          // Drop the failed attempt and ask again after a backoff.
           if (messages.at(-1) === failed) messages.pop();
           yield* setStatus("retrying", { error: failed.errorMessage });
           const wake = yield* Deferred.make<void>();
@@ -381,14 +304,12 @@ export const makeRunner = Effect.fnUntraced(function* (
           yield* setStatus("thinking");
           yield* loop(controller.signal);
         }
-        // A stop that landed between steps leaves no aborted answer behind; say so in the transcript.
         const last = messages.at(-1);
         if (abortRequested && !(last?.role === "assistant" && last.stopReason === "aborted")) {
           yield* append("notice", { text: "Stopped" });
         }
         return true;
       }).pipe(
-        // Interrupted (the daemon stopping, the bot deleted): the request and the tools are told to stop.
         Effect.onInterrupt(() => Effect.sync(() => controller.abort())),
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
@@ -402,9 +323,7 @@ export const makeRunner = Effect.fnUntraced(function* (
               }),
         ),
       );
-      // Not when the daemon is stopping (interrupted above): the task is still running, and resumes when it starts.
       yield* store.setRunActive(id, false);
-      // The Stop was for this run; the next one (a message queued behind it) runs.
       abortRequested = false;
       return ok;
     }).pipe(Effect.withSpan("Runner.run", { attributes: { bot: bot.name } }));
@@ -419,9 +338,7 @@ export const makeRunner = Effect.fnUntraced(function* (
         continue;
       }
       if (!inbox.length) break;
-      // Everything waiting goes in together: one task for several jobs that ended while it was idle.
       const taken = yield* Effect.forEach(inbox, userMessage);
-      // A prompt change goes in just before the messages, in the same run, so it's saved with them.
       yield* updateSections;
       const update = systemUpdate;
       systemUpdate = undefined;
@@ -445,8 +362,6 @@ export const makeRunner = Effect.fnUntraced(function* (
     yield* idle.close;
     yield* Effect.forkIn(drive, scope);
   });
-
-  // ── recovery ─────────────────────────────────────────────────────────────────
 
   const settle = (call: ToolCall, seq: number, giveUp: boolean, restarts: number) =>
     Effect.gen(function* () {
@@ -503,7 +418,6 @@ export const makeRunner = Effect.fnUntraced(function* (
     function* (planned: boolean) {
       const row = (yield* store.bot(id))!;
       if (!row.runActive) return undefined;
-      // An update's restart is the user's doing, not a task that keeps crashing the daemon: it doesn't count.
       const restarts = planned ? row.restarts : row.restarts + 1;
       yield* store.setRestarts(id, restarts);
       const giveUp = restarts > RESTART_LIMIT;
@@ -543,14 +457,11 @@ export const makeRunner = Effect.fnUntraced(function* (
     submitted: (row) =>
       Effect.suspend(() => {
         if (!busy) {
-          // The user's starts a task now; Top's waits a moment for others (several jobs ending together).
           if (!row.source || !(gatherMs > 0)) return start;
           return Effect.asVoid(
             FiberHandle.run(gather, Effect.sleep(Duration.millis(gatherMs)).pipe(Effect.andThen(Effect.forkIn(start, scope))), { onlyIfMissing: true }),
           );
         }
-        // Mid-run: hand it to the loop so it lands at the next turn (steer) or when the task would end
-        // (follow-up). Between runs, the next run picks it up from the inbox.
         return looping ? deliver(row) : Effect.void;
       }),
     abort: Effect.sync(() => {

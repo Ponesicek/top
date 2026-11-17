@@ -1,12 +1,3 @@
-/**
- * Sign in with ChatGPT, from the app: the settings section (which says the bots are using the user's
- * ChatGPT plan, with its "Manage usage" link), the dialog that signs in, and the gate that holds the app
- * until the bots can answer.
- *
- * The browser comes back to 127.0.0.1:1455 on the computer it ran on. On the daemon's computer, the
- * daemon is listening there and the dialog closes by itself. Anywhere else, that page fails to load, and
- * the user pastes its address here.
- */
 import { type AccountView, CHATGPT_BACKGROUND_NOTICE, CHATGPT_REDIRECT, CHATGPT_USAGE_URL } from "@top/client";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { top, useClient } from "../top.ts";
@@ -28,10 +19,6 @@ function ManageUsage() {
   );
 }
 
-/**
- * The dialog's steps: agree to background use, then sign in (and paste the address, from elsewhere).
- * `required`: the gate, which has no Cancel; Back starts over instead.
- */
 function SignInForm({ onDone, required = false }: { onDone: () => void; required?: boolean }) {
   const account = useAccount();
   const [url, setUrl] = useState<string>();
@@ -40,7 +27,6 @@ function SignInForm({ onDone, required = false }: { onDone: () => void; required
   const [error, setError] = useState<string>();
   const started = useRef(false);
 
-  // Signed in on the daemon's computer: the daemon got the browser's answer itself.
   useEffect(() => {
     if (started.current && account?.signedIn === "chatgpt" && !account.signingIn) onDone();
   }, [account, onDone]);
@@ -124,7 +110,6 @@ function SignInForm({ onDone, required = false }: { onDone: () => void; required
               variant="outline"
               size="wide"
               onClick={() => {
-                // Drop the sign-in, so the daemon's listener on :1455 goes too.
                 void top.chatgptSignInCancel().catch(() => {});
                 started.current = false;
                 setUrl(undefined);
@@ -151,7 +136,6 @@ export function SignInDialog({ open, onOpenChange }: { open: boolean; onOpenChan
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        // Closed before it finished: drop the sign-in, so the daemon's listener on :1455 goes too.
         if (!next && top.getSnapshot().account?.signingIn) void top.chatgptSignInCancel().catch(() => {});
         onOpenChange(next);
       }}
@@ -178,7 +162,6 @@ function statusLine(account: AccountView) {
   }
 }
 
-/** Settings: the bots' model and what it's signed in with. Absent on a daemon with fake bots. */
 export function AccountSection() {
   const account = useAccount();
   const [dialog, setDialog] = useState(false);
@@ -223,15 +206,10 @@ export function AccountSection() {
   );
 }
 
-/**
- * Not signed in, on a daemon whose model takes Sign in with ChatGPT: the bots can't answer, so the app
- * asks for it first, in a dialog that doesn't close until they can.
- */
 export function SignInGate() {
   const account = useAccount();
   const open = !!account && !account.signedIn && account.canSignIn;
   return (
-    // Controlled and never closed from inside: Escape and outside clicks ask to close, and nothing listens.
     <Dialog open={open} disablePointerDismissal>
       <DialogPopup className="w-125">{open && <SignInForm required onDone={() => {}} />}</DialogPopup>
     </Dialog>

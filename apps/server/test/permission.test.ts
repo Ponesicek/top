@@ -1,8 +1,3 @@
-/**
- * Permission requests (Collar's `ask_permission`): a bot asks without waiting, the request waits on the
- * daemon (also across a restart), a client answers it once, and what came of it is one `permission`
- * entry. An answer reaches the bot once, as a message; Stop withdraws a request and never counts as an Allow.
- */
 import assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import { test } from "vitest";
@@ -24,7 +19,6 @@ const ofKind = async <K extends StoredEntry["kind"]>(h: Harness, kind: K, bot = 
 const messages = async (h: Harness, bot = h.bot) => (await ofKind(h, "user", bot)).filter((e) => e.source === "permission");
 const lastIsAnswer = async (h: Harness, bot = h.bot) => (await h.entries(bot)).at(-1)?.kind === "assistant" && (await idle(h, bot));
 
-/** Ask, and wait until the bot has finished the turn it asked in. */
 const ask = async (h: Harness, action: string, bot = h.bot, requestId = `ask-${action}`) => {
   await h.run(h.daemon.submit(bot, requestId, `ask permission to ${action}`, "followUp", null));
   const request = await until("the request", async () => (await waiting(h)).find((r) => r.bot === bot && r.action === action));
@@ -132,7 +126,6 @@ test("Stop withdraws the bot's requests: an entry says so, nothing reaches the b
     [{ request: request.id, answer: "withdrawn" }],
   );
   assert.equal((await answer(h, request.id, h.bot, true))._tag, "Failure");
-  // No message, so no new task: the user stopped the bot.
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.ok(await idle(h));
   assert.equal((await h.entries()).length, before + 1, "only the withdrawal");
@@ -164,7 +157,6 @@ test("a call a restart cut off between asking and its result is settled with the
   assert.ok(recovered);
   assert.deepEqual((recovered.details as { permission: unknown }).permission, { id: row.id, action: "deploy web" });
   assert.equal(await h.run(tool.recover!({ action: "deploy web" }, { key: `${h.bot}:6:call_1`, bot: h.bot })), false, "never asked: not run");
-  // The same tool-call id in a later answer is another call, so another request.
   const later = await h.run(h.daemon.permissions.ask(h.bot, `${h.bot}:9:call_1`, "deploy web", undefined));
   assert.notEqual(later.id, row.id);
   assert.equal((await waiting(h)).length, 2);
@@ -193,7 +185,6 @@ test("a call that runs after Stop asks nothing, and asking can't be moved to the
   assert.match((moved.content[0] as { text: string }).text, /can't run in the background/);
   assert.deepEqual(await waiting(h), []);
 
-  // One that landed for a bot being deleted isn't listed for clients.
   await h.run(h.daemon.permissions.ask(juniper, `${juniper}:4:call_1`, "archive the tickets", undefined));
   await h.run(h.store.markDeleted(juniper));
   await h.run(h.daemon.permissions.ask(juniper, `${juniper}:5:call_1`, "archive the logs", undefined));

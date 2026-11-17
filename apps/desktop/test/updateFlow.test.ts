@@ -1,8 +1,3 @@
-/**
- * The sidebar's update button: updating the server and then this app, through the server's restart and
- * the reconnect after it, and what the button says at each step. Nothing real is installed: the server
- * and the app are stand-ins driven by hand.
- */
 import type { ConnectionStatus, UpdateView } from "@top/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppUpdates } from "../src/bridge.ts";
@@ -14,7 +9,6 @@ const NEW = "0.1.0-nightly.20261115.3";
 const offer = { version: NEW, notes: ["Faster"], url: "https://example.com" };
 const idleView: UpdateView = { channel: "nightly", current: OLD, state: "idle", available: offer };
 
-/** A server whose state the test moves along, and an app that records being installed. */
 function harness(options: { update?: UpdateView; connection?: ConnectionStatus; app?: AppUpdates["state"]; appError?: string } = {}) {
   let side: ServerSide = { version: OLD, update: options.update ?? idleView, connection: options.connection ?? "open" };
   const listeners = new Set<() => void>();
@@ -47,7 +41,6 @@ function harness(options: { update?: UpdateView; connection?: ConnectionStatus; 
   return { deps, set, log, listeners };
 }
 
-/** Let promise callbacks run. */
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
 afterEach(() => {
@@ -66,10 +59,8 @@ describe("installBoth", () => {
     set({ update: { state: "restarting" } });
     set({ connection: "reconnecting" });
     await flush();
-    // Gone and not back yet: the app waits.
     expect(log).toEqual([`server ${NEW}`]);
 
-    // Back, but on the old version (the welcome hasn't said otherwise): still waiting.
     set({ connection: "open" });
     set({ connection: "reconnecting" });
     set({ connection: "open", version: NEW, update: { current: NEW, state: "idle" } });
@@ -106,7 +97,6 @@ describe("installBoth", () => {
     await flush();
     set({ update: { state: "restarting" } });
     set({ connection: "reconnecting" });
-    // As the daemon does: back on the old version, idle, saying what happened.
     set({ connection: "open", update: { state: "idle", rolledBack: NEW, error: `Top ${NEW} didn't start.` } });
     await expect(done).rejects.toThrow(`Top ${NEW} didn't start.`);
     expect(log).toEqual([`server ${NEW}`]);
@@ -140,7 +130,6 @@ describe("installBoth", () => {
     const done = installBoth({ server: NEW, app: NEW }, deps);
     const failed = expect(done).rejects.toThrow("didn't start the update");
     await vi.advanceTimersByTimeAsync(0);
-    // The daemon's own check was running, so it turned the install down (in its log only).
     set({ update: { state: "checking" } });
     set({ update: { state: "idle" } });
     await vi.advanceTimersByTimeAsync(501);
@@ -155,7 +144,6 @@ describe("installBoth", () => {
     await vi.advanceTimersByTimeAsync(0);
     set({ update: { state: "downloading" } });
     set({ connection: "reconnecting" });
-    // Longer than the restart limit: a blip during a download isn't a restart.
     await vi.advanceTimersByTimeAsync(5000);
     set({ connection: "open", update: { state: "downloading" } });
     set({ update: { state: "restarting" } });
@@ -200,7 +188,6 @@ describe("installBoth", () => {
     const failed = expect(done).rejects.toThrow("hasn't come back");
     await vi.advanceTimersByTimeAsync(0);
     set({ update: { state: "downloading" } });
-    // Downloading takes as long as it takes.
     await vi.advanceTimersByTimeAsync(10_000);
     set({ update: { state: "restarting" } });
     set({ connection: "reconnecting" });
@@ -294,7 +281,6 @@ describe("describeUpdates", () => {
   it("tells about a rollback it didn't see happen (after a relaunch, or from another device), until the next check", () => {
     const status = describeUpdates(input({ server: { ...idleView, rolledBack: NEW, error: `Top ${NEW} didn't start.` } }));
     expect(status).toMatchObject({ kind: "failed", error: `Top ${NEW} didn't start.` });
-    // A check clears the error; the daemon keeps `rolledBack` until the next install.
     expect(describeUpdates(input({ server: { ...idleView, rolledBack: NEW } })).kind).toBe("available");
   });
 

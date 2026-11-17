@@ -20,7 +20,6 @@ after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
 
-/** OpenAI's sign-in as pi-ai runs it, without the browser: it opens a page, then waits for the address the browser ended on. */
 function fakeOpenAI() {
   const logins: { hostId: string | undefined; agentName: string | undefined; cancelled: boolean }[] = [];
   let next = 0;
@@ -63,7 +62,6 @@ async function setup(model = "openai/gpt-test") {
   const runtime = ManagedRuntime.make(layer({ models, model, hostPath, fs }).pipe(Layer.provideMerge(eventsLayer)));
   after(() => runtime.dispose());
   const run = <A, E>(effect: Effect.Effect<A, E, ChatGPT | Events>) => runtime.runPromise(effect);
-  /** Why `effect` failed, or "succeeded". */
   const fails = <A>(effect: Effect.Effect<A, SignInError, ChatGPT>) =>
     run(
       Effect.match(effect, {
@@ -90,7 +88,6 @@ test("signs in with the pasted address, as Top, on this installation's host id, 
   assert.equal(typeof host.backgroundConsentAt, "number");
   assert.equal((await run(Effect.flatMap(Effect.service(ChatGPT), (c) => c.view))).signingIn, page);
 
-  // A wrong address is refused before it reaches the sign-in, which goes on.
   assert.match(await fails(Effect.flatMap(Effect.service(ChatGPT), (c) => c.finish("signed in!"))), /Paste the whole address/);
   assert.match(await fails(Effect.flatMap(Effect.service(ChatGPT), (c) => c.finish(`${CHATGPT_REDIRECT}?code=x&state=old`))), /another sign-in/);
 
@@ -98,7 +95,6 @@ test("signs in with the pasted address, as Top, on this installation's host id, 
     Effect.scoped(
       Effect.gen(function* () {
         const { subscription } = yield* (yield* Events).subscribe;
-        // The browser showed `localhost`; it's the same page.
         yield* (yield* ChatGPT).finish(pasted(page, "abc", "localhost"));
         return yield* PubSub.takeAll(subscription);
       }),
@@ -109,7 +105,6 @@ test("signs in with the pasted address, as Top, on this installation's host id, 
   assert.equal(read(auth).openai.access, "access-abc");
   assert.deepEqual(openai.logins, [{ hostId: `${host.hostId}`, agentName: "Top", cancelled: false }]);
 
-  // The same installation keeps its host id on the next sign-in.
   await run(Effect.flatMap(Effect.service(ChatGPT), (c) => c.signOut));
   assert.equal(read(auth).openai, undefined);
   assert.equal((await run(Effect.flatMap(Effect.service(ChatGPT), (c) => c.view))).signedIn, undefined);
@@ -123,7 +118,6 @@ test("a new sign-in drops the one under way, and cancelling ends it without an e
   const second = await run(Effect.flatMap(Effect.service(ChatGPT), (c) => c.signIn));
   assert.notEqual(first, second);
   assert.equal(openai.logins[0]?.cancelled, true);
-  // The first page's address belongs to a sign-in that's gone.
   assert.match(await fails(Effect.flatMap(Effect.service(ChatGPT), (c) => c.finish(pasted(first, "x")))), /another sign-in/);
 
   await run(Effect.flatMap(Effect.service(ChatGPT), (c) => c.cancel));
@@ -142,6 +136,5 @@ test("a pasted address must be the sign-in's own page", () => {
   assert.deepEqual(checkPasted(`  ${CHATGPT_REDIRECT}?code=c&state=s  `, "s"), { url: `${CHATGPT_REDIRECT}?code=c&state=s` });
   assert.ok("problem" in checkPasted("http://127.0.0.1:1456/auth/callback?code=c&state=s", "s"));
   assert.ok("problem" in checkPasted(`${CHATGPT_REDIRECT}?state=s`, "s"));
-  // An error from OpenAI goes through, so the sign-in ends with OpenAI's reason.
   assert.ok("url" in checkPasted(`${CHATGPT_REDIRECT}?error=access_denied&state=s`, "s"));
 });

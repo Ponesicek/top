@@ -1,12 +1,3 @@
-/**
- * Attachments: files the user sends with a message (see the protocol's Attachment). Each upload lands
- * at its final path, `<data>/attachments/<id>/<name>`, and never moves: a message claiming it only
- * marks it as its bot's (store.ts), so nothing can be half moved by a crash. The bot is told that path,
- * and its tools can open the file; images go to the model as images too (`imageData`).
- *
- * Uploads no message claims are deleted after a day, a bot's go with the bot, and a folder the store
- * doesn't know (a crash mid-upload) goes on the next sweep.
- */
 import { randomBytes } from "node:crypto";
 import { join, resolve } from "node:path";
 import { type Attachment, AttachmentError, isModelImage, MAX_ATTACHMENT_BYTES, MODEL_IMAGE_TYPES } from "@top/protocol";
@@ -27,14 +18,11 @@ import { Store } from "./store.ts";
 
 const UNCLAIMED_MS = 24 * 60 * 60_000;
 const SWEEP_MS = 60 * 60_000;
-/** Images kept in memory as base64 for the next model requests (every request sends the whole context). */
 const IMAGE_CACHE_BYTES = 64 * 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{16}$/;
 
-/** A file name that is one safe path segment, keeping its extension when it has to be shortened. */
 export function cleanName(name: string): string {
   let clean = [...name]
-    // Path separators and control characters.
     .map((c) => (/[\\/:]/.test(c) || c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f ? "_" : c))
     .join("")
     .trim()
@@ -47,7 +35,6 @@ export function cleanName(name: string): string {
   return clean || "file";
 }
 
-/** The type the first bytes say, among the images models take, if any. */
 function sniffImage(head: Buffer): string | undefined {
   if (head.length >= 8 && head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
   if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return "image/jpeg";
@@ -56,10 +43,6 @@ function sniffImage(head: Buffer): string | undefined {
   return undefined;
 }
 
-/**
- * What the daemon records a file as. An image type is only believed when the bytes are that image:
- * a model given a broken image refuses the request, and every later one that still carries it.
- */
 function decideType(declared: string, head: Buffer): string {
   const type = declared.split(";")[0]!.trim().toLowerCase();
   const sniffed = sniffImage(head);
@@ -68,12 +51,10 @@ function decideType(declared: string, head: Buffer): string {
   return /^[a-z0-9][\w.+-]*\/[\w.+-]+$/.test(type) ? type : "application/octet-stream";
 }
 
-/** How an attachment is served: shown in place when that's safe, downloaded otherwise. */
 function servedAs(attachment: Attachment): { type: string; inline: boolean; sandbox: boolean } {
   const type = attachment.mimeType;
   if (MODEL_IMAGE_TYPES.includes(type) || /^(audio|video)\//.test(type)) return { type, inline: true, sandbox: true };
-  if (type === "application/pdf") return { type, inline: true, sandbox: false }; // the PDF viewer won't run sandboxed
-  // Text of any kind (code, Markdown, JSON, HTML) shows as plain text: never run, never styled.
+  if (type === "application/pdf") return { type, inline: true, sandbox: false };
   if (/^text\//.test(type) || /[/+](json|xml|yaml|toml|javascript|typescript)$/.test(type))
     return { type: "text/plain; charset=utf-8", inline: true, sandbox: true };
   return { type: "application/octet-stream", inline: false, sandbox: true };
@@ -90,22 +71,15 @@ export class Attachments extends Context.Service<
   Attachments,
   {
     readonly root: string;
-    /** Where an attachment's file is, on this computer. */
     readonly path: (attachment: Pick<Attachment, "id" | "name">) => string;
-    /** The bot's uploads by id, in order; fails naming one that doesn't exist (or is another bot's). */
     readonly lookup: (bot: number, ids: readonly string[]) => Effect.Effect<Attachment[], AttachmentError>;
-    /** An image's bytes as base64, for the model; undefined if its file is gone. */
     readonly imageData: (attachment: Attachment) => Effect.Effect<string | undefined>;
-    /** Delete a bot's attachments, before its rows go (store.purgeBot). */
     readonly removeBot: (bot: number) => Effect.Effect<void>;
-    /** Delete unclaimed uploads past their day, and folders the store doesn't know. */
     readonly sweep: Effect.Effect<void>;
-    /** An HTTP request under `<attachmentsPath>/`; `rest` is what follows: `upload` or an id. */
     readonly handle: (request: HttpServerRequest.HttpServerRequest, rest: string) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, FileServing>;
   }
 >()("top/Attachments") {}
 
-/** Attachments kept under `<dataDir>/attachments`, swept every hour while the layer lives. */
 export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | FileSystem.FileSystem> =>
   Layer.effect(
     Attachments,
@@ -136,14 +110,12 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
         const folders = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed((): string[] => []));
         for (const id of folders) {
           if (!ID.test(id) || (yield* store.attachment(id))) continue;
-          // Not one being uploaded right now.
           const info = yield* Effect.option(fs.stat(join(root, id)));
           const mtime = Option.flatMap(info, (i) => i.mtime);
           if (Option.isSome(mtime) && now - mtime.value.getTime() > SWEEP_MS) yield* remove(id);
         }
       }).pipe(Effect.catchCause((cause) => Effect.logError("sweeping attachments", cause)));
 
-      /** Take one upload: the raw bytes, exactly `Content-Length` of them, into its own folder. */
       const receive = (request: HttpServerRequest.HttpServerRequest, rawName: string) =>
         Effect.gen(function* () {
           const length = Number(request.headers["content-length"]);
@@ -186,7 +158,6 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
 
       const handle = (request: HttpServerRequest.HttpServerRequest, rest: string) =>
         Effect.gen(function* () {
-          // The app uploads from `file://` (and the dev UI from :5199): the secret in the path is what guards this.
           if (request.method === "OPTIONS")
             return HttpServerResponse.empty({
               status: 204,
@@ -208,7 +179,6 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
           return yield* sendFile(request, path(row), {
             "Content-Type": as.type,
             "Content-Disposition": `${as.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(cleanName(row.name))}`,
-            // An attachment never changes.
             "Cache-Control": "private, max-age=31536000, immutable",
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
@@ -235,7 +205,6 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
         imageData: Effect.fn("Attachments.imageData")(function* (attachment) {
           const cached = images.get(attachment.id);
           if (cached !== undefined) {
-            // Most recently used goes last.
             images.delete(attachment.id);
             images.set(attachment.id, cached);
             return cached;
@@ -261,20 +230,11 @@ export const layer = (dataDir: string): Layer.Layer<Attachments, never, Store | 
     }),
   );
 
-// ── what the model gets ──────────────────────────────────────────────────────
-
 const sizeLabel = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
-/**
- * A user message with attachments: the text, one line per attachment saying where it is saved (never
- * cut: the bot must know each one exists), then the images it can see. An image part holds only its
- * attachment's id; `withImageData` puts the bytes in for each model request, so the transcript stays
- * small. The note is marked, so clients are shown only what the user wrote (wire.ts).
- */
 export function userContent(text: string, attachments: readonly Attachment[], pathOf: (attachment: Attachment) => string): (UserText | UserImage)[] {
   const parts: (UserText | UserImage)[] = [];
-  // No empty text block: some providers refuse them.
   if (text.trim()) parts.push({ type: "text", text });
   const lines = attachments.map(
     (a) => `[Attached ${isModelImage(a) ? "image" : "file"} "${a.name}" (${a.mimeType}, ${sizeLabel(a.size)}) is saved at: ${pathOf(a)}]`,
@@ -284,10 +244,8 @@ export function userContent(text: string, attachments: readonly Attachment[], pa
   return parts;
 }
 
-/** An image part still waiting for its bytes. */
 const unread = (part: UserText | UserImage): part is UserImage & { attachment: string } => part.type === "image" && !!part.attachment && !part.data;
 
-/** The context for one model request, with each image part's bytes read in (or a note, if its file is gone). */
 export const withImageData = (messages: readonly TranscriptMessage[], attachments: Attachments["Service"]): Effect.Effect<TranscriptMessage[]> =>
   Effect.forEach(messages, (message): Effect.Effect<TranscriptMessage> => {
     if (message.role !== "user" || typeof message.content === "string" || !message.content.some(unread)) return Effect.succeed(message);

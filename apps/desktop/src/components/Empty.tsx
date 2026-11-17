@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 
-/** A centered message over the main area: no bots yet, a new bot's first screen, waiting to connect. */
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-muted-foreground">{children}</div>;
 }

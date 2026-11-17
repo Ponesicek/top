@@ -1,8 +1,3 @@
-/**
- * A bot's permission request shows as one card where it asked (its call's result, which names the
- * request), and settles from the `permission` entry naming that request. Never a tool step as well,
- * and the entry and the bot's message about the answer show no row of their own.
- */
 import type { ConversationSnapshot, Entry, TranscriptItem } from "@top/client";
 import { describe, expect, it } from "vitest";
 import { committedRows, displayRows, tailRows } from "../src/rows.ts";
@@ -12,7 +7,6 @@ const ASK = "collar__ask_permission";
 let seq = 0;
 const entry = (e: Record<string, unknown>): TranscriptItem => ({ kind: "entry", entry: { seq: ++seq, bot: BOT, at: 1_000 + seq, ...e } as Entry });
 const said = () => entry({ kind: "assistant", text: "I'll check with you first.", tools: [{ id: "call_1", name: ASK, summary: "action: deploy web" }] });
-/** The call's result: it asked, as request `id`. Providers may reuse the call's id in a later turn. */
 const asked = (id: number, toolCallId = "call_1") =>
   entry({ kind: "tool", toolCallId, name: ASK, text: "Asked the user: deploy web.", permission: { id, action: "deploy web", reason: "It's Friday." } });
 const settled = (request: number, answer: string) => entry({ kind: "permission", request, answer });

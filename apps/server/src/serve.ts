@@ -1,23 +1,3 @@
-/**
- * One WebSocket per client, compressed with permessage-deflate, on Effect's HTTP server.
- *
- * Every client gets the bot summaries once, then one small frame per bot that changed. A client
- * watches the bots it shows: `watch` answers with only the entries it is missing, then each new
- * entry is pushed once. A connection listens to the daemon's events from the moment it opens, and
- * remembers the newest entry each `watch` sent, so no entry slips between the catch-up and the live
- * updates and none comes twice.
- *
- * A request's answer goes out after the frames about what it did while it ran (a new bot's summary
- * before `createBot`'s answer), as each connection waits until it has sent every event published by
- * then. `watch` and the events take turns on a lock, so the catch-up and the live entries can't cross.
- *
- * The same port serves the bots' files over plain HTTP (see serveFile), so one address, tunnel or
- * Tailscale name reaches both.
- *
- * With `--tailscale`, a second listener on 127.0.0.1 is the daemon on the tailnet: Tailscale Serve
- * forwards to it, and every request there must come from a person or device the user allowed (see
- * tailscale.ts). The local port keeps working as before.
- */
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { extname, join } from "node:path";
@@ -74,9 +54,7 @@ import { toWire } from "./wire.ts";
 
 const DEFAULT_WINDOW = 50;
 const MAX_WINDOW = 200;
-/** Clients ping every 10 s; one silent this long has lost its network without closing the socket. */
 const SILENT_MS = 60_000;
-/** A client this far behind is reading nothing; drop it and let it resync on reconnect. */
 const MAX_BACKLOG = 20_000;
 
 const wire = (entries: readonly StoredEntry[]): Entry[] => entries.flatMap((e) => toWire(e) ?? []);
@@ -103,7 +81,6 @@ const inboxOf = (store: Store["Service"], bot: number) =>
     ),
   );
 
-/** What a failed request tells the client: `<Tag>: <message>`, as the protocol's `result` frame carries it. */
 const errorText = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -111,7 +88,6 @@ const errorText = (cause: Cause.Cause<unknown>) => {
 
 type Write = (frame: ServerFrame) => Effect.Effect<void>;
 
-/** One client's WebSocket, from its first frame to its close. */
 const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { tailnetUrl?: string | undefined; viewer?: Viewer | undefined }) {
   const scope = yield* Effect.scope;
   const daemon = yield* Daemon;
@@ -121,26 +97,18 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const chatgpt = Option.getOrUndefined(yield* Effect.serviceOption(ChatGPT));
   const updates = Option.getOrUndefined(yield* Effect.serviceOption(Updates));
   const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
-  // Taking the reader completes the handshake; frames written before it would wait for it.
   const reader = yield* socket.reader;
   const writer = yield* socket.writer;
   const send: Write = (frame) => Effect.ignore(writer.write(JSON.stringify(frame)));
-  /** `watch` and the events take turns, so the catch-up and the live entries can't cross. */
   const turn = yield* Semaphore.make(1);
-  /** Each watched bot, with the newest entry it was sent. */
   const watching = new Map<number, number>();
-  /** The client's entries are from another daemon's data, so its `after` positions mean nothing here. */
   let foreign = false;
   let lastHeard = yield* Clock.currentTimeMillis;
   const closed = yield* Latch.make(false);
 
-  // Listen first, then send what is: an event in between is one the snapshot may already show, and
-  // sending a summary or a listing twice changes nothing.
   const { subscription, before } = yield* events.subscribe;
-  /** Events this connection has handled, and answers waiting for it to reach a count (see `caughtUp`). */
   let handled = 0;
   const waiting = new Set<{ readonly until: number; readonly done: Deferred.Deferred<void> }>();
-  /** Wait until every event published so far has gone out to this client. */
   const caughtUp = Effect.gen(function* () {
     const until = (yield* events.published) - before;
     if (handled >= until) return;
@@ -211,7 +179,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
     ),
   );
 
-  /** Run a request (in a span named for it, `Connection.submit`, …) and answer it with what that request answers (`null` for none). */
   const answer = <T extends RequestType, E>({ req }: { readonly t: T; readonly req: number }, run: Effect.Effect<Answer<T>, E>) =>
     Effect.flatMap(Effect.exit(Effect.withSpan(run, `Connection.${requestName(req)}`)), (exit) =>
       Effect.andThen(
@@ -239,12 +206,10 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       } else {
         entries = yield* store.after(frame.bot, after, limit + 1);
         if (entries.length > limit) {
-          // Missed more than fit: send the newest, and say what lies between.
           entries = yield* store.newest(frame.bot, limit);
           gap = { after, before: entries[0]!.seq };
         }
       }
-      // Live entries continue after the newest one sent, or after the client's own newest when it's current.
       watching.set(frame.bot, entries.at(-1)?.seq ?? after ?? 0);
       yield* send({
         t: "sync",
@@ -258,14 +223,12 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       if (folder) yield* send(filesFrame(frame.bot, folder.folder, folder.listing()));
     });
 
-  /** The kind of each request being answered, for its span. */
   const kinds = new Map<number, string>();
   const requestName = (req: number) => kinds.get(req) ?? "request";
   const receive = (text: string): Effect.Effect<void> => {
     const parsed = parseClientFrame(text);
     if (parsed.ok && "req" in parsed.frame) kinds.set(parsed.frame.req, parsed.frame.t);
     if (!parsed.ok) {
-      // Answer a request, so the client isn't left waiting for its timeout; drop anything else.
       if (parsed.req !== undefined) return send({ t: "result", req: parsed.req, ok: false, error: parsed.error });
       return Effect.logWarning(`ignored a frame from a client: ${parsed.error}`);
     }
@@ -323,7 +286,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           Effect.flatMap(mcpOf(), (m) => Effect.andThen(known(frame.bot), m.assign(frame.server, frame.bot, frame.on))),
         );
       case "mcpSignIn":
-        // It waits on the MCP server: other frames go on meanwhile.
         return Effect.asVoid(
           Effect.forkIn(
             Effect.flatMap(Effect.exit(Effect.flatMap(mcpOf(), (m) => Effect.map(m.signIn(frame.id), (url) => ({ url })))), (exit) => answer(frame, exit)),
@@ -363,7 +325,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           Effect.flatMap(chatgptOf(), (c) => Effect.map(c.signIn, (url) => ({ url }))),
         );
       case "chatgptSignInFinish":
-        // It waits on OpenAI: other frames go on meanwhile.
         return Effect.asVoid(
           Effect.forkIn(
             answer(
@@ -389,7 +350,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           Effect.flatMap(updatesOf(), (u) => u.check),
         );
       case "installUpdate":
-        // Not awaited by the connection: the daemon restarts at the end, and the answer goes out before.
         return answer(
           frame,
           Effect.flatMap(updatesOf(), (u) => Effect.asVoid(Effect.forkDetach(u.install(frame.version).pipe(Effect.ignoreCause({ log: true }))))),
@@ -411,7 +371,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       for (const data of frames) yield* receive(typeof data === "string" ? data : Buffer.from(data).toString("utf8"));
     }),
   ).pipe(Effect.ignore);
-  // Drop clients that stopped talking (a phone that lost its network without closing the socket).
   const silence = Effect.repeat(
     Effect.gen(function* () {
       if ((yield* Clock.currentTimeMillis) - lastHeard > SILENT_MS) yield* closed.open;
@@ -421,25 +380,21 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   yield* Effect.raceFirst(reading, Effect.raceFirst(closed.await, silence));
 });
 
-/** What a request's handler comes to: its result, or nothing for those that answer `null`. */
 // biome-ignore lint/suspicious/noConfusingVoidType: handlers that only do something are `Effect<void>`; `answer` sends `null` for them
 type Answer<T extends RequestType> = ResultOf<T> extends null ? void : ResultOf<T>;
 
-/** The daemon has no MCP servers set up (a test daemon). */
 class NoMcp extends Data.TaggedError("NoMcp") {
   override get message() {
     return "This daemon has no MCP servers.";
   }
 }
 
-/** The daemon's bots have no skills (a test daemon). */
 class NoSkills extends Data.TaggedError("NoSkills") {
   override get message() {
     return "This daemon has no skills.";
   }
 }
 
-/** The daemon runs from a checkout, or wasn't installed with `top install`: it doesn't update itself. */
 class NoUpdates extends Data.TaggedError("NoUpdates") {
   override get message() {
     return BUILD.channel
@@ -448,26 +403,14 @@ class NoUpdates extends Data.TaggedError("NoUpdates") {
   }
 }
 
-/** The daemon runs fake bots, which need no sign-in. */
 class NoChatGPT extends Data.TaggedError("NoChatGPT") {
   override get message() {
     return "This daemon's bots don't sign in (they're fake).";
   }
 }
 
-/**
- * Browsers let any web page open a WebSocket to localhost, and the bots can run commands, so a browser
- * connection is accepted only from the app itself: the Electron build (`file://`) and the dev/web UI
- * (`pnpm desktop`, `pnpm web` on :5199). Native clients (Node, the phone app) send no Origin.
- *
- * Not `null`: that's the Origin of a sandboxed frame, which any web page (or a bot's own page in the
- * Files panel) can make, so accepting it would let them run commands. The Electron build sends `file://`.
- */
 export const APP_ORIGINS = ["file://", "http://localhost:5199", "http://127.0.0.1:5199"] as const;
 
-// ── files over HTTP ──────────────────────────────────────────────────────────────
-
-/** Files are at `/files/<secret>/<bot id>/<path>`. */
 const FILES_PREFIX = "/files/";
 const ATTACHMENTS_PREFIX = "/attachments/";
 
@@ -510,7 +453,6 @@ const TYPES: Record<string, string> = {
   ".ttf": "font/ttf",
   ".otf": "font/otf",
 };
-/** Source code and other text without a type of its own: shown as text, not downloaded. */
 const PLAIN = new Set(
   "mmd ts tsx jsx py rb go rs java kt swift c h cpp hpp cs php sh bash zsh ps1 sql toml ini cfg conf env diff patch lua r jl scala dart vue svelte"
     .split(" ")
@@ -528,7 +470,6 @@ function sameSecret(given: string, secret: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** A file path's parts, decoded; undefined if one isn't valid percent-encoding. */
 function decodeParts(parts: readonly string[]): string[] | undefined {
   try {
     return parts.map(decodeURIComponent);
@@ -544,15 +485,6 @@ const plainText = (request: HttpServerRequest.HttpServerRequest, status: number,
     headers: { "cache-control": "no-store", ...headers },
   });
 
-/**
- * Serve a bot's file. The secret in the path is what protects them: browsers let any web page make
- * requests to localhost, and a page that rebinds its own DNS name to 127.0.0.1 can even read the
- * answers, but neither can guess the secret. So any origin may read a file it has the link to (the
- * app fetches Markdown and text from `file://`), and pages never pass the link on as a referrer.
- *
- * A bot's HTML page runs with this address as its origin, which the WebSocket refuses (it isn't one
- * of the app's), so a page can't reach the daemon's controls.
- */
 const serveFile = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     const daemon = yield* Daemon;
@@ -573,12 +505,10 @@ const serveFile = (request: HttpServerRequest.HttpServerRequest) =>
     const parts = decodeParts(rest);
     if (!parts) return plainText(request, 400, "Bad path", cors);
     if (parts.at(-1) === "") parts.pop();
-    // Only inside the folder, and not its hidden files (they aren't listed either).
     if (parts.some((part) => !part || part.startsWith(".") || /[/\\:\0]/.test(part))) return plainText(request, 404, "Not found", cors);
     const path = join(folder.folder, ...parts);
     const headers = (file: string) => ({
       "Content-Type": typeOf(file),
-      // The file may change at any moment: always check, but a 304 costs nothing.
       "Cache-Control": "no-cache",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
@@ -587,7 +517,6 @@ const serveFile = (request: HttpServerRequest.HttpServerRequest) =>
     return yield* sendFile(request, path, headers(path)).pipe(
       Effect.catchTag("NotFound", () =>
         Effect.gen(function* () {
-          // A folder with an index.html is a site: relative links between its pages work.
           const index = join(path, "index.html");
           const response = yield* Effect.option(sendFile(request, index, headers(index)));
           if (Option.isNone(response)) return plainText(request, 404, "Not found", cors);
@@ -598,7 +527,6 @@ const serveFile = (request: HttpServerRequest.HttpServerRequest) =>
     );
   });
 
-/** Uploads and attachments: `<attachmentsPath>/upload` and `<attachmentsPath>/<id>`, behind the files secret (see serveFile). */
 const serveAttachment = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     const store = yield* Store;
@@ -612,15 +540,10 @@ const serveAttachment = (request: HttpServerRequest.HttpServerRequest) =>
 const serveHttp = (request: HttpServerRequest.HttpServerRequest) =>
   request.url.startsWith(ATTACHMENTS_PREFIX) ? serveAttachment(request) : serveFile(request);
 
-/** Headers about one connection rather than the message (and Host, which names the hop): never passed along. */
 const HOP_BY_HOP = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade", "host", "content-length"]);
 const passable = (headers: Readonly<Record<string, string | undefined>>) =>
   Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== undefined && !HOP_BY_HOP.has(entry[0])));
 
-/**
- * An MCP sign-in redirect that came over the tailnet: hand it to the callback server on this computer,
- * which is open only while someone signs in, and send back what it answers, as it answers it.
- */
 const passOAuth = (request: HttpServerRequest.HttpServerRequest, port: number) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
@@ -641,7 +564,6 @@ const passOAuth = (request: HttpServerRequest.HttpServerRequest, port: number) =
     });
   }).pipe(Effect.catch(() => Effect.succeed(plainText(request, 404, "No sign-in is waiting. Start it again from Top's settings.\n"))));
 
-/** Answers `/.well-known/top` on the tailnet, so the desktop app can find daemons there. */
 const WELL_KNOWN = "/.well-known/top";
 
 export type ServeOptions = {
@@ -649,21 +571,16 @@ export type ServeOptions = {
   readonly port: number;
   readonly compress: boolean;
   readonly allowOrigins?: readonly string[] | undefined;
-  /** Also serve on the tailnet: a listener on 127.0.0.1 that Tailscale Serve forwards to. */
   readonly tailnet?:
     | {
         readonly gate: Pick<Tailnet, "admit" | "url" | "self">;
-        /** Its port on 127.0.0.1 (`0` picks a free one). */
         readonly port: number;
-        /** MCP sign-in redirects arriving on the tailnet are passed to this port (see mcp.ts). */
         readonly oauthPort?: number | undefined;
-        /** Their path. */
         readonly oauthPath?: string | undefined;
       }
     | undefined;
 };
 
-/** A listener couldn't open its port. */
 export class ListenError extends Data.TaggedError("ListenError")<{ readonly host: string; readonly port: number; readonly cause: unknown }> {
   override get message() {
     const cause = this.cause;
@@ -675,7 +592,6 @@ export class ListenError extends Data.TaggedError("ListenError")<{ readonly host
 
 type Served = Daemon | Store | Events | FileServing;
 
-/** Listen on one port with `app`; answers with the port (`0` picks a free one). */
 const listen = (
   host: string,
   port: number,
@@ -687,7 +603,6 @@ const listen = (
       NodeHttpServer.layer(() => createServer(), {
         host,
         port,
-        // Context takeover on both sides: repeated keys and names across frames cost almost nothing.
         websocket: { perMessageDeflate: compress ? { threshold: 64, zlibDeflateOptions: { level: 6 } } : false },
       }),
     ).pipe(Effect.mapError((cause) => new ListenError({ host, port, cause })));
@@ -697,7 +612,6 @@ const listen = (
     return address._tag === "UnixPathAddress" ? port : address.port;
   });
 
-/** Serve the daemon until the scope closes; answers with the ports it listens on. */
 export const serve = (options: ServeOptions) =>
   Effect.gen(function* () {
     const services = yield* Effect.context<Daemon | Store | Events>();
@@ -724,7 +638,6 @@ export const serve = (options: ServeOptions) =>
         ? Effect.succeed(HttpServerResponse.empty({ status: 499 }))
         : Effect.as(Effect.logError(what, cause), HttpServerResponse.empty({ status: 500 }));
 
-    // ── this computer ──
     const local = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (isUpgrade(request)) return yield* upgrade(request);
@@ -732,11 +645,9 @@ export const serve = (options: ServeOptions) =>
     }).pipe(Effect.catchCause(failed("serving a request")), Effect.provideContext(services));
     const port = yield* listen(options.host, options.port, options.compress, local);
 
-    // ── the tailnet, through Tailscale Serve ──
     let tailnetPort: number | undefined;
     if (tailnet) {
       const gate = tailnet.gate;
-      // For passing sign-in redirects on (see passOAuth).
       const httpClient = yield* Layer.build(NodeHttpClient.layerNodeHttp);
       const app = Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;

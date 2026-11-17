@@ -1,8 +1,3 @@
-/**
- * Stored entries → what a client receives. The client gets what it shows, not what the model saw:
- * no usage counters, provider metadata or tool arguments, and tool output cut to a preview. `detail`
- * fetches one entry in full when someone opens it.
- */
 import { type Entry, PermissionAsk, type ToolCallView } from "@top/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -15,7 +10,6 @@ export { textOf };
 const TOOL_PREVIEW_CHARS = 280;
 const ARGS_SUMMARY_CHARS = 100;
 
-/** Tool arguments on one short line. */
 export function summarize(args: unknown): string {
   if (!args || typeof args !== "object") return "";
   const text = Object.entries(args)
@@ -25,10 +19,8 @@ export function summarize(args: unknown): string {
   return text.length > ARGS_SUMMARY_CHARS ? `${text.slice(0, ARGS_SUMMARY_CHARS - 1)}…` : text;
 }
 
-/** The request a permission call made (Collar's `ask_permission` puts it in its result's `details`). */
 const permissionOf = Schema.decodeUnknownOption(Schema.Struct({ permission: PermissionAsk }));
 
-/** The client's view of a stored entry; `undefined` for entries clients never see (system messages). */
 export function toWire(stored: StoredEntry, full = false): Entry | undefined {
   const base = { seq: stored.seq, bot: stored.bot, at: stored.at };
   switch (stored.kind) {
@@ -47,7 +39,6 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       return {
         ...base,
         kind: "user",
-        // What the user wrote: not the notes telling the bot where their attachments are saved, or what a skill says.
         text: textOf(typeof content === "string" ? content : content.filter((p) => !(p.type === "text" && (p.attachmentNote || p.skill)))),
         ...(attachments?.length ? { attachments } : {}),
         ...(skill ? { skill } : {}),

@@ -1,4 +1,3 @@
-/** `collar__jobs`: look at, wait for and stop tool calls that moved to the background (see jobs.ts). */
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
@@ -36,7 +35,6 @@ export const jobsGroup: CollarGroup = (daemon) => [
     ].join(" "),
     parameters,
     replay: "safe",
-    // Waiting is what it's for.
     background: false,
     run: (args, ctx) =>
       Effect.gen(function* () {

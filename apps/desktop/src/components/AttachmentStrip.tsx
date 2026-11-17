@@ -1,8 +1,3 @@
-/**
- * The attachments waiting in the composer: images as thumbnails (click to see them full size), other
- * files as cards with their name and size. Each shows its upload's progress, offers Retry when it
- * failed, and × to remove it.
- */
 import { RotateCcw, X } from "lucide-react";
 import { memo, useState } from "react";
 import { type Draft, removeAttachment, retryAttachment, sizeLabel } from "../attachments.ts";

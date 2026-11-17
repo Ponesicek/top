@@ -1,13 +1,3 @@
-/**
- * The installed daemon's updates (see installation.ts for where it lives). Only the user starts one,
- * from an app; the daemon only looks: when it starts, every 6 hours, and when asked.
- *
- * Installing a version: download its archive and check it against the release's SHA256SUMS, unpack it
- * next to the running one, back up the database, point `current` at it, and restart (systemd starts
- * it again). The bots stop where they are and pick their tasks back up on the new version, as after any
- * restart, except that this one doesn't count toward the restart limit. The new version is on trial
- * until it has run for 30 s; one that won't start is rolled back by the launcher.
- */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -44,7 +34,6 @@ import { type InstallLayout, readChannel, swapLink } from "./installation.ts";
 import { PLANNED_RESTART, Store } from "./store.ts";
 
 const CHECK_EVERY = Duration.hours(6);
-/** How long a new version runs before it's no longer on trial. */
 const TRIAL = Duration.seconds(30);
 const FIRST_CHECK = Duration.seconds(20);
 
@@ -55,13 +44,10 @@ export class Updates extends Context.Service<
   {
     readonly view: Effect.Effect<UpdateView>;
     readonly check: Effect.Effect<void, UpdateError>;
-    /** Install `version`, the release `view.available` offers; ends with the daemon restarting. */
     readonly install: (version: string) => Effect.Effect<void, UpdateError>;
     readonly setChannel: (channel: Channel) => Effect.Effect<void, UpdateError>;
   }
 >()("top/Updates") {}
-
-// ── GitHub releases ─────────────────────────────────────────────────────────────
 
 const Asset = Schema.Struct({ name: Schema.String, browser_download_url: Schema.String });
 const Release = Schema.Struct({
@@ -75,13 +61,8 @@ const Release = Schema.Struct({
 export type GitHubRelease = typeof Release.Type;
 const decodeReleases = Schema.decodeUnknownEffect(Schema.Array(Release));
 
-/** A release the daemon can install: its notes, and where its archive and checksums are. */
 export type Installable = UpdateRelease & { readonly archiveUrl: string; readonly checksumsUrl: string };
 
-/**
- * The newest published release on `channel` that's newer than `current` and has this platform's
- * archive. A stable release is never offered on Nightly, nor a nightly on Stable.
- */
 export function newestRelease(releases: readonly GitHubRelease[], channel: Channel, current: string): Installable | undefined {
   let best: Installable | undefined;
   for (const release of releases) {
@@ -102,7 +83,6 @@ export function newestRelease(releases: readonly GitHubRelease[], channel: Chann
   return best;
 }
 
-/** The checksum `SHA256SUMS` gives for `name`. */
 export function checksumOf(sums: string, name: string): string | undefined {
   for (const line of sums.split("\n")) {
     const match = /^([0-9a-f]{64})\s+\*?(.+?)\s*$/i.exec(line);
@@ -132,13 +112,9 @@ const untar = (archive: string, into: string) =>
     );
   });
 
-// ── the service ─────────────────────────────────────────────────────────────────
-
 export type UpdatesOptions = {
   readonly layout: InstallLayout;
-  /** The GitHub releases API to ask (tests point it elsewhere). */
   readonly releasesUrl?: string;
-  /** How the daemon restarts once the new version is in place (by default: SIGTERM to itself, and systemd starts it again). */
   readonly restart?: Effect.Effect<void>;
 };
 
@@ -151,7 +127,6 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
       const fs = yield* FileSystem.FileSystem;
       const http = (yield* HttpClient.HttpClient).pipe(
         HttpClient.mapRequest(HttpClientRequest.setHeaders(HEADERS)),
-        // Release files redirect to GitHub's storage.
         HttpClient.followRedirects(5),
         HttpClient.filterStatusOk,
       );
@@ -165,7 +140,6 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
       let available: Installable | undefined;
       let checkedAt: number | undefined;
       let error: string | undefined;
-      // The launcher left word that a version didn't start, and went back to this one.
       let rolledBack = yield* Effect.promise(() =>
         readFile(layout.rolledBack, "utf8").then(
           (text) => text.trim() || undefined,
@@ -230,7 +204,6 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
           if ((yield* sha256(archive)) !== expected)
             return yield* new UpdateError({ message: `The download of ${release.version} is damaged (its checksum doesn't match). Try again.` });
 
-          // Unpacked beside the others, then renamed into place: a half-unpacked version is never `versions/<v>`.
           const unpacking = join(layout.versions, `.unpacking-${release.version}`);
           yield* Effect.tryPromise({
             try: async () => {
@@ -261,12 +234,10 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
           if (release?.version !== version)
             return yield* new UpdateError({ message: `Top ${version} isn't the newest ${channelName(channel)} release any more. Check again.` });
 
-          // A new try: the last one's rollback is history.
           rolledBack = undefined;
           yield* set("downloading");
           yield* download(release).pipe(Effect.catchTag("UpdateError", (e) => Effect.andThen(set("failed", e.message), Effect.fail(e))));
 
-          // From here on the update happens: the database as it is now, kept to go back to, then the switch.
           yield* Effect.gen(function* () {
             yield* store.backup(layout.backup(version));
             yield* Effect.tryPromise({
@@ -275,7 +246,6 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
             });
             yield* swapLink(join("versions", version), layout.current).pipe(Effect.mapError((e) => new UpdateError({ message: e.message })));
           }).pipe(
-            // Not on trial after all: a trial file left behind would roll the running version back to itself.
             Effect.onError(() =>
               Effect.promise(() => rm(layout.trial, { force: true })).pipe(
                 Effect.andThen(set("failed", `Couldn't start the update to ${version}. Try again.`)),
@@ -285,7 +255,6 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
           yield* store.setFlag(PLANNED_RESTART);
           yield* set("restarting");
           yield* Effect.log(`updating to Top ${version}: restarting`);
-          // Let the `restarting` frames go out before the connections close.
           yield* Effect.sleep(Duration.millis(300));
           yield* restart;
         }).pipe(Effect.withSpan("Updates.install", { attributes: { version } }));
@@ -300,8 +269,6 @@ export const layer = (options: UpdatesOptions): Layer.Layer<Updates, never, Stor
           yield* check.pipe(Effect.ignore);
         });
 
-      // A new version that has run for a while is no longer on trial; the versions before the one it
-      // replaced, and their database backups, go.
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           yield* Effect.sleep(TRIAL);

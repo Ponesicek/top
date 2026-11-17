@@ -1,8 +1,3 @@
-/**
- * Settings → Skills: what the daemon found in the shared library and in each bot's own folder, and
- * which bots have which. Nothing here installs or edits a skill: they are folders on the daemon's
- * computer, and a bot uses only the ones switched on for it (a new bot has none).
- */
 import type { BotId, SkillView } from "@top/client";
 import { RefreshCw } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
@@ -14,7 +9,6 @@ import { Button } from "./ui/button.tsx";
 
 const PATH = "font-mono text-[11.5px]";
 
-/** A bot's chip on a skill: on means the bot has it. Flips at once; the daemon's answer settles it. */
 function BotToggle({
   bot,
   name,
@@ -49,7 +43,6 @@ function BotToggle({
   );
 }
 
-/** A chip that isn't a switch: the bot has a skill of its own by this name, which takes this one's place. */
 function Shadowed({ bot, name }: { bot: RosterBot; name: string }) {
   return (
     <span
@@ -107,10 +100,8 @@ function Tag({ children, title }: { children: ReactNode; title?: string }) {
 const toggleTitle = (bot: RosterBot, name: string, on: boolean, error: string | undefined) =>
   error && !on ? `${name} can't be used, so it can't be switched on` : on ? `${bot.name} has ${name}. Click to take it away.` : `Give ${bot.name} ${name}`;
 
-/** The skills on the daemon, and which bots use each. A bot starts with none. */
 export function Skills() {
   const view = useClient((snapshot) => snapshot.skills);
-  // Only names and ids: they don't change when a bot's status does.
   const bots = useRoster();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string>();
@@ -124,7 +115,6 @@ export function Skills() {
     }
     setRefreshing(false);
   };
-  // Skills are folders anyone can change: opening settings reads them again.
   // biome-ignore lint/correctness/useExhaustiveDependencies: once per opening
   useEffect(() => {
     if (view) void refresh();
@@ -137,7 +127,6 @@ export function Skills() {
     const bot = byId.get(b.bot);
     return bot ? b.local.map((skill) => ({ bot, skill, enabled: b.enabled.includes(skill.name) })) : [];
   });
-  // Names switched on for a bot that nothing on disk answers to: shown so they can be switched off.
   const missing = view.bots.flatMap((b) => {
     const bot = byId.get(b.bot);
     if (!bot) return [];

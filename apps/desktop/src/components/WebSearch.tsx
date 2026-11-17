@@ -1,17 +1,8 @@
-/**
- * Settings → Web search: which bots may search the web with OpenAI's own web search. It's OpenAI's tool,
- * run on OpenAI's side while the bot answers, so it's here only when the bots' model is OpenAI's. Whether
- * the user's plan, workspace and model may use it is OpenAI's call; when it says no, the answer says so.
- */
 import { useEffect, useState } from "react";
 import { type RosterBot, top, useRoster, useWebSearch } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
 import { BotChip, Section } from "./SettingsSection.tsx";
 
-/**
- * A bot's chip: on means it may search. Flips at once and stays flipped until the bot's summary says so
- * (it can arrive after the request's answer); a refusal puts it back.
- */
 function BotToggle({ bot, on, onError }: { bot: RosterBot; on: boolean; onError: (error: string | undefined) => void }) {
   const [pending, setPending] = useState<boolean>();
   const shown = pending ?? on;

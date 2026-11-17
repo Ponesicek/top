@@ -1,26 +1,3 @@
-/**
- * The Top daemon: runs the bots 24/7 on its own agent loop with its own SQLite storage, and serves any
- * number of desktop and phone clients over one WebSocket each.
- *
- *   node --import tsx src/main.ts --model openai/gpt-6.1-sol [--thinking medium]   real bots
- *   node --import tsx src/main.ts [--load] [--tools] [--seed N] [--tps 100]          fake bots
- *   node --import tsx src/main.ts login | logout [--home DIR]                       Sign in with ChatGPT
- *   common: [--port 7357] [--host 127.0.0.1] [--home DIR] [--reset] [--no-compress]
- *           [--tailscale [--tailscale-allow LOGIN|tag:TAG|DEVICE]... [--tailscale-port 7357]]
- *
- * Everything the daemon keeps is in its home, `~/.top` (`$TOP_HOME`, or `--home`; see home.ts). With
- * `--model`, the bots run on that model, signed in with ChatGPT (from the app, or `top login`; see
- * chatgpt.ts) or with an API key in the environment. Each works in its own folder, `~/.top/bots/<name>`, with
- * full access to the computer (see workspace.ts). Without it they run on a scripted fake model with
- * fake tools, for development, tests and benchmarks, in a home of their own (`.data/fake`).
- *
- * With `--tailscale`, the daemon is also at `wss://<device>.<tailnet>.ts.net:7357`, through the
- * computer's own Tailscale, for every device on the tailnet, or only whoever `--tailscale-allow` names
- * (see tailscale.ts).
- *
- * Everything the daemon opens is a scoped resource: on SIGINT or SIGTERM they close in reverse order
- * (load, Tailscale Serve, the listeners, the bots, MCP servers, the database).
- */
 import { join, resolve } from "node:path";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -66,10 +43,8 @@ import { botFolder, computerTools, ensureFolder, FILES_FOLDER, workspaceSection 
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
 
-/** The daemon can't start as asked: `message` says why, for the user. */
 class StartError extends Data.TaggedError("StartError")<{ readonly message: string }> {}
 
-/** How the user's quotes of earlier answers reach a bot (the desktop app's quotes.ts makes them). */
 const QUOTES_SECTION = [
   "<quotes>",
   "The user can quote passages of your earlier answers. A quote appears in their message as a link: [Quote](top-quote://v1/<seq>?text=<passage>&comment=<comment>), URL-encoded (+ is a space).",
@@ -77,11 +52,6 @@ const QUOTES_SECTION = [
   "</quotes>",
 ].join("\n");
 
-/**
- * How a bot should wait. Each turn reads the whole transcript again, so a bot that checks on a timer
- * (a wake-up every few minutes, a short wait started again each time it times out) spends the user's
- * plan on turns where nothing happened. `repeat_while` lets it wait for an agent in one turn.
- */
 const WAITING_SECTION = [
   "<waiting>",
   "Every turn you take reads this whole conversation again, and the user pays for each one. Take turns to act, not to check on things.",
@@ -91,7 +61,6 @@ const WAITING_SECTION = [
   "</waiting>",
 ].join("\n");
 
-/** Given more than once, the last one counts (as `node:util`'s parseArgs had it, and scripts rely on). */
 const last = <A>(flag: Flag.Flag<A>, fallback: A) =>
   flag.pipe(
     Flag.atLeast(0),
@@ -116,7 +85,6 @@ const flags = {
   reset: toggle("reset", false),
   tps: last(Flag.Int("tps"), 100),
   seed: last(Flag.Int("seed"), 0),
-  /** `--no-compress` turns it off. */
   compress: toggle("compress", true),
   tailscale: toggle("tailscale", false),
   tailscaleAllow: Flag.String("tailscale-allow").pipe(Flag.atLeast(0)),
@@ -125,10 +93,8 @@ const flags = {
 
 type Args = Command.Command.Config.Infer<typeof flags>;
 
-/** Skills come from the home's shared library and each bot's own folder; nothing else is read (not ~/.claude/skills). */
 const skillsOf = (home: Home.Layout) => ({ library: home.skills, local: (bot: Store.BotRow) => join(botFolder(home.bots, bot.name), LOCAL_SKILLS) });
 
-/** What real bots are made of: a signed-in model, and the computer's tools in their own folders. */
 const realBots = (args: Args, model: string, home: Home.Layout) =>
   Effect.gen(function* () {
     const slash = model.indexOf("/");
@@ -147,7 +113,6 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
     const auth = yield* Effect.promise(() => models.checkAuth(providerId).catch(() => undefined));
     if (!auth && providerId !== ChatGPT.CHATGPT_PROVIDER)
       return yield* new StartError({ message: `Not signed in to ${providerId}. Set the provider's API key in the environment.` });
-    // Signed out, the daemon still starts: the user signs in from the app (or with `top login`).
     if (!auth) yield* Effect.logWarning("Not signed in: sign in with ChatGPT in the app's Settings, or run `top login`. The bots can't answer until then.");
     if (!models.getModel(providerId, model.slice(slash + 1))) {
       yield* Effect.promise(() => models.refresh({ providers: [providerId] }).catch(() => undefined));
@@ -159,8 +124,6 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
       Daemon.BotKit,
       Effect.gen(function* () {
         const store = yield* Store.Store;
-        // Each bot works in a folder it owns, with pi's tools over the whole computer. The tools are
-        // declared to the model on its next request, and the workspace section with its next message.
         const folderOf = (bot: Store.BotRow) => ensureFolder(botFolder(home.bots, bot.name)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
         return Daemon.BotKit.of({
           models,
@@ -175,7 +138,6 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
                 waiting: WAITING_SECTION,
               };
             }),
-          // Real bots' tools are declared on their first request, so their first system message holds only instructions.
           newBot: {
             model,
             declare: [],
@@ -186,14 +148,12 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
                 "Your answers arrive whole, not streamed, often on a phone, so lead with the answer and keep it tight. Use Markdown where it helps.",
               ].join("\n"),
           },
-          // One bot to start with; the app makes more.
           firstBots: ["Atlas"],
           files: (bot) => join(botFolder(home.bots, bot.name), FILES_FOLDER),
           skills: skillsOf(home),
           foregroundMs: yield* ForegroundMs,
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
-          // Offered per bot when the user switches it on; whether the plan may use it is OpenAI's to say.
           webSearch: canSearchTheWeb(found),
         });
       }),
@@ -201,7 +161,6 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
     return Layer.merge(kit, ChatGPT.layer({ models, model, hostPath: home.chatgptHost, fs }));
   });
 
-/** What fake bots are made of: a scripted model and tools with real (recorded) side effects. */
 const fakeBots = (args: Args, home: Home.Layout) =>
   Layer.effect(
     Daemon.BotKit,
@@ -223,9 +182,7 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         skills: skillsOf(home),
         foregroundMs: yield* ForegroundMs,
         retryDelaysMs: yield* RetryDelaysMs,
-        // The fake model's answers are short: `TOP_COMPACT_AT_TOKENS=3000 pnpm dev:fake` shows compaction quickly.
         compactAtTokens: yield* CompactAtTokens,
-        // The fake model plays OpenAI's web search ("search the web for …"), so it can be switched on.
         webSearch: true,
       });
     }),
@@ -241,21 +198,17 @@ const program = (args: Args) =>
     if (!args.tailscale && args.tailscaleAllow.length)
       return yield* new StartError({ message: "--tailscale-allow says who may use Top on your tailnet; add --tailscale to put it there." });
 
-    // Real and fake bots have separate homes, so trying the fake ones never touches real transcripts.
     const home = Home.layout(Option.isSome(args.home) ? resolve(Home.expandTilde(args.home.value)) : real ? yield* Home.defaultHome : resolve(".data/fake"));
     const fs = yield* FileSystem.FileSystem;
-    // A reset starts the daemon over. Real bots' folders are the user's work, so it leaves them; fake ones go too.
     if (args.reset) {
       yield* Effect.orDie(fs.remove(home.server, { recursive: true, force: true }));
       if (!real) yield* Effect.orDie(fs.remove(home.bots, { recursive: true, force: true }));
     }
     yield* Effect.orDie(fs.makeDirectory(home.server, { recursive: true, mode: 0o700 }));
-    // Real bots' layer also has the ChatGPT sign-in (serve.ts looks for it); the daemon needs only the kit.
     const kit: Layer.Layer<Daemon.BotKit, Config.ConfigError, FileSystem.FileSystem | Store.Store | Events.Events> = Option.isSome(args.model)
       ? yield* realBots(args, args.model.value, home)
       : fakeBots(args, home);
 
-    // On the tailnet: who may connect is settled before anything listens.
     let tailnet: Tailnet | undefined;
     if (args.tailscale) {
       tailnet = yield* connectTailnet({ allow: args.tailscaleAllow, port: args.tailscalePort, cli: yield* systemCli }).pipe(
@@ -263,13 +216,9 @@ const program = (args: Args) =>
       );
     }
 
-    // MCP servers set up in the app. Signing in to one redirects to the port after the daemon's (or, on
-    // the tailnet, to the daemon's tailnet address, which passes it on).
     const oauthPort = args.port + 1;
     const storeLayer = Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: home.database })));
-    // Installed from a release (`top install`; the launcher says where): it updates itself, when the user asks.
     const installed = BUILD.channel && process.env.TOP_DAEMON_DIR ? installLayout(home.home) : undefined;
-    // TOP_RELEASES_URL: another place to get releases from (a mirror, or a test's stand-in for GitHub).
     const releasesUrl = process.env.TOP_RELEASES_URL;
     const updatesLayer = installed
       ? Updates.layer({ layout: installed, ...(releasesUrl ? { releasesUrl } : {}) }).pipe(Layer.provide(NodeHttpClient.layerUndici))
@@ -289,10 +238,8 @@ const program = (args: Args) =>
 
     return yield* Effect.gen(function* () {
       const daemon = yield* Daemon.Daemon;
-      // Settle what the last process left unfinished (interrupted tool calls, half-done tasks), then run.
       yield* daemon.start;
 
-      // The tailnet listener: 127.0.0.1 only, two after the daemon's port (the one after is the sign-in redirect).
       const { tailnetPort } = yield* serve({
         host: args.host,
         port: args.port,
@@ -342,7 +289,6 @@ const installCommand = Command.make(
   ({ home, model, tailscale, tailscaleAllow, start }) =>
     Effect.gen(function* () {
       const layout = yield* homeOf(home);
-      // Flags given: the daemon runs with these. None: it keeps the ones it had.
       const given = Option.isSome(model) || tailscale || tailscaleAllow.length > 0;
       const args = given
         ? [
@@ -370,6 +316,5 @@ const command = Command.make("top", flags, program).pipe(
 
 Command.run(command, { version: BUILD.version }).pipe(
   Effect.provide(Layer.mergeAll(NodeServices.layer, Logger.layer)),
-  // A second Ctrl-C while shutting down exits at once.
   NodeRuntime.runMain({ disableErrorReporting: false }),
 );

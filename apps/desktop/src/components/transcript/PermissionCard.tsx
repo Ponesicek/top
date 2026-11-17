@@ -1,15 +1,3 @@
-/**
- * A bot asking whether it may do something (Collar's `ask_permission`), in its conversation where it
- * asked: what it wants to do and why, with Allow and Deny while the request waits on the daemon, then
- * what came of it. The answer only goes back to the bot, as a message; nothing else waits on it.
- *
- * Both halves are the daemon's: whether it waits is its waiting list (`permissions`), and what came of
- * it is the `permission` entry naming it (on the row as `answer`), the same after a reload or on another
- * device. Neither known yet (offline, or the entry still on its way): the buttons stay off.
- *
- * It takes no focus when it arrives: a request coming in while you type doesn't take your keystrokes.
- * Answered from the keyboard, focus stays on the card as it settles.
- */
 import { Check, CircleSlash, X } from "lucide-react";
 import { memo, useId, useRef, useState } from "react";
 import { cn } from "../../lib/utils.ts";
@@ -33,8 +21,6 @@ export const PermissionCard = memo(function PermissionCard({ row, className }: {
   const waiting = useClient((s) => s.permissions.some((p) => p.id === id));
   const online = useClient((s) => s.connection === "open");
   const [error, setError] = useState<string>();
-  // The daemon answers only after it has sent this client the entry and the new waiting list, so once
-  // the answer is in, the card has settled (or, the entry in a part not loaded, its buttons are off).
   const [busy, setBusy] = useState(false);
   const card = useRef<HTMLElement>(null);
   const titleId = useId();
@@ -42,7 +28,6 @@ export const PermissionCard = memo(function PermissionCard({ row, className }: {
 
   const decide = async (allow: boolean) => {
     if (!waiting || busy) return;
-    // The buttons go disabled, then away as it settles: keep focus on the card rather than dropping it to the page.
     if (card.current?.contains(document.activeElement)) card.current.focus();
     setBusy(true);
     setError(undefined);
@@ -80,7 +65,6 @@ export const PermissionCard = memo(function PermissionCard({ row, className }: {
             {!online && <span className="text-muted-foreground">Reconnecting…</span>}
           </div>
         )}
-        {/* Always there, so screen readers announce the outcome when it lands. */}
         <div role="status" className={settled ? "text-meta" : "-mt-1"}>
           {settled && (
             <span className={cn("mt-1 inline-flex items-center gap-1.5 font-label", settled.tone)}>

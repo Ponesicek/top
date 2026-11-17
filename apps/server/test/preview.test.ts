@@ -25,12 +25,10 @@ test("while the bot is calling tools, the sidebar keeps its last answer that sai
   const said = async () => lastLine(textOf((await h.run(h.store.lastAnswer(h.bot)))?.content));
 
   await answer([{ type: "text", text: "Deployed the web service." }]);
-  // A model that calls tools without a word first (GPT does), and a stopped answer that got nowhere.
   await answer([fauxToolCall("bash", { command: "ls" })]);
   await answer([{ type: "text", text: "" }]);
   assert.equal(await said(), "Deployed the web service.");
 
-  // Earlier versions saved some answers with plain string content.
   await answer("Plain string content works too." as unknown as AssistantMessage["content"]);
   assert.equal(await said(), "Plain string content works too.");
 });

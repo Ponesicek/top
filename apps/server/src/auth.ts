@@ -1,14 +1,3 @@
-/**
- * Model credentials, in Top's own `~/.top/server/auth.json` (see home.ts), in pi's format: what Sign
- * in with ChatGPT saves (see chatgpt.ts), and API keys. API keys from the environment
- * (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) work too; pi-ai reads those itself.
- *
- * OAuth refresh tokens rotate, so every write goes through a file lock. Otherwise the daemon and
- * `top login` (or two daemons on one home) could each write at once, and the loser would be signed out.
- *
- * pi-ai asks for credentials through its `CredentialStore` interface, which is Promise-based: this is
- * the adapter, with the work done as Effects inside.
- */
 import { dirname } from "node:path";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
@@ -17,14 +6,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import lockfile from "proper-lockfile";
 
-/**
- * The file: provider id → credential. Entries are kept as they are, also ones Top can't read (a newer
- * pi's), so writing one credential never drops another.
- */
 type AuthEntries = Readonly<Record<string, unknown>>;
 const parseAuthFile = Schema.decodeOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)));
 
-/** What Top checks of a credential before handing it to pi-ai; the rest of it is pi-ai's. */
 const CredentialShape = Schema.Union([
   Schema.Struct({ type: Schema.Literal("api_key"), key: Schema.optionalKey(Schema.String) }),
   Schema.Struct({ type: Schema.Literal("oauth"), refresh: Schema.String, access: Schema.String, expires: Schema.Number }),
@@ -32,7 +16,6 @@ const CredentialShape = Schema.Union([
 const isCredential = Schema.is(CredentialShape);
 const credentialOf = (value: unknown): Credential | undefined => (isCredential(value) ? value : undefined);
 
-/** An `auth.json` in pi's format. */
 export class AuthFile implements CredentialStore {
   readonly path: string;
   readonly #fs: FileSystem.FileSystem;
@@ -78,7 +61,6 @@ export class AuthFile implements CredentialStore {
     );
   }
 
-  /** The file as it is now; missing or unreadable is empty. */
   get #load(): Effect.Effect<AuthEntries> {
     return this.#fs.readFileString(this.path).pipe(
       Effect.map((text) => Option.getOrElse(parseAuthFile(text.replace(/^\uFEFF/, "")), (): AuthEntries => ({}))),
@@ -86,7 +68,6 @@ export class AuthFile implements CredentialStore {
     );
   }
 
-  /** Read-modify-write under the file's lock; `fn` returns the new file, or undefined to leave it. */
   #locked(fn: (file: AuthEntries) => Effect.Effect<AuthEntries | undefined>): Effect.Effect<void> {
     const path = this.path;
     const fs = this.#fs;

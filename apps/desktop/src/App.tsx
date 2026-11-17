@@ -21,7 +21,6 @@ import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
 import { conversation, markSeen, sidebarOrder, top, useBot, useClient, useRoster } from "./top.ts";
 
-// For `pnpm bench` and `pnpm screenshot` (electron/bench-driver.js): select the i-th bot.
 declare global {
   interface Window {
     __topSelect?: (i: number) => void;
@@ -36,7 +35,6 @@ function readSelected(): string | undefined {
   }
 }
 
-/** The overlay stays on across restarts; `?perf` turns it on regardless. */
 function readPerfHud(): boolean {
   if (new URLSearchParams(location.search).has("perf")) return true;
   try {
@@ -49,13 +47,10 @@ function readPerfHud(): boolean {
 function savePerfHud(on: boolean) {
   try {
     localStorage.setItem("top.perfHud", on ? "1" : "0");
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 export function App() {
-  // Re-render only when the roster changes, not on every status/preview update (those are the sidebar's).
   const bots = useRoster();
   const [selected, setSelected] = useState<BotId | undefined>(() => {
     const saved = readSelected();
@@ -103,9 +98,7 @@ export function App() {
     setSettingsOpen(false);
     try {
       localStorage.setItem("top.selected", String(id));
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -114,7 +107,6 @@ export function App() {
         e.preventDefault();
         setHud((h) => !h);
       } else if (canScale && (e.ctrlKey || e.metaKey) && !e.altKey && ["=", "+", "-", "0"].includes(e.key)) {
-        // Interface size, as in a browser (the window menu that did this is gone on Windows/Linux).
         e.preventDefault();
         setScale(e.key === "0" ? 1 : stepScale(scale, e.key === "-" ? -1 : 1));
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "e") {
@@ -146,7 +138,6 @@ export function App() {
     return () => removeEventListener("keydown", onKey);
   }, [bot?.id, select, setHud, settingsOpen, scale, setScale]);
 
-  // Expose a tiny driver for `pnpm bench`.
   useEffect(() => {
     window.__topSelect = (i) => {
       const target = top.getSnapshot().bots[i];
@@ -156,11 +147,9 @@ export function App() {
 
   const sync = bot ? conversation(bot.id) : undefined;
   const panel = usePanel();
-  // The panel is there when it's open, a bot is open, and the daemon gives bots files.
   const hasFiles = useBotFiles(bot?.id) !== undefined;
   const filesOpen = panel.open && !settingsOpen && !!bot && hasFiles;
 
-  // The open bot's newest entry counts as read; with settings open, no bot is open.
   const summary = useBot(bot?.id);
   const seenId = summary?.id;
   const seenSeq = summary?.lastSeq;
@@ -173,7 +162,6 @@ export function App() {
       <div className={cn("grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]", filesOpen && "grid-cols-[280px_1fr_auto]")}>
         <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
         <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
-          {/* The sidebar doesn't drag the window, so without a header the top of this column does. */}
           {!settingsOpen && !(bot && sync) && <div className="h-15 flex-none [-webkit-app-region:drag]" aria-hidden />}
           {settingsOpen ? (
             <Settings
@@ -191,7 +179,6 @@ export function App() {
           ) : bot && sync ? (
             <>
               <Header sync={sync} name={bot.name} avatar={bot.avatar} filesOpen={filesOpen} />
-              {/* A soft edge under the header, so text scrolling away fades instead of being sliced. */}
               <div
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
                 aria-hidden
@@ -219,7 +206,6 @@ export function App() {
           }}
         />
         {hud && <PerfHud />}
-        {/* Settings has its own Updates section. */}
         {!settingsOpen && <UpdatePopup onOpenSettings={openSettings} />}
         <SignInGate />
         <EditMenu />
