@@ -3,15 +3,21 @@
  * run on OpenAI's side while the bot answers, so it's here only when the bots' model is OpenAI's. Whether
  * the user's plan, workspace and model may use it is OpenAI's call; when it says no, the answer says so.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { type RosterBot, top, useRoster, useWebSearch } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
 import { BotChip, Section } from "./SettingsSection.tsx";
 
-/** A bot's chip: on means it may search. Flips at once; the daemon's answer settles it. */
+/**
+ * A bot's chip: on means it may search. Flips at once and stays flipped until the bot's summary says so
+ * (it can arrive after the request's answer); a refusal puts it back.
+ */
 function BotToggle({ bot, on, onError }: { bot: RosterBot; on: boolean; onError: (error: string | undefined) => void }) {
   const [pending, setPending] = useState<boolean>();
   const shown = pending ?? on;
+  useEffect(() => {
+    if (pending === on) setPending(undefined);
+  }, [pending, on]);
   const toggle = async () => {
     const next = !shown;
     setPending(next);
@@ -20,8 +26,8 @@ function BotToggle({ bot, on, onError }: { bot: RosterBot; on: boolean; onError:
       await top.setWebSearch(bot.id, next);
     } catch (err) {
       onError(messageOf(err));
+      setPending(undefined);
     }
-    setPending(undefined);
   };
   return (
     <BotChip on={shown} onClick={() => void toggle()} title={shown ? `${bot.name} may search the web. Click to stop it.` : `Let ${bot.name} search the web`}>

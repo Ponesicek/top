@@ -163,12 +163,14 @@ export function captureWebSearch(searching: (on: boolean) => void) {
 
 /**
  * What to tell the user when OpenAI refused a request that offered web search because of it: the plan,
- * workspace or model may not use it. Undefined when the error isn't about web search.
+ * workspace or model may not use it. Only OpenAI's "unsupported capability" refusal naming the tools,
+ * the sources it asked for, or web search counts, so what this says is also never retried
+ * (`permanentFailure`). On the ChatGPT route the bot's own tools aren't top-level `tools` (they go in
+ * `additional_tools` items), so a refused `tools` there is web search. Undefined otherwise.
  */
 export function searchRefusal(error: string | undefined): string | undefined {
-  if (!error) return undefined;
-  const aboutSearch = /web_search/i.test(error) || (error.includes(UNSUPPORTED) && /"param"\s*:\s*"(tools|include)/.test(error));
-  if (!aboutSearch) return undefined;
+  if (!error?.includes(UNSUPPORTED)) return undefined;
+  if (!/web_search|"param"\s*:\s*"(tools|include)/.test(error)) return undefined;
   return `OpenAI refused web search for this account, workspace or model, so the bot didn't answer. Switch web search off for this bot in Settings to keep it working. OpenAI said: ${error}`;
 }
 

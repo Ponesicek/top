@@ -9,7 +9,7 @@ import { BotError } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import { afterEach, assert, beforeEach, expect, test, vi } from "vitest";
 import type { TopAssistantMessage, TranscriptMessage } from "../src/messages.ts";
-import { captureWebSearch, searchStep, WEB_SEARCH_SECTION, withWebSearch } from "../src/websearch.ts";
+import { captureWebSearch, permanentFailure, searchRefusal, searchStep, WEB_SEARCH_SECTION, withWebSearch } from "../src/websearch.ts";
 import { toWire } from "../src/wire.ts";
 import { type Harness, harness, idle, until } from "./harness.ts";
 
@@ -392,4 +392,22 @@ test("only web addresses become links: citations, sources and opened pages", () 
   // Nothing searched or cited: nothing kept.
   expect(captureWebSearch(() => {}).record()).toBeUndefined();
   expect(WEB_SEARCH_SECTION).toContain("untrusted evidence");
+});
+
+test("only OpenAI's capability refusal of the tool is called a web search refusal, and that is never retried", () => {
+  const refused = `OpenAI API error (400): {"param":"tools","code":"subscription_sharing_unsupported_capability"}`;
+  expect(searchRefusal(refused)).toMatch(/^OpenAI refused web search/);
+  expect(permanentFailure(refused)).toBe(true);
+  // Another refused capability (a model): not blamed on web search, still not retried.
+  const model = `OpenAI API error (400): {"param":"model","code":"subscription_sharing_unsupported_capability"}`;
+  expect(searchRefusal(model)).toBeUndefined();
+  expect(permanentFailure(model)).toBe(true);
+  // Anything else that mentions web search isn't a refusal: it keeps its own words, and the usual retries.
+  for (const other of [
+    "Item 'ws_1' of type 'web_search_call' was provided without its required 'reasoning' item.",
+    `OpenAI API error (400): {"message":"web_search is not supported with this model","param":"tools","code":null}`,
+  ]) {
+    expect(searchRefusal(other)).toBeUndefined();
+    expect(permanentFailure(other)).toBe(false);
+  }
 });
