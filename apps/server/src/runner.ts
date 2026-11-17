@@ -178,8 +178,10 @@ export const makeRunner = Effect.fnUntraced(function* (
   const deliver = (row: InboxRow) =>
     Effect.gen(function* () {
       if (delivered.has(row.requestId)) return;
-      delivered.add(row.requestId);
       const message = yield* userMessage(row);
+      // Checked again after reading a skill: a run that started meanwhile may have taken it already.
+      if (delivered.has(row.requestId)) return;
+      delivered.add(row.requestId);
       if (row.mode === "steer") steering.push(message);
       else followUps.push(message);
     });

@@ -228,6 +228,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
       clearQuotes(key);
       clearAttachments(key);
       setEmpty(true);
+      setSlash(null);
       setNotice(null);
     },
     [running, sync, key, say],
@@ -330,7 +331,8 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
               aria-activedescendant={matches.length ? `${menuId}-${Math.min(picked, matches.length - 1)}` : undefined}
               onKeyDown={(e) => {
                 perf.trackInput(e.nativeEvent);
-                if (matches.length && !e.nativeEvent.isComposing) {
+                // Keys with a modifier keep their own meaning (Alt+↑↓ switches bots, Ctrl+Enter steers).
+                if (matches.length && !e.nativeEvent.isComposing && !e.altKey && !e.ctrlKey && !e.metaKey) {
                   const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
                   if (move) {
                     e.preventDefault();

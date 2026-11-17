@@ -27,6 +27,8 @@ export function SkillMenu({
 }) {
   const list = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<{ left: number; width: number; bottom: number }>();
+  // The box can move while the menu is open (an attachment added): place it again as the list changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `skills` changing is when to measure again
   useLayoutEffect(() => {
     const measure = () => {
       const box = anchor.current?.getBoundingClientRect();
@@ -35,7 +37,7 @@ export function SkillMenu({
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [anchor]);
+  }, [anchor, skills]);
   useEffect(() => {
     list.current?.querySelector(`[data-index="${picked}"]`)?.scrollIntoView({ block: "nearest" });
   }, [picked]);

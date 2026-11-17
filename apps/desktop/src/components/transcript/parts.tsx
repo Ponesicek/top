@@ -340,7 +340,7 @@ export function UserText({ text, skill }: { text: string; skill?: SkillUse | und
   const bot = String(useIdentity().sync.id);
   // The skill's `/<name>` is its tag; the rest is what the user asked of it.
   const tagged = skill !== undefined && text.startsWith(`/${skill.name}`);
-  const rest = tagged ? text.slice(skill.name.length + 1).replace(/^[ \t]/, "") : text;
+  const rest = tagged ? text.slice(skill.name.length + 1).replace(/^\s/, "") : text;
   const parts = useMemo(() => messageParts(rest), [rest]);
   const tag = tagged ? <SkillTag key="skill" skill={skill} /> : null;
   if (!parts) return tag ? [tag, rest] : rest;

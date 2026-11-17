@@ -193,8 +193,8 @@ found and which bots have which; a new bot has none, however many are installed.
   dangling link). A broken skill can't be switched on and never stops the others loading. Folders may
   be links to skills kept elsewhere.
 - **What the bot gets.** The skills switched on for it are listed in its instructions (name,
-  description, where SKILL.md is), read again before each message it takes, so a change shows from its
-  next message. It reads a skill's SKILL.md with its tools when a task matches. Paths in a skill are
+  description, where SKILL.md is), read again before it starts on a new message, so a change shows from
+  its next task. It reads a skill's SKILL.md with its tools when a task matches. Paths in a skill are
   relative to its folder, and the bot is told so: it runs a skill's scripts by their full path or from
   the skill's folder.
 - **Asking for one.** Start a message with `/<name>` (type `/` to pick from the bot's skills): the
