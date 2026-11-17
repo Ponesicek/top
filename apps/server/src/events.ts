@@ -31,6 +31,8 @@ export type DaemonEvent =
   | { readonly _tag: "McpServerRemoved"; readonly id: number }
   /** What the bots' model requests are signed in with changed (see chatgpt.ts). */
   | { readonly _tag: "Account"; readonly view: AccountView }
+  /** A permission request came or went (see permissions.ts). */
+  | { readonly _tag: "Permissions" }
   /** The daemon's updates changed: a check, a download, a restart, or another channel (see updates.ts). */
   | { readonly _tag: "Update"; readonly view: UpdateView };
 

@@ -83,11 +83,22 @@ export const BotSummary = Struct({
 });
 export type BotSummary = typeof BotSummary.Type;
 
+/** The tool a bot asks the user's permission with (Collar's, see PermissionRequest). */
+export const ASK_PERMISSION = "collar__ask_permission";
+
+/** What a bot asked permission for, and whether the user allowed it (see PermissionRequest). */
+export const PermissionAsk = Struct({ action: Schema.String, reason: Optional(Schema.String) });
+export type PermissionAsk = typeof PermissionAsk.Type;
+export const PermissionAnswer = Schema.Literals(["allowed", "denied"]);
+export type PermissionAnswer = typeof PermissionAnswer.Type;
+
 export const ToolCallView = Struct({
   id: Schema.String,
   name: Schema.String,
   /** The arguments, shortened to one line. */
   summary: Schema.String,
+  /** A call asking the user's permission: what for. Its answer is on the call's result, or its job's message. */
+  permission: Optional(PermissionAsk),
 });
 export type ToolCallView = typeof ToolCallView.Type;
 
@@ -158,6 +169,10 @@ export const Entry = Schema.Union([
     attachments: Optional(List(Attachment)),
     requestId: Optional(Schema.String),
     source: Optional(MessageSource),
+    /** A background job's message: which job (the `job` of the tool result that started it). */
+    job: Optional(Schema.Int),
+    /** The job asked the user's permission, and this is their answer. */
+    permission: Optional(PermissionAnswer),
   }),
   Struct({
     ...entryBase,
@@ -181,6 +196,10 @@ export const Entry = Schema.Union([
     truncated: Optional(Schema.Literal(true)),
     isError: Optional(Schema.Literal(true)),
     outcome: Optional(ToolOutcome),
+    /** The call asked the user's permission, and this is their answer. */
+    permission: Optional(PermissionAnswer),
+    /** The call moved to the background as this job; its result comes as a message with the same `job`. */
+    job: Optional(Schema.Int),
   }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),
   /** Files in the bot's files folder were added, changed or removed (by the bot or anyone else). Not part of the model's context. */
@@ -202,6 +221,9 @@ export const QueuedMessage = Struct({
   mode: Schema.Literals(["steer", "followUp"]),
   at: Schema.Number,
   source: Optional(MessageSource),
+  /** As on a user entry: a background job's message, and a permission's answer in it. */
+  job: Optional(Schema.Int),
+  permission: Optional(PermissionAnswer),
 });
 export type QueuedMessage = typeof QueuedMessage.Type;
 
@@ -359,6 +381,30 @@ export const UpdateView = Struct({
 });
 export type UpdateView = typeof UpdateView.Type;
 
+// ── permission requests ──────────────────────────────────────────────────────────
+//
+// A bot can ask the user whether it may do something (Collar's `ask_permission`). The daemon keeps the
+// request until a client answers it, the bot's task is stopped, or the daemon restarts (then the bot is
+// told nobody answered). The first answer wins; any later one is refused. This only carries the
+// question and the answer: it doesn't stop a bot's other tools from running.
+
+export const PermissionRequest = Struct({
+  /** Names this one request; a new one (also after a restart) never reuses it. */
+  id: Schema.String,
+  bot: BotId,
+  /** The tool call that asked, as in the bot's transcript (ToolCallView's `id`), so a client shows the request there. */
+  toolCallId: Schema.String,
+  /** What the bot wants to do, in its words. */
+  action: Schema.String,
+  /** Why, in its words, when it said. */
+  reason: Optional(Schema.String),
+});
+export type PermissionRequest = typeof PermissionRequest.Type;
+
+/** The longest action and reason a bot may ask with. */
+export const MAX_PERMISSION_ACTION = 500;
+export const MAX_PERMISSION_REASON = 1_000;
+
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
 const req = Schema.Int;
@@ -445,6 +491,11 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("installUpdate"), req, version: Schema.String }),
   /** Which releases the daemon follows from now on. It never goes back to an older version. */
   Struct({ t: Schema.Literal("setUpdateChannel"), req, channel: Channel }),
+  /**
+   * Answer a bot's permission request (see PermissionRequest). `bot` must be the bot that asked. Refused
+   * with a `PermissionError` when it was answered already (on this device or another), or isn't waiting anymore.
+   */
+  Struct({ t: Schema.Literal("answerPermission"), req, id: Schema.String, bot: BotId, allow: Schema.Boolean }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
@@ -479,6 +530,7 @@ export const RequestResult = {
   checkForUpdate: Schema.Null,
   installUpdate: Schema.Null,
   setUpdateChannel: Schema.Null,
+  answerPermission: Schema.Null,
 } as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
 export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
 
@@ -551,6 +603,8 @@ export const ServerFrame = Schema.Union([
   Struct({ t: Schema.Literal("files"), bot: BotId, folder: Schema.String, files: List(FileView), more: Optional(Schema.Literal(true)) }),
   /** A watched bot's queue changed. */
   Struct({ t: Schema.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
+  /** Every permission request waiting for an answer, oldest first: once per connection, then whenever one comes or goes. */
+  Struct({ t: Schema.Literal("permissions"), requests: List(PermissionRequest) }),
   /** The daemon's updates: once per connection on an installed daemon, then whenever they change. */
   Struct({ t: Schema.Literal("update"), update: UpdateView }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(true), value: Schema.Unknown }),

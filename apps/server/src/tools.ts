@@ -24,6 +24,8 @@ export type ToolContext = {
   /** Stable for this one tool call, also across restarts. */
   readonly key: string;
   readonly bot: number;
+  /** The model's id for this call (absent where a tool is run outside a bot's turn, as in some tests). */
+  readonly toolCallId?: string | undefined;
   /**
    * Stop asked for (the user's Stop, a job's time limit). Tools stop cooperatively: they wind down and
    * report what they got to, which is why this is a signal and not an interruption.

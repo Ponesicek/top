@@ -70,7 +70,7 @@ import { type FileServing, sendFile } from "./sendFile.ts";
 import { Store, type StoredEntry } from "./store.ts";
 import type { Tailnet } from "./tailscale.ts";
 import { Updates } from "./updates.ts";
-import { toWire } from "./wire.ts";
+import { jobMessage, toWire } from "./wire.ts";
 
 const DEFAULT_WINDOW = 50;
 const MAX_WINDOW = 200;
@@ -98,6 +98,7 @@ const inboxOf = (store: Store["Service"], bot: number) =>
         mode: row.mode,
         at: row.at,
         ...(row.source ? { source: row.source } : {}),
+        ...(row.source === "job" ? jobMessage(row.requestId, row.text) : {}),
         ...(row.attachments.length ? { attachments: row.attachments } : {}),
       }),
     ),
@@ -164,6 +165,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (mcp) yield* send({ t: "mcpServers", servers: yield* mcp.views });
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
+  yield* send({ t: "permissions", requests: daemon.permissions.pending() });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -191,6 +193,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "account", account: event.view });
       case "Update":
         return send({ t: "update", update: event.view });
+      case "Permissions":
+        return send({ t: "permissions", requests: daemon.permissions.pending() });
     }
   };
   yield* Effect.forkScoped(
@@ -375,6 +379,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(updatesOf(), (u) => u.setChannel(frame.channel)),
         );
+      case "answerPermission":
+        return answer(frame, daemon.permissions.answer(frame.id, frame.bot, frame.allow));
     }
   };
 

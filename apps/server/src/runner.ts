@@ -223,7 +223,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           thinkingLevel: options.thinkingLevel ?? "off",
           messages,
           tools: toolList,
-          toolContext: (toolCallId) => ({ key: key(assistantSeq, toolCallId), bot: id }),
+          toolContext: (toolCallId) => ({ key: key(assistantSeq, toolCallId), bot: id, toolCallId }),
           signal,
           stopped: () => abortRequested,
           // Messages that queue up while the bot works reach it together, at one step.
@@ -384,7 +384,7 @@ export const makeRunner = Effect.fnUntraced(function* (
     Effect.gen(function* () {
       const record = yield* store.toolCall(seq, call.id);
       const tool = tools.get(call.name);
-      const ctx = { key: key(seq, call.id), bot: id };
+      const ctx = { key: key(seq, call.id), bot: id, toolCallId: call.id };
       const args = record ? record.args : call.arguments;
       let result: ToolResult;
       let isError = true;

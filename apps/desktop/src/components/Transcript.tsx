@@ -22,6 +22,7 @@ import { FilesLine } from "./files/FilesLine.tsx";
 import { highlight, QuoteMenu } from "./Quotes.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
+import { PermissionCard } from "./transcript/PermissionCard.tsx";
 import { AutoLoad, DIVIDER, type RowContext, type RowRenderer } from "./transcript/parts.tsx";
 import { renderTeamRow } from "./transcript/TeamRows.tsx";
 
@@ -33,6 +34,7 @@ function estimate(row: DisplayRow | undefined): number {
   if (row.kind === "user") return 64 + Math.ceil(row.text.length / 90) * 22 + (row.attachments ? 200 : 0);
   if (row.kind === "assistant") return 80 + Math.ceil(row.text.length / 110) * 24;
   if (row.kind === "toolgroup" || row.kind === "files") return 34;
+  if (row.kind === "permission") return 120;
   return 48;
 }
 
@@ -241,6 +243,14 @@ export const Transcript = memo(function Transcript({
                 <div className={DIVIDER}>{row.text}</div>
               ) : row.kind === "files" ? (
                 <FilesLine row={row} bot={sync.id} className={look.files} />
+              ) : row.kind === "permission" ? (
+                <PermissionCard
+                  row={row}
+                  name={name}
+                  queued={row.job === undefined ? undefined : snapshot.inbox.find((m) => m.job === row.job)}
+                  live={snapshot.status === "live"}
+                  className={look.files}
+                />
               ) : (
                 look.render(rows, item.index, ctx, bot)
               )}

@@ -16,6 +16,9 @@ export class AttachmentError extends Schema.TaggedError<AttachmentError>()("Atta
 /** An MCP server couldn't be saved, signed in to, or found. */
 export class McpServerError extends Schema.TaggedError<McpServerError>()("McpServerError", { message: Schema.String }) {}
 
+/** A permission answer came too late: the request was answered already, or isn't waiting anymore. */
+export class PermissionError extends Schema.TaggedError<PermissionError>()("PermissionError", { message: Schema.String }) {}
+
 /** The request named a bot this daemon doesn't have. */
 export class UnknownBotError extends Schema.TaggedError<UnknownBotError>()("UnknownBotError", { bot: Schema.Int }) {
   override get message(): string {
@@ -31,4 +34,4 @@ export class UnknownEntryError extends Schema.TaggedError<UnknownEntryError>()("
 }
 
 /** Every refusal a request can get. */
-export type DaemonRefusal = BotError | BusyError | AttachmentError | McpServerError | UnknownBotError | UnknownEntryError;
+export type DaemonRefusal = BotError | BusyError | AttachmentError | McpServerError | PermissionError | UnknownBotError | UnknownEntryError;

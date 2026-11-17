@@ -93,6 +93,7 @@ test("a tool call that outruns the limit moves to the background, and its result
     text: textOf(message!),
     requestId: message!.requestId!,
     source: "job",
+    job: 1,
   });
   // The bot took it like any message and answered.
   await until("the answer to the job's message", () => lastIsAnswer(h));
@@ -227,7 +228,14 @@ test("wake-ups can be listed and cancelled, and setting one twice from the same 
 type Result = Effect.Success<ReturnType<TopTool["run"]>>;
 const resultText = (result: Result) => (result.content[0] as { text: string }).text;
 /** What Collar's tools reach in the test's daemon. */
-const collarOf = (h: Harness) => ({ store: h.store, jobs: h.daemon.jobs, wakes: h.daemon.wakes, changed: h.daemon.changed, toolsOf: h.daemon.toolsOf });
+const collarOf = (h: Harness) => ({
+  store: h.store,
+  jobs: h.daemon.jobs,
+  wakes: h.daemon.wakes,
+  permissions: h.daemon.permissions,
+  changed: h.daemon.changed,
+  toolsOf: h.daemon.toolsOf,
+});
 const backgroundOf = (h: Harness) => {
   const tool = backgroundGroup(collarOf(h))[0]!;
   return (args: Record<string, unknown>, key = "k") => h.run(tool.run(args, { key, bot: h.bot }));
