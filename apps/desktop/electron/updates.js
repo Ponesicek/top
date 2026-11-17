@@ -7,7 +7,6 @@ const CHECK_EVERY_MS = 6 * 60 * 60_000;
 const FIRST_CHECK_MS = 15_000;
 
 /**
- * What the page sees (checked again there, in src/bridge.ts).
  * @typedef {"stable" | "nightly"} Channel
  * @typedef {{
  *   version: string;

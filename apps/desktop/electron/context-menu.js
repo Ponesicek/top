@@ -3,7 +3,6 @@ const SUGGESTIONS = 5;
 /** @typedef {{ action: string; label?: string; enabled: boolean } | { separator: true }} ContextMenuItem */
 
 /**
- * The part of a right-click this reads.
  * @typedef {Pick<Electron.ContextMenuParams, "isEditable" | "selectionText" | "misspelledWord" | "dictionarySuggestions" | "editFlags">} Click
  */
 
