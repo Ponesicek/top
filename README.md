@@ -61,7 +61,8 @@ Everything Top keeps is in its home, `~/.top` (`TOP_HOME=DIR` or `--home DIR` mo
 ```
 ~/.top/
 ├── server/        the daemon's: top.sqlite (bots, conversations, MCP servers and their sign-ins), attachments/, auth.json, chatgpt-host.json
-├── bots/<name>/   each bot's working folder; files/ is what the Files panel shows
+├── skills/        the shared skill library (see Skills)
+├── bots/<name>/   each bot's working folder; files/ is what the Files panel shows, .agents/skills/ its own skills
 ├── daemon/        the installed daemon (`top install`, see Releases and updates)
 └── desktop/       the desktop app's profile: its cache and settings (TOP_USER_DATA moves it)
 ```
@@ -174,6 +175,31 @@ headers or environment variables for keys. Their values stay on the daemon: the 
 - **Crash safety.** A cut-off call to a tool the server marks read-only or idempotent runs again;
   any other is reported as interrupted, like `bash`. So is one whose server hasn't reconnected yet when
   the daemon restarts.
+
+### Skills
+
+Skills are [AgentSkills](https://agentskills.io) folders: `<name>/SKILL.md` (frontmatter with a `name`
+and a `description`, then instructions), with any scripts, references and assets beside it. Top reads
+them where they are and never installs, copies or updates one. Settings → **Skills** lists what it
+found and which bots have which; a new bot has none, however many are installed.
+
+- **Where.** Shared skills are in Top's home, `~/.top/skills` (fake bots: in their home). Every bot a
+  shared skill is switched on for uses the same files, so a change to one, by you or by a bot with its
+  tools, reaches all of them. A bot's own skills are in its folder, `.agents/skills`. Nothing else is
+  read: not `~/.claude/skills`, not a project's.
+- **Same name.** A bot's own skill takes the place of the shared one with its name, for that bot only.
+  Settings shows both, which one each bot uses, and why one that's broken can't be used (a folder name
+  that isn't a skill name, a frontmatter `name` that isn't the folder's, no description, bad YAML, a
+  dangling link). A broken skill can't be switched on and never stops the others loading. Folders may
+  be links to skills kept elsewhere.
+- **What the bot gets.** The skills switched on for it are listed in its instructions (name,
+  description, where SKILL.md is), read again before it starts on a new message, so a change shows from
+  its next task. It reads a skill's SKILL.md with its tools when a task matches. Paths in a skill are
+  relative to its folder, and the bot is told so: it runs a skill's scripts by their full path or from
+  the skill's folder.
+- **Asking for one.** Start a message with `/<name>` (type `/` to pick from the bot's skills): the
+  skill's SKILL.md, as it is then, goes with the message, and the message shows which skill it used.
+- **Rescan** reads the folders again after you add or edit a skill; opening Settings does too.
 
 **Collar** is Top's own set of tools for managing the app. Every bot always has it, it isn't
 listed among the servers, and no server may be named "Collar". Its tools are named like a server's

@@ -5,6 +5,7 @@ import { canScale, SCALES, type Scale } from "../scale.ts";
 import { AccountSection } from "./ChatGPT.tsx";
 import { DaemonSettings } from "./DaemonSettings.tsx";
 import { McpServers } from "./McpServers.tsx";
+import { Skills } from "./Skills.tsx";
 
 const SCALE_OPTIONS = SCALES.map((s) => ({ value: String(s), label: `${Math.round(s * 100)}%` }));
 
@@ -83,6 +84,7 @@ export function Settings({
           </Section>
           <AccountSection />
           <McpServers />
+          <Skills />
           <DaemonSettings />
           <UpdateSettings />
           <Section title="Performance">

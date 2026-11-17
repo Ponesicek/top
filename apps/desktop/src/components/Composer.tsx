@@ -1,12 +1,13 @@
 /**
- * The composer is isolated from the transcript: it subscribes only to "is the bot working", so typing
- * never waits on a transcript render. Its field is uncontrolled (composerEditor.ts), and the component
- * re-renders only when "empty" or "working" flips, not on every keystroke.
+ * The composer is isolated from the transcript: it subscribes only to "is the bot working" and the bot's
+ * skills, so typing never waits on a transcript render. Its field is uncontrolled (composerEditor.ts),
+ * and the component re-renders only when "empty" or "working" flips, or while a `/` at the start asks
+ * for a skill (SkillMenu.tsx), not on every keystroke.
  */
 
-import type { ConversationSync } from "@top/client";
+import { activeSkills, type ConversationSync } from "@top/client";
 import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { addAttachments, clearAttachments, LARGE_PASTE_BYTES, pastedTextName, readyAttachments, sizeLabel, useAttachments } from "../attachments.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
@@ -16,6 +17,7 @@ import { top, useClient } from "../top.ts";
 import { AttachmentStrip } from "./AttachmentStrip.tsx";
 import { focusEnd, insertChip, isEmpty, makeChip, readSegments, type Segment, toMessage, writeSegments } from "./composerEditor.ts";
 import { CommentPopover } from "./Quotes.tsx";
+import { SkillMenu } from "./SkillMenu.tsx";
 import { Button } from "./ui/button.tsx";
 import { Tooltip } from "./ui/tooltip.tsx";
 
@@ -110,6 +112,14 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
   const [dropping, setDropping] = useState(false);
   // Ctrl+Shift+V pastes a large text as it is, instead of as a file.
   const pasteInline = useRef(false);
+  // The bot's skills, and what's typed after a `/` that starts the message (null: no `/` there).
+  const skillsView = useClient((snapshot) => snapshot.skills);
+  const skills = useMemo(() => (skillsView ? activeSkills(skillsView, sync.id).filter((s) => !s.error) : []), [skillsView, sync.id]);
+  const [slash, setSlash] = useState<string | null>(null);
+  const [picked, setPicked] = useState(0);
+  const matches = slash === null ? [] : skills.filter((s) => s.name.startsWith(slash));
+  const menuId = useId();
+  const box = useRef<HTMLDivElement>(null);
 
   const attach = useCallback(
     (list: File[]) => {
@@ -163,7 +173,22 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
     if (isEmpty(segments)) drafts.delete(key);
     else drafts.set(key, segments);
     setEmpty(isEmpty(segments));
+    // Only `/` and a name so far, nothing else in the field: it's asking for a skill.
+    const typed = segments.length === 1 && typeof segments[0] === "string" ? /^\/([a-z0-9-]*)$/.exec(segments[0]) : null;
+    setSlash(typed ? typed[1]! : null);
+    setPicked(0);
   }, [key]);
+
+  /** Ask for a skill: the field becomes `/<name> `, to go on with what it should do. */
+  const pickSkill = useCallback(
+    (name: string) => {
+      const field = ref.current!;
+      field.replaceChildren(document.createTextNode(`/${name} `));
+      focusEnd(field);
+      changed();
+    },
+    [changed],
+  );
 
   // The draft this bot had, chips and all; and the focus, whenever another bot opens.
   useLayoutEffect(() => {
@@ -203,6 +228,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
       clearQuotes(key);
       clearAttachments(key);
       setEmpty(true);
+      setSlash(null);
       setNotice(null);
     },
     [running, sync, key, say],
@@ -239,9 +265,13 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
     // the same scrollbar gutter as the transcript, so both center on the same axis.
     <div className="flex-none overflow-hidden [scrollbar-gutter:stable]">
       <div className="relative mx-auto max-w-220 px-8 pt-1 pb-6 narrow:px-4">
+        {matches.length > 0 && (
+          <SkillMenu anchor={box} id={menuId} skills={matches} picked={Math.min(picked, matches.length - 1)} onPick={pickSkill} onHover={setPicked} />
+        )}
         {/* Clicking the padding focuses the field, a pointer convenience; the field itself takes focus from the keyboard. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: see above */}
         <div
+          ref={box}
           className="composer flex cursor-text flex-col rounded-bubble border border-input bg-popover p-1.75 shadow-composer transition duration-120 focus-within:shadow-composer-focus"
           onMouseDown={(e) => {
             if (e.target !== e.currentTarget && !(e.target as HTMLElement).hasAttribute("data-pad")) return;
@@ -270,7 +300,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
               aria-label={`Message ${name}`}
               tabIndex={0}
               contentEditable="plaintext-only"
-              data-placeholder={`Message ${name}…`}
+              data-placeholder={skills.length ? `Message ${name}… / for skills` : `Message ${name}…`}
               data-empty={empty ? "" : undefined}
               className="composer-input relative max-h-60 min-w-0 flex-1 overflow-y-auto bg-transparent py-1.75 text-body leading-6 whitespace-pre-wrap text-foreground outline-none [overflow-wrap:anywhere] data-empty:before:pointer-events-none data-empty:before:absolute data-empty:before:text-muted-foreground data-empty:before:content-[attr(data-placeholder)]"
               onInput={changed}
@@ -297,8 +327,26 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
                   say(`Large paste attached as ${name} (${sizeLabel(bytes)}) · Ctrl+Shift+V pastes it inline`, false);
                 }
               }}
+              aria-controls={matches.length ? menuId : undefined}
+              aria-activedescendant={matches.length ? `${menuId}-${Math.min(picked, matches.length - 1)}` : undefined}
               onKeyDown={(e) => {
                 perf.trackInput(e.nativeEvent);
+                // Keys with a modifier keep their own meaning (Alt+↑↓ switches bots, Ctrl+Enter steers).
+                if (matches.length && !e.nativeEvent.isComposing && !e.altKey && !e.ctrlKey && !e.metaKey) {
+                  const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+                  if (move) {
+                    e.preventDefault();
+                    return setPicked((i) => (Math.min(i, matches.length - 1) + move + matches.length) % matches.length);
+                  }
+                  if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+                    e.preventDefault();
+                    return pickSkill(matches[Math.min(picked, matches.length - 1)]!.name);
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    return setSlash(null);
+                  }
+                }
                 if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "v") pasteInline.current = true;
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();

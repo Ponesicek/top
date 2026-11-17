@@ -10,6 +10,7 @@ import type {
   PermissionAnswer,
   PermissionAsk,
   QueuedMessage,
+  SkillUse,
   ToolCallView,
   TranscriptItem,
 } from "@top/client";
@@ -25,6 +26,8 @@ export type Row =
       readonly key: string;
       readonly text: string;
       readonly attachments?: readonly Attachment[];
+      /** The skill the message asked for with `/<name>`, once the bot took it. */
+      readonly skill?: SkillUse;
       readonly at?: number;
       readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer";
       readonly requestId?: string;
@@ -75,7 +78,14 @@ function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
     case "user":
       row = entry.source
         ? { kind: "wake", key }
-        : { kind: "user", key, text: entry.text, at: entry.at, ...(entry.attachments ? { attachments: entry.attachments } : {}) };
+        : {
+            kind: "user",
+            key,
+            text: entry.text,
+            at: entry.at,
+            ...(entry.attachments ? { attachments: entry.attachments } : {}),
+            ...(entry.skill ? { skill: entry.skill } : {}),
+          };
       break;
     case "assistant":
       row = {

@@ -26,6 +26,7 @@ import {
   PROTOCOL_VERSION,
   type ResultOf,
   type ServerFrame,
+  type SkillsView,
   type UpdateView,
   type Viewer,
 } from "@top/protocol";
@@ -43,8 +44,10 @@ const parseAttachment = Schema.decodeOption(Schema.fromJsonString(Attachment));
 
 export type {
   AccountView,
+  ActiveSkill,
   Attachment,
   BotId,
+  BotSkills,
   BotStatus,
   Channel,
   Entry,
@@ -61,6 +64,10 @@ export type {
   PermissionRequest,
   QueuedMessage,
   Seq,
+  SkillSource,
+  SkillsView,
+  SkillUse,
+  SkillView,
   ToolCallView,
   ToolOutcome,
   UpdateRelease,
@@ -69,6 +76,7 @@ export type {
   WhenBusy,
 } from "@top/protocol";
 export {
+  activeSkills,
   BotSummary,
   CHANNELS,
   CHATGPT_BACKGROUND_NOTICE,
@@ -87,6 +95,7 @@ export {
   MAX_IMAGE_EDGE,
   MAX_MCP_NAME,
   MODEL_IMAGE_TYPES,
+  skillInvocation,
 } from "@top/protocol";
 export { type Connection, type ConnectionStatus, makeConnection, OfflineError, RequestError, type RequestFailure, TimeoutError } from "./connection.ts";
 export * from "./conversation.ts";
@@ -128,6 +137,8 @@ export type TopSnapshot = {
   readonly bots: readonly BotSummary[];
   /** The MCP servers set up on the daemon (empty until it says). */
   readonly mcpServers: readonly McpServerView[];
+  /** The skills the daemon found, and which bots have which; `undefined` until it says (and on one whose bots have none). */
+  readonly skills: SkillsView | undefined;
   /** What the bots' model requests are signed in with; `undefined` until the daemon says, and on one with fake bots. */
   readonly account: AccountView | undefined;
   /** The files folders of the bots being watched, once the daemon has listed them. */
@@ -185,6 +196,7 @@ export class TopClient {
       serverId: options.serverId,
       bots: [],
       mcpServers: [],
+      skills: undefined,
       account: undefined,
       files: {},
       hasFiles: false,
@@ -285,6 +297,16 @@ export class TopClient {
   /** Give a bot an MCP server's tools, or take them away. */
   assignMcp(server: McpServerId, bot: BotId, on: boolean): Promise<void> {
     return this.#command({ t: "assignMcp", server, bot, on });
+  }
+
+  /** Switch a skill on for a bot, or off. Rejects with a message for the user when the bot has no usable skill by that name. */
+  enableSkill(bot: BotId, name: string, on: boolean): Promise<void> {
+    return this.#command({ t: "enableSkill", bot, name, on });
+  }
+
+  /** Ask the daemon to read the skills folders again (skills added or edited on disk). */
+  rescanSkills(): Promise<void> {
+    return this.#command({ t: "rescanSkills" });
   }
 
   /** Start signing in to an MCP server: resolves with the page to open (in a browser on the daemon's computer). */
@@ -485,6 +507,9 @@ export class TopClient {
       }
       case "mcpServerRemoved":
         this.#publish({ mcpServers: this.#snapshot.mcpServers.filter((s) => s.id !== frame.id) });
+        return;
+      case "skills":
+        this.#publish({ skills: frame.skills });
         return;
       case "account":
         this.#publish({ account: frame.account });

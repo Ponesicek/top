@@ -37,6 +37,7 @@ import { Mcp } from "./mcp.ts";
 import { makePermissions, type Permissions } from "./permissions.ts";
 import { type BotRunner, makeRunner } from "./runner.ts";
 import { seedHistory } from "./seed.ts";
+import { makeSkills, type Skills, type SkillsConfig } from "./skills.ts";
 import { type BotRow, type InboxRow, PLANNED_RESTART, Store, type StoredEntry } from "./store.ts";
 import type { TopTool } from "./tools.ts";
 import { makeWakeClock, type WakeClock } from "./wakes.ts";
@@ -102,6 +103,8 @@ export class BotKit extends Context.Service<
     readonly seed?: number | undefined;
     /** Each bot's files folder (see files.ts). Without it, bots have none. */
     readonly files?: ((bot: BotRow) => string) | undefined;
+    /** Where skills are found (see skills.ts). Without it, bots have none. */
+    readonly skills?: SkillsConfig | undefined;
     /** How long a tool call may run before it moves to the background (see jobs.ts). */
     readonly foregroundMs: number;
     /** How long Top's own messages to an idle bot wait for others before starting a task (see runner.ts). */
@@ -186,6 +189,8 @@ export class Daemon extends Context.Service<
     readonly wakes: WakeClock;
     /** What bots asked the user's permission for (see permissions.ts). */
     readonly permissions: Permissions;
+    /** The skills found, and which bots have which (see skills.ts); absent when bots have none here. */
+    readonly skills: Skills | undefined;
   }
 >()("top/Daemon") {}
 
@@ -280,6 +285,9 @@ const make = Effect.gen(function* () {
   });
   /** Top's own tools, which every bot has (see collar/index.ts). */
   const collar = collarTools({ store, jobs, wakes, permissions, changed, toolsOf });
+  const skills = kit.skills
+    ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
+    : undefined;
 
   const add = (bot: BotRow): Effect.Effect<LiveBot> =>
     Effect.gen(function* () {
@@ -298,6 +306,9 @@ const make = Effect.gen(function* () {
       toolSources.set(bot.id, plain);
       const wrapped = own.map(jobs.wrap);
       const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map(jobs.wrap)] : () => wrapped;
+      // The kit's sections are made once; the skills section is read again before each message the bot takes.
+      const fixed = kit.sections ? yield* kit.sections(bot) : undefined;
+      const sections = skills ? Effect.map(skills.section(bot), (section) => ({ ...fixed, skills: section })) : fixed && Effect.succeed(fixed);
       const runner = yield* makeRunner(
         bot,
         kit.models,
@@ -309,7 +320,8 @@ const make = Effect.gen(function* () {
         },
         {
           thinkingLevel: kit.thinking,
-          sections: kit.sections ? yield* kit.sections(bot) : undefined,
+          sections,
+          note: skills ? (text) => skills.note(bot, text) : undefined,
           gatherMs: kit.gatherMs,
           attachments,
           retryDelaysMs: kit.retryDelaysMs,
@@ -368,6 +380,7 @@ const make = Effect.gen(function* () {
       const id = yield* addBot(name, description, newBot, avatar).pipe(Effect.provideService(Store, store));
       const live = yield* add((yield* store.bot(id))!);
       yield* events.publish({ _tag: "Bot", summary: live.summary });
+      if (skills) yield* skills.rescan;
       return id;
     }),
     deleteBot: Effect.fn("Daemon.deleteBot")(function* (id) {
@@ -382,6 +395,7 @@ const make = Effect.gen(function* () {
       // Its requests went with it (markDeleted).
       yield* events.publish({ _tag: "Permissions" });
       if (mcp) yield* mcp.botRemoved(id);
+      if (skills) yield* skills.rescan;
       const { runner } = live;
       yield* runner.close;
       yield* runner.abort;
@@ -435,6 +449,7 @@ const make = Effect.gen(function* () {
     jobs,
     wakes,
     permissions,
+    skills,
   });
 });
 

@@ -19,6 +19,7 @@ import * as Events from "../src/events.ts";
 import { FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "../src/fake-bots.ts";
 import * as Mcp from "../src/mcp.ts";
 import { type ServeOptions, serve } from "../src/serve.ts";
+import { LOCAL_SKILLS } from "../src/skills.ts";
 import * as Sqlite from "../src/sqlite.ts";
 import * as Store from "../src/store.ts";
 import type { TopTool } from "../src/tools.ts";
@@ -41,10 +42,18 @@ export type HarnessOptions = {
   readonly files?: (bot: Store.BotRow) => string;
   readonly attachments?: boolean;
   readonly mcp?: boolean;
+  /** Bots have skills: the shared library is `<dir>/skills`, a bot's own are `<dir>/bots/<name>/.agents/skills`. */
+  readonly skills?: boolean;
   /** Also listen over HTTP and WebSocket (port 0 picks a free one). */
   readonly serve?: Partial<ServeOptions>;
   readonly tps?: number;
 };
+
+/** Where a test daemon's skills are (see `HarnessOptions.skills`). */
+export const skillsConfig = (dir: string) => ({
+  library: join(dir, "skills"),
+  local: (bot: Pick<Store.BotRow, "name">) => join(dir, "bots", bot.name, LOCAL_SKILLS),
+});
 
 class Ports extends Context.Service<Ports, { readonly port: number; readonly tailnetPort: number | undefined }>()("test/Ports") {}
 
@@ -68,7 +77,10 @@ export async function harness(options: HarnessOptions = {}) {
         models,
         tools: options.tools ?? [],
         thinking: "off",
+        // Bots can be made from a test like from the app (the first ones are made above, without a system message).
+        newBot: { model: MODEL, instructions: Daemon.defaultInstructions, declare: [] },
         files: options.files,
+        ...(options.skills ? { skills: skillsConfig(dir) } : {}),
         foregroundMs: options.foregroundMs ?? 30_000,
         gatherMs: options.gatherMs,
         retryDelaysMs: [100, 100, 100],

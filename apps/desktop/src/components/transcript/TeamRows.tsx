@@ -113,7 +113,7 @@ const UserMessage = memo(function UserMessage({ row, head }: { row: Extract<Disp
             row.state === "failed" && "text-destructive-foreground",
           )}
         >
-          <UserText text={row.text} />
+          <UserText text={row.text} skill={row.skill} />
         </div>
       )}
       {row.attachments && (
