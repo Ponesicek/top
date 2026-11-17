@@ -43,6 +43,11 @@ export type Row =
   | { readonly kind: "tool"; readonly key: string; readonly entry: ToolEntry }
   | { readonly kind: "notice"; readonly key: string; readonly text: string }
   /**
+   * A wake-up the bot set came due. It shows nothing: the bot's reply says what came of it. It still ends
+   * the turn before it, so that reply, often hours later, opens a turn of its own.
+   */
+  | { readonly kind: "wake"; readonly key: string }
+  /**
    * A bot asked the user's permission, shown where it asked (its call's result). `answer` once the
    * `permission` entry naming the request has arrived; until then the daemon's waiting list says
    * whether it can be answered.
@@ -57,18 +62,9 @@ const entryRows = new WeakMap<Entry, Row>();
 /**
  * A background job's result, or the user's answer to a permission request, shows no row: the bot's
  * reply that follows says what came of it (and a permission card says what was answered). The bot
- * still gets the message; only the transcript leaves it out.
+ * still gets the message; only the transcript leaves it out. A wake-up leaves an empty `wake` row.
  */
 const hidden = (source: string | undefined) => source === "job" || source === "permission";
-
-/**
- * Any other message from Top rather than the user (a wake-up) shows as one line:
- * its first, "[Wake-up] check the deploy" → "Wake-up: check the deploy".
- */
-export function eventLine(text: string): string {
-  const first = text.split("\n", 1)[0]!.replace(/^\[([^\]]+)\]\s*/, "$1: ");
-  return first.length > 160 ? `${first.slice(0, 159)}…` : first;
-}
 
 /** A permission entry has no row of its own: its request's card shows what came of it (committedRows). */
 function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
@@ -78,7 +74,7 @@ function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
   switch (entry.kind) {
     case "user":
       row = entry.source
-        ? { kind: "notice", key, text: eventLine(entry.text) }
+        ? { kind: "wake", key }
         : { kind: "user", key, text: entry.text, at: entry.at, ...(entry.attachments ? { attachments: entry.attachments } : {}) };
       break;
     case "assistant":
@@ -162,20 +158,17 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
   const rows: Row[] = [];
   if (working) rows.push(WORKING);
   for (const item of snapshot.inbox) {
-    if (hidden(item.source)) continue;
+    // Top's own messages (a wake-up, a job's result) wait unseen, like the entries they become.
+    if (item.source) continue;
     rows.push(
-      stable<QueuedMessage>(item, () =>
-        item.source
-          ? { kind: "notice", key: `m${item.requestId}`, text: eventLine(item.text) }
-          : {
-              kind: "user",
-              key: `m${item.requestId}`,
-              text: item.text,
-              ...(item.attachments ? { attachments: item.attachments } : {}),
-              at: item.at,
-              state: item.mode === "steer" ? "steer" : "queued",
-            },
-      ),
+      stable<QueuedMessage>(item, () => ({
+        kind: "user",
+        key: `m${item.requestId}`,
+        text: item.text,
+        ...(item.attachments ? { attachments: item.attachments } : {}),
+        at: item.at,
+        state: item.mode === "steer" ? "steer" : "queued",
+      })),
     );
   }
   for (const pending of snapshot.pending) {
