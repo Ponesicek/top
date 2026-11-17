@@ -18,8 +18,12 @@ import type { AssistantMessage, ImageContent, TextContent } from "@earendil-work
 import * as Config from "effect/Config";
 import type { TopUserMessage, TranscriptMessage } from "./messages.ts";
 
-/** A transcript longer than this (in tokens) is compacted before the next request (`TOP_COMPACT_AT_TOKENS`; 0 turns it off). */
-export const CompactAtTokens = Config.Int("TOP_COMPACT_AT_TOKENS").pipe(Config.withDefault(120_000));
+/**
+ * A transcript longer than this (in tokens) is compacted before the next request (`TOP_COMPACT_AT_TOKENS`;
+ * 0 turns it off). A transcript grows from the summary up to it, so a request averages about half of it:
+ * replaying two busy bots' history, 60k sent ~40% less than 120k, for a compaction every few hours.
+ */
+export const CompactAtTokens = Config.Int("TOP_COMPACT_AT_TOKENS").pipe(Config.withDefault(60_000));
 /** Never wait past this share of the model's context window. */
 export const WINDOW_SHARE = 0.8;
 
