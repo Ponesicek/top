@@ -27,7 +27,8 @@ export function SkillMenu({
 }) {
   const list = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<{ left: number; width: number; bottom: number }>();
-  // The box can move while the menu is open (an attachment added): place it again as the list changes.
+  // The box can move while the menu is open (an attachment added): measured again on each render, which
+  // `skills` (a new list each time) stands for.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `skills` changing is when to measure again
   useLayoutEffect(() => {
     const measure = () => {
