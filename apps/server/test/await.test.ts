@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import Type from "typebox";
@@ -60,7 +61,11 @@ function slowTool() {
 const setup = (tools: TopTool[] = [], dir?: string) => harness({ tools, foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS, ...(dir ? { dir } : {}) });
 
 const textOf = (entry: StoredEntry) =>
-  entry.kind === "notice" ? entry.message.text : entry.kind === "files" || entry.kind === "permission" ? "" : textOfContent(entry.message.content);
+  entry.kind === "notice"
+    ? entry.message.text
+    : entry.kind === "files" || entry.kind === "permission" || entry.kind === "compaction"
+      ? ""
+      : textOfContent(entry.message.content);
 const fromTop = async (h: Harness, source: "wake" | "job") => (await h.entries()).filter((e) => e.kind === "user" && e.source === source);
 const lastIsAnswer = async (h: Harness) => (await h.entries()).at(-1)?.kind === "assistant" && (await idle(h));
 const messagesFrom = (h: Harness, source: "wake" | "job") => async () => {
@@ -338,6 +343,74 @@ test("stop_after_minutes stops a job that runs too long, and the bot is told it 
   await until("the bot to answer", () => lastIsAnswer(h));
   assert.equal(slow.stopped, true);
   assert.equal((await h.run(h.store.job(1)))?.state, "stopped");
+});
+
+/** A wait on another agent: "timed out, still running" until the test says it's done. Each call takes `ms`. */
+function agentWait(ms = 0) {
+  const state = { done: false, fail: false, starts: [] as number[] };
+  const tool: TopTool = {
+    name: "agent__wait",
+    label: "Wait",
+    description: "",
+    parameters: Type.Object({}),
+    run: () =>
+      Effect.gen(function* () {
+        state.starts.push(yield* Clock.currentTimeMillis);
+        if (state.fail) return { ...text('{"error":"no such thread","timedOut":true}'), isError: true };
+        yield* Effect.sleep(`${ms} millis`);
+        return text(state.done ? '{"status":"done","summary":"PR 12 merged"}' : '{"status":"running","timedOut":true}');
+      }),
+  };
+  return { tool, state };
+}
+
+test("with repeat_while, a wait that times out runs again without telling the bot, which hears once when it's done", async () => {
+  const wait = agentWait(20);
+  const h = await harness({ tools: [wait.tool], foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS, repeatGapMs: 60 });
+  const started = resultText(await backgroundOf(h)({ tool: "agent__wait", repeat_while: '"timedOut":true', note: "PR 12 agent" }));
+  assert.match(started, /^Started as background job 1/);
+  assert.match(started, /runs again without telling you/);
+
+  await until("a few runs", () => wait.state.starts.length >= 4);
+  assert.deepEqual(await fromTop(h, "job"), [], "no message while it only timed out");
+  assert.equal(h.daemon.jobs.count(h.bot), 1);
+  // A call that answers sooner than the gap waits out the rest of it before running again.
+  const gaps = wait.state.starts.slice(1).map((at, i) => at - wait.state.starts[i]!);
+  assert.ok(
+    gaps.every((gap) => gap >= 55),
+    `runs were ${gaps.join(", ")}ms apart`,
+  );
+
+  wait.state.done = true;
+  const [message] = await until("the job's message", messagesFrom(h, "job"));
+  assert.match(textOf(message!), /^\[Background job 1 finished\] PR 12 agent: agent__wait, after .+ and \d+ runs/);
+  assert.match(textOf(message!), /PR 12 merged/);
+  await until("the bot to answer", () => lastIsAnswer(h));
+  assert.equal((await fromTop(h, "job")).length, 1, "it heard once");
+  assert.equal(h.daemon.jobs.count(h.bot), 0);
+});
+
+test("a repeating call that fails is reported at once, even when its result has the text", async () => {
+  const wait = agentWait();
+  wait.state.fail = true;
+  const h = await harness({ tools: [wait.tool], foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS, repeatGapMs: 60 });
+  const result = await backgroundOf(h)({ tool: "agent__wait", repeat_while: '"timedOut":true' });
+  // It failed within its first second, so it's an ordinary failed result, not a job.
+  assert.match(resultText(result), /no such thread/);
+  assert.equal(result.isError, true);
+  assert.equal(wait.state.starts.length, 1);
+  assert.equal(h.daemon.jobs.count(h.bot), 0);
+});
+
+test("Stop ends a repeating job between its runs", async () => {
+  const wait = agentWait();
+  const h = await harness({ tools: [wait.tool], foregroundMs: FOREGROUND_MS, gatherMs: GATHER_MS, repeatGapMs: 60_000 });
+  assert.match(resultText(await backgroundOf(h)({ tool: "agent__wait", repeat_while: '"timedOut":true' })), /^Started as background job 1/);
+  await h.run(h.daemon.stop(h.bot));
+  await until("the job to stop", () => h.daemon.jobs.count(h.bot) === 0);
+  assert.equal(wait.state.starts.length, 1);
+  assert.equal((await h.run(h.store.job(1)))?.state, "stopped");
+  assert.deepEqual(await fromTop(h, "job"), []);
 });
 
 test("background checks the tool and its arguments before starting anything", async () => {

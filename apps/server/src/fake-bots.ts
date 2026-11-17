@@ -77,7 +77,10 @@ function paragraph(): string {
   return Array.from({ length: 2 + Math.floor(Math.random() * 4) }, () => sentence()).join(" ");
 }
 
-type Context = Parameters<FauxResponseFactory>[0];
+/** A request's transcript, as the provider gets it. */
+export type Context = Parameters<FauxResponseFactory>[0];
+/** What a request asks besides its context: its session id, reasoning level, signal. */
+export type RequestOptions = Parameters<FauxResponseFactory>[1];
 type ContextMessage = Context["messages"][number];
 
 function contentText(message: ContextMessage | undefined): string {
@@ -205,8 +208,11 @@ export const FAKE_PROMPTS = [
   "List the open TODOs in the client package",
 ] as const;
 
-/** The scripted model at `tokensPerSecond`, its script kept topped up by a fiber for as long as the scope lasts. */
-export const makeFakeModelProvider = (tokensPerSecond: number) =>
+/**
+ * The scripted model at `tokensPerSecond`, its script kept topped up by a fiber for as long as the scope lasts.
+ * `onRequest` sees each request (tests check what goes out with it).
+ */
+export const makeFakeModelProvider = (tokensPerSecond: number, onRequest?: (context: Context, options: RequestOptions) => void) =>
   Effect.gen(function* () {
     const faux = fauxProvider({
       provider: FAKE_PROVIDER,
@@ -214,7 +220,10 @@ export const makeFakeModelProvider = (tokensPerSecond: number) =>
       tokensPerSecond,
       tokenSize: { min: 3, max: 6 },
     });
-    const factory: FauxResponseFactory = (context) => respond(context);
+    const factory: FauxResponseFactory = (context, options) => {
+      onRequest?.(context, options);
+      return respond(context);
+    };
     // The faux provider consumes one scripted step per request; keep the script topped up forever.
     const topUp = Effect.sync(() => {
       if (faux.getPendingResponseCount() < 256) faux.appendResponses(Array.from({ length: 1024 }, () => factory));

@@ -32,6 +32,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
   const base = { seq: stored.seq, bot: stored.bot, at: stored.at };
   switch (stored.kind) {
     case "system":
+    case "compaction":
       return undefined;
     case "notice":
       return { ...base, kind: "notice", text: stored.message.text };

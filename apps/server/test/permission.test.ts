@@ -12,7 +12,11 @@ import { toWire } from "../src/wire.ts";
 import { type Harness, harness, idle, until } from "./harness.ts";
 
 const textOf = (entry: StoredEntry) =>
-  entry.kind === "notice" ? entry.message.text : entry.kind === "files" || entry.kind === "permission" ? "" : textOfContent(entry.message.content);
+  entry.kind === "notice"
+    ? entry.message.text
+    : entry.kind === "files" || entry.kind === "permission" || entry.kind === "compaction"
+      ? ""
+      : textOfContent(entry.message.content);
 const waiting = (h: Harness) => h.run(h.daemon.permissions.waiting);
 const answer = (h: Harness, id: number, bot: number, allow: boolean) => h.run(Effect.result(h.daemon.permissions.answer(id, bot, allow)));
 const ofKind = async <K extends StoredEntry["kind"]>(h: Harness, kind: K, bot = h.bot) =>

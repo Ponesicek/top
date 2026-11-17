@@ -16,7 +16,7 @@ import { afterAll } from "vitest";
 import * as Attachments from "../src/attachments.ts";
 import * as Daemon from "../src/daemon.ts";
 import * as Events from "../src/events.ts";
-import { FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "../src/fake-bots.ts";
+import { FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider, type Context as RequestContext, type RequestOptions } from "../src/fake-bots.ts";
 import * as Mcp from "../src/mcp.ts";
 import { type ServeOptions, serve } from "../src/serve.ts";
 import { LOCAL_SKILLS } from "../src/skills.ts";
@@ -35,6 +35,10 @@ export type HarnessOptions = {
   readonly tools?: readonly TopTool[];
   readonly foregroundMs?: number;
   readonly gatherMs?: number;
+  /** The least time between two runs of a repeating background call. */
+  readonly repeatGapMs?: number;
+  /** Compact a bot's transcript when it's longer than this many tokens. */
+  readonly compactAtTokens?: number;
   /** An existing data folder: a daemon starting again on the last one's data. */
   readonly dir?: string;
   /** The bots a fresh store starts with. */
@@ -47,6 +51,8 @@ export type HarnessOptions = {
   /** Also listen over HTTP and WebSocket (port 0 picks a free one). */
   readonly serve?: Partial<ServeOptions>;
   readonly tps?: number;
+  /** Sees every model request the bots make. */
+  readonly onRequest?: (context: RequestContext, options: RequestOptions) => void;
 };
 
 /** Where a test daemon's skills are (see `HarnessOptions.skills`). */
@@ -72,7 +78,7 @@ export async function harness(options: HarnessOptions = {}) {
     Daemon.BotKit,
     Effect.gen(function* () {
       const models = createModels();
-      models.setProvider((yield* makeFakeModelProvider(options.tps ?? 2_000)).provider);
+      models.setProvider((yield* makeFakeModelProvider(options.tps ?? 2_000, options.onRequest)).provider);
       return Daemon.BotKit.of({
         models,
         tools: options.tools ?? [],
@@ -83,6 +89,8 @@ export async function harness(options: HarnessOptions = {}) {
         ...(options.skills ? { skills: skillsConfig(dir) } : {}),
         foregroundMs: options.foregroundMs ?? 30_000,
         gatherMs: options.gatherMs,
+        repeatGapMs: options.repeatGapMs,
+        compactAtTokens: options.compactAtTokens,
         retryDelaysMs: [100, 100, 100],
       });
     }),

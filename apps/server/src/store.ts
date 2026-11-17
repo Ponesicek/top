@@ -4,7 +4,8 @@
  * the whole durability story:
  *
  * - `entries`: every finished message of every bot (system, user, assistant, tool result) plus
- *   notices, numbered by one global sequence. Never updated or deleted.
+ *   notices, numbered by one global sequence. Never updated or deleted. A `compaction` entry replaces
+ *   the transcript before it with a summary, in what the model sees only (see compaction.ts).
  * - `inbox`: messages accepted from clients and not yet given to the model. Moving one into
  *   `entries` is a single transaction, so a message is never lost or doubled.
  * - `tool_calls`: written right before a tool runs, so after a crash the daemon knows whether a tool
@@ -45,8 +46,11 @@ import * as Schema from "effect/Schema";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import { summaryMessage } from "./compaction.ts";
 import {
   AssistantView,
+  type Compaction,
+  CompactionView,
   type EntryBody,
   FilesView,
   NoticeView,
@@ -68,7 +72,7 @@ const Text = Schema.String;
 const NullableText = Schema.NullOr(Schema.String);
 const Source = Schema.NullOr(MessageSource);
 
-export const EntryKind = Schema.Literals(["system", "user", "assistant", "tool", "notice", "files", "permission"]);
+export const EntryKind = Schema.Literals(["system", "user", "assistant", "tool", "notice", "files", "permission", "compaction"]);
 export type EntryKind = typeof EntryKind.Type;
 
 /** A file in a bot's files folder, as last seen. */
@@ -97,6 +101,7 @@ export const StoredEntry = Schema.Union([
   entryOf_("notice", NoticeView),
   entryOf_("files", FilesView),
   entryOf_("permission", PermissionView),
+  entryOf_("compaction", CompactionView),
 ]);
 export type StoredEntry = typeof StoredEntry.Type;
 
@@ -196,7 +201,12 @@ export const ToolCallRow = Schema.Struct({
 export type ToolCallRow = typeof ToolCallRow.Type;
 
 const FileRow = Schema.Struct({ path: Text, size: Schema.Number, mtime: Schema.Number });
-const ContextRow = Schema.Struct({ kind: Schema.Literals(["system", "user", "assistant", "tool"]), message: Schema.fromJsonString(Schema.Unknown) });
+const ContextRow = Schema.Struct({
+  seq: Int,
+  kind: Schema.Literals(["system", "user", "assistant", "tool"]),
+  message: Schema.fromJsonString(Schema.Unknown),
+});
+const compactionOf = Schema.decodeUnknownSync(Schema.fromJsonString(CompactionView));
 const answerOf = Schema.decodeUnknownSync(Schema.fromJsonString(AssistantView));
 
 export type AppendExtra = {
@@ -394,9 +404,11 @@ const botOf = decoder(Schema.decodeUnknownSync(BotRow));
 const toolCallOf = decoder(Schema.decodeUnknownSync(ToolCallRow));
 const fileOf = decoder(Schema.decodeUnknownSync(FileRow));
 const contextRow = Schema.decodeUnknownSync(ContextRow);
-const contextOf = (row: Row): TranscriptMessage => {
-  const { kind, message } = contextRow(row);
-  return transcriptMessage(kind, message);
+/** A message of the model's context, with the seq of the entry it is (none for a summary). */
+type ContextItem = { readonly seq: number | undefined; readonly message: TranscriptMessage };
+const contextOf = (row: Row): ContextItem => {
+  const { seq, kind, message } = contextRow(row);
+  return { seq, message: transcriptMessage(kind, message) };
 };
 
 /** Set (a store flag) by an update just before the daemon restarts on the new version; see Daemon.start. */
@@ -471,8 +483,13 @@ export class Store extends Context.Service<
     // entries
     readonly append: <K extends EntryKind>(bot: number, kind: K, message: EntryBody[K], extra?: AppendExtra) => Effect.Effect<StoredEntry>;
     readonly entry: (seq: number) => Effect.Effect<StoredEntry | undefined>;
-    /** Every message the model sees, in order. */
+    /** Every message the model sees, in order: after a compaction, the summary in place of what it summarised. */
     readonly context: (bot: number) => Effect.Effect<TranscriptMessage[]>;
+    /**
+     * Replace the context but its last `keep` messages with `summary`, and add `notice` for the user, in
+     * one transaction. The notice's entry, for clients.
+     */
+    readonly compact: (bot: number, keep: number, summary: Omit<Compaction, "keptFrom">, notice: string) => Effect.Effect<StoredEntry>;
     /** The newest entry that is part of the model's context. */
     readonly lastContextEntry: (bot: number) => Effect.Effect<StoredEntry | undefined>;
     readonly lastSeq: (bot: number) => Effect.Effect<number>;
@@ -589,9 +606,9 @@ const traced = (store: Store["Service"]): Store["Service"] => {
   return wrapped as Store["Service"];
 };
 
-const VISIBLE = "kind != 'system'";
+const VISIBLE = "kind NOT IN ('system', 'compaction')";
 /** Entries the model sees: not the ones only clients show. */
-const CONTEXT = "kind NOT IN ('notice', 'files', 'permission')";
+const CONTEXT = "kind IN ('system', 'user', 'assistant', 'tool')";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -631,6 +648,19 @@ const make = Effect.gen(function* () {
       RETURNING *`);
     return entryOf(row!);
   });
+
+  /** The model's context, with each message's seq: see `context`. */
+  const context = (bot: number) =>
+    Effect.gen(function* () {
+      const items = (yield* rows(sql.unsafe(`SELECT seq, kind, message FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq`, [bot]))).map(contextOf);
+      const latest = yield* first(sql`SELECT message FROM entries WHERE bot = ${bot} AND kind = 'compaction' ORDER BY seq DESC LIMIT 1`);
+      if (!latest) return items;
+      const compaction = compactionOf(latest.message);
+      // Its instructions and tools stay as they were; the conversation before `keptFrom` is the summary.
+      const before = items.filter((item) => item.seq! < compaction.keptFrom && item.message.role === "system");
+      const after = items.filter((item) => item.seq! >= compaction.keptFrom);
+      return [...before, { seq: undefined, message: summaryMessage(compaction.summary, compaction.timestamp) }, ...after];
+    });
 
   const inboxRow = (requestId: string) => Effect.map(first(sql`SELECT * FROM inbox WHERE request_id = ${requestId}`), (row) => row && inboxOf(row));
 
@@ -777,8 +807,18 @@ const make = Effect.gen(function* () {
 
       append,
       entry: (seq) => Effect.map(first(sql`SELECT * FROM entries WHERE seq = ${seq}`), (row) => row && entryOf(row)),
-      context: (bot) =>
-        Effect.map(rows(sql.unsafe(`SELECT kind, message FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq`, [bot])), (r) => r.map(contextOf)),
+      context: (bot) => Effect.map(context(bot), (items) => items.map((item) => item.message)),
+      compact: (bot, keep, summary, notice) =>
+        transaction(
+          Effect.gen(function* () {
+            const items = yield* context(bot);
+            const kept = items.slice(items.length - keep);
+            if (keep > items.length || kept.some((item) => item.seq === undefined)) return yield* Effect.die(new Error(`Can't keep the last ${keep} messages`));
+            const keptFrom = kept[0]?.seq ?? Number((yield* first(sql`SELECT MAX(seq) AS seq FROM entries`))?.seq ?? 0) + 1;
+            yield* append(bot, "compaction", { ...summary, keptFrom });
+            return yield* append(bot, "notice", { text: notice });
+          }),
+        ),
       lastContextEntry: (bot) =>
         Effect.map(first(sql.unsafe(`SELECT * FROM entries WHERE bot = ? AND ${CONTEXT} ORDER BY seq DESC LIMIT 1`, [bot])), (row) => row && entryOf(row)),
       lastSeq: (bot) =>

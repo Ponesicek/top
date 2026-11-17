@@ -46,6 +46,19 @@ export type EntryBody = {
   readonly files: { readonly files: readonly FileChange[] };
   /** What came of a permission request (see permissions.ts). */
   readonly permission: { readonly request: number; readonly answer: PermissionAnswer };
+  readonly compaction: Compaction;
+};
+
+/** The transcript before `keptFrom` was summarised (see compaction.ts). Clients never see it. */
+export type Compaction = {
+  readonly summary: string;
+  /** The seq of the first entry kept word for word; past the last one when none was kept. */
+  readonly keptFrom: number;
+  /** The transcript's size before, as estimated. */
+  readonly tokensBefore: number;
+  /** What the summary request cost, as the provider counted it. */
+  readonly usage?: unknown;
+  readonly timestamp: number;
 };
 
 // ── what Top reads ───────────────────────────────────────────────────────────────
@@ -92,6 +105,13 @@ export const ToolResultView = Schema.Struct({
   timestamp: Schema.Number,
 });
 export const NoticeView = Schema.Struct({ text: Schema.String });
+export const CompactionView = Schema.Struct({
+  summary: Schema.String,
+  keptFrom: Schema.Number,
+  tokensBefore: Schema.Number,
+  usage: Optional(Schema.Unknown),
+  timestamp: Schema.Number,
+});
 export const FilesView = Schema.Struct({ files: Schema.Array(FileChange) });
 export const PermissionView = Schema.Struct({ request: Schema.Int, answer: PermissionAnswer });
 

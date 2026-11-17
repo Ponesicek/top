@@ -13,6 +13,9 @@
  * the bot works go in at the next turn (steering) or when it would end (follow-ups), all at once; tool
  * calls run in parallel unless one of them must run alone; tools that came or went since the transcript
  * last said so are declared to the model in a system message before its next request.
+ *
+ * A transcript that has grown past `compact.atTokens` is compacted before the next request (see
+ * compaction.ts): the model summarises it, and the summary stands in for it from then on.
  */
 import {
   type Api,
@@ -30,7 +33,8 @@ import {
 } from "@earendil-works/pi-ai";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import type { TranscriptMessage } from "./messages.ts";
+import { compactionCut, SUMMARY_REQUEST } from "./compaction.ts";
+import { type TranscriptMessage, textOf } from "./messages.ts";
 import { checkArguments, type ToolArguments, type ToolContext, type ToolResult, type TopTool, text } from "./tools.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -52,6 +56,12 @@ export type LoopOptions = {
   readonly models: Models;
   readonly model: Model<Api>;
   readonly thinkingLevel: ThinkingLevel;
+  /**
+   * The same for every request of one transcript (a bot's). Providers route on it to the machine that
+   * holds the transcript's prompt cache (OpenAI's `prompt_cache_key`); without it, a request often
+   * lands where nothing is cached and the whole transcript is read again at full price.
+   */
+  readonly sessionId: string;
   /** The transcript. The loop adds to it as it goes. */
   readonly messages: TranscriptMessage[];
   /** The tools for this run. */
@@ -68,6 +78,18 @@ export type LoopOptions = {
   /** The transcript as the model gets it (images read in, for example). */
   readonly transformContext?: ((messages: readonly TranscriptMessage[]) => Effect.Effect<readonly TranscriptMessage[]>) | undefined;
   readonly hooks: LoopHooks;
+  /** Compact the transcript when it's longer than this; without it, never. */
+  readonly compact?: Compact | undefined;
+};
+
+export type Compact = {
+  /** In tokens, as `contextTokens` counts them. */
+  readonly atTokens: number;
+  /**
+   * Save the summary in place of all but the transcript's last `keep` messages, and answer the
+   * transcript as it is now. `answer` is the model's, whose text is the summary.
+   */
+  readonly save: (summary: string, keep: number, answer: AssistantMessage, tokensBefore: number) => Effect.Effect<readonly TranscriptMessage[]>;
 };
 
 /** A tool result as it goes in the transcript. */
@@ -147,22 +169,61 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         }
       });
 
+    /**
+     * The model's answer to `transcript`. Every request is made the same way, so they all start alike
+     * and the provider's prompt cache covers what they share.
+     */
+    const request = (transcript: readonly TranscriptMessage[]) =>
+      Effect.gen(function* () {
+        const context = options.transformContext ? yield* options.transformContext(transcript) : transcript;
+        const llm = normalizeContext({
+          messages: context.filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult"),
+        });
+        const response = options.models.streamSimple(options.model, llm, {
+          ...(reasoning ? { reasoning } : {}),
+          transport: "auto",
+          sessionId: options.sessionId,
+          identity: { attribution: null },
+          signal,
+        });
+        const answer = yield* Effect.promise(() => response.result());
+        answer.thinkingLevel = options.thinkingLevel;
+        return answer;
+      });
+
+    /** A compaction failed in this run: don't ask for another. */
+    let compactionFailed = false;
+    /** Compact the transcript if it's grown too long (see compaction.ts). A failure leaves it as it was. */
+    const compactIfLong = Effect.gen(function* () {
+      const compact = options.compact;
+      if (!compact || compactionFailed) return;
+      const due = compactionCut(messages, compact.atTokens);
+      if (!due) return;
+      const { cut, tokens: tokensBefore } = due;
+      const answer = yield* request([...messages.slice(0, cut), { role: "user", content: SUMMARY_REQUEST, timestamp: yield* Clock.currentTimeMillis }]);
+      const summary = textOf(answer.content.filter((part) => part.type === "text")).trim();
+      if (answer.stopReason !== "stop" || toolCallsOf(answer).length || !summary) {
+        compactionFailed = true;
+        if (!signal.aborted) yield* Effect.logWarning(`compaction failed (${answer.stopReason}): ${answer.errorMessage ?? "no summary"}`);
+        return;
+      }
+      const next = yield* compact.save(summary, messages.length - cut, answer, tokensBefore);
+      messages.splice(0, messages.length, ...next);
+    }).pipe(
+      Effect.catchDefect((defect) =>
+        Effect.gen(function* () {
+          compactionFailed = true;
+          yield* Effect.logWarning("compaction failed", defect);
+        }),
+      ),
+      Effect.withSpan("Loop.compact"),
+    );
+
     /** The model's answer. A request that couldn't be made is an answer that failed, so it's retried like one. */
     const ask = Effect.gen(function* () {
       yield* hooks.asking;
-      const context = options.transformContext ? yield* options.transformContext(messages) : messages;
-      const llm = normalizeContext({
-        messages: context.filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult"),
-      });
-      const response = options.models.streamSimple(options.model, llm, {
-        ...(reasoning ? { reasoning } : {}),
-        transport: "auto",
-        identity: { attribution: null },
-        signal,
-      });
-      const answer = yield* Effect.promise(() => response.result());
-      answer.thinkingLevel = options.thinkingLevel;
-      return answer;
+      yield* compactIfLong;
+      return yield* request(messages);
     }).pipe(
       Effect.catchDefect((defect) =>
         Effect.map(
