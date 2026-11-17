@@ -320,6 +320,28 @@ test("the fake model plays OpenAI's search through the same hooks, once it's swi
 
 // ── the pieces ───────────────────────────────────────────────────────────────────
 
+test("compacting a bot that may search keeps search in the summary request, so it starts like the request before it", async () => {
+  const h = await harness({ model: openai(), webSearch: true, compactAtTokens: 10 });
+  await h.run(h.daemon.setWebSearch(h.bot, true));
+  replies.push(() => sse(searched()));
+  await send(h, "what is top?");
+  // The next message finds the conversation over the limit: first the summary, then the answer.
+  replies.push(() => sse(plain("resp_summary", "## Goal\nKnow what Top is.")));
+  replies.push(() => sse(plain("resp_2", "Anything else?")));
+  await send(h, "thanks");
+
+  const [first, summary, next] = requests;
+  // The same tools, and the first request's items word for word, then its answer with the search: the cache covers it.
+  expect(tools(summary)).toEqual(tools(first));
+  expect(items(summary).slice(0, items(first).length)).toEqual(items(first));
+  expect(items(summary).flatMap((item) => (item.id ? [item.id] : []))).toEqual(["rs_1", "ws_1", "msg_1"]);
+  expect(JSON.stringify(items(summary).at(-1))).toContain("being compacted");
+  // Then the bot goes on from the summary, still able to search.
+  expect(tools(next)).toEqual([{ type: "web_search" }]);
+  expect(JSON.stringify(items(next))).toContain("Know what Top is.");
+  expect((await h.entries()).some((e) => e.kind === "notice" && e.message.text.startsWith("Compacted"))).toBe(true);
+});
+
 const assistant = (webSearch: TopAssistantMessage["webSearch"]): TranscriptMessage =>
   ({ role: "assistant", content: [], stopReason: "stop", timestamp: 0, webSearch }) as unknown as TranscriptMessage;
 const item = (id: string) => ({ type: "web_search_call" as const, id, status: "completed" });
