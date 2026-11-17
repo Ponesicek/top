@@ -8,6 +8,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { textOf } from "./messages.ts";
 import type { StoredEntry } from "./store.ts";
+import { searchStep } from "./websearch.ts";
 
 export { textOf };
 
@@ -62,11 +63,15 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         p.type === "toolCall" ? [{ id: p.id, name: p.name, summary: full ? JSON.stringify(p.arguments ?? {}) : summarize(p.arguments) }] : [],
       );
       const failed = message.stopReason === "error" || message.stopReason === "aborted";
+      const searches = message.webSearch?.searches.map((s) => searchStep(s.item, full)) ?? [];
+      const citations = message.webSearch?.citations ?? [];
       return {
         ...base,
         kind: "assistant",
         text: textOf(message.content),
         ...(tools.length ? { tools } : {}),
+        ...(searches.length ? { searches } : {}),
+        ...(citations.length ? { citations } : {}),
         ...(thinking ? (full ? { thinking } : { hasThinking: true as const }) : {}),
         ...(failed ? { error: message.errorMessage || message.stopReason } : {}),
         ...(message.stopReason === "aborted" ? { stopped: true as const } : {}),

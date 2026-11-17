@@ -16,6 +16,9 @@
  *
  * A transcript that has grown past `compact.atTokens` is compacted before the next request (see
  * compaction.ts): the model summarises it, and the summary stands in for it from then on.
+ *
+ * On OpenAI's Responses API, the model may also search the web with OpenAI's own tool (websearch.ts),
+ * inside its request: what it did comes back on the answer, and isn't a tool call the loop runs.
  */
 import {
   type Api,
@@ -34,8 +37,9 @@ import {
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import { compactionCut, SUMMARY_REQUEST } from "./compaction.ts";
-import { type TranscriptMessage, textOf } from "./messages.ts";
+import { type TopAssistantMessage, type TranscriptMessage, textOf } from "./messages.ts";
 import { checkArguments, type ToolArguments, type ToolContext, type ToolResult, type TopTool, text } from "./tools.ts";
+import { captureWebSearch, searchRefusal, withWebSearch } from "./websearch.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -50,6 +54,8 @@ export type LoopHooks = {
   readonly toolRunning: (call: ToolCall, args: ToolArguments) => Effect.Effect<void>;
   /** The call's result; `ran` when the tool really ran (not refused, not stopped before it started). */
   readonly toolEnd: (result: ToolResultMessage, ran: boolean) => Effect.Effect<void>;
+  /** OpenAI started searching the web for the answer under way (`on`), or stopped. */
+  readonly searching?: ((on: boolean) => Effect.Effect<void>) | undefined;
 };
 
 export type LoopOptions = {
@@ -77,6 +83,11 @@ export type LoopOptions = {
   readonly followUps: () => TranscriptMessage[];
   /** The transcript as the model gets it (images read in, for example). */
   readonly transformContext?: ((messages: readonly TranscriptMessage[]) => Effect.Effect<readonly TranscriptMessage[]>) | undefined;
+  /**
+   * The model takes OpenAI's web search (websearch.ts): `offer` it in this run's requests. Earlier
+   * answers' searches go back in either way. Absent: the model can't search.
+   */
+  readonly webSearch?: { readonly offer: boolean } | undefined;
   readonly hooks: LoopHooks;
   /** Compact the transcript when it's longer than this; without it, never. */
   readonly compact?: Compact | undefined;
@@ -179,15 +190,30 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         const llm = normalizeContext({
           messages: context.filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult"),
         });
+        // Web search is part of every request alike (its tool and earlier searches are in the cached prefix).
+        const search = options.webSearch;
+        const services = yield* Effect.context<never>();
+        const capture = search?.offer
+          ? captureWebSearch((on) => {
+              if (hooks.searching) Effect.runForkWith(services)(hooks.searching(on));
+            })
+          : undefined;
         const response = options.models.streamSimple(options.model, llm, {
           ...(reasoning ? { reasoning } : {}),
           transport: "auto",
           sessionId: options.sessionId,
           identity: { attribution: null },
           signal,
+          ...(search ? { onPayload: (payload: unknown) => withWebSearch(payload, context, search.offer) } : {}),
+          ...(capture ? { onProviderStreamEvent: capture.event } : {}),
         });
-        const answer = yield* Effect.promise(() => response.result());
+        const answer: TopAssistantMessage = yield* Effect.promise(() => response.result());
         answer.thinkingLevel = options.thinkingLevel;
+        const record = capture?.record();
+        if (record) answer.webSearch = record;
+        // OpenAI may not let this plan, workspace or model search: say so, rather than a bare 400.
+        const refusal = search?.offer && answer.stopReason === "error" ? searchRefusal(answer.errorMessage) : undefined;
+        if (refusal) answer.errorMessage = refusal;
         return answer;
       });
 

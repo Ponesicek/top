@@ -4,7 +4,7 @@
  * under it while you point anywhere in it.
  */
 
-import { Loader2 } from "lucide-react";
+import { Globe, Loader2 } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderCached } from "../../markdown.ts";
@@ -20,6 +20,7 @@ import {
   prevTime,
   RetryNote,
   type RowRenderer,
+  Sources,
   StepIcon,
   ToolGroup,
   time,
@@ -29,6 +30,7 @@ import {
   UserText,
   useBotStatus,
   useElapsed,
+  WebSearches,
 } from "./parts.tsx";
 
 /** The divider that opens a stretch of conversation: the time today, the day and time before that. */
@@ -105,7 +107,9 @@ const AssistantRow = memo(function AssistantRow({ row, cont, turn, end }: { row:
       <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
         {cont ? <span className="w-7 flex-none" /> : <BotAvatar size="sm" className="-mt-0.5" titled />}
         <div className="min-w-0 flex-1">
+          {row.searches.length > 0 && <WebSearches row={row} className={cn("py-0.5", row.text && "mb-1.5")} />}
           {row.text && <Markdown html={html} answer={row.seq} />}
+          {row.citations.length > 0 && <Sources citations={row.citations} />}
           {row.error && <AnswerError error={row.error} />}
         </div>
       </div>
@@ -131,14 +135,21 @@ function WorkingRow({ cont }: { cont: boolean }) {
   const bot = useBotStatus();
   const seconds = useElapsed(bot);
   const tool = bot?.status === "tool";
+  const searching = bot?.status === "thinking" && bot.searching === true;
   return (
     <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
       {cont ? <span className="w-7 flex-none" /> : <BotAvatar size="sm" className="-mt-0.5" />}
       <div className="min-w-0 flex-1">
         <div className={cn("inline-flex items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
-          {/* Amber while thinking, blue while a tool runs. */}
-          <StepIcon className={tool ? "bg-tool-surface text-tool" : "bg-warning-surface text-warning"}>
-            {tool ? <Loader2 size={12} strokeWidth={2.4} className="animate-spin motion-reduce:animate-none" /> : <Dots />}
+          {/* Amber while thinking, blue while a tool runs or OpenAI searches the web. */}
+          <StepIcon className={tool || searching ? "bg-tool-surface text-tool" : "bg-warning-surface text-warning"}>
+            {searching ? (
+              <Globe size={12} strokeWidth={2.4} className="animate-pulse motion-reduce:animate-none" />
+            ) : tool ? (
+              <Loader2 size={12} strokeWidth={2.4} className="animate-spin motion-reduce:animate-none" />
+            ) : (
+              <Dots />
+            )}
           </StepIcon>
           {bot ? statusLabel(bot) : "Working"}
           {seconds >= 2 && <span className="text-meta text-muted-foreground tabular-nums"> · {seconds} s</span>}

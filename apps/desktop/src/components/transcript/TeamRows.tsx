@@ -18,6 +18,7 @@ import {
   prevTime,
   RetryNote,
   type RowRenderer,
+  Sources,
   sameDay,
   ToolGroup,
   time,
@@ -26,6 +27,7 @@ import {
   useBotStatus,
   useElapsed,
   useIdentity,
+  WebSearches,
 } from "./parts.tsx";
 
 /** A run of messages from one author breaks after this long a pause. */
@@ -132,7 +134,9 @@ const BotMessage = memo(function BotMessage({ row, head }: { row: Extract<Displa
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
     <Shell head={head} who="bot" at={row.at}>
+      {row.searches.length > 0 && <WebSearches row={row} className="py-0.5" />}
       {row.text && <Markdown html={html} answer={row.seq} />}
+      {row.citations.length > 0 && <Sources citations={row.citations} className="mt-1.5" />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
   );

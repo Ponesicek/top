@@ -9,7 +9,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { cn } from "../lib/utils.ts";
 import { type RosterBot, top, useClient, useRoster } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
-import { Section } from "./SettingsSection.tsx";
+import { BotChip, Section } from "./SettingsSection.tsx";
 import { Button } from "./ui/button.tsx";
 
 const PATH = "font-mono text-[11.5px]";
@@ -43,20 +43,9 @@ function BotToggle({
     setPending(undefined);
   };
   return (
-    <button
-      type="button"
-      aria-pressed={shown}
-      disabled={disabled}
-      onClick={() => void toggle()}
-      title={title}
-      className={cn(
-        "inline-flex h-6.5 items-center gap-1.5 rounded-full px-2.5 text-meta leading-none font-label transition-colors duration-90 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55",
-        shown ? "bg-primary-soft text-link inset-ring inset-ring-primary/35" : "bg-secondary text-muted-foreground enabled:hover:text-foreground",
-      )}
-    >
-      <i className={cn("size-1.5 rounded-full", shown ? "bg-primary" : "inset-ring-[1.5px] inset-ring-current")} aria-hidden />
+    <BotChip on={shown} disabled={disabled} onClick={() => void toggle()} title={title}>
       {bot.name}
-    </button>
+    </BotChip>
   );
 }
 

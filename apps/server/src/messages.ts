@@ -4,14 +4,15 @@
  * Model messages are pi-ai's, plus what Top adds to a user message: the attachments it came with, a
  * marked note telling the bot where they are saved, images held by attachment id (attachments.ts
  * reads their bytes in for each request), and the SKILL.md of a skill the message asked for with
- * `/<name>`, marked with the skill (see skills.ts).
+ * `/<name>`, marked with the skill (see skills.ts). An answer may carry what OpenAI's web search did
+ * while the model wrote it (see websearch.ts).
  *
  * Every entry read back is checked against a Schema of what Top itself reads (the `*View` schemas).
  * They're lenient where pi's own types are strict, so transcripts written by earlier versions still
  * load: an answer's usage, provider metadata and the like are pi's to read, and pass through as saved.
  */
 import type { AssistantMessage, ImageContent, SystemMessage, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { Attachment, FileChange, PermissionAnswer, SkillUse } from "@top/protocol";
+import { Attachment, Citation, FileChange, PermissionAnswer, SkillUse } from "@top/protocol";
 import * as Schema from "effect/Schema";
 
 // ── types ────────────────────────────────────────────────────────────────────────
@@ -33,14 +34,28 @@ export interface TopUserMessage extends UserMessage {
   readonly attachments?: readonly Attachment[];
 }
 
+/** A `web_search_call` item, as OpenAI sent it; later requests send it back as it was. */
+export type SearchItem = { readonly type: "web_search_call"; readonly id: string; readonly status: string; readonly action?: unknown };
+/**
+ * A search, and where it was among the answer's items: right after the item `after`, or (when it came
+ * first) right before `before`. A request puts it back there (see websearch.ts).
+ */
+export type SearchRecord = { readonly item: SearchItem; readonly after?: string; readonly before?: string };
+/** What OpenAI's web search did while the model wrote one answer. */
+export type WebSearchRecord = { readonly searches: readonly SearchRecord[]; readonly citations: readonly Citation[] };
+
+export interface TopAssistantMessage extends AssistantMessage {
+  webSearch?: WebSearchRecord;
+}
+
 /** A message in a bot's transcript, as the model sees it. */
-export type TranscriptMessage = SystemMessage | TopUserMessage | AssistantMessage | ToolResultMessage;
+export type TranscriptMessage = SystemMessage | TopUserMessage | TopAssistantMessage | ToolResultMessage;
 
 /** What each kind of entry stores. */
 export type EntryBody = {
   readonly system: SystemMessage;
   readonly user: TopUserMessage;
-  readonly assistant: AssistantMessage;
+  readonly assistant: TopAssistantMessage;
   readonly tool: ToolResultMessage;
   readonly notice: { readonly text: string };
   readonly files: { readonly files: readonly FileChange[] };
@@ -86,12 +101,18 @@ export const UserView = Schema.Struct({
   attachments: Optional(Schema.Array(Attachment)),
   timestamp: Schema.Number,
 });
+const SearchItemView = Schema.Struct({ type: Schema.Literal("web_search_call"), id: Schema.String, status: Schema.String, action: Optional(Schema.Unknown) });
+const WebSearchView = Schema.Struct({
+  searches: Schema.Array(Schema.Struct({ item: SearchItemView, after: Optional(Schema.String), before: Optional(Schema.String) })),
+  citations: Schema.Array(Citation),
+});
 /** Plain string content: answers saved by earlier versions. */
 export const AssistantView = Schema.Struct({
   role: Schema.Literal("assistant"),
   content: Schema.Union([Schema.String, Schema.Array(Schema.Union([Text, Thinking, ToolCall]))]),
   stopReason: Schema.String,
   errorMessage: Optional(Schema.String),
+  webSearch: Optional(WebSearchView),
   timestamp: Schema.Number,
 });
 export const ToolResultView = Schema.Struct({

@@ -235,6 +235,19 @@ export function useRoster(): readonly RosterBot[] {
   return useAtomValue(rosterAtom, (roster) => roster.bots);
 }
 
+const webSearchAtom = Atom.make((get): { readonly key: string; readonly on: ReadonlyMap<BotId, boolean> } => {
+  const bots = get(clientAtom).bots.flatMap((b) => (b.webSearch === undefined ? [] : [[b.id, b.webSearch] as const]));
+  const key = JSON.stringify(bots);
+  const previous = get.self<{ key: string; on: ReadonlyMap<BotId, boolean> }>();
+  if (Option.isSome(previous) && previous.value.key === key) return previous.value;
+  return { key, on: new Map(bots) };
+});
+
+/** Which bots may search the web, for those whose model can; re-renders only when that changes. */
+export function useWebSearch(): ReadonlyMap<BotId, boolean> {
+  return useAtomValue(webSearchAtom, (state) => state.on);
+}
+
 /** One bot's summary; re-renders only when that bot changes. */
 export function useBot(id: BotId | undefined): BotSummary | undefined {
   return useClient((snapshot) => (id === undefined ? undefined : snapshot.bots.find((b) => b.id === id)));

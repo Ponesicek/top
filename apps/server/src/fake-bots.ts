@@ -4,8 +4,14 @@
  * asks for one ("deploy web", "email the team", "check status", "write a report", "crash", "ask permission to …", or a tool by name:
  * `call echo__echo {"text": "hi"}`). Everything above the model is
  * the real daemon: storage, the agent loop, tools, recovery.
+ *
+ * "Search the web for …" plays OpenAI's hosted web search (see websearch.ts): the model sends the events
+ * OpenAI's Responses API sends (a search, a page it opened, citations on its answer) through the same
+ * hooks the real requests go through, so everything Top does with them runs. It searches only when the
+ * request offers the tool, and "… refused" / "… fails" play OpenAI refusing it or a search failing.
  */
 
+import type { SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { type FauxResponseFactory, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -142,8 +148,99 @@ function lastUserText(context: Context): string {
 
 const failedOnce = new Set<string>();
 
+/** Pages the fake web search finds: the reserved example domains, so nothing real is named or fetched. */
+const FAKE_PAGES = [
+  { url: "https://example.com/guides/backoff", title: "Retry with backoff · Example Guides" },
+  { url: "https://example.org/notes/websocket-reconnects", title: "Notes on WebSocket reconnects" },
+  { url: "https://www.example.net/blog/sqlite-wal", title: "SQLite WAL in practice" },
+  { url: "https://example.com/reference/jitter", title: "Jitter, explained" },
+] as const;
+
+let searchCounter = 0;
+const pause = (ms: number, signal: AbortSignal | undefined) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+
+/**
+ * "Search the web for X", the way OpenAI's Responses API reports it: the request must offer the tool
+ * (Top's `onPayload` adds it), then a search, a page opened, and an answer citing what it found.
+ */
+async function searchTheWeb(prompt: string, options: SimpleStreamOptions | undefined) {
+  const offered = (await options?.onPayload?.({ input: [], tools: [] }, undefined as never)) as { tools?: { type?: string }[] } | undefined;
+  if (!offered?.tools?.some((tool) => tool.type === "web_search"))
+    return fauxAssistantMessage("I can't search the web: web search is off for me. You can switch it on in Settings.");
+  const query =
+    /search the web (?:for|about)\s+(.+)/is
+      .exec(prompt)?.[1]
+      ?.replace(/\s+(refused|fails)\s*$/i, "")
+      .trim() || "the question";
+  if (/\brefused\b/i.test(prompt))
+    return fauxAssistantMessage("", {
+      stopReason: "error",
+      errorMessage: `OpenAI API error (400): {"message":"Web search is not available for this account.","type":"invalid_request_error","param":"tools","code":"subscription_sharing_unsupported_capability"}`,
+    });
+  const emit = async (event: Record<string, unknown>) => options?.onProviderStreamEvent?.(event, undefined as never);
+  const n = ++searchCounter;
+  const fails = /\bfails\b/i.test(prompt);
+  await emit({ type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: `rs_fake${n}` } });
+  await emit({ type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: `rs_fake${n}`, summary: [] } });
+  await emit({ type: "response.output_item.added", output_index: 1, item: { type: "web_search_call", id: `ws_fake${n}`, status: "in_progress" } });
+  await emit({ type: "response.web_search_call.in_progress", output_index: 1, item_id: `ws_fake${n}` });
+  await emit({ type: "response.web_search_call.searching", output_index: 1, item_id: `ws_fake${n}` });
+  await pause(3_000, options?.signal);
+  if (fails) {
+    await emit({
+      type: "response.output_item.done",
+      output_index: 1,
+      item: { type: "web_search_call", id: `ws_fake${n}`, status: "failed", action: { type: "search", queries: [query] } },
+    });
+    return fauxAssistantMessage(`I tried to search the web for “${query}”, but the search failed, so I haven't checked anything online. ${sentence()}`);
+  }
+  await emit({ type: "response.web_search_call.completed", output_index: 1, item_id: `ws_fake${n}` });
+  await emit({
+    type: "response.output_item.done",
+    output_index: 1,
+    item: {
+      type: "web_search_call",
+      id: `ws_fake${n}`,
+      status: "completed",
+      action: { type: "search", queries: [query], sources: FAKE_PAGES.map((page) => ({ type: "url", url: page.url })) },
+    },
+  });
+  const [first, second] = [FAKE_PAGES[0], FAKE_PAGES[1]];
+  await emit({
+    type: "response.output_item.done",
+    output_index: 2,
+    item: { type: "web_search_call", id: `ws_fake${n}b`, status: "completed", action: { type: "open_page", url: first.url } },
+  });
+  const cited = (page: (typeof FAKE_PAGES)[number]) => `([${new URL(page.url).hostname}](${page.url}?utm_source=openai))`;
+  const lead = `On “${query}”: start with a short delay and double it after each failure, up to a cap `;
+  const middle = `. Add random jitter so clients that dropped together don't all come back at once `;
+  const text = `${lead}${cited(first)}${middle}${cited(second)}.\n\n${paragraph()}`;
+  const span = (page: (typeof FAKE_PAGES)[number]) => {
+    const start = text.indexOf(cited(page));
+    return { type: "url_citation", url: `${page.url}?utm_source=openai`, title: page.title, start_index: start, end_index: start + cited(page).length };
+  };
+  await emit({
+    type: "response.output_item.done",
+    output_index: 3,
+    item: { type: "message", id: `msg_fake${n}`, content: [{ type: "output_text", text, annotations: [span(first), span(second)] }] },
+  });
+  return fauxAssistantMessage(text);
+}
+
 /** One scripted model response: a tool call when the message asks for one, else an answer. "fail once" and "fail always" fail the request. */
-export function respond(context: Context) {
+export function respond(context: Context, options?: SimpleStreamOptions) {
   const results = trailingToolResults(context);
   if (results.length) {
     const lines = results.map((r) => `- **${"toolName" in r ? r.toolName : "tool"}**: ${contentText(r)}`).join("\n");
@@ -163,6 +260,7 @@ export function respond(context: Context) {
     failedOnce.add(prompt);
     return failure();
   }
+  if (/\bsearch the web\b/i.test(prompt)) return searchTheWeb(prompt, options);
   const tool = toolFor(prompt);
   if (tool) {
     const said = tool.name === ASK_PERMISSION ? "I'll check with you first." : `On it: ${tool.name.replace("_", " ")}.`;
@@ -222,7 +320,7 @@ export const makeFakeModelProvider = (tokensPerSecond: number, onRequest?: (cont
     });
     const factory: FauxResponseFactory = (context, options) => {
       onRequest?.(context, options);
-      return respond(context);
+      return respond(context, options);
     };
     // The faux provider consumes one scripted step per request; keep the script topped up forever.
     const topUp = Effect.sync(() => {

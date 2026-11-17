@@ -61,6 +61,7 @@ import * as Store from "./store.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
 import { makeFakeTools } from "./tools.ts";
 import * as Updates from "./updates.ts";
+import { canSearchTheWeb } from "./websearch.ts";
 import { botFolder, computerTools, ensureFolder, FILES_FOLDER, workspaceSection } from "./workspace.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
@@ -150,9 +151,9 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
     if (!auth) yield* Effect.logWarning("Not signed in: sign in with ChatGPT in the app's Settings, or run `top login`. The bots can't answer until then.");
     if (!models.getModel(providerId, model.slice(slash + 1))) {
       yield* Effect.promise(() => models.refresh({ providers: [providerId] }).catch(() => undefined));
-      if (!models.getModel(providerId, model.slice(slash + 1)))
-        return yield* new StartError({ message: `${providerId} has no model "${model.slice(slash + 1)}".` });
     }
+    const found = models.getModel(providerId, model.slice(slash + 1));
+    if (!found) return yield* new StartError({ message: `${providerId} has no model "${model.slice(slash + 1)}".` });
     yield* Effect.log(`model ${model} (${auth ? (auth.source ?? auth.type) : "not signed in"}), thinking ${args.thinking}`);
     const kit = Layer.effect(
       Daemon.BotKit,
@@ -192,6 +193,8 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           foregroundMs: yield* ForegroundMs,
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
+          // Offered per bot when the user switches it on; whether the plan may use it is OpenAI's to say.
+          webSearch: canSearchTheWeb(found),
         });
       }),
     );
@@ -222,6 +225,8 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         retryDelaysMs: yield* RetryDelaysMs,
         // The fake model's answers are short: `TOP_COMPACT_AT_TOKENS=3000 pnpm dev:fake` shows compaction quickly.
         compactAtTokens: yield* CompactAtTokens,
+        // The fake model plays OpenAI's web search ("search the web for …"), so it can be switched on.
+        webSearch: true,
       });
     }),
   );

@@ -6,6 +6,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Context from "effect/Context";
@@ -53,6 +54,10 @@ export type HarnessOptions = {
   readonly tps?: number;
   /** Sees every model request the bots make. */
   readonly onRequest?: (context: RequestContext, options: RequestOptions) => void;
+  /** Another model than the fake one: its `models`, and `provider/model-id`. */
+  readonly model?: { readonly models: Models; readonly id: string };
+  /** The model takes OpenAI's web search (BotKit's `webSearch`). */
+  readonly webSearch?: boolean;
 };
 
 /** Where a test daemon's skills are (see `HarnessOptions.skills`). */
@@ -71,20 +76,21 @@ export async function harness(options: HarnessOptions = {}) {
   const firstBots = Layer.effectDiscard(
     Effect.gen(function* () {
       const store = yield* Store.Store;
-      if ((yield* store.bots).length === 0) for (const name of options.bots ?? ["Atlas"]) yield* store.createBot(name, "", MODEL);
+      if ((yield* store.bots).length === 0) for (const name of options.bots ?? ["Atlas"]) yield* store.createBot(name, "", options.model?.id ?? MODEL);
     }),
   );
   const kit = Layer.effect(
     Daemon.BotKit,
     Effect.gen(function* () {
-      const models = createModels();
-      models.setProvider((yield* makeFakeModelProvider(options.tps ?? 2_000, options.onRequest)).provider);
+      const fake = createModels();
+      if (!options.model) fake.setProvider((yield* makeFakeModelProvider(options.tps ?? 2_000, options.onRequest)).provider);
+      const models = options.model?.models ?? fake;
       return Daemon.BotKit.of({
         models,
         tools: options.tools ?? [],
         thinking: "off",
         // Bots can be made from a test like from the app (the first ones are made above, without a system message).
-        newBot: { model: MODEL, instructions: Daemon.defaultInstructions, declare: [] },
+        newBot: { model: options.model?.id ?? MODEL, instructions: Daemon.defaultInstructions, declare: [] },
         files: options.files,
         ...(options.skills ? { skills: skillsConfig(dir) } : {}),
         foregroundMs: options.foregroundMs ?? 30_000,
@@ -92,6 +98,7 @@ export async function harness(options: HarnessOptions = {}) {
         repeatGapMs: options.repeatGapMs,
         compactAtTokens: options.compactAtTokens,
         retryDelaysMs: [100, 100, 100],
+        webSearch: options.webSearch,
       });
     }),
   );

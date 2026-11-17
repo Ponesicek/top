@@ -50,6 +50,7 @@ export type {
   BotSkills,
   BotStatus,
   Channel,
+  Citation,
   Entry,
   FileChange,
   FileView,
@@ -73,6 +74,7 @@ export type {
   UpdateRelease,
   UpdateView,
   Viewer,
+  WebSearchStep,
   WhenBusy,
 } from "@top/protocol";
 export {
@@ -302,6 +304,11 @@ export class TopClient {
   /** Switch a skill on for a bot, or off. Rejects with a message for the user when the bot has no usable skill by that name. */
   enableSkill(bot: BotId, name: string, on: boolean): Promise<void> {
     return this.#command({ t: "enableSkill", bot, name, on });
+  }
+
+  /** Let a bot search the web, or stop it. Rejects with a message for the user when its model can't. */
+  setWebSearch(bot: BotId, on: boolean): Promise<void> {
+    return this.#command({ t: "setWebSearch", bot, on });
   }
 
   /** Ask the daemon to read the skills folders again (skills added or edited on disk). */

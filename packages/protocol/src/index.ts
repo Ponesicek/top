@@ -66,6 +66,8 @@ export const BotSummary = Struct({
   status: BotStatus,
   /** The running tool's name while `status` is `tool`. */
   tool: Optional(Schema.String),
+  /** While `status` is `thinking`: the model is searching the web, on its provider's side (see WebSearchStep). */
+  searching: Optional(Schema.Literal(true)),
   /** When the current status began (ms since epoch), for an elapsed timer. */
   since: Schema.Number,
   /** The failure or retry reason, when there is one. */
@@ -82,6 +84,11 @@ export const BotSummary = Struct({
   wakeAt: Optional(Schema.Number),
   /** Newest entry of this bot, so a client can show "unread" without loading it. */
   lastSeq: Seq,
+  /**
+   * Whether the bot may search the web (see WebSearchStep), switched with `setWebSearch`. Absent: its
+   * model can't, so there's nothing to switch.
+   */
+  webSearch: Optional(Schema.Boolean),
 });
 export type BotSummary = typeof BotSummary.Type;
 
@@ -101,6 +108,34 @@ export type ToolCallView = typeof ToolCallView.Type;
  * - `replayed`: the tool is safe to repeat, so it ran again.
  * - `stopped`: it kept crashing the daemon, so the task was ended.
  */
+// ── web search ───────────────────────────────────────────────────────────────────
+//
+// A bot on OpenAI's Responses API can be given OpenAI's own web search (`setWebSearch`). OpenAI runs
+// it while it answers, inside the one model request: it's not one of the bot's tools, so it has no
+// tool entry, no crash policy and nothing to re-run. What it did is kept with the answer it went into.
+// Whether a plan, workspace or model may search is OpenAI's call; when it says no, the answer fails and
+// says so.
+
+/** One thing the model did on the web while it answered, as OpenAI reported it. */
+export const WebSearchStep = Struct({
+  /** Searched for `queries`, opened the page at `url`, or looked for `pattern` in the page at `url`. */
+  action: Schema.Literals(["search", "open_page", "find_in_page"]),
+  queries: Optional(List(Schema.String)),
+  url: Optional(Schema.String),
+  pattern: Optional(Schema.String),
+  /** OpenAI said the step failed or was cut off: whatever it was after, the bot didn't get it. */
+  failed: Optional(Schema.Literal(true)),
+  /** How many pages OpenAI says the search looked at. */
+  sourceCount: Optional(Schema.Int),
+  /** Those pages' addresses; only in a `detail` answer. */
+  sources: Optional(List(Schema.String)),
+});
+export type WebSearchStep = typeof WebSearchStep.Type;
+
+/** A page an answer cites, as OpenAI marked it in the text. Only http(s) addresses are kept. */
+export const Citation = Struct({ url: Schema.String, title: Schema.String });
+export type Citation = typeof Citation.Type;
+
 export const ToolOutcome = Schema.Literals(["interrupted", "not_run", "recovered", "replayed", "stopped"]);
 export type ToolOutcome = typeof ToolOutcome.Type;
 
@@ -283,6 +318,10 @@ export const Entry = Schema.Union([
     kind: Schema.Literal("assistant"),
     text: Schema.String,
     tools: Optional(List(ToolCallView)),
+    /** What the model did on the web while it wrote this answer, in order. */
+    searches: Optional(List(WebSearchStep)),
+    /** The pages the answer cites, each once, in the order it first cites them. */
+    citations: Optional(List(Citation)),
     /** Thinking text exists; fetch it with `detail`. */
     hasThinking: Optional(Schema.Literal(true)),
     /** Full thinking text, only in a `detail` answer. */
@@ -556,6 +595,11 @@ export const ClientFrame = Schema.Union([
    * shared library's); off takes any. It reaches the bot from its next message. Every client gets `skills`.
    */
   Struct({ t: Schema.Literal("enableSkill"), req, bot: BotId, name: Schema.String, on: Schema.Boolean }),
+  /**
+   * Let a bot search the web (`on`), or stop it. Refused with a `BotError` when its model can't (see
+   * BotSummary's `webSearch`). It reaches the bot from its next message. Every client gets its `bot` frame.
+   */
+  Struct({ t: Schema.Literal("setWebSearch"), req, bot: BotId, on: Schema.Boolean }),
   /** Read the skills folders again (after skills were added or edited on disk). Every client gets `skills` if anything changed. */
   Struct({ t: Schema.Literal("rescanSkills"), req }),
   /**
@@ -608,6 +652,7 @@ export const RequestResult = {
   mcpSignOut: Schema.Null,
   mcpRetry: Schema.Null,
   enableSkill: Schema.Null,
+  setWebSearch: Schema.Null,
   rescanSkills: Schema.Null,
   chatgptSignIn: Struct({ url: Schema.String }),
   chatgptSignInFinish: Schema.Null,

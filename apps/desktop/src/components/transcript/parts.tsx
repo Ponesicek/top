@@ -1,7 +1,7 @@
 /** Pieces every transcript style shares: the bot it shows, times, tool steps, the folded tool group, notes. */
 
-import type { BotSummary, ConversationSync, SkillUse, ToolOutcome } from "@top/client";
-import { AlertTriangle, Check, ChevronRight, CircleSlash, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
+import type { BotSummary, Citation, ConversationSync, SkillUse, ToolOutcome, WebSearchStep } from "@top/client";
+import { AlertTriangle, Check, ChevronRight, CircleSlash, Globe, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
 import { type ComponentProps, createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { cn } from "../../lib/utils.ts";
 import { withBotFiles } from "../../markdown.ts";
@@ -228,6 +228,156 @@ export const ToolGroup = memo(function ToolGroup({
         ))}
       </CollapsiblePanel>
     </Collapsible>
+  );
+});
+
+/** `url` if it's a web address (the daemon passes on only those; this keeps it so). */
+function webHref(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A page as a short line: its host and path, without OpenAI's `utm_source`. */
+function pageLabel(href: string): string {
+  const url = new URL(href);
+  url.searchParams.delete("utm_source");
+  const path = url.pathname === "/" ? "" : url.pathname;
+  return `${url.hostname.replace(/^www\./, "")}${path}${url.search}`;
+}
+
+/** A link to a page on the web; it opens outside the app. */
+function PageLink({ href, className, children }: { href: string; className?: string; children?: React.ReactNode }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer noopener" title={href} className={cn("min-w-0 truncate text-link hover:underline", className)}>
+      {children ?? pageLabel(href)}
+    </a>
+  );
+}
+
+const quoted = (queries: readonly string[] | undefined) => (queries?.length ? queries.map((q) => `“${q}”`).join(", ") : "");
+
+/** One thing the model did on the web; a search's pages list below it once they're loaded. */
+function SearchStep({ step, sources }: { step: WebSearchStep; sources: readonly string[] | undefined }) {
+  const href = webHref(step.url);
+  const verb = step.action === "search" ? "Searched" : step.action === "open_page" ? "Opened" : "Looked in";
+  return (
+    <div className="py-0.75 text-small">
+      <div className="flex min-w-0 items-center gap-2.25">
+        <StepIcon className={step.failed ? "bg-destructive-surface text-destructive" : "bg-success-surface text-success-foreground"}>
+          {step.failed ? <AlertTriangle size={12} strokeWidth={2.4} /> : <Check size={12} strokeWidth={2.4} />}
+        </StepIcon>
+        <span className="flex-none font-medium text-foreground">{verb}</span>
+        {step.action === "search" && <span className="min-w-0 truncate text-secondary-foreground">{quoted(step.queries) || "the web"}</span>}
+        {step.action === "find_in_page" && step.pattern && <span className="flex-none text-secondary-foreground">for “{step.pattern}” in</span>}
+        {step.action !== "search" && (href ? <PageLink href={href} /> : <span className="text-muted-foreground">a page</span>)}
+        {step.failed && <span className="flex-none text-destructive-foreground">· failed</span>}
+        {!step.failed && step.sourceCount ? (
+          <span className="flex-none text-muted-foreground">· {step.sourceCount === 1 ? "1 source" : `${step.sourceCount} sources`}</span>
+        ) : null}
+      </div>
+      {sources && sources.length > 0 && (
+        <ul className="m-0 mt-1 ml-6.75 flex list-none flex-col gap-0.5 p-0 text-meta">
+          {sources.flatMap((source) => {
+            const link = webHref(source);
+            return link ? (
+              <li key={link} className="flex min-w-0">
+                <PageLink href={link} />
+              </li>
+            ) : (
+              []
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the model did on the web while it wrote an answer, as one quiet line ("Searched the web ·
+ * “query”") opening into its steps. OpenAI ran them, not the bot's tools. Opening it loads the pages
+ * each search looked at.
+ */
+export const WebSearches = memo(function WebSearches({
+  row,
+  className,
+  trigger,
+}: {
+  row: Pick<AssistantRowData, "seq" | "searches">;
+  className?: string;
+  trigger?: string;
+}) {
+  const { sync } = useIdentity();
+  const [full, setFull] = useState<readonly WebSearchStep[]>();
+  const steps = row.searches;
+  const failed = steps.filter((s) => s.failed).length;
+  const searched = steps.some((s) => s.action === "search");
+  const first = steps.find((s) => s.action === "search" && s.queries?.length)?.queries?.[0];
+  const pages = steps.filter((s) => s.action !== "search").length;
+  return (
+    <Collapsible
+      className={cn("text-small", className)}
+      onOpenChange={(open) => {
+        if (open && full === undefined)
+          void sync.detail(row.seq).then(
+            (e) => setFull(e?.kind === "assistant" ? (e.searches ?? []) : []),
+            () => setFull([]),
+          );
+      }}
+    >
+      <CollapsibleTrigger
+        className={cn(
+          "group/disclosure inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-meta font-label text-muted-foreground transition-colors duration-120 hover:text-secondary-foreground",
+          trigger,
+        )}
+      >
+        <Globe size={12} strokeWidth={2.2} className="flex-none" />
+        <span className="flex-none">{searched ? "Searched the web" : pages === 1 ? "Read a page" : `Read ${pages} pages`}</span>
+        {first && <span className="min-w-0 truncate font-book opacity-80">· “{first}”</span>}
+        {steps.length > 1 && <span className="flex-none font-book opacity-80">· {steps.length} steps</span>}
+        {failed > 0 && <span className="flex-none text-destructive-foreground">· {failed} failed</span>}
+        <ChevronRight size={12} strokeWidth={2.4} className={cn("flex-none", chevron)} />
+      </CollapsibleTrigger>
+      <CollapsiblePanel className="mt-1 border-l-2 border-border pl-3">
+        {steps.map((step, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the steps of an immutable answer
+          <SearchStep key={i} step={step} sources={full?.[i]?.sources} />
+        ))}
+      </CollapsiblePanel>
+    </Collapsible>
+  );
+});
+
+/** The pages an answer cites, under it: each a link that opens outside the app. */
+export const Sources = memo(function Sources({ citations, className }: { citations: readonly Citation[]; className?: string }) {
+  const links = citations.flatMap((c) => {
+    const href = webHref(c.url);
+    return href ? [{ href, title: c.title }] : [];
+  });
+  if (!links.length) return null;
+  return (
+    <div className={cn("mt-2 flex flex-wrap items-center gap-1.5", className)}>
+      <span className="text-micro font-semibold text-muted-foreground">Sources</span>
+      {links.map(({ href, title }, i) => (
+        <a
+          key={href}
+          href={href}
+          target="_blank"
+          rel="noreferrer noopener"
+          title={`${title}\n${href}`}
+          className="inline-flex h-6 max-w-[min(100%,280px)] items-center gap-1.5 rounded-full bg-secondary px-2.25 text-meta leading-none font-label text-secondary-foreground transition-colors duration-90 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          <span className="flex-none text-micro text-muted-foreground tabular-nums">{i + 1}</span>
+          <span className="min-w-0 truncate">{title}</span>
+          <span className="flex-none font-book text-muted-foreground">{new URL(href).hostname.replace(/^www\./, "")}</span>
+        </a>
+      ))}
+    </div>
   );
 });
 

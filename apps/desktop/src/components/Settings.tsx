@@ -12,6 +12,7 @@ const SCALE_OPTIONS = SCALES.map((s) => ({ value: String(s), label: `${Math.roun
 import { Row, Section, Segmented } from "./SettingsSection.tsx";
 import { UpdateSettings } from "./UpdateSettings.tsx";
 import { Switch } from "./ui/switch.tsx";
+import { WebSearch } from "./WebSearch.tsx";
 
 function Kbd({ children }: { children: ReactNode }) {
   return <kbd className="rounded-sm bg-secondary px-1 py-px font-mono text-[11px] text-secondary-foreground">{children}</kbd>;
@@ -83,6 +84,7 @@ export function Settings({
             )}
           </Section>
           <AccountSection />
+          <WebSearch />
           <McpServers />
           <Skills />
           <DaemonSettings />

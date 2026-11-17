@@ -6,7 +6,7 @@ import { cn } from "../lib/utils.ts";
 import { serverUrl, top, useClient, useRoster, useTailnet } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
 import { McpServerDialog } from "./McpServerDialog.tsx";
-import { Section } from "./SettingsSection.tsx";
+import { BotChip, Section } from "./SettingsSection.tsx";
 import { Button } from "./ui/button.tsx";
 
 const STATE_DOT: Record<McpServerView["state"], string> = {
@@ -64,19 +64,13 @@ function BotToggle({ server, bot, name }: { server: McpServerView; bot: BotId; n
     setPending(undefined);
   };
   return (
-    <button
-      type="button"
-      aria-pressed={on}
+    <BotChip
+      on={on}
       onClick={() => void toggle()}
       title={on ? `${name} has ${server.name}'s tools. Click to take them away.` : `Give ${name} ${server.name}'s tools`}
-      className={cn(
-        "inline-flex h-6.5 items-center gap-1.5 rounded-full px-2.5 text-meta leading-none font-label transition-colors duration-90 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-        on ? "bg-primary-soft text-link inset-ring inset-ring-primary/35" : "bg-secondary text-muted-foreground hover:text-foreground",
-      )}
     >
-      <i className={cn("size-1.5 rounded-full", on ? "bg-primary" : "inset-ring-[1.5px] inset-ring-current")} aria-hidden />
       {name}
-    </button>
+    </BotChip>
   );
 }
 
