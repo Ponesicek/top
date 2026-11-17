@@ -3,9 +3,9 @@
  * request), and settles from the `permission` entry naming that request. Never a tool step as well,
  * and the entry and the bot's message about the answer show no row of their own.
  */
-import type { Entry, TranscriptItem } from "@top/client";
+import type { ConversationSnapshot, Entry, TranscriptItem } from "@top/client";
 import { describe, expect, it } from "vitest";
-import { committedRows, displayRows } from "../src/rows.ts";
+import { committedRows, displayRows, tailRows } from "../src/rows.ts";
 
 const BOT = 3;
 const ASK = "collar__ask_permission";
@@ -61,5 +61,40 @@ describe("permission rows", () => {
     const answered = cards([...items, settled(9, "denied")])[0];
     expect(answered).not.toBe(first);
     expect(cards([...items, settled(9, "denied"), message(9)])[0]).toBe(answered);
+  });
+});
+
+describe("messages from Top", () => {
+  const wake = () =>
+    entry({ kind: "user", text: "[Wake-up] check the deploy\n\nYou set this wake-up at 9:00 for 9:30. The user didn't send it.", source: "wake" });
+  const reply = () => entry({ kind: "assistant", text: "The deploy finished." });
+
+  it("a wake-up that came due shows nothing but ends the turn before it; the bot's reply to it shows", () => {
+    const rows = displayRows(committedRows([entry({ kind: "assistant", text: "I'll look at 9:30." }), wake(), reply()]));
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "wake", "assistant"]);
+    expect(rows[1]).not.toHaveProperty("text");
+    expect(rows.map((r) => (r.kind === "assistant" ? r.text : ""))).toEqual(["I'll look at 9:30.", "", "The deploy finished."]);
+  });
+
+  it("files changed in the turn before a wake-up show under that turn, not under the reply", () => {
+    const files = entry({ kind: "files", files: [{ path: "report.md", change: "added" }] });
+    const rows = displayRows(committedRows([entry({ kind: "assistant", text: "Wrote the report." }), files, wake(), reply()]));
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "files", "wake", "assistant"]);
+  });
+
+  it("the user's own message stays, even when it reads like a wake-up", () => {
+    const rows = committedRows([entry({ kind: "user", text: "[Wake-up] remind me about wake-ups" }), reply()]);
+    expect(rows[0]).toMatchObject({ kind: "user", text: "[Wake-up] remind me about wake-ups" });
+  });
+
+  it("a wake-up waiting in the inbox shows no row, the user's queued message does", () => {
+    const snapshot = {
+      inbox: [
+        { requestId: "wake:1", text: "[Wake-up] check the deploy", source: "wake", mode: "followUp", at: 1 },
+        { requestId: "r2", text: "and the wake-up?", mode: "followUp", at: 2 },
+      ],
+      pending: [],
+    } as unknown as ConversationSnapshot;
+    expect(tailRows(snapshot, false)).toEqual([expect.objectContaining({ kind: "user", text: "and the wake-up?", state: "queued" })]);
   });
 });

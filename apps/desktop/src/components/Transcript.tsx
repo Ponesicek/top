@@ -32,6 +32,7 @@ const scrollMemory = new Map<string, { offset: number; atBottom: boolean }>();
 
 function estimate(row: DisplayRow | undefined): number {
   if (!row) return 80;
+  if (row.kind === "wake") return 0;
   if (row.kind === "user") return 64 + Math.ceil(row.text.length / 90) * 22 + (row.attachments ? 200 : 0);
   if (row.kind === "assistant") return 80 + Math.ceil(row.text.length / 110) * 24;
   if (row.kind === "toolgroup" || row.kind === "files") return 34;
@@ -250,7 +251,7 @@ export const Transcript = memo(function Transcript({
                   <AutoLoad onVisible={loadEarlier} label="Load earlier messages" />
                 ) : row.kind === "gap" ? (
                   <AutoLoad onVisible={() => sync.fillGap(row.gap)} label="Load missed messages" />
-                ) : row.kind === "notice" ? (
+                ) : row.kind === "wake" ? null : row.kind === "notice" ? (
                   <div className={DIVIDER}>{row.text}</div>
                 ) : row.kind === "files" ? (
                   <FilesLine row={row} bot={sync.id} className={look.files} />
