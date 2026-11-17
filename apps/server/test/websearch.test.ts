@@ -373,6 +373,18 @@ test("earlier searches go back next to the item they followed, and only when it'
   expect(withWebSearch("nope", context, true)).toBeUndefined();
 });
 
+test("searches in a row with nothing before them go back before the message they led to, in order", () => {
+  const capture = captureWebSearch(() => {});
+  const done = (index: number, item: Record<string, unknown>) => capture.event({ type: "response.output_item.done", output_index: index, item });
+  done(0, { type: "web_search_call", id: "ws_a", status: "completed" });
+  done(1, { type: "web_search_call", id: "ws_b", status: "completed" });
+  done(2, { type: "message", id: "msg_1", content: [] });
+  const context = [assistant(capture.record())];
+  // pi-ai's next request has the message, not the searches: both go back before it.
+  const out = withWebSearch({ input: [{ role: "user" }, { type: "message", id: "msg_1" }] }, context, false) as { input: { id?: string }[] };
+  expect(out.input.map((i) => i.id)).toEqual([undefined, "ws_a", "ws_b", "msg_1"]);
+});
+
 test("only web addresses become links: citations, sources and opened pages", () => {
   const seen: boolean[] = [];
   const capture = captureWebSearch((on) => seen.push(on));

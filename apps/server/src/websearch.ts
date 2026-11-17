@@ -152,7 +152,9 @@ export function captureWebSearch(searching: (on: boolean) => void) {
       .map(([index, item]): SearchRecord => {
         const position = order.indexOf(index);
         const after = position > 0 ? items.get(order[position - 1]!) : undefined;
-        const before = position >= 0 ? items.get(order[position + 1]!) : undefined;
+        // Not another search: pi-ai leaves searches out, so a search can't be what puts this one back.
+        const next = order.slice(position + 1).find((i) => !searches.has(i));
+        const before = next === undefined ? undefined : items.get(next);
         return { item, ...(after ? { after } : before ? { before } : {}) };
       });
     return { searches: placed, citations };
