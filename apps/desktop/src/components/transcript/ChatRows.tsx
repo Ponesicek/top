@@ -4,7 +4,7 @@
  * blocks stand on their own between the bot's bubbles, so they keep the full width.
  */
 
-import type { BotSummary } from "@top/client";
+import type { BotId, BotSummary } from "@top/client";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderSegments } from "../../markdown.ts";
@@ -111,7 +111,7 @@ const UserBubble = memo(function UserBubble({ row, ctx, first }: { row: Extract<
 });
 
 /** An answer: its prose in bubbles, its tables and code blocks between them, the time in the last bubble. */
-const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<DisplayRow, { kind: "assistant" }>; first: boolean }) {
+const BotBubbles = memo(function BotBubbles({ row, first, bot }: { row: Extract<DisplayRow, { kind: "assistant" }>; first: boolean; bot: BotId }) {
   const segments = useMemo(() => (row.text ? renderSegments(row.key, row.text) : []), [row]);
   const last = segments.length - 1;
   return (
@@ -122,13 +122,13 @@ const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<Displ
           // biome-ignore lint/suspicious/noArrayIndexKey: segments of an immutable entry
           <div key={i} className={cn(BUBBLE, "bg-chat-in text-foreground", first && i === 0 && "rounded-tl-none")}>
             {first && i === 0 && <Tail side="in" />}
-            <Markdown html={i === last ? withStampSpace(segment.html, time(row.at)) : segment.html} />
+            <Markdown html={i === last ? withStampSpace(segment.html, time(row.at)) : segment.html} bot={bot} />
             {i === last && <Stamp at={row.at} />}
           </div>
         ) : (
           // biome-ignore lint/suspicious/noArrayIndexKey: segments of an immutable entry
           <div key={i} className="chat-block max-w-full overflow-x-auto px-px pb-0.5">
-            <Markdown html={segment.html} />
+            <Markdown html={segment.html} bot={bot} />
             {i === last && (
               <time className="block pt-0.5 pl-1 text-[11px] text-muted-foreground tabular-nums" dateTime={new Date(row.at).toISOString()}>
                 {time(row.at)}
@@ -181,7 +181,7 @@ export const renderChatRow: RowRenderer = (rows, index, ctx, bot) => {
       {row.kind === "user" ? (
         <UserBubble row={row} ctx={ctx} first={first} />
       ) : row.kind === "assistant" ? (
-        <BotBubbles row={row} first={first} />
+        <BotBubbles row={row} first={first} bot={ctx.sync.id} />
       ) : row.kind === "toolgroup" ? (
         <ToolCard row={row} ctx={ctx} first={first} />
       ) : row.kind === "working" ? (

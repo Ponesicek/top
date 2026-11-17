@@ -83,6 +83,52 @@ md.core.ruler.push("numeric_columns", (state) => {
   }
 });
 
+/**
+ * The path in a bot's files folder that a link or image in its answer names, or `undefined` if it
+ * names none. Bots are told to name their files `files/report.html`, relative to their working folder;
+ * anything with a scheme, an absolute or protocol-relative path, or a step outside the folder (`..`,
+ * hidden files, encoded slashes) is not one.
+ */
+export function botFilePath(ref: string): string | undefined {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) return undefined;
+  const path = ref.split(/[?#]/, 1)[0]!.replace(/^(?:\.\/)+/, "");
+  if (!path.startsWith("files/")) return undefined;
+  try {
+    const parts = path.slice("files/".length).split("/").map(decodeURIComponent);
+    return parts.every((part) => part && !part.startsWith(".") && !/[/\\:\0]/.test(part)) ? parts.join("/") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Rendered markdown with its relative images and links pointed at the bot's own files (`fileUrl`, the
+ * daemon's link for one), never at the app's own address: there, `files/x.png` would load from the web
+ * server or, in the desktop app, from `file://`. Relative images that aren't the bot's files show
+ * their alt text; links to its files carry `data-file`, for opening them in the Files panel.
+ */
+export function withBotFiles(html: string, fileUrl: (path: string) => string | undefined): string {
+  if (!html.includes("<img") && !html.includes("<a")) return html;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  for (const img of template.content.querySelectorAll("img")) {
+    const src = img.getAttribute("src") ?? "";
+    if (/^[a-z][a-z0-9+.-]*:/i.test(src)) continue;
+    const path = botFilePath(src);
+    const url = path === undefined ? undefined : fileUrl(path);
+    if (url) img.setAttribute("src", url);
+    else img.removeAttribute("src");
+  }
+  for (const link of template.content.querySelectorAll("a")) {
+    const path = botFilePath(link.getAttribute("href") ?? "");
+    const url = path === undefined ? undefined : fileUrl(path);
+    if (path === undefined || !url) continue;
+    link.setAttribute("href", url);
+    link.setAttribute("data-file", path);
+  }
+  return template.innerHTML;
+}
+
 const cache = new Map<string, string>();
 
 export function renderMarkdown(text: string): string {

@@ -145,7 +145,7 @@ const BotMessage = memo(function BotMessage({ row, ctx, head }: { row: Extract<D
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
     <Shell head={head} who="bot" name={ctx.name} avatar={ctx.avatar} at={row.at}>
-      {row.text && <Markdown html={html} answer={row.seq} />}
+      {row.text && <Markdown html={html} answer={row.seq} bot={ctx.sync.id} />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
   );

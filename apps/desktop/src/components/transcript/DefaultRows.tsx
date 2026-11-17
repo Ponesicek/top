@@ -4,7 +4,7 @@
  * under it while you point anywhere in it.
  */
 
-import type { BotSummary } from "@top/client";
+import type { BotId, BotSummary } from "@top/client";
 import { Loader2 } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
@@ -101,6 +101,7 @@ const UserRow = memo(function UserRow({ row, ctx }: { row: UserRowData; ctx: Row
 /** An answer right after another answer or a tool group continues the same turn: no second avatar. */
 const AssistantRow = memo(function AssistantRow({
   row,
+  bot,
   name,
   avatar,
   cont,
@@ -108,6 +109,7 @@ const AssistantRow = memo(function AssistantRow({
   end,
 }: {
   row: AssistantRowData;
+  bot: BotId;
   name: string;
   avatar: number | undefined;
   cont: boolean;
@@ -120,7 +122,7 @@ const AssistantRow = memo(function AssistantRow({
       <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
         {cont ? <span className="w-7 flex-none" /> : <Avatar name={name} avatar={avatar} size="sm" className="-mt-0.5" title={name} />}
         <div className="min-w-0 flex-1">
-          {row.text && <Markdown html={html} answer={row.seq} />}
+          {row.text && <Markdown html={html} answer={row.seq} bot={bot} />}
           {row.error && <AnswerError error={row.error} />}
         </div>
       </div>
@@ -190,7 +192,7 @@ export const renderDefaultRow: RowRenderer = (rows, index, ctx, bot) => {
     row.kind === "user" ? (
       <UserRow row={row} ctx={ctx} />
     ) : row.kind === "assistant" ? (
-      <AssistantRow row={row} name={ctx.name} avatar={ctx.avatar} cont={cont} turn={turnOf(rows, index)} end={end} />
+      <AssistantRow row={row} bot={ctx.sync.id} name={ctx.name} avatar={ctx.avatar} cont={cont} turn={turnOf(rows, index)} end={end} />
     ) : row.kind === "toolgroup" ? (
       <ToolGroupLine row={row} ctx={ctx} cont={cont} turn={turnOf(rows, index)} end={end} />
     ) : row.kind === "working" ? (

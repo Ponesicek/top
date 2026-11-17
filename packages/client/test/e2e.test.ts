@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll as after, test } from "vitest";
@@ -636,4 +636,26 @@ test("a bot's permission request reaches every client; the first answer wins, an
   reloaded.retain();
   await untilBot(reloaded, (x) => x.status === "live" && answerOf(x, third!.id) === "withdrawn", "the withdrawal, after a reload");
   assert.equal(ofKind(reloaded.getSnapshot(), "user").filter((e) => e.source === "permission").length, 2, "nothing reached the bot about it");
+});
+
+test("a bot's files have links once the daemon says where they are", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const top = new TopClient({ url: daemon.url });
+  cleanup.push(() => top.close());
+  // Before the daemon answers (a transcript shown from cache), there are no links yet.
+  assert.equal(top.getSnapshot().hasFiles, false);
+  assert.equal(top.fileUrl(1, "a.png"), undefined);
+  await until(top.subscribe, top.getSnapshot, (s) => s.hasFiles && s.ready, "the files path");
+
+  const bot = top.getSnapshot().bots[0]!;
+  const folder = join(daemon.dataDir, "bots", bot.name, "files", "shots dir");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "inline narrow.png"), "png bytes");
+  const response = await fetch(top.fileUrl(bot.id, "shots dir/inline narrow.png")!);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "png bytes");
+  // Another bot's link doesn't reach this bot's files.
+  const other = top.getSnapshot().bots[1]!;
+  assert.equal((await fetch(top.fileUrl(other.id, "shots dir/inline narrow.png")!)).status, 404);
 });
