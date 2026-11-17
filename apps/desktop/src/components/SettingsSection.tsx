@@ -43,6 +43,38 @@ export function Row({
   );
 }
 
+/** A bot's chip in a list of bots something is switched on for: filled while `on`. */
+export function BotChip({
+  on,
+  disabled,
+  title,
+  onClick,
+  children,
+}: {
+  on: boolean;
+  disabled?: boolean | undefined;
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      disabled={disabled}
+      onClick={onClick}
+      title={title}
+      className={cn(
+        "inline-flex h-6.5 items-center gap-1.5 rounded-full px-2.5 text-meta leading-none font-label transition-colors duration-90 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55",
+        on ? "bg-primary-soft text-link inset-ring inset-ring-primary/35" : "bg-secondary text-muted-foreground enabled:hover:text-foreground",
+      )}
+    >
+      <i className={cn("size-1.5 rounded-full", on ? "bg-primary" : "inset-ring-[1.5px] inset-ring-current")} aria-hidden />
+      {children}
+    </button>
+  );
+}
+
 /** A few buttons in a track, the chosen one raised. */
 export function Segmented<T extends string>({
   value,

@@ -26,6 +26,7 @@ import { type Compact, runLoop, type ThinkingLevel, toolCallsOf, toolResultMessa
 import type { EntryBody, TopUserMessage, TranscriptMessage, UserText } from "./messages.ts";
 import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
 import { type ToolResult, type TopTool, text } from "./tools.ts";
+import { permanentFailure } from "./websearch.ts";
 
 /** A task may survive this many daemon restarts; the next one ends it. */
 export const RESTART_LIMIT = 3;
@@ -35,7 +36,14 @@ export const RetryDelaysMs = Config.String("TOP_RETRY_DELAYS_MS").pipe(
   Config.withDefault([1_000, 4_000, 15_000]),
 );
 
-export type RunnerStatus = { readonly status: BotStatus; readonly tool?: string | undefined; readonly error?: string | undefined; readonly since: number };
+export type RunnerStatus = {
+  readonly status: BotStatus;
+  readonly tool?: string | undefined;
+  readonly error?: string | undefined;
+  /** While thinking: OpenAI is searching the web for the answer (websearch.ts). */
+  readonly searching?: boolean | undefined;
+  readonly since: number;
+};
 
 export type RunnerOptions = {
   readonly thinkingLevel?: ThinkingLevel | undefined;
@@ -57,6 +65,11 @@ export type RunnerOptions = {
   readonly retryDelaysMs?: readonly number[] | undefined;
   /** Compact the bot's transcript when it's longer than this many tokens (see compaction.ts); without it, never. */
   readonly compactAtTokens?: number | undefined;
+  /**
+   * The model takes OpenAI's web search (websearch.ts); this says whether the user lets the bot use it,
+   * asked again at the start of every run. Absent: the model can't search.
+   */
+  readonly webSearch?: Effect.Effect<boolean> | undefined;
 };
 
 /** A bot's prompt cache key (see `LoopOptions.sessionId`): one per bot, kept across restarts. */
@@ -143,6 +156,8 @@ export const makeRunner = Effect.fnUntraced(function* (
   /** Prompt sections that changed since the transcript last said; saved with the next message taken. */
   let systemUpdate: SystemMessage | undefined;
   let toolList: readonly TopTool[] = [];
+  /** The bot may search the web in this run (see `RunnerOptions.webSearch`). */
+  let searchOn = false;
   let tools = new Map<string, TopTool>();
   /** A task waiting to start on messages from Top, in case more come (see `RunnerOptions.gatherMs`). */
   const gather = yield* FiberHandle.make();
@@ -178,9 +193,9 @@ export const makeRunner = Effect.fnUntraced(function* (
             }),
         };
 
-  const setStatus = (next: BotStatus, extra: { tool?: string | undefined; error?: string | undefined } = {}) =>
+  const setStatus = (next: BotStatus, extra: { tool?: string | undefined; error?: string | undefined; searching?: boolean | undefined } = {}) =>
     Effect.gen(function* () {
-      if (status.status === next && status.tool === extra.tool && status.error === extra.error) return;
+      if (status.status === next && status.tool === extra.tool && status.error === extra.error && status.searching === extra.searching) return;
       status = { status: next, ...extra, since: yield* now };
       yield* events.status(id);
     });
@@ -274,6 +289,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           followUps: () => take(followUps),
           // Images are stored as their attachment's id; each request reads them in (attachments.ts).
           transformContext: attachments ? (context) => withImageData(context, attachments) : undefined,
+          webSearch: options.webSearch ? { offer: searchOn } : undefined,
           hooks: {
             added: saveMessage,
             asking: setStatus("thinking"),
@@ -291,6 +307,8 @@ export const makeRunner = Effect.fnUntraced(function* (
                 yield* events.entry(stored);
                 if (--runningTools === 0) yield* setStatus("thinking");
               }),
+            // Only while it's waiting on the model: the search is part of the request.
+            searching: (on) => (status.status === "thinking" ? setStatus("thinking", on ? { searching: true } : {}) : Effect.void),
           },
         },
         prompts,
@@ -325,6 +343,7 @@ export const makeRunner = Effect.fnUntraced(function* (
   const run = (prompts: readonly TranscriptMessage[] | undefined, queued: readonly InboxRow[], prompted: readonly InboxRow[] = []) =>
     Effect.gen(function* () {
       refreshTools();
+      searchOn = options.webSearch ? yield* options.webSearch : false;
       steering = [];
       followUps = [];
       delivered.clear();
@@ -341,7 +360,8 @@ export const makeRunner = Effect.fnUntraced(function* (
           const failed = takePendingError();
           if (!failed) break;
           const delay = retryDelays[attempt];
-          if (abortRequested || delay === undefined) {
+          // OpenAI saying this account can't use what the request asks for (a model, web search) won't change on a retry.
+          if (abortRequested || delay === undefined || permanentFailure(failed.errorMessage)) {
             yield* append("assistant", failed);
             yield* setStatus("failed", { error: failed.errorMessage ?? "The model request failed" });
             break;

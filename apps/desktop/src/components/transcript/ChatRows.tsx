@@ -18,6 +18,7 @@ import {
   prevTime,
   RetryNote,
   type RowRenderer,
+  Sources,
   sameDay,
   ToolGroup,
   time,
@@ -26,6 +27,7 @@ import {
   UserText,
   useBotStatus,
   useElapsed,
+  WebSearches,
 } from "./parts.tsx";
 
 const BUBBLE = "chat-bubble relative w-fit max-w-[min(75%,540px)] rounded-[9px] pt-1.25 pr-2.25 pb-1.75 pl-2.5 shadow-bubble";
@@ -115,6 +117,7 @@ const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<Displ
   const last = segments.length - 1;
   return (
     <div className={cn("flex flex-col items-start gap-0.75 pl-2", first ? "pt-2.5" : "pt-0.5")} data-answer={row.seq}>
+      {row.searches.length > 0 && <WebSearches row={row} className="w-fit max-w-[min(80%,620px)] rounded-[10px] bg-chat-in/75 px-2.75 py-1 shadow-bubble" />}
       {/* An entry never changes, so neither do its segments: their index is a stable key. */}
       {segments.map((segment, i) =>
         segment.kind === "prose" ? (
@@ -136,6 +139,7 @@ const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<Displ
           </div>
         ),
       )}
+      {row.citations.length > 0 && <Sources citations={row.citations} className="mt-0.5 max-w-[min(80%,620px)] pl-1" />}
       {row.error && <AnswerError error={row.error} className="mt-0 shadow-bubble" />}
     </div>
   );

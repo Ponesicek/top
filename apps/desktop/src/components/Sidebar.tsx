@@ -21,7 +21,7 @@ export function statusLabel(bot: BotSummary): string {
       // Its permission requests are in its conversation, waiting for an answer.
       return bot.approvals ? "Waiting for your approval" : "Idle";
     case "thinking":
-      return "Thinking";
+      return bot.searching ? "Searching the web" : "Thinking";
     case "tool":
       return `Running ${bot.tool ?? "a tool"}`;
     case "retrying":
@@ -190,7 +190,7 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
               title={fresh ? "Idle · new messages" : statusLabel(bot)}
             >
               <StatusDot status={bot.status} fresh={fresh} />
-              {busy ? SHORT[bot.status] : "Idle"}
+              {busy ? (bot.searching ? "Searching" : SHORT[bot.status]) : "Idle"}
             </span>
             {bot.queued > 0 && (
               <Badge className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible" title={`${bot.queued} queued`}>

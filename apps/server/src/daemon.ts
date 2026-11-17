@@ -41,6 +41,7 @@ import { makeSkills, type Skills, type SkillsConfig } from "./skills.ts";
 import { type BotRow, type InboxRow, PLANNED_RESTART, Store, type StoredEntry } from "./store.ts";
 import type { TopTool } from "./tools.ts";
 import { makeWakeClock, type WakeClock } from "./wakes.ts";
+import { WEB_SEARCH_SECTION } from "./websearch.ts";
 import { textOf } from "./wire.ts";
 
 const SUMMARY_DELAY_MS = 100;
@@ -115,6 +116,8 @@ export class BotKit extends Context.Service<
     readonly repeatGapMs?: number | undefined;
     /** Compact a bot's transcript when it's longer than this many tokens (see compaction.ts); without it, never. */
     readonly compactAtTokens?: number | undefined;
+    /** The bots' model takes OpenAI's web search (see websearch.ts), so each bot can be let use it. */
+    readonly webSearch?: boolean | undefined;
   }
 >()("top/BotKit") {}
 
@@ -160,6 +163,8 @@ export class Daemon extends Context.Service<
     readonly runners: () => BotRunner[];
     /** Make a bot and announce it. Fails with a `BotError` the user can read when the name is empty or taken. */
     readonly createBot: (name: string, description: string, avatar?: number) => Effect.Effect<number, BotError>;
+    /** Let a bot search the web, from its next message. Fails with a `BotError` when its model can't. */
+    readonly setWebSearch: (bot: number, on: boolean) => Effect.Effect<void, UnknownBotError | BotError>;
     /**
      * Delete a bot and its transcript. It leaves the roster at once; whatever it was doing is stopped,
      * and its rows are removed once it has. Files it made in its folder stay.
@@ -240,11 +245,13 @@ const make = Effect.gen(function* () {
         status: status.status,
         ...(status.tool ? { tool: status.tool } : {}),
         ...(status.error ? { error: status.error } : {}),
+        ...(status.searching ? { searching: true as const } : {}),
         since: status.since,
         preview: lastLine(textOf(answer?.content)),
         queued: (yield* store.inbox(bot)).length,
         ...(yield* waiting(bot)),
         lastSeq: yield* store.lastSeq(bot),
+        ...(kit.webSearch ? { webSearch: row.webSearch } : {}),
       } satisfies BotSummary;
     });
 
@@ -310,9 +317,17 @@ const make = Effect.gen(function* () {
       toolSources.set(bot.id, plain);
       const wrapped = own.map(jobs.wrap);
       const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map(jobs.wrap)] : () => wrapped;
-      // The kit's sections are made once; the skills section is read again before each message the bot takes.
+      // The kit's sections are made once; the skills and web search sections are read again before each message the bot takes.
       const fixed = kit.sections ? yield* kit.sections(bot) : undefined;
-      const sections = skills ? Effect.map(skills.section(bot), (section) => ({ ...fixed, skills: section })) : fixed && Effect.succeed(fixed);
+      const searchOn = Effect.map(store.bot(bot.id), (row) => row?.webSearch === true);
+      const changing = [
+        ...(skills ? [Effect.map(skills.section(bot), (section) => ({ skills: section }))] : []),
+        ...(kit.webSearch ? [Effect.map(searchOn, (on) => ({ web_search: on ? WEB_SEARCH_SECTION : null }))] : []),
+      ];
+      const sections =
+        changing.length > 0
+          ? Effect.map(Effect.all(changing), (parts): Readonly<Record<string, string | null>> => Object.assign({ ...fixed }, ...parts))
+          : fixed && Effect.succeed(fixed);
       const runner = yield* makeRunner(
         bot,
         kit.models,
@@ -330,6 +345,7 @@ const make = Effect.gen(function* () {
           attachments,
           retryDelaysMs: kit.retryDelaysMs,
           compactAtTokens: kit.compactAtTokens,
+          webSearch: kit.webSearch ? searchOn : undefined,
         },
       ).pipe(Scope.provide(botScope));
       const live: LiveBot = { runner, scope: botScope, folder: undefined, summary: yield* summarize(bot.id, runner) };
@@ -387,6 +403,15 @@ const make = Effect.gen(function* () {
       yield* events.publish({ _tag: "Bot", summary: live.summary });
       if (skills) yield* skills.rescan;
       return id;
+    }),
+    setWebSearch: Effect.fn("Daemon.setWebSearch")(function* (bot, on) {
+      if (!bots.has(bot)) return yield* new UnknownBotError({ bot });
+      if (!kit.webSearch)
+        return yield* new BotError({
+          message: `Web search is OpenAI's, on its Responses API; the bots run on ${kit.newBot?.model ?? "a model"}, which can't use it.`,
+        });
+      yield* store.setWebSearch(bot, on);
+      yield* touch(bot);
     }),
     deleteBot: Effect.fn("Daemon.deleteBot")(function* (id) {
       const live = bots.get(id);

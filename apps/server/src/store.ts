@@ -10,7 +10,8 @@
  *   `entries` is a single transaction, so a message is never lost or doubled.
  * - `tool_calls`: written right before a tool runs, so after a crash the daemon knows whether a tool
  *   call without a result had started (it may have taken effect) or not.
- * - `bots`: the roster, plus whether a task was running and how often the daemon restarted during it.
+ * - `bots`: the roster, plus whether a task was running and how often the daemon restarted during it,
+ *   and whether the bot may search the web (see websearch.ts).
  *   A deleted bot is first marked `deleted` (it may still be winding down a step), then purged with
  *   everything it wrote; a restart purges any that were only marked.
  * - `files`: the last listing of each bot's files folder, so changes made while the daemon was down are
@@ -115,7 +116,9 @@ export const BotRow = Schema.Struct({
   model: Text,
   runActive: Schema.BooleanFromBit,
   restarts: Int,
-}).pipe(Schema.encodeKeys({ runActive: "run_active" }));
+  /** The user let it search the web (see websearch.ts); it does only on a model that can. */
+  webSearch: Schema.BooleanFromBit,
+}).pipe(Schema.encodeKeys({ runActive: "run_active", webSearch: "web_search" }));
 export type BotRow = typeof BotRow.Type;
 
 const InboxColumns = Schema.Struct({
@@ -360,6 +363,7 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
       PRIMARY KEY (bot, name)
     )`;
   }),
+  "5_bot_web_search": addColumn("bots", "web_search", "INTEGER NOT NULL DEFAULT 0"),
 };
 
 /**
@@ -453,6 +457,7 @@ export class Store extends Context.Service<
     readonly setRestarts: (bot: number, restarts: number) => Effect.Effect<void>;
     /** `provider/model-id`. Takes effect when the daemon next starts. */
     readonly setModel: (bot: number, model: string) => Effect.Effect<void>;
+    readonly setWebSearch: (bot: number, on: boolean) => Effect.Effect<void>;
 
     // files
     /** The bot's files as last recorded; `undefined` before its folder was first looked at. */
@@ -729,6 +734,7 @@ const make = Effect.gen(function* () {
       setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
       setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
       setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),
+      setWebSearch: (bot, on) => Effect.asVoid(q(sql`UPDATE bots SET web_search = ${on ? 1 : 0} WHERE id = ${bot}`)),
 
       files: (bot) =>
         Effect.gen(function* () {

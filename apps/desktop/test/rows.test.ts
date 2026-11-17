@@ -98,3 +98,32 @@ describe("messages from Top", () => {
     expect(tailRows(snapshot, false)).toEqual([expect.objectContaining({ kind: "user", text: "and the wake-up?", state: "queued" })]);
   });
 });
+
+describe("web search rows", () => {
+  const searches = [{ action: "search", queries: ["retry backoff"], sourceCount: 4 }];
+  const citations = [{ url: "https://example.com/a", title: "A" }];
+  const tool = () => entry({ kind: "tool", toolCallId: "call_9", name: "bash", text: "ok" });
+
+  it("an answer keeps what it searched and what it cites", () => {
+    const rows = displayRows(committedRows([entry({ kind: "assistant", text: "Use backoff.", searches, citations })]), true);
+    expect(rows).toEqual([expect.objectContaining({ kind: "assistant", text: "Use backoff.", searches, citations })]);
+  });
+
+  it("an answer that only searched before calling a tool shows its searches; with tool steps hidden, it's left out", () => {
+    const items = [entry({ kind: "assistant", text: "", searches, tools: [{ id: "call_9", name: "bash", summary: "" }] }), tool()];
+    expect(displayRows(committedRows(items), true).map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
+    expect(displayRows(committedRows(items), false)).toEqual([]);
+  });
+
+  it("with tool steps hidden, the searches go and the citations stay, the same row each time", () => {
+    const committed = committedRows([entry({ kind: "assistant", text: "Use backoff.", searches, citations })]);
+    const [row] = displayRows(committed, false);
+    expect(row).toMatchObject({ kind: "assistant", searches: [], citations });
+    expect(displayRows(committed, false)[0]).toBe(row);
+  });
+
+  it("an answer from before web search has none of either", () => {
+    const [row] = committedRows([entry({ kind: "assistant", text: "Old." })]);
+    expect(row).toMatchObject({ searches: [], citations: [] });
+  });
+});

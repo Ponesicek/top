@@ -2,6 +2,7 @@
 import type {
   Attachment,
   BotSummary,
+  Citation,
   ConversationSnapshot,
   Entry,
   FileChange,
@@ -13,6 +14,7 @@ import type {
   SkillUse,
   ToolCallView,
   TranscriptItem,
+  WebSearchStep,
 } from "@top/client";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -39,6 +41,10 @@ export type Row =
       readonly seq: number;
       readonly text: string;
       readonly tools: readonly ToolCallView[];
+      /** What the model did on the web while it wrote this answer (OpenAI's web search, not one of the bot's tools). */
+      readonly searches: readonly WebSearchStep[];
+      /** The pages the answer cites. */
+      readonly citations: readonly Citation[];
       readonly hasThinking: boolean;
       readonly at: number;
       readonly error?: string | undefined;
@@ -61,6 +67,7 @@ export type Row =
   | { readonly kind: "working"; readonly key: "working" };
 
 const entryRows = new WeakMap<Entry, Row>();
+const NONE: readonly never[] = [];
 
 /**
  * A background job's result, or the user's answer to a permission request, shows no row: the bot's
@@ -94,6 +101,8 @@ function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
         seq: entry.seq,
         text: entry.text,
         tools: entry.tools ?? [],
+        searches: entry.searches ?? NONE,
+        citations: entry.citations ?? NONE,
         hasThinking: !!entry.hasThinking,
         at: entry.at,
         error: entry.stopped ? "Stopped" : entry.error,
@@ -217,6 +226,17 @@ export function rowTime(row: DisplayRow | undefined): number | undefined {
 }
 
 const groupCache = new Map<string, ToolGroupRow>();
+type AssistantRow = Extract<Row, { kind: "assistant" }>;
+/** Answers without their web search steps, for when steps are hidden: the same object per answer. */
+const withoutSearches = new WeakMap<AssistantRow, AssistantRow>();
+function stepsHidden(row: AssistantRow): AssistantRow {
+  if (!row.searches.length) return row;
+  const known = withoutSearches.get(row);
+  if (known) return known;
+  const hidden: AssistantRow = { ...row, searches: NONE };
+  withoutSearches.set(row, hidden);
+  return hidden;
+}
 const filesCache = new Map<string, { parts: readonly FilesRow[]; row: FilesRow }>();
 
 /** What a file went through, as one change: made then edited is "added", made then removed is nothing. */
@@ -255,7 +275,8 @@ function mergeFiles(parts: readonly FilesRow[]): FilesRow {
  * File changes wait for the end of the bot's turn (or its "working" row) and show there as one line,
  * so a turn that wrote a report says so once, under the answer, instead of splitting its steps.
  *
- * With `showTools` off, tool steps are left out altogether.
+ * With `showTools` off, tool steps are left out altogether, and so are an answer's web searches (its
+ * citations stay: they're part of the answer).
  */
 export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[] {
   const out: DisplayRow[] = [];
@@ -278,7 +299,8 @@ export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[
     out.push(group);
     run = null;
   };
-  for (const row of rows) {
+  for (const next of rows) {
+    const row = next.kind === "assistant" && !showTools ? stepsHidden(next) : next;
     if (row.kind === "files") {
       files.push(row);
       continue;
@@ -289,8 +311,9 @@ export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[
       run.push(row.entry);
       continue;
     }
-    // A tool-call-only answer sits between tool steps; skipping it keeps the run together.
-    if (row.kind === "assistant" && !row.text && !row.error) continue;
+    // A tool-call-only answer sits between tool steps; skipping it keeps the run together. One that
+    // searched the web shows its searches.
+    if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length) continue;
     flush();
     if (row.kind === "working" || author(row) !== "bot") flushFiles();
     out.push(row);
