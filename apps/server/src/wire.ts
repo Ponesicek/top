@@ -41,12 +41,14 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       return { ...base, kind: "permission", request: stored.message.request, answer: stored.message.answer };
     case "user": {
       const { content, attachments } = stored.message;
+      const skill = typeof content === "string" ? undefined : content.flatMap((p) => (p.type === "text" && p.skill ? [p.skill] : []))[0];
       return {
         ...base,
         kind: "user",
-        // What the user wrote: not the note telling the bot where their attachments are saved.
-        text: textOf(typeof content === "string" ? content : content.filter((p) => !(p.type === "text" && p.attachmentNote))),
+        // What the user wrote: not the notes telling the bot where their attachments are saved, or what a skill says.
+        text: textOf(typeof content === "string" ? content : content.filter((p) => !(p.type === "text" && (p.attachmentNote || p.skill)))),
         ...(attachments?.length ? { attachments } : {}),
+        ...(skill ? { skill } : {}),
         ...(stored.requestId ? { requestId: stored.requestId } : {}),
         ...(stored.source ? { source: stored.source } : {}),
       };

@@ -54,6 +54,7 @@ import type { ThinkingLevel } from "./loop.ts";
 import * as Mcp from "./mcp.ts";
 import { RetryDelaysMs } from "./runner.ts";
 import { serve } from "./serve.ts";
+import { LOCAL_SKILLS } from "./skills.ts";
 import * as Sqlite from "./sqlite.ts";
 import * as Store from "./store.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
@@ -107,6 +108,9 @@ const flags = {
 };
 
 type Args = Command.Command.Config.Infer<typeof flags>;
+
+/** Skills come from the home's shared library and each bot's own folder; nothing else is read (not ~/.claude/skills). */
+const skillsOf = (home: Home.Layout) => ({ library: home.skills, local: (bot: Store.BotRow) => join(botFolder(home.bots, bot.name), LOCAL_SKILLS) });
 
 /** What real bots are made of: a signed-in model, and the computer's tools in their own folders. */
 const realBots = (args: Args, model: string, home: Home.Layout) =>
@@ -165,6 +169,7 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           // One bot to start with; the app makes more.
           firstBots: ["Atlas"],
           files: (bot) => join(botFolder(home.bots, bot.name), FILES_FOLDER),
+          skills: skillsOf(home),
           foregroundMs: yield* ForegroundMs,
           retryDelaysMs: yield* RetryDelaysMs,
         });
@@ -192,6 +197,7 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         firstBots: BOT_NAMES,
         seed: args.seed,
         files: filesOf,
+        skills: skillsOf(home),
         foregroundMs: yield* ForegroundMs,
         retryDelaysMs: yield* RetryDelaysMs,
       });

@@ -23,6 +23,7 @@ import {
   type RequestType,
   type ResultOf,
   type ServerFrame,
+  SkillError,
 } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -66,7 +67,16 @@ export class TimeoutError extends Schema.TaggedError<TimeoutError>()("TimeoutErr
 export class RequestError extends Schema.TaggedError<RequestError>()("RequestError", { message: Schema.String }) {}
 
 /** What a request can end in, besides its answer. */
-export type RequestFailure = OfflineError | TimeoutError | RequestError | BotError | BusyError | AttachmentError | McpServerError | PermissionError;
+export type RequestFailure =
+  | OfflineError
+  | TimeoutError
+  | RequestError
+  | BotError
+  | BusyError
+  | AttachmentError
+  | McpServerError
+  | PermissionError
+  | SkillError;
 
 const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   BotError: (message) => new BotError({ message }),
@@ -74,6 +84,7 @@ const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   AttachmentError: (message) => new AttachmentError({ message }),
   McpServerError: (message) => new McpServerError({ message }),
   PermissionError: (message) => new PermissionError({ message }),
+  SkillError: (message) => new SkillError({ message }),
 };
 
 const numbered = (frame: RequestFrame, req: number): ClientFrame => ({ ...frame, req });

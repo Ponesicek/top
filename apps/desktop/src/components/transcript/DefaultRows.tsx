@@ -89,7 +89,7 @@ const UserRow = memo(function UserRow({ row }: { row: UserRowData }) {
             row.state && USER_BUBBLE_STATE[row.state],
           )}
         >
-          <UserText text={row.text} />
+          <UserText text={row.text} skill={row.skill} />
         </div>
       )}
       {row.state ? <UserState row={row} className="mt-1.25 mb-1" /> : <TurnTime at={row.at} turn={row.key} align="end" />}

@@ -2,22 +2,27 @@
  * The messages Top keeps in `entries.message` (JSON), by entry kind.
  *
  * Model messages are pi-ai's, plus what Top adds to a user message: the attachments it came with, a
- * marked note telling the bot where they are saved, and images held by attachment id (attachments.ts
- * reads their bytes in for each request).
+ * marked note telling the bot where they are saved, images held by attachment id (attachments.ts
+ * reads their bytes in for each request), and the SKILL.md of a skill the message asked for with
+ * `/<name>`, marked with the skill (see skills.ts).
  *
  * Every entry read back is checked against a Schema of what Top itself reads (the `*View` schemas).
  * They're lenient where pi's own types are strict, so transcripts written by earlier versions still
  * load: an answer's usage, provider metadata and the like are pi's to read, and pass through as saved.
  */
 import type { AssistantMessage, ImageContent, SystemMessage, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { Attachment, FileChange, PermissionAnswer } from "@top/protocol";
+import { Attachment, FileChange, PermissionAnswer, SkillUse } from "@top/protocol";
 import * as Schema from "effect/Schema";
 
 // ── types ────────────────────────────────────────────────────────────────────────
 
-/** Text in a user message; `attachmentNote` marks the line telling the bot where attachments are saved. */
+/**
+ * Text in a user message. `attachmentNote` marks the line telling the bot where attachments are saved;
+ * `skill`, the instructions of the skill the message asked for. Neither is what the user wrote.
+ */
 export interface UserText extends TextContent {
   readonly attachmentNote?: true;
+  readonly skill?: SkillUse;
 }
 /** An image in a user message: stored with its attachment's id and empty `data`, which each request fills in. */
 export interface UserImage extends ImageContent {
@@ -47,7 +52,12 @@ export type EntryBody = {
 
 const Optional = Schema.optionalKey;
 
-const Text = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String, attachmentNote: Optional(Schema.Literal(true)) });
+const Text = Schema.Struct({
+  type: Schema.Literal("text"),
+  text: Schema.String,
+  attachmentNote: Optional(Schema.Literal(true)),
+  skill: Optional(SkillUse),
+});
 const Image = Schema.Struct({ type: Schema.Literal("image"), mimeType: Schema.String, data: Schema.String, attachment: Optional(Schema.String) });
 const Thinking = Schema.Struct({ type: Schema.Literal("thinking"), thinking: Schema.String });
 const ToolCall = Schema.Struct({ type: Schema.Literal("toolCall"), id: Schema.String, name: Schema.String, arguments: Schema.Unknown });

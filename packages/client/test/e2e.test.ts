@@ -549,6 +549,73 @@ test("MCP servers set up from the app: every client sees them, bots get them onl
   await until(c.subscribe, c.getSnapshot, (s) => s.mcpServers.length === 0, "the server gone");
 });
 
+test("skills from the app: found in the home and the bot's folder, switched on per bot, used with /<name>, kept across a restart", async () => {
+  const daemon = new Daemon();
+  const skill = (folder: string, name: string, description: string) => {
+    mkdirSync(join(folder, name), { recursive: true });
+    writeFileSync(join(folder, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\nRead references/form.md first.\n`);
+  };
+  skill(join(daemon.dataDir, "skills"), "pdf", "Fill in PDF forms.");
+  await daemon.start();
+  const a = await connect(daemon, 0);
+  const b = await connect(daemon, 0);
+  const name = a.top.getSnapshot().bots[0]!.name;
+  const skillsOf = (top: TopClient) => top.getSnapshot().skills;
+  const mine = (top: TopClient) => skillsOf(top)?.bots.find((x) => x.bot === a.id);
+
+  const first = await until(
+    b.top.subscribe,
+    () => skillsOf(b.top),
+    (v) => !!v,
+    "the skills",
+  );
+  assert.deepEqual(
+    first!.shared.map((x) => x.name),
+    ["pdf"],
+  );
+  assert.ok(
+    first!.bots.every((x) => x.enabled.length === 0),
+    "no bot has a skill until it's switched on",
+  );
+
+  // One added to the bot's own folder shows once the folders are read again.
+  skill(join(daemon.dataDir, "bots", name, ".agents", "skills"), "notes", "Keep notes.");
+  await a.top.rescanSkills();
+  await until(
+    b.top.subscribe,
+    () => mine(b.top)?.local.map((x) => x.name),
+    (n) => n?.[0] === "notes",
+    "the bot's own skill",
+  );
+
+  await a.top.enableSkill(a.id, "pdf", true);
+  await until(
+    b.top.subscribe,
+    () => mine(b.top)?.enabled,
+    (e) => e?.[0] === "pdf",
+    "the skill switched on, on the other client",
+  );
+  await assert.rejects(a.top.enableSkill(a.id, "nope", true), /no skill named nope/);
+
+  a.bot.send("/pdf fill in the form");
+  const s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "user").some((u) => u.skill), "the message that used the skill");
+  const used = ofKind(s, "user").find((u) => u.skill)!;
+  assert.equal(used.text, "/pdf fill in the form");
+  assert.deepEqual(used.skill, { name: "pdf", source: "shared", path: join(daemon.dataDir, "skills", "pdf", "SKILL.md") });
+
+  await daemon.kill();
+  await daemon.start();
+  const c = new TopClient({ url: daemon.url });
+  cleanup.push(() => c.close());
+  const after = await until(
+    c.subscribe,
+    () => skillsOf(c)?.bots.find((x) => x.bot === a.id),
+    (x) => !!x,
+    "the skills after a restart",
+  );
+  assert.deepEqual(after!.enabled, ["pdf"]);
+});
+
 test("no MCP server may take the name of Top's own tools (Collar)", async () => {
   const daemon = new Daemon();
   await daemon.start();

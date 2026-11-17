@@ -162,6 +162,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   });
   yield* send({ t: "bots", bots: daemon.bots() });
   if (mcp) yield* send({ t: "mcpServers", servers: yield* mcp.views });
+  if (daemon.skills) yield* send({ t: "skills", skills: daemon.skills.view() });
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
   yield* send({ t: "permissions", requests: yield* daemon.permissions.waiting });
@@ -188,6 +189,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "mcpServer", server: event.view });
       case "McpServerRemoved":
         return send({ t: "mcpServerRemoved", id: event.id });
+      case "Skills":
+        return send({ t: "skills", skills: event.view });
       case "Account":
         return send({ t: "account", account: event.view });
       case "Update":
@@ -219,6 +222,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const mcpOf = () => (mcp ? Effect.succeed(mcp) : Effect.fail(new NoMcp()));
   const chatgptOf = () => (chatgpt ? Effect.succeed(chatgpt) : Effect.fail(new NoChatGPT()));
   const updatesOf = () => (updates ? Effect.succeed(updates) : Effect.fail(new NoUpdates()));
+  const skillsOf = () => (daemon.skills ? Effect.succeed(daemon.skills) : Effect.fail(new NoSkills()));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
 
   const watch = (frame: Extract<ClientFrame, { t: "watch" }>) =>
@@ -336,6 +340,21 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(mcpOf(), (m) => m.retry(frame.id)),
         );
+      case "enableSkill":
+        return answer(
+          frame,
+          Effect.gen(function* () {
+            const skills = yield* skillsOf();
+            const bot = daemon.has(frame.bot) ? yield* store.bot(frame.bot) : undefined;
+            if (!bot) return yield* new UnknownBotError({ bot: frame.bot });
+            yield* skills.enable(bot, frame.name, frame.on);
+          }),
+        );
+      case "rescanSkills":
+        return answer(
+          frame,
+          Effect.flatMap(skillsOf(), (s) => s.rescan),
+        );
       case "chatgptSignIn":
         return answer(
           frame,
@@ -408,6 +427,13 @@ type Answer<T extends RequestType> = ResultOf<T> extends null ? void : ResultOf<
 class NoMcp extends Data.TaggedError("NoMcp") {
   override get message() {
     return "This daemon has no MCP servers.";
+  }
+}
+
+/** The daemon's bots have no skills (a test daemon). */
+class NoSkills extends Data.TaggedError("NoSkills") {
+  override get message() {
+    return "This daemon has no skills.";
   }
 }
 

@@ -22,7 +22,7 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as Latch from "effect/Latch";
 import { type Attachments, userContent, withImageData } from "./attachments.ts";
 import { runLoop, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
-import type { EntryBody, TopUserMessage, TranscriptMessage } from "./messages.ts";
+import type { EntryBody, TopUserMessage, TranscriptMessage, UserText } from "./messages.ts";
 import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
 import { type ToolResult, type TopTool, text } from "./tools.ts";
 
@@ -38,8 +38,13 @@ export type RunnerStatus = { readonly status: BotStatus; readonly tool?: string 
 
 export type RunnerOptions = {
   readonly thinkingLevel?: ThinkingLevel | undefined;
-  /** Named system prompt sections the bot should have. A change is saved just before the next message the bot takes. */
-  readonly sections?: Readonly<Record<string, string>> | undefined;
+  /**
+   * Named system prompt sections the bot should have (`null`: none by that name), asked for again before
+   * each message the bot takes between tasks. A change is saved just before that message.
+   */
+  readonly sections?: Effect.Effect<Readonly<Record<string, string | null>>> | undefined;
+  /** Something to add to a message from the user when the bot takes it: the skill its `/<name>` asks for (see skills.ts). */
+  readonly note?: ((text: string) => Effect.Effect<UserText | undefined>) | undefined;
   /**
    * How long a message from Top itself (a job's result, a wake-up) waits before it starts a task for
    * an idle bot, so ones that come close together start one task, not one each.
@@ -153,27 +158,31 @@ export const makeRunner = Effect.fnUntraced(function* (
   const append = <K extends "assistant" | "system" | "notice">(kind: K, message: EntryBody[K]) =>
     Effect.tap(store.append(id, kind, message), (stored) => events.entry(stored));
 
-  const userMessage = (row: InboxRow): TopUserMessage => {
-    const message: TopUserMessage =
-      row.attachments.length && attachments
-        ? {
-            role: "user",
-            content: userContent(row.text, row.attachments, (a) => attachments.path(a)),
-            attachments: row.attachments,
-            timestamp: row.at,
-          }
-        : { role: "user", content: row.text, timestamp: row.at };
-    requestIds.set(message, row.requestId);
-    return message;
-  };
+  const userMessage = (row: InboxRow): Effect.Effect<TopUserMessage> =>
+    Effect.gen(function* () {
+      // Only the user's own messages ask for skills; Top's (a job's result, a wake-up) are what they are.
+      const note = !row.source && options.note ? yield* options.note(row.text) : undefined;
+      const message: TopUserMessage =
+        row.attachments.length && attachments
+          ? {
+              role: "user",
+              content: [...userContent(row.text, row.attachments, (a) => attachments.path(a)), ...(note ? [note] : [])],
+              attachments: row.attachments,
+              timestamp: row.at,
+            }
+          : { role: "user", content: note ? [...(row.text.trim() ? [{ type: "text" as const, text: row.text }] : []), note] : row.text, timestamp: row.at };
+      requestIds.set(message, row.requestId);
+      return message;
+    });
 
-  const deliver = (row: InboxRow) => {
-    if (delivered.has(row.requestId)) return;
-    delivered.add(row.requestId);
-    const message = userMessage(row);
-    if (row.mode === "steer") steering.push(message);
-    else followUps.push(message);
-  };
+  const deliver = (row: InboxRow) =>
+    Effect.gen(function* () {
+      if (delivered.has(row.requestId)) return;
+      delivered.add(row.requestId);
+      const message = yield* userMessage(row);
+      if (row.mode === "steer") steering.push(message);
+      else followUps.push(message);
+    });
 
   const saveMessage = (message: TranscriptMessage) =>
     Effect.gen(function* () {
@@ -261,11 +270,15 @@ export const makeRunner = Effect.fnUntraced(function* (
       ),
     );
 
-  {
+  /** Compare the sections the bot should have with what its transcript says, and hold any change for the next message it takes. */
+  const updateSections = Effect.gen(function* () {
+    if (!options.sections) return;
+    const wanted = yield* options.sections;
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
-    const changed = Object.entries(options.sections ?? {}).filter(([name, value]) => current[name] !== value);
-    if (changed.length) systemUpdate = { role: "system", content: "", sections: Object.fromEntries(changed), timestamp: yield* now };
-  }
+    const changed = Object.entries(wanted).filter(([name, value]) => (current[name] ?? null) !== value);
+    systemUpdate = changed.length ? { role: "system", content: "", sections: Object.fromEntries(changed), timestamp: yield* now } : undefined;
+  });
+  yield* updateSections;
 
   /** Set by `saveMessage` while the loop runs, so read it through a call TypeScript can't narrow. */
   const takePendingError = (): AssistantMessage | undefined => {
@@ -282,7 +295,7 @@ export const makeRunner = Effect.fnUntraced(function* (
       followUps = [];
       delivered.clear();
       for (const row of prompted) delivered.add(row.requestId);
-      for (const row of queued) deliver(row);
+      for (const row of queued) yield* deliver(row);
       pendingError = undefined;
       yield* store.setRunActive(id, true);
       yield* setStatus("thinking");
@@ -310,7 +323,7 @@ export const makeRunner = Effect.fnUntraced(function* (
             yield* append("assistant", { ...failed, stopReason: "aborted", errorMessage: "Stopped" });
             break;
           }
-          for (const row of yield* store.inbox(id)) deliver(row);
+          for (const row of yield* store.inbox(id)) yield* deliver(row);
           yield* setStatus("thinking");
           yield* loop(controller.signal);
         }
@@ -353,8 +366,9 @@ export const makeRunner = Effect.fnUntraced(function* (
       }
       if (!inbox.length) break;
       // Everything waiting goes in together: one task for several jobs that ended while it was idle.
-      const taken = inbox.map(userMessage);
+      const taken = yield* Effect.forEach(inbox, userMessage);
       // A prompt change goes in just before the messages, in the same run, so it's saved with them.
+      yield* updateSections;
       const update = systemUpdate;
       systemUpdate = undefined;
       if (!(yield* run(update ? [update, ...taken] : taken, [], inbox))) break;
@@ -483,8 +497,7 @@ export const makeRunner = Effect.fnUntraced(function* (
         }
         // Mid-run: hand it to the loop so it lands at the next turn (steer) or when the task would end
         // (follow-up). Between runs, the next run picks it up from the inbox.
-        if (looping) deliver(row);
-        return Effect.void;
+        return looping ? deliver(row) : Effect.void;
       }),
     abort: Effect.sync(() => {
       if (!busy) return;

@@ -3,7 +3,9 @@
  *
  *   ~/.top/
  *   ├── server/           the daemon's own state: top.sqlite, attachments/, auth.json, chatgpt-host.json
- *   ├── bots/<name>/      each bot's working folder, with files/ for what it makes for the user
+ *   ├── skills/<name>/    the shared skill library: AgentSkills folders, each bot uses the ones switched on for it
+ *   ├── bots/<name>/      each bot's working folder, with files/ for what it makes for the user and
+ *   │                     .agents/skills/ for its own skills
  *   └── desktop/          the desktop app's profile (its cache and settings; see electron/main.js)
  *
  * Fake bots get a home of their own (`.data/fake` by default), laid out the same way, so trying them
@@ -30,6 +32,8 @@ export const layout = (home: string) => {
     home,
     server,
     bots: join(home, "bots"),
+    /** The shared skill library (see skills.ts). */
+    skills: join(home, "skills"),
     database: join(server, "top.sqlite"),
     auth: join(server, "auth.json"),
     /** This installation's id for Sign in with ChatGPT, and the user's consent to background use (see chatgpt.ts). */

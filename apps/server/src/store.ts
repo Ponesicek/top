@@ -16,6 +16,8 @@
  *   still reported when it starts. A `files` entry and the listing it reports change together.
  * - `mcp_servers`: MCP connections set up in the app, with their secrets and OAuth credentials, and
  *   `bot_mcp`: which bots use which. A bot has none until it is given one.
+ * - `bot_skills`: the skills switched on for each bot, by name (the skills themselves are folders on
+ *   disk, see skills.ts). A bot has none until one is switched on.
  * - `wakes`: wake-ups a bot set for itself (see wakes.ts). Firing one puts its message in the inbox in
  *   the same transaction, so a wake-up arrives once, also across restarts.
  * - `jobs`: tool calls that outran the time limit and went on in the background (see jobs.ts). Ending
@@ -340,6 +342,14 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     )`;
     yield* sql`CREATE INDEX permissions_pending ON permissions(state, bot)`;
   }),
+  "4_bot_skills": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE bot_skills (
+      bot INTEGER NOT NULL REFERENCES bots(id),
+      name TEXT NOT NULL,
+      PRIMARY KEY (bot, name)
+    )`;
+  }),
 };
 
 /**
@@ -452,6 +462,11 @@ export class Store extends Context.Service<
     /** The bots (not deleted) that use each server: server id → bot ids. */
     readonly mcpAssignments: Effect.Effect<Map<number, number[]>>;
     readonly assignMcp: (server: number, bot: number, on: boolean) => Effect.Effect<void>;
+
+    // skills
+    /** The skill names switched on for each bot (not deleted), sorted: bot id → names. */
+    readonly enabledSkills: Effect.Effect<Map<number, string[]>>;
+    readonly enableSkill: (bot: number, name: string, on: boolean) => Effect.Effect<void>;
 
     // entries
     readonly append: <K extends EntryKind>(bot: number, kind: K, message: EntryBody[K], extra?: AppendExtra) => Effect.Effect<StoredEntry>;
@@ -631,7 +646,7 @@ const make = Effect.gen(function* () {
   const purgeBot = (bot: number) =>
     transaction(
       Effect.gen(function* () {
-        for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "files", "wakes", "jobs", "permissions", "attachments"])
+        for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "bot_skills", "files", "wakes", "jobs", "permissions", "attachments"])
           yield* q(sql.unsafe(`DELETE FROM ${table} WHERE bot = ?`, [bot]));
         yield* q(sql`DELETE FROM bots WHERE id = ${bot}`);
       }),
@@ -661,6 +676,7 @@ const make = Effect.gen(function* () {
             yield* q(sql`UPDATE bots SET deleted = 1, run_active = 0, name = ${`deleted:${bot}:${randomUUID()}`} WHERE id = ${bot}`);
             yield* q(sql`DELETE FROM inbox WHERE bot = ${bot}`);
             yield* q(sql`DELETE FROM bot_mcp WHERE bot = ${bot}`);
+            yield* q(sql`DELETE FROM bot_skills WHERE bot = ${bot}`);
             yield* q(sql`UPDATE wakes SET state = 'cancelled' WHERE bot = ${bot} AND state = 'pending'`);
             yield* q(sql`UPDATE jobs SET state = 'stopped' WHERE bot = ${bot} AND state = 'running'`);
             yield* q(sql`UPDATE permissions SET state = 'withdrawn' WHERE bot = ${bot} AND state = 'pending'`);
@@ -739,6 +755,23 @@ const make = Effect.gen(function* () {
             on
               ? sql`INSERT OR IGNORE INTO bot_mcp (bot, server) VALUES (${bot}, ${server})`
               : sql`DELETE FROM bot_mcp WHERE bot = ${bot} AND server = ${server}`,
+          ),
+        ),
+
+      enabledSkills: Effect.map(
+        rows(
+          sql`SELECT bot_skills.bot, bot_skills.name FROM bot_skills JOIN bots ON bots.id = bot_skills.bot WHERE bots.deleted = 0 ORDER BY bot_skills.bot, bot_skills.name`,
+        ),
+        (enabled) => {
+          const map = new Map<number, string[]>();
+          for (const row of enabled) map.set(Number(row.bot), [...(map.get(Number(row.bot)) ?? []), String(row.name)]);
+          return map;
+        },
+      ),
+      enableSkill: (bot, name, on) =>
+        Effect.asVoid(
+          q(
+            on ? sql`INSERT OR IGNORE INTO bot_skills (bot, name) VALUES (${bot}, ${name})` : sql`DELETE FROM bot_skills WHERE bot = ${bot} AND name = ${name}`,
           ),
         ),
 

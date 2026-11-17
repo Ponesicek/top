@@ -96,7 +96,7 @@ const UserBubble = memo(function UserBubble({ row, first }: { row: Extract<Displ
         >
           {first && !row.attachments && <Tail side="out" />}
           <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">
-            <UserText text={row.text} />
+            <UserText text={row.text} skill={row.skill} />
             <span className="stamp-space" aria-hidden>
               {time(row.at)}
             </span>

@@ -1,6 +1,6 @@
 /** Pieces every transcript style shares: the bot it shows, times, tool steps, the folded tool group, notes. */
 
-import type { BotSummary, ConversationSync, ToolOutcome } from "@top/client";
+import type { BotSummary, ConversationSync, SkillUse, ToolOutcome } from "@top/client";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
 import { type ComponentProps, createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { cn } from "../../lib/utils.ts";
@@ -315,15 +315,36 @@ export function Markdown({ html, answer }: { html: string; answer?: number }) {
   return <div className="md" data-answer={answer} dangerouslySetInnerHTML={{ __html: shown }} />;
 }
 
+/** The `/<name>` a message started with, marked as the skill it asked for: where it came from, or why it couldn't be used. */
+function SkillTag({ skill }: { skill: SkillUse }) {
+  const from = skill.source === "shared" ? "the shared library" : "the bot's own skills";
+  return (
+    <span
+      className={cn(
+        "mr-1 inline-block rounded-md bg-current/8 px-1.5 font-mono text-[0.9em] leading-[1.45]",
+        skill.error && "text-destructive-foreground line-through decoration-current/50",
+      )}
+      title={skill.error ? `The skill ${skill.name} couldn't be used: ${skill.error}` : `Skill ${skill.name}, from ${from}\n${skill.path}`}
+    >
+      /{skill.name}
+    </span>
+  );
+}
+
 /**
  * What you sent. Passages you quoted (quotes.ts) show where you put them, each with your comment on
- * it, and take you back to the answer they came from. Its parent keeps line breaks.
+ * it, and take you back to the answer they came from. A skill the message asked for with `/<name>`
+ * shows as a tag. Its parent keeps line breaks.
  */
-export function UserText({ text }: { text: string }) {
+export function UserText({ text, skill }: { text: string; skill?: SkillUse | undefined }) {
   const bot = String(useIdentity().sync.id);
-  const parts = useMemo(() => messageParts(text), [text]);
-  if (!parts) return text;
-  return parts.map((part, i) =>
+  // The skill's `/<name>` is its tag; the rest is what the user asked of it.
+  const tagged = skill !== undefined && text.startsWith(`/${skill.name}`);
+  const rest = tagged ? text.slice(skill.name.length + 1).replace(/^[ \t]/, "") : text;
+  const parts = useMemo(() => messageParts(rest), [rest]);
+  const tag = tagged ? <SkillTag key="skill" skill={skill} /> : null;
+  if (!parts) return tag ? [tag, rest] : rest;
+  const shown = parts.map((part, i) =>
     part.kind === "text" ? (
       part.text.trim() && (
         // biome-ignore lint/suspicious/noArrayIndexKey: parts of an immutable message
@@ -345,6 +366,7 @@ export function UserText({ text }: { text: string }) {
       </button>
     ),
   );
+  return tag ? [tag, ...shown] : shown;
 }
 
 /** A rule across the column with a short line in the middle: "Load earlier messages", notices. */

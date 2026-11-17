@@ -19,7 +19,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 export const DEFAULT_PORT = 7357;
 
 // ── schema helpers ───────────────────────────────────────────────────────────────
@@ -169,6 +169,88 @@ export type PermissionAnswer = typeof PermissionAnswer.Type;
 export const MAX_PERMISSION_ACTION = 500;
 export const MAX_PERMISSION_REASON = 1_000;
 
+// ── skills ───────────────────────────────────────────────────────────────────────
+//
+// Skills are AgentSkills folders (`<name>/SKILL.md`, with whatever scripts and references sit beside it).
+// The daemon finds them in two places: the shared library in Top's home (`<home>/skills`), and each
+// bot's own folder (`<bot's folder>/.agents/skills`). Finding a skill gives it to no one: a bot has
+// only the names switched on for it (a new bot has none). A bot's own skill takes the place of a
+// shared one with the same name, for that bot only. The daemon reads the folders again when a client
+// asks (`rescanSkills`) and before each message a bot takes.
+
+/** Where a skill was found: the shared library, or the bot's own folder. */
+export const SkillSource = Schema.Literals(["shared", "local"]);
+export type SkillSource = typeof SkillSource.Type;
+
+export const SkillView = Struct({
+  /** The skill's folder name, which is its name. */
+  name: Schema.String,
+  /** From SKILL.md's frontmatter; empty when it has none. */
+  description: Schema.String,
+  /** SKILL.md's absolute path on the daemon's computer. Paths inside the skill are relative to its folder. */
+  path: Schema.String,
+  /** Why it can't be used, when it can't: no SKILL.md, a bad name or description, frontmatter that doesn't parse. */
+  error: Optional(Schema.String),
+});
+export type SkillView = typeof SkillView.Type;
+
+export const BotSkills = Struct({
+  bot: BotId,
+  /** The bot's own skills folder (`.agents/skills` in its folder). It may not exist. */
+  folder: Schema.String,
+  local: List(SkillView),
+  /** The names switched on for this bot, sorted. A name with no skill behind it stays until it's switched off. */
+  enabled: List(Schema.String),
+});
+export type BotSkills = typeof BotSkills.Type;
+
+export const SkillsView = Struct({
+  /** The shared library's folder (`skills` in Top's home). */
+  library: Schema.String,
+  shared: List(SkillView),
+  bots: List(BotSkills),
+});
+export type SkillsView = typeof SkillsView.Type;
+
+/** What the user's message used: `/<name>` at its start, a skill switched on for the bot. */
+export const SkillUse = Struct({
+  name: Schema.String,
+  source: SkillSource,
+  path: Schema.String,
+  /** The skill couldn't be read when the bot took the message, so the bot was told that instead. */
+  error: Optional(Schema.String),
+});
+export type SkillUse = typeof SkillUse.Type;
+
+/** A skill a bot has: switched on, and found. `error` set: it's there but can't be used. */
+export type ActiveSkill = SkillView & { readonly source: SkillSource };
+
+/**
+ * The skills a bot has, sorted by name: each name switched on for it, from its own folder if it has
+ * one by that name, else from the shared library. Names found in neither are left out.
+ */
+export function activeSkills(view: SkillsView, bot: BotId): ActiveSkill[] {
+  const mine = view.bots.find((b) => b.bot === bot);
+  if (!mine) return [];
+  return mine.enabled.flatMap((name): ActiveSkill[] => {
+    const local = mine.local.find((s) => s.name === name);
+    if (local) return [{ ...local, source: "local" }];
+    const shared = view.shared.find((s) => s.name === name);
+    return shared ? [{ ...shared, source: "shared" }] : [];
+  });
+}
+
+/** A skill's name, as the AgentSkills spec has it: lowercase letters, digits and single hyphens between them, up to 64. */
+export const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const MAX_SKILL_NAME = 64;
+export const MAX_SKILL_DESCRIPTION = 1_024;
+
+/** The skill a message asks for: `/<name>` at its very start, followed by a space, a new line or nothing. */
+export function skillInvocation(text: string): string | undefined {
+  const match = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/.exec(text);
+  return match && match[1]!.length <= MAX_SKILL_NAME ? match[1] : undefined;
+}
+
 const entryBase = { seq: Seq, bot: BotId, at: Schema.Number };
 
 /** A file in a bot's files folder that was added, changed or removed. */
@@ -193,6 +275,8 @@ export const Entry = Schema.Union([
     attachments: Optional(List(Attachment)),
     requestId: Optional(Schema.String),
     source: Optional(MessageSource),
+    /** The message started with `/<name>` of one of the bot's skills, whose instructions went with it. */
+    skill: Optional(SkillUse),
   }),
   Struct({
     ...entryBase,
@@ -468,6 +552,13 @@ export const ClientFrame = Schema.Union([
   /** Reconnect to an MCP server now instead of waiting for the next retry. */
   Struct({ t: Schema.Literal("mcpRetry"), req, id: McpServerId }),
   /**
+   * Switch a skill on for a bot (`on`), or off. On takes a name the bot has a skill by (its own or the
+   * shared library's); off takes any. It reaches the bot from its next message. Every client gets `skills`.
+   */
+  Struct({ t: Schema.Literal("enableSkill"), req, bot: BotId, name: Schema.String, on: Schema.Boolean }),
+  /** Read the skills folders again (after skills were added or edited on disk). Every client gets `skills` if anything changed. */
+  Struct({ t: Schema.Literal("rescanSkills"), req }),
+  /**
    * Start signing in with ChatGPT (see AccountView), dropping any sign-in already under way. Answers
    * with the page to open. `backgroundConsent`: the user agreed that the bots may use their plan while
    * nobody is watching (wake-ups, background jobs). OpenAI's terms ask for that before background use.
@@ -516,6 +607,8 @@ export const RequestResult = {
   mcpSignIn: Struct({ url: Schema.String }),
   mcpSignOut: Schema.Null,
   mcpRetry: Schema.Null,
+  enableSkill: Schema.Null,
+  rescanSkills: Schema.Null,
   chatgptSignIn: Struct({ url: Schema.String }),
   chatgptSignInFinish: Schema.Null,
   chatgptSignInCancel: Schema.Null,
@@ -572,6 +665,8 @@ export const ServerFrame = Schema.Union([
   /** One MCP server was added or changed (its settings, bots, state or tools). */
   Struct({ t: Schema.Literal("mcpServer"), server: McpServerView }),
   Struct({ t: Schema.Literal("mcpServerRemoved"), id: McpServerId }),
+  /** The skills the daemon found and which bots have which (see SkillsView): once per connection, then whenever it changes. */
+  Struct({ t: Schema.Literal("skills"), skills: SkillsView }),
   /** What the bots' model requests are signed in with: once per connection (on a daemon with real bots), then whenever it changes. */
   Struct({ t: Schema.Literal("account"), account: AccountView }),
   /**
