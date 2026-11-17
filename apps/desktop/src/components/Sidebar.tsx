@@ -1,5 +1,5 @@
 import { ContextMenu } from "@base-ui/react/context-menu";
-import { ASK_PERMISSION, type BotId, type BotSummary } from "@top/client";
+import type { BotId, BotSummary } from "@top/client";
 import { Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
 import { memo, type ReactNode, useCallback, useState } from "react";
 import { cn } from "../lib/utils.ts";
@@ -18,12 +18,12 @@ const SHORT: Record<BotSummary["status"], string> = { idle: "", thinking: "Think
 export function statusLabel(bot: BotSummary): string {
   switch (bot.status) {
     case "idle":
-      return "Idle";
+      // Its permission requests are in its conversation, waiting for an answer.
+      return bot.approvals ? "Waiting for your approval" : "Idle";
     case "thinking":
       return "Thinking";
     case "tool":
-      // Its permission request is in its conversation, waiting for an answer.
-      return bot.tool === ASK_PERMISSION ? "Waiting for your approval" : `Running ${bot.tool ?? "a tool"}`;
+      return `Running ${bot.tool ?? "a tool"}`;
     case "retrying":
       return "Retrying";
     case "failed":
@@ -97,10 +97,21 @@ type ItemProps = {
 
 const shortcutFor = (index: number) => (index < 9 ? ` (Ctrl+${index + 1})` : "");
 
+/** On a bot's avatar where its name and badges don't show (a pinned tile, the narrow sidebar): it waits for your approval. */
+function ApprovalMark({ className }: { className?: string }) {
+  return (
+    <span className={cn("absolute -top-0.5 -right-0.5 grid size-3.75 place-items-center rounded-full bg-(--avatar-ring)", className)} aria-hidden>
+      <i className="size-1.75 rounded-full bg-warning ring-2 ring-warning-surface" />
+    </span>
+  );
+}
+
 /** A pinned bot: a tile in the grid above the list, its avatar large and its name under it. */
 const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
-  const fresh = unread && !busy;
+  // Waiting for your approval says more than "something new": it wins the shoulder and the tooltip.
+  const asking = !busy && !!bot.approvals;
+  const fresh = unread && !busy && !asking;
   // Working or something new: the status sits on the avatar's shoulder (a failed bot's red dot is the avatar's own).
   const mark = (busy && bot.status !== "failed") || fresh;
   const status = fresh ? "Idle · new messages" : statusLabel(bot);
@@ -120,10 +131,12 @@ const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSe
       >
         <span className="relative flex">
           <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} size="lg" className="size-12 narrow:size-9" />
-          {mark && (
+          {mark ? (
             <span className="absolute -top-0.5 -right-0.5 grid size-3.75 place-items-center rounded-full bg-(--avatar-ring)" aria-hidden>
               <StatusDot status={bot.status} fresh={fresh} />
             </span>
+          ) : (
+            asking && <ApprovalMark />
           )}
         </span>
         <span
@@ -158,10 +171,14 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
             : "[--avatar-ring:var(--color-sidebar)]",
         )}
         onClick={() => onSelect(bot.id)}
-        title={bot.description ? `${bot.name}${shortcut}\n${bot.description}` : `${bot.name}${shortcut}`}
+        title={`${bot.name}${shortcut}${bot.approvals ? " · Waiting for your approval" : ""}${bot.description ? `\n${bot.description}` : ""}`}
         aria-current={selected || undefined}
       >
-        <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} />
+        <span className="relative flex">
+          <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} />
+          {/* Wide, the badge beside the name says so. */}
+          {!!bot.approvals && <ApprovalMark className="hidden narrow:grid" />}
+        </span>
         <span className="flex min-w-0 flex-1 flex-col gap-px narrow:hidden">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className={cn("min-w-0 flex-1 truncate text-body leading-snug tracking-name", fresh ? "font-heading" : "font-label")}>{bot.name}</span>
@@ -178,6 +195,15 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
             {bot.queued > 0 && (
               <Badge className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible" title={`${bot.queued} queued`}>
                 {bot.queued} queued
+              </Badge>
+            )}
+            {!!bot.approvals && (
+              <Badge
+                variant="warning"
+                className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible"
+                title={`${bot.approvals} permission request${bot.approvals === 1 ? "" : "s"} waiting for your answer`}
+              >
+                Needs approval
               </Badge>
             )}
             {!!bot.background && (

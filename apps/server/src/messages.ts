@@ -10,7 +10,7 @@
  * load: an answer's usage, provider metadata and the like are pi's to read, and pass through as saved.
  */
 import type { AssistantMessage, ImageContent, SystemMessage, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { Attachment, FileChange } from "@top/protocol";
+import { Attachment, FileChange, PermissionAnswer } from "@top/protocol";
 import * as Schema from "effect/Schema";
 
 // ── types ────────────────────────────────────────────────────────────────────────
@@ -39,6 +39,8 @@ export type EntryBody = {
   readonly tool: ToolResultMessage;
   readonly notice: { readonly text: string };
   readonly files: { readonly files: readonly FileChange[] };
+  /** What came of a permission request (see permissions.ts). */
+  readonly permission: { readonly request: number; readonly answer: PermissionAnswer };
 };
 
 // ── what Top reads ───────────────────────────────────────────────────────────────
@@ -75,12 +77,13 @@ export const ToolResultView = Schema.Struct({
   toolName: Schema.String,
   content: Schema.Array(Schema.Union([Text, Image])),
   isError: Schema.Boolean,
-  /** What the tool told clients besides its text (a permission's answer, a background job's number). */
+  /** What the tool told clients besides its text (the request a permission call made, see wire.ts). */
   details: Schema.optionalKey(Schema.Unknown),
   timestamp: Schema.Number,
 });
 export const NoticeView = Schema.Struct({ text: Schema.String });
 export const FilesView = Schema.Struct({ files: Schema.Array(FileChange) });
+export const PermissionView = Schema.Struct({ request: Schema.Int, answer: PermissionAnswer });
 
 export type AssistantView = typeof AssistantView.Type;
 export type Content = AssistantView["content"] | typeof UserView.Type.content | typeof ToolResultView.Type.content;

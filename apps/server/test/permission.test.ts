@@ -1,6 +1,7 @@
 /**
- * Permission requests (Collar's `ask_permission`): a bot asks, a client answers once, and the answer
- * comes back to the bot as its tool's result. Stop, a slow answer and a restart never count as an Allow.
+ * Permission requests (Collar's `ask_permission`): a bot asks without waiting, the request waits on the
+ * daemon (also across a restart), a client answers it once, and what came of it is one `permission`
+ * entry. An answer reaches the bot once, as a message; Stop withdraws a request and never counts as an Allow.
  */
 import assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
@@ -10,150 +11,187 @@ import type { StoredEntry } from "../src/store.ts";
 import { toWire } from "../src/wire.ts";
 import { type Harness, harness, idle, until } from "./harness.ts";
 
-const textOf = (entry: StoredEntry) => (entry.kind === "notice" ? entry.message.text : entry.kind === "files" ? "" : textOfContent(entry.message.content));
-const toolResults = async (h: Harness, bot = h.bot) => (await h.entries(bot)).filter((e) => e.kind === "tool");
-const pending = (h: Harness) => async () => h.daemon.permissions.pending()[0];
-const answer = (h: Harness, id: string, bot: number, allow: boolean) => h.run(Effect.result(h.daemon.permissions.answer(id, bot, allow)));
+const textOf = (entry: StoredEntry) =>
+  entry.kind === "notice" ? entry.message.text : entry.kind === "files" || entry.kind === "permission" ? "" : textOfContent(entry.message.content);
+const waiting = (h: Harness) => h.run(h.daemon.permissions.waiting);
+const answer = (h: Harness, id: number, bot: number, allow: boolean) => h.run(Effect.result(h.daemon.permissions.answer(id, bot, allow)));
+const ofKind = async <K extends StoredEntry["kind"]>(h: Harness, kind: K, bot = h.bot) =>
+  (await h.entries(bot)).filter((e): e is Extract<StoredEntry, { kind: K }> => e.kind === kind);
+const messages = async (h: Harness, bot = h.bot) => (await ofKind(h, "user", bot)).filter((e) => e.source === "permission");
 const lastIsAnswer = async (h: Harness, bot = h.bot) => (await h.entries(bot)).at(-1)?.kind === "assistant" && (await idle(h, bot));
 
-test("a bot asks, the user allows, and the bot gets the answer as its tool's result", async () => {
+/** Ask, and wait until the bot has finished the turn it asked in. */
+const ask = async (h: Harness, action: string, bot = h.bot, requestId = `ask-${action}`) => {
+  await h.run(h.daemon.submit(bot, requestId, `ask permission to ${action}`, "followUp", null));
+  const request = await until("the request", async () => (await waiting(h)).find((r) => r.bot === bot && r.action === action));
+  await until("the bot to end its turn", () => lastIsAnswer(h, bot));
+  return request;
+};
+
+test("asking doesn't make the bot wait: the call's result carries the request, which clients show where it asked", async () => {
   const h = await harness();
   await h.run(h.daemon.start);
-  await h.run(h.daemon.submit(h.bot, "r1", "ask permission to delete the 3 old backups", "followUp", null));
-  const request = await until("the request", pending(h));
-  assert.equal(request.bot, h.bot);
-  assert.equal(request.action, "delete the 3 old backups");
-  assert.equal(request.reason, "You asked me to check with you first.");
-  // Clients show it where the bot asked: the call it came from, with what it asks.
-  const asked = toWire((await h.entries()).find((e) => e.kind === "assistant")!);
-  const call = asked?.kind === "assistant" ? asked.tools?.[0] : undefined;
-  assert.equal(call?.id, request.toolCallId);
-  assert.deepEqual(call?.permission, { action: "delete the 3 old backups", reason: "You asked me to check with you first." });
+  const request = await ask(h, "delete the 3 old backups");
+  assert.deepEqual(request, { id: request.id, bot: h.bot, action: "delete the 3 old backups", reason: "You asked me to check with you first." });
 
-  assert.equal((await answer(h, request.id, h.bot, true))._tag, "Success");
-  await until("the bot's answer", () => lastIsAnswer(h));
-  const [result] = await toolResults(h);
-  assert.equal(result?.kind === "tool" && result.message.toolName, "collar__ask_permission");
-  assert.equal(textOf(result!), "Allowed by the user: delete the 3 old backups.");
-  assert.equal((toWire(result!) as { permission?: string }).permission, "allowed");
-  assert.deepEqual(h.daemon.permissions.pending(), []);
+  const [result] = await ofKind(h, "tool");
+  assert.match(textOf(result!), /^Asked the user: delete the 3 old backups\. Their answer will come to you as a message\./);
+  assert.deepEqual((toWire(result!) as { permission?: unknown }).permission, {
+    id: request.id,
+    action: "delete the 3 old backups",
+    reason: "You asked me to check with you first.",
+  });
+  assert.equal(result!.outcome, null, "it ran: nothing to settle");
+  assert.deepEqual(await ofKind(h, "permission"), [], "nothing came of it yet");
 });
 
-test("a denial is the answer too; a second answer, or one naming another bot, is refused", async () => {
-  const h = await harness({ bots: ["Atlas", "Juniper"] });
+test("the user allows: one entry says so, and the bot gets one message with the answer", async () => {
+  const h = await harness({ gatherMs: 50 });
+  await h.run(h.daemon.start);
+  const request = await ask(h, "delete the 3 old backups");
+
+  assert.equal((await answer(h, request.id, h.bot, true))._tag, "Success");
+  const [settled] = await ofKind(h, "permission");
+  assert.deepEqual(toWire(settled!), { seq: settled!.seq, bot: h.bot, at: settled!.at, kind: "permission", request: request.id, answer: "allowed" });
+  assert.deepEqual(await waiting(h), []);
+
+  await until("the bot to take the answer", async () => (await messages(h)).length === 1 && (await lastIsAnswer(h)));
+  const [message] = await messages(h);
+  assert.equal(textOf(message!), "[Permission] The user allowed: delete the 3 old backups.");
+  assert.equal(message!.requestId, `permission:${request.id}`);
+  assert.match(textOf((await ofKind(h, "assistant")).at(-1)!), /^Got your answer\. The user allowed/);
+});
+
+test("a denial is an answer too; a second answer, one naming another bot, or an unknown one is refused", async () => {
+  const h = await harness({ bots: ["Atlas", "Juniper"], gatherMs: 50 });
   const [atlas, juniper] = h.bots as [number, number];
   await h.run(h.daemon.start);
-  await h.run(h.daemon.submit(atlas, "r1", "ask permission to deploy web.", "followUp", null));
-  const request = await until("the request", pending(h));
+  const request = await ask(h, "deploy web", atlas);
 
   const wrongBot = await answer(h, request.id, juniper, true);
   assert.equal(wrongBot._tag === "Failure" && wrongBot.failure._tag, "PermissionError");
-  assert.equal(h.daemon.permissions.pending().length, 1, "still waiting for Atlas's answer");
-  const unknown = await answer(h, "no-such-request", atlas, true);
-  assert.equal(unknown._tag, "Failure");
+  assert.equal((await waiting(h)).length, 1, "still waiting for Atlas's answer");
+  assert.equal((await answer(h, 9_999, atlas, true))._tag, "Failure");
 
   assert.equal((await answer(h, request.id, atlas, false))._tag, "Success");
   const again = await answer(h, request.id, atlas, true);
   assert.equal(again._tag === "Failure" && again.failure.message, "That request was already answered, or isn't waiting anymore.");
 
-  await until("Atlas's answer", () => lastIsAnswer(h, atlas));
-  const results = await toolResults(h, atlas);
-  assert.equal(results.length, 1, "one result: the late Allow changed nothing");
-  assert.equal(textOf(results[0]!), "Denied by the user: deploy web. Don't do it.");
-  assert.equal((toWire(results[0]!) as { permission?: string }).permission, "denied");
+  await until("Atlas to take the answer", async () => (await messages(h, atlas)).length === 1 && (await lastIsAnswer(h, atlas)));
+  assert.deepEqual(
+    (await ofKind(h, "permission", atlas)).map((e) => e.message),
+    [{ request: request.id, answer: "denied" }],
+    "one answer: the late Allow changed nothing",
+  );
+  assert.equal(textOf((await messages(h, atlas))[0]!), "[Permission] The user denied: deploy web. Don't do it.");
   assert.deepEqual(await h.entries(juniper), [], "Juniper wasn't involved");
 });
 
-test("Stop withdraws the request: no answer is taken after it", async () => {
-  const h = await harness();
+test("two answers at once (two devices): the first wins and the bot hears once", async () => {
+  const h = await harness({ gatherMs: 50 });
   await h.run(h.daemon.start);
-  await h.run(h.daemon.submit(h.bot, "r1", "ask permission to restart the database", "followUp", null));
-  const request = await until("the request", pending(h));
-  await h.run(h.daemon.stop(h.bot));
-  await until("the request to go", () => h.daemon.permissions.pending().length === 0);
-  assert.equal((await answer(h, request.id, h.bot, true))._tag, "Failure");
-  await until("the bot to stop", () => idle(h));
-  const results = await toolResults(h);
-  assert.equal(results.length, 1);
-  assert.doesNotMatch(textOf(results[0]!), /Allowed/);
-  assert.equal((toWire(results[0]!) as { permission?: string }).permission, undefined, "no answer for clients either");
+  const request = await ask(h, "rotate the keys");
+  const results = await Promise.all([answer(h, request.id, h.bot, true), answer(h, request.id, h.bot, false)]);
+  assert.deepEqual(results.map((r) => r._tag).sort(), ["Failure", "Success"]);
+  await until("the bot to take the answer", async () => (await messages(h)).length === 1 && (await lastIsAnswer(h)));
+  assert.equal((await ofKind(h, "permission")).length, 1);
+  assert.equal((await messages(h)).length, 1);
 });
 
-test("a slow answer moves to the background: the bot answers other messages meanwhile, and gets the answer by message", async () => {
-  const h = await harness({ foregroundMs: 150, gatherMs: 50 });
+test("the bot stays responsive while a request waits: a message sent meanwhile is answered first", async () => {
+  const h = await harness();
   await h.run(h.daemon.start);
-  await h.run(h.daemon.submit(h.bot, "r1", "ask permission to email the customer list", "followUp", null));
-  const request = await until("the request", pending(h));
-  await until("the call to move to the background", async () => (await toolResults(h)).some((e) => /moved to the background as job/.test(textOf(e))));
-  await until("the bot to finish its turn", () => idle(h));
-
-  // A message sent while the request waits is answered, not held up behind it.
+  const request = await ask(h, "email the customer list");
   await h.run(h.daemon.submit(h.bot, "r2", "what's the queue depth?", "followUp", null));
   await until("the answer to the other message", async () => {
     const entries = await h.entries();
     const asked = entries.findIndex((e) => e.kind === "user" && e.requestId === "r2");
     return asked >= 0 && entries.slice(asked).some((e) => e.kind === "assistant") && (await idle(h));
   });
-  assert.equal(h.daemon.permissions.pending()[0]?.id, request.id, "still waiting");
-
-  assert.equal((await answer(h, request.id, h.bot, true))._tag, "Success");
-  const message = await until("the answer's message", async () => (await h.entries()).find((e) => e.kind === "user" && e.source === "job"));
-  assert.match(textOf(message), /^\[Background job 1 finished\] collar__ask_permission/);
-  assert.match(textOf(message), /Allowed by the user: email the customer list\./);
-  // Clients tie the message back to the call by its job, and read the answer from it.
-  const moved = (await toolResults(h)).find((e) => /moved to the background/.test(textOf(e)))!;
-  assert.equal((toWire(moved) as { job?: number }).job, 1);
-  assert.deepEqual([(toWire(message) as { job?: number }).job, (toWire(message) as { permission?: string }).permission], [1, "allowed"]);
-  await until("the bot to take it", () => lastIsAnswer(h));
+  assert.deepEqual(
+    (await waiting(h)).map((r) => r.id),
+    [request.id],
+    "still waiting",
+  );
 });
 
-test("a restart ends a waiting request unanswered: it isn't asked again, and nothing is allowed", async () => {
-  const first = await harness({ foregroundMs: 60_000 });
-  await first.run(first.daemon.start);
-  await first.run(first.daemon.submit(first.bot, "r1", "ask permission to drop the staging table", "followUp", null));
-  const request = await until("the request", pending(first));
-  await first.close();
-
-  const h = await harness({ foregroundMs: 60_000, dir: first.dir });
-  assert.deepEqual(h.daemon.permissions.pending(), []);
+test("Stop withdraws the bot's requests: an entry says so, nothing reaches the bot, and a later answer is refused", async () => {
+  const h = await harness({ gatherMs: 50 });
   await h.run(h.daemon.start);
-  await until("the bot to carry on", () => lastIsAnswer(h));
-  const results = await toolResults(h);
-  assert.equal(results.length, 1);
-  assert.equal(results[0]!.kind === "tool" && results[0]!.outcome, "not_run");
-  assert.doesNotMatch(textOf(results[0]!), /Allowed/);
-  assert.deepEqual(h.daemon.permissions.pending(), [], "not asked again");
-  assert.equal((await answer(h, request.id, h.bot, true))._tag, "Failure", "the old request's id means nothing now");
+  const request = await ask(h, "restart the database");
+  const before = (await h.entries()).length;
+  await h.run(h.daemon.stop(h.bot));
+
+  assert.deepEqual(await waiting(h), []);
+  assert.deepEqual(
+    (await ofKind(h, "permission")).map((e) => e.message),
+    [{ request: request.id, answer: "withdrawn" }],
+  );
+  assert.equal((await answer(h, request.id, h.bot, true))._tag, "Failure");
+  // No message, so no new task: the user stopped the bot.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(await idle(h));
+  assert.equal((await h.entries()).length, before + 1, "only the withdrawal");
+  assert.deepEqual(await messages(h), []);
 });
 
-test("a request that waited in the background and was cut off by a restart says nobody answered", async () => {
-  const first = await harness();
-  const job = await first.run(first.store.startJob(first.bot, "1:2:call_x", "collar__ask_permission", "action: deploy web", "", Date.now() - 90_000));
+test("a waiting request outlives a restart: it's still answerable, and the bot gets the answer once", async () => {
+  const first = await harness({ gatherMs: 50 });
+  await first.run(first.daemon.start);
+  const request = await ask(first, "drop the staging table");
   await first.close();
 
   const h = await harness({ dir: first.dir, gatherMs: 50 });
   await h.run(h.daemon.start);
-  const message = await until("the cut-off message", async () => (await h.entries()).find((e) => e.kind === "user" && e.source === "job"));
-  assert.match(textOf(message), new RegExp(`^\\[Background job ${job} was cut off\\] collar__ask_permission`));
-  assert.match(textOf(message), /before the user answered\. Nothing was allowed/);
-  assert.doesNotMatch(textOf(message), /may have taken effect/);
-  const wired = toWire(message) as { job?: number; permission?: string };
-  assert.equal(wired.job, job);
-  assert.equal(wired.permission, undefined, "cut off: no answer");
+  await until("the bot to settle", () => idle(h));
+  assert.deepEqual(await waiting(h), [request], "asked once, still waiting");
+  assert.equal((await ofKind(h, "tool")).length, 1, "not asked again");
+
+  assert.equal((await answer(h, request.id, h.bot, true))._tag, "Success");
+  await until("the bot to take the answer", async () => (await messages(h)).length === 1 && (await lastIsAnswer(h)));
+  assert.equal((await messages(h)).length, 1);
 });
 
-test("a bot can't wait on its permission request in the background: the answer comes once, as a message the app shows", async () => {
-  const h = await harness({ foregroundMs: 150, gatherMs: 50 });
+test("a call a restart cut off between asking and its result is settled with the request it made, never a second one", async () => {
+  const h = await harness();
+  const tool = h.daemon.toolsOf(h.bot).find((t) => t.name === "collar__ask_permission")!;
+  const row = await h.run(h.daemon.permissions.ask(h.bot, `${h.bot}:5:call_1`, "deploy web", undefined));
+  const recovered = await h.run(tool.recover!({ action: "deploy web" }, { key: `${h.bot}:5:call_1`, bot: h.bot }));
+  assert.ok(recovered);
+  assert.deepEqual((recovered.details as { permission: unknown }).permission, { id: row.id, action: "deploy web" });
+  assert.equal(await h.run(tool.recover!({ action: "deploy web" }, { key: `${h.bot}:6:call_1`, bot: h.bot })), false, "never asked: not run");
+  // The same tool-call id in a later answer is another call, so another request.
+  const later = await h.run(h.daemon.permissions.ask(h.bot, `${h.bot}:9:call_1`, "deploy web", undefined));
+  assert.notEqual(later.id, row.id);
+  assert.equal((await waiting(h)).length, 2);
+});
+
+test("deleting a bot takes its waiting requests with it", async () => {
+  const h = await harness({ bots: ["Atlas", "Juniper"] });
+  const [atlas, juniper] = h.bots as [number, number];
   await h.run(h.daemon.start);
-  await h.run(h.daemon.submit(h.bot, "r1", "ask permission to archive the old tickets", "followUp", null));
-  const request = await until("the request", pending(h));
-  await until("the call to move to the background", async () => (await toolResults(h)).some((e) => /moved to the background as job/.test(textOf(e))));
+  await ask(h, "archive the logs", atlas);
+  const kept = await ask(h, "archive the tickets", juniper);
+  await h.run(h.daemon.deleteBot(atlas));
+  assert.deepEqual(await waiting(h), [kept]);
+});
 
-  const jobsTool = h.daemon.toolsOf(h.bot).find((t) => t.name === "collar__jobs")!;
-  const waited = await h.run(jobsTool.run({ action: "wait", id: 1 }, { key: "k", bot: h.bot }));
-  assert.match((waited.content[0] as { text: string }).text, /waiting for the user to answer/);
+test("a call that runs after Stop asks nothing, and asking can't be moved to the background", async () => {
+  const h = await harness({ bots: ["Atlas", "Juniper"] });
+  const [atlas, juniper] = h.bots as [number, number];
+  const tool = (name: string) => h.daemon.toolsOf(atlas).find((t) => t.name === name)!;
+  const signal = AbortSignal.abort();
+  const late = await h.run(tool("collar__ask_permission").run({ action: "deploy web" }, { key: `${atlas}:3:call_1`, bot: atlas, signal }));
+  assert.equal(late.isError, true);
+  assert.deepEqual(await waiting(h), []);
 
-  assert.equal((await answer(h, request.id, h.bot, false))._tag, "Success");
-  const message = await until("the answer's message", async () => (await h.entries()).find((e) => e.kind === "user" && e.source === "job"));
-  assert.equal((toWire(message) as { permission?: string }).permission, "denied");
+  const moved = await h.run(tool("collar__background").run({ tool: "collar__ask_permission", arguments: { action: "deploy web" } }, { key: "k", bot: atlas }));
+  assert.match((moved.content[0] as { text: string }).text, /can't run in the background/);
+  assert.deepEqual(await waiting(h), []);
+
+  // One that landed for a bot being deleted isn't listed for clients.
+  await h.run(h.daemon.permissions.ask(juniper, `${juniper}:4:call_1`, "archive the tickets", undefined));
+  await h.run(h.store.markDeleted(juniper));
+  await h.run(h.daemon.permissions.ask(juniper, `${juniper}:5:call_1`, "archive the logs", undefined));
+  assert.deepEqual(await waiting(h), []);
 });

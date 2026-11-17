@@ -1,15 +1,17 @@
 /**
  * A bot asking whether it may do something (Collar's `ask_permission`), in its conversation where it
- * asked: what it wants to do and why, with Allow and Deny while the daemon holds the request, then what
- * came of it. The answer only goes back to the bot as its tool's result; nothing else waits on it.
+ * asked: what it wants to do and why, with Allow and Deny while the request waits on the daemon, then
+ * what came of it. The answer only goes back to the bot, as a message; nothing else waits on it.
+ *
+ * Both halves are the daemon's: whether it waits is its waiting list (`permissions`), and what came of
+ * it is the `permission` entry naming it (on the row as `answer`), the same after a reload or on another
+ * device. Neither known yet (offline, or the entry still on its way): the buttons stay off.
  *
  * It takes no focus when it arrives: a request coming in while you type doesn't take your keystrokes.
- * Answered from the keyboard, focus stays on the card as it settles. Another device answering first
- * settles it here too.
+ * Answered from the keyboard, focus stays on the card as it settles.
  */
-import type { QueuedMessage } from "@top/client";
 import { Check, CircleSlash, X } from "lucide-react";
-import { memo, useEffect, useId, useRef, useState } from "react";
+import { memo, useId, useRef, useState } from "react";
 import { cn } from "../../lib/utils.ts";
 import type { Row } from "../../rows.ts";
 import { top, useClient } from "../../top.ts";
@@ -18,77 +20,39 @@ import { Button } from "../ui/button.tsx";
 
 type PermissionRow = Extract<Row, { kind: "permission" }>;
 
-/**
- * How long a background request must be gone from the daemon's list, with no answer arriving, before
- * the card says it's no longer waiting: an answer reaches the list a moment before its message does.
- */
-const WITHDRAWN_AFTER_MS = 2_000;
-
 const SETTLED = {
   allowed: { icon: Check, text: "Allowed", tone: "text-success-foreground" },
   denied: { icon: X, text: "Denied", tone: "text-destructive-foreground" },
-  stopped: { icon: CircleSlash, text: "Not answered: the request was withdrawn", tone: "text-muted-foreground" },
-  restarted: { icon: CircleSlash, text: "Not answered: Top restarted first", tone: "text-muted-foreground" },
+  withdrawn: { icon: CircleSlash, text: "Not answered: the request was withdrawn", tone: "text-muted-foreground" },
 } as const;
 
-export const PermissionCard = memo(function PermissionCard({
-  row,
-  name,
-  queued,
-  live,
-  className,
-}: {
-  row: PermissionRow;
-  name: string;
-  /** Its job's message, while it waits in the bot's queue (a background request's answer). */
-  queued: QueuedMessage | undefined;
-  /** The conversation is caught up with the daemon (not a cached or loading one that may lack the answer). */
-  live: boolean;
-  className?: string;
-}) {
-  const request = useClient((s) => (row.answer ? undefined : s.permissions.find((p) => p.bot === row.bot && p.toolCallId === row.toolCallId)));
+export const PermissionCard = memo(function PermissionCard({ row, name, className }: { row: PermissionRow; name: string; className?: string }) {
+  const id = row.ask.id;
+  const waiting = useClient((s) => s.permissions.some((p) => p.id === id));
   const online = useClient((s) => s.connection === "open");
-  // The daemon's list for this connection has arrived: only then does a missing request mean anything.
-  const synced = useClient((s) => s.permissionsSynced);
   const [error, setError] = useState<string>();
+  // The daemon answers only after it has sent this client the entry and the new waiting list, so once
+  // the answer is in, the card has settled (or, the entry in a part not loaded, its buttons are off).
   const [busy, setBusy] = useState(false);
-  /** What this device answered, shown until the daemon's record of it arrives. */
-  const [sent, setSent] = useState<"allowed" | "denied">();
   const card = useRef<HTMLElement>(null);
   const titleId = useId();
-
-  // A background request gone from the list with no answer on its way: it was withdrawn. Sure at once when
-  // the bot has no background jobs left (its count drops only after an answer is delivered); otherwise after
-  // a moment, since another job of the bot's may be what's still running.
-  const missing = row.job !== undefined && !row.answer && !queued && !sent && synced && live && !request;
-  const jobsLeft = useClient((s) => s.bots.find((b) => b.id === row.bot)?.background ?? 0);
-  const [waited, setWaited] = useState(false);
-  const withdrawn = missing && (jobsLeft === 0 || waited);
-  useEffect(() => {
-    setWaited(false);
-    if (!missing) return;
-    const timer = setTimeout(() => setWaited(true), WITHDRAWN_AFTER_MS);
-    return () => clearTimeout(timer);
-  }, [missing]);
-
-  const answer = row.answer ?? (queued ? (queued.permission ?? "restarted") : undefined) ?? sent ?? (withdrawn ? "stopped" : undefined);
-  const settled = answer ? SETTLED[answer] : undefined;
+  const settled = row.answer ? SETTLED[row.answer] : undefined;
 
   const decide = async (allow: boolean) => {
-    if (!request || busy) return;
+    if (!waiting || busy) return;
     // The buttons go disabled, then away as it settles: keep focus on the card rather than dropping it to the page.
     if (card.current?.contains(document.activeElement)) card.current.focus();
     setBusy(true);
     setError(undefined);
     try {
-      await top.answerPermission(request, allow);
-      setSent(allow ? "allowed" : "denied");
+      await top.answerPermission({ id, bot: row.bot }, allow);
     } catch (err) {
       setError(messageOf(err));
     } finally {
       setBusy(false);
     }
   };
+  const off = !waiting || busy;
 
   return (
     <div className={cn("py-1.5", className)}>
@@ -105,17 +69,10 @@ export const PermissionCard = memo(function PermissionCard({
         {row.ask.reason && <span className="text-meta break-words whitespace-pre-wrap text-secondary-foreground">{row.ask.reason}</span>}
         {!settled && (
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-meta">
-            <Button size="xs" className="h-7.5 px-3 text-meta" disabled={!request || busy} onClick={() => decide(true)} aria-describedby={titleId}>
+            <Button size="xs" className="h-7.5 px-3 text-meta" disabled={off} onClick={() => decide(true)} aria-describedby={titleId}>
               Allow
             </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              className="h-7.5 px-3 text-meta"
-              disabled={!request || busy}
-              onClick={() => decide(false)}
-              aria-describedby={titleId}
-            >
+            <Button size="xs" variant="outline" className="h-7.5 px-3 text-meta" disabled={off} onClick={() => decide(false)} aria-describedby={titleId}>
               Deny
             </Button>
             {!online && <span className="text-muted-foreground">Reconnecting…</span>}

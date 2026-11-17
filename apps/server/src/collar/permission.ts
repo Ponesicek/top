@@ -1,25 +1,10 @@
-/** `collar__ask_permission`: ask the user whether the bot may do something, and wait for the answer (see permissions.ts). */
-import { MAX_PERMISSION_ACTION, MAX_PERMISSION_REASON } from "@top/protocol";
+/** `collar__ask_permission`: ask the user whether the bot may do something; the answer comes later, as a message (see permissions.ts). */
+import { MAX_PERMISSION_ACTION, MAX_PERMISSION_REASON, type PermissionAsk } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
-import { defineTool, stopped, text } from "../tools.ts";
+import type { PermissionRow } from "../store.ts";
+import { defineTool, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
-import { ASK_PERMISSION } from "./names.ts";
-
-/** How the result starts, for the model and for clients reading a background job's message (`answerIn`). */
-const ALLOWED = "Allowed by the user: ";
-const DENIED = "Denied by the user: ";
-
-/**
- * The answer in a background job's message about this tool, if it got one. The message is a header
- * line naming the call (its arguments squeezed onto that one line), a blank line, then the result.
- */
-export function answerIn(message: string): "allowed" | "denied" | undefined {
-  const [head = "", ...rest] = message.split("\n");
-  if (!/^\[Background job \d+ finished\]/.test(head) || !head.includes(ASK_PERMISSION)) return undefined;
-  const result = rest.join("\n").trimStart();
-  return result.startsWith(ALLOWED) ? "allowed" : result.startsWith(DENIED) ? "denied" : undefined;
-}
 
 const parameters = Type.Object(
   {
@@ -33,31 +18,40 @@ const parameters = Type.Object(
   { additionalProperties: false },
 );
 
+/** The call's result: the model reads that it asked; clients get the request, to show it where the bot asked (see wire.ts). */
+function asked(row: PermissionRow): ToolResult {
+  const permission: PermissionAsk = { id: row.id, action: row.action, ...(row.reason ? { reason: row.reason } : {}) };
+  return {
+    ...text(
+      `Asked the user: ${row.action}. Their answer will come to you as a message. Until it does, don't do it: ` +
+        "carry on with anything that doesn't need it, or end your turn.",
+    ),
+    details: { permission },
+  };
+}
+
 export const permissionGroup: CollarGroup = (daemon) => [
   defineTool({
     name: "ask_permission",
     label: "Ask permission",
     description: [
-      "Ask the user whether you may do something, and get their answer: allowed or denied.",
-      "The user sees your action and reason in the app and answers with Allow or Deny.",
-      "Nothing enforces the answer: your tools work either way, so it's up to you to respect it. If it's denied, don't do it.",
-      "If the user takes a while, the request moves to the background and the answer comes to you as a message.",
+      "Ask the user whether you may do something. The user sees your action and reason in the app and answers with Allow or Deny.",
+      "You don't wait here: their answer comes to you later as a message, even when you're idle. If the user stops you first, the request is withdrawn and no answer comes; ask again if you still need to.",
+      "Nothing enforces the answer: your tools work either way, so it's up to you to respect it. Don't do it unless it's allowed.",
     ].join(" "),
     parameters,
-    // A restart ends the request unanswered (`recover`): it's never asked again, and never taken as allowed.
-    recover: () => Effect.succeed(false),
+    // It returns at once; and its result, which carries the request, must be the call's own, not a job's message.
+    background: false,
+    // A restart between asking and the result: the request it made, if it got that far (asked once, never twice).
+    recover: (_args, ctx) => Effect.map(daemon.permissions.askedBy(ctx.key), (row) => (row ? asked(row) : false)),
     run: (args, ctx) =>
       Effect.gen(function* () {
-        // Its own words, without a closing full stop, so it reads well after "Allowed by the user:".
+        // Its own words, without a closing full stop, so it reads well after "The user allowed:".
         const action = args.action.trim().replace(/\.+$/, "");
         if (!action) return { ...text("Say what you want to do in `action`."), isError: true };
-        const allowed = yield* Effect.raceFirst(
-          daemon.permissions.ask(ctx.bot, ctx.toolCallId ?? ctx.key, action, args.reason?.trim() || undefined),
-          stopped(ctx.signal),
-        );
-        return allowed
-          ? { ...text(`${ALLOWED}${action}.`), details: { permission: "allowed" } }
-          : { ...text(`${DENIED}${action}. Don't do it.`), details: { permission: "denied" } };
+        // Stopped (or deleted) just before this ran: don't leave a request behind the withdrawal.
+        if (ctx.signal?.aborted) return { ...text("Not asked: stopped by the user."), isError: true };
+        return asked(yield* daemon.permissions.ask(ctx.bot, ctx.key, action, args.reason?.trim() || undefined));
       }),
   }),
 ];

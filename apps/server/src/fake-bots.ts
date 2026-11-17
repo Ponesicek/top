@@ -12,7 +12,9 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import { ASK_PERMISSION } from "./collar/names.ts";
+import { COLLAR } from "./collar/names.ts";
+
+const ASK_PERMISSION = `${COLLAR}__ask_permission`;
 
 export const FAKE_PROVIDER = "faux";
 export const FAKE_MODEL = "top-fake";
@@ -142,14 +144,15 @@ export function respond(context: Context) {
   const results = trailingToolResults(context);
   if (results.length) {
     const lines = results.map((r) => `- **${"toolName" in r ? r.toolName : "tool"}**: ${contentText(r)}`).join("\n");
-    // An answer to a question isn't something done: say what the user decided.
-    if (results.every((r) => "toolName" in r && r.toolName === ASK_PERMISSION && / by the user: /.test(contentText(r))))
-      return fauxAssistantMessage(`Got your answer:\n\n${lines}`);
+    // Asking isn't doing: the answer comes later, as a message.
+    if (results.every((r) => "toolName" in r && r.toolName === ASK_PERMISSION && !r.isError))
+      return fauxAssistantMessage("I've asked you. I'll wait for your answer before I do it.");
     return fauxAssistantMessage(`Done. Here is what happened:\n\n${lines}\n\n${sentence()}`);
   }
   const prompt = lastUserText(context);
   // Top's own messages (a wake-up, a background job's result) are answered, never acted on: their text
   // quotes the tool call that started them ("deploy …"), which would otherwise start it again.
+  if (/^\[Permission\]/.test(prompt)) return fauxAssistantMessage(`Got your answer. ${prompt.replace(/^\[Permission\] /, "")}`);
   if (/^\[(Wake-up|Background job)/.test(prompt)) return fauxAssistantMessage(`Noted: ${prompt.split("\n")[0]}`);
   const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider overloaded (test)" });
   if (/\bfail always\b/i.test(prompt)) return failure();

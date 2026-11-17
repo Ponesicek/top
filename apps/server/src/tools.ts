@@ -24,8 +24,6 @@ export type ToolContext = {
   /** Stable for this one tool call, also across restarts. */
   readonly key: string;
   readonly bot: number;
-  /** The model's id for this call (absent where a tool is run outside a bot's turn, as in some tests). */
-  readonly toolCallId?: string | undefined;
   /**
    * Stop asked for (the user's Stop, a job's time limit). Tools stop cooperatively: they wind down and
    * report what they got to, which is why this is a signal and not an interruption.
@@ -77,6 +75,11 @@ export interface TopTool<P extends TSchema & object = TSchema & object> {
    * wait on purpose, like Collar's `jobs` waiting for a job.
    */
   readonly background?: false;
+  /**
+   * What else the model should know about a call that a daemon restart cut off, after "it may have
+   * taken effect" (bash: its command may still be running). Said whether it ran in the task or the background.
+   */
+  readonly cutOff?: string;
   // Methods, not properties, so a TopTool<P> is a TopTool: the arguments it gets were checked against `parameters`.
   run(args: ArgumentsOf<P>, ctx: ToolContext): Effect.Effect<ToolResult, ToolError>;
   /** After a restart cut this call off: its result if it took effect, `false` if it surely did not, `undefined` if unknown. */

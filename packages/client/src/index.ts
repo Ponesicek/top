@@ -69,7 +69,6 @@ export type {
   WhenBusy,
 } from "@top/protocol";
 export {
-  ASK_PERMISSION,
   BotSummary,
   CHANNELS,
   CHATGPT_BACKGROUND_NOTICE,
@@ -144,12 +143,10 @@ export type TopSnapshot = {
   /** The daemon's updates; `undefined` on one that doesn't update itself (run from a checkout, or not installed). */
   readonly update: UpdateView | undefined;
   /**
-   * Bots' permission requests waiting for an answer, oldest first. Empty while disconnected: they can't
-   * be answered then, and the daemon sends them again on reconnect (minus any answered meanwhile).
+   * Bots' permission requests waiting for an answer, oldest first: the daemon's list. Empty while
+   * disconnected, since they can't be answered then; the daemon sends it again on reconnect.
    */
   readonly permissions: readonly PermissionRequest[];
-  /** `permissions` is the daemon's list for this connection (false while offline and until it arrives). */
-  readonly permissionsSynced: boolean;
   /**
    * The daemon speaks another version of the protocol, so this client can't work with it: `client`
    * when this client is the older one (update the app), `server` when the daemon is.
@@ -194,7 +191,6 @@ export class TopClient {
       server: undefined,
       update: undefined,
       permissions: [],
-      permissionsSynced: false,
       outdated: undefined,
     };
     this.#connection = Effect.runSync(
@@ -217,9 +213,7 @@ export class TopClient {
             this.#publish({
               connection: status,
               attempt: this.#connection.attempt(),
-              ...(status !== "open" && (this.#snapshot.permissions.length || this.#snapshot.permissionsSynced)
-                ? { permissions: [], permissionsSynced: false }
-                : {}),
+              ...(status !== "open" && this.#snapshot.permissions.length ? { permissions: [] } : {}),
             });
           },
         },
@@ -495,7 +489,7 @@ export class TopClient {
         this.#publish({ update: frame.update });
         return;
       case "permissions":
-        this.#publish({ permissions: frame.requests, permissionsSynced: true });
+        this.#publish({ permissions: frame.requests });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);

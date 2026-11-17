@@ -1,69 +1,65 @@
 /**
- * A bot's permission request shows as one row where it asked, and settles to what came of it: the
- * call's result, or (after it moved to the background) its job's message. Never a tool step as well.
+ * A bot's permission request shows as one card where it asked (its call's result, which names the
+ * request), and settles from the `permission` entry naming that request. Never a tool step as well,
+ * and the entry and the bot's message about the answer show no row of their own.
  */
-import { ASK_PERMISSION, type Entry, type TranscriptItem } from "@top/client";
+import type { Entry, TranscriptItem } from "@top/client";
 import { describe, expect, it } from "vitest";
 import { committedRows, displayRows } from "../src/rows.ts";
 
 const BOT = 3;
+const ASK = "collar__ask_permission";
 let seq = 0;
 const entry = (e: Record<string, unknown>): TranscriptItem => ({ kind: "entry", entry: { seq: ++seq, bot: BOT, at: 1_000 + seq, ...e } as Entry });
-const ask = (id: string) =>
-  entry({
-    kind: "assistant",
-    text: "I'll check with you first.",
-    tools: [{ id, name: ASK_PERMISSION, summary: "action: deploy web", permission: { action: "deploy web", reason: "It's Friday." } }],
-  });
-const result = (id: string, extra: Record<string, unknown> = {}) => entry({ kind: "tool", toolCallId: id, name: ASK_PERMISSION, text: "…", ...extra });
-const permissionRows = (items: TranscriptItem[]) => displayRows(committedRows(items)).filter((r) => r.kind === "permission");
+const said = () => entry({ kind: "assistant", text: "I'll check with you first.", tools: [{ id: "call_1", name: ASK, summary: "action: deploy web" }] });
+/** The call's result: it asked, as request `id`. Providers may reuse the call's id in a later turn. */
+const asked = (id: number, toolCallId = "call_1") =>
+  entry({ kind: "tool", toolCallId, name: ASK, text: "Asked the user: deploy web.", permission: { id, action: "deploy web", reason: "It's Friday." } });
+const settled = (request: number, answer: string) => entry({ kind: "permission", request, answer });
+const message = (request: number) =>
+  entry({ kind: "user", text: "[Permission] The user allowed: deploy web.", source: "permission", requestId: `permission:${request}` });
+const cards = (items: TranscriptItem[]) => displayRows(committedRows(items)).filter((r) => r.kind === "permission");
 
 describe("permission rows", () => {
-  it("waits with no result, and shows no tool step for the call", () => {
-    const items = [ask("c1")];
-    const rows = displayRows(committedRows(items));
+  it("waits where the bot asked, in place of the call's tool step", () => {
+    const rows = displayRows(committedRows([said(), asked(1)]), true);
     expect(rows.map((r) => r.kind)).toEqual(["assistant", "permission"]);
-    expect(rows[1]).toMatchObject({ toolCallId: "c1", bot: BOT, ask: { action: "deploy web", reason: "It's Friday." } });
+    expect(rows[1]).toMatchObject({ bot: BOT, ask: { id: 1, action: "deploy web", reason: "It's Friday." } });
     expect(rows[1]).not.toHaveProperty("answer");
   });
 
-  it("settles from the call's result: allowed, denied, stopped, or cut off by a restart", () => {
-    expect(permissionRows([ask("a"), result("a", { permission: "allowed" })])[0]).toMatchObject({ answer: "allowed" });
-    expect(permissionRows([ask("d"), result("d", { permission: "denied" })])[0]).toMatchObject({ answer: "denied" });
-    expect(permissionRows([ask("s"), result("s", { isError: true, text: "Stopped" })])[0]).toMatchObject({ answer: "stopped" });
-    expect(permissionRows([ask("r"), result("r", { outcome: "not_run" })])[0]).toMatchObject({ answer: "restarted" });
-    // The result shows only in the row: no tool group beside it.
-    expect(displayRows(committedRows([ask("x"), result("x", { permission: "allowed" })])).map((r) => r.kind)).toEqual(["assistant", "permission"]);
+  it("settles from the entry naming its request: allowed, denied or withdrawn; that entry and the bot's message show nothing", () => {
+    for (const answer of ["allowed", "denied", "withdrawn"]) {
+      const items = [said(), asked(5), settled(5, answer), ...(answer === "withdrawn" ? [] : [message(5)])];
+      const rows = displayRows(committedRows(items), true);
+      expect(rows.map((r) => r.kind)).toEqual(["assistant", "permission"]);
+      expect(rows[1]).toMatchObject({ ask: { id: 5 }, answer });
+    }
   });
 
-  it("after it moves to the background, settles from its job's message, which stays hidden", () => {
-    const moved = [ask("b"), result("b", { job: 7, text: "Still running after 30 s, so it moved to the background as job 7" })];
-    const waiting = permissionRows(moved);
-    expect(waiting).toHaveLength(1);
-    expect(waiting[0]).toMatchObject({ job: 7 });
-    expect(waiting[0]).not.toHaveProperty("answer");
-
-    const answered = [
-      ...moved,
-      entry({ kind: "user", text: "[Background job 7 finished] …", source: "job", requestId: "job:7:1", job: 7, permission: "allowed" }),
-    ];
-    const rows = displayRows(committedRows(answered));
-    expect(rows.map((r) => r.kind)).toEqual(["assistant", "permission"]);
-    expect(rows[1]).toMatchObject({ answer: "allowed", job: 7 });
-
-    const cutOff = [...moved, entry({ kind: "user", text: "[Background job 7 was cut off] …", source: "job", requestId: "job:7:2", job: 7 })];
-    expect(permissionRows(cutOff)[0]).toMatchObject({ answer: "restarted" });
+  it("a provider reusing a tool-call id in a later turn doesn't settle the new request with the old answer", () => {
+    const items = [said(), asked(1, "call_1"), settled(1, "allowed"), message(1), said(), asked(2, "call_1")];
+    const [first, second] = cards(items);
+    expect(first).toMatchObject({ ask: { id: 1 }, answer: "allowed" });
+    expect(second).toMatchObject({ ask: { id: 2 } });
+    expect(second).not.toHaveProperty("answer");
   });
 
   it("a call refused before anyone was asked (bad arguments) is an ordinary failed tool step, not a request", () => {
-    const rows = displayRows(committedRows([ask("v"), result("v", { isError: true, text: "Say what you want to do in `action`." })]));
-    expect(rows.map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
+    const refused = entry({ kind: "tool", toolCallId: "call_1", name: ASK, text: "Say what you want to do in `action`.", isError: true });
+    expect(displayRows(committedRows([said(), refused]), true).map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
+  });
+
+  it("shows with tool steps hidden too: it's a question, not a step", () => {
+    expect(displayRows(committedRows([said(), asked(1)]), false).map((r) => r.kind)).toEqual(["assistant", "permission"]);
   });
 
   it("keeps the same row object while nothing about it changes, so it doesn't re-render", () => {
-    const items = [ask("k")];
-    const first = permissionRows(items)[0];
-    expect(permissionRows([...items])[0]).toBe(first);
-    expect(permissionRows([...items, result("k", { permission: "denied" })])[0]).not.toBe(first);
+    const items = [said(), asked(9)];
+    const first = cards(items)[0];
+    expect(cards([...items])[0]).toBe(first);
+    const answered = cards([...items, settled(9, "denied")])[0];
+    expect(answered).not.toBe(first);
+    expect(cards([...items, settled(9, "denied"), message(9)])[0]).toBe(answered);
   });
 });

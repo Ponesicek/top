@@ -54,6 +54,8 @@ function adapt<P extends TSchema & object>(tool: CodingTool<P>): TopTool {
     ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
     ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
     replay: REPLAY_SAFE.has(tool.name) ? "safe" : "never",
+    // Its command runs in a process of its own, which a restart of the daemon may leave running.
+    ...(tool.name === "bash" ? { cutOff: "The command may even still be running." } : {}),
     run: (args, ctx) => fromPromise(() => tool.execute(ctx.key, args, ctx.signal, ctx.onUpdate)),
   });
 }

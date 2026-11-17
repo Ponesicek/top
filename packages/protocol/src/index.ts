@@ -19,7 +19,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 export const DEFAULT_PORT = 7357;
 
 // ── schema helpers ───────────────────────────────────────────────────────────────
@@ -76,6 +76,8 @@ export const BotSummary = Struct({
   queued: Schema.Int,
   /** Tool calls that outran the time limit and are still running in the background. */
   background: Optional(Schema.Int),
+  /** Permission requests waiting for the user's answer (see PermissionRequest). */
+  approvals: Optional(Schema.Int),
   /** When the bot's next wake-up is due (ms since epoch), if it set one. */
   wakeAt: Optional(Schema.Number),
   /** Newest entry of this bot, so a client can show "unread" without loading it. */
@@ -83,22 +85,11 @@ export const BotSummary = Struct({
 });
 export type BotSummary = typeof BotSummary.Type;
 
-/** The tool a bot asks the user's permission with (Collar's, see PermissionRequest). */
-export const ASK_PERMISSION = "collar__ask_permission";
-
-/** What a bot asked permission for, and whether the user allowed it (see PermissionRequest). */
-export const PermissionAsk = Struct({ action: Schema.String, reason: Optional(Schema.String) });
-export type PermissionAsk = typeof PermissionAsk.Type;
-export const PermissionAnswer = Schema.Literals(["allowed", "denied"]);
-export type PermissionAnswer = typeof PermissionAnswer.Type;
-
 export const ToolCallView = Struct({
   id: Schema.String,
   name: Schema.String,
   /** The arguments, shortened to one line. */
   summary: Schema.String,
-  /** A call asking the user's permission: what for. Its answer is on the call's result, or its job's message. */
-  permission: Optional(PermissionAsk),
 });
 export type ToolCallView = typeof ToolCallView.Type;
 
@@ -146,6 +137,38 @@ export const MODEL_IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", 
 export const isModelImage = (attachment: Pick<Attachment, "mimeType" | "size">) =>
   MODEL_IMAGE_TYPES.includes(attachment.mimeType) && attachment.size <= MAX_IMAGE_BYTES;
 
+// ── permission requests ──────────────────────────────────────────────────────────
+//
+// A bot can ask the user whether it may do something (Collar's `ask_permission`). Asking doesn't make
+// the bot wait: the call's result says it asked, and the bot carries on. The request waits on the
+// daemon, also across restarts, until a client answers it or the user stops the bot (which withdraws
+// it). The first answer wins; any later one is refused. What came of it is a `permission` entry naming
+// the request, and an answer also reaches the bot once, as a message. This only carries the question
+// and the answer: it doesn't stop a bot's other tools from running.
+
+/** What a bot asked permission for: on the tool entry of the call that asked, and in the waiting list. */
+export const PermissionAsk = Struct({
+  /** Names this one request; never reused. */
+  id: Schema.Int,
+  /** What the bot wants to do, in its words. */
+  action: Schema.String,
+  /** Why, in its words, when it said. */
+  reason: Optional(Schema.String),
+});
+export type PermissionAsk = typeof PermissionAsk.Type;
+
+/** A request waiting for the user's answer. */
+export const PermissionRequest = Struct({ ...PermissionAsk.fields, bot: BotId });
+export type PermissionRequest = typeof PermissionRequest.Type;
+
+/** What came of a request: the user's answer, or `withdrawn` by the user's Stop before they answered. */
+export const PermissionAnswer = Schema.Literals(["allowed", "denied", "withdrawn"]);
+export type PermissionAnswer = typeof PermissionAnswer.Type;
+
+/** The longest action and reason a bot may ask with. */
+export const MAX_PERMISSION_ACTION = 500;
+export const MAX_PERMISSION_REASON = 1_000;
+
 const entryBase = { seq: Seq, bot: BotId, at: Schema.Number };
 
 /** A file in a bot's files folder that was added, changed or removed. */
@@ -155,10 +178,11 @@ export type FileChange = typeof FileChange.Type;
 /**
  * Who a message in the bot's inbox comes from, when it isn't the user:
  * - `wake`: a wake-up the bot set for itself came due;
- * - `job`: a tool call that ran on in the background finished (or was cut off).
+ * - `job`: a tool call that ran on in the background finished (or was cut off);
+ * - `permission`: the user answered one of the bot's permission requests (see PermissionRequest).
  * The model reads it like any message; clients show it as an event, not as something the user said.
  */
-export const MessageSource = Schema.Literals(["wake", "job"]);
+export const MessageSource = Schema.Literals(["wake", "job", "permission"]);
 export type MessageSource = typeof MessageSource.Type;
 
 export const Entry = Schema.Union([
@@ -169,10 +193,6 @@ export const Entry = Schema.Union([
     attachments: Optional(List(Attachment)),
     requestId: Optional(Schema.String),
     source: Optional(MessageSource),
-    /** A background job's message: which job (the `job` of the tool result that started it). */
-    job: Optional(Schema.Int),
-    /** The job asked the user's permission, and this is their answer. */
-    permission: Optional(PermissionAnswer),
   }),
   Struct({
     ...entryBase,
@@ -196,11 +216,11 @@ export const Entry = Schema.Union([
     truncated: Optional(Schema.Literal(true)),
     isError: Optional(Schema.Literal(true)),
     outcome: Optional(ToolOutcome),
-    /** The call asked the user's permission, and this is their answer. */
-    permission: Optional(PermissionAnswer),
-    /** The call moved to the background as this job; its result comes as a message with the same `job`. */
-    job: Optional(Schema.Int),
+    /** The call asked the user's permission: this request. Its answer is a `permission` entry naming it. */
+    permission: Optional(PermissionAsk),
   }),
+  /** The user answered a permission request, or it was withdrawn (see PermissionRequest). Not part of the model's context. */
+  Struct({ ...entryBase, kind: Schema.Literal("permission"), request: Schema.Int, answer: PermissionAnswer }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),
   /** Files in the bot's files folder were added, changed or removed (by the bot or anyone else). Not part of the model's context. */
   Struct({
@@ -221,9 +241,6 @@ export const QueuedMessage = Struct({
   mode: Schema.Literals(["steer", "followUp"]),
   at: Schema.Number,
   source: Optional(MessageSource),
-  /** As on a user entry: a background job's message, and a permission's answer in it. */
-  job: Optional(Schema.Int),
-  permission: Optional(PermissionAnswer),
 });
 export type QueuedMessage = typeof QueuedMessage.Type;
 
@@ -381,30 +398,6 @@ export const UpdateView = Struct({
 });
 export type UpdateView = typeof UpdateView.Type;
 
-// ── permission requests ──────────────────────────────────────────────────────────
-//
-// A bot can ask the user whether it may do something (Collar's `ask_permission`). The daemon keeps the
-// request until a client answers it, the bot's task is stopped, or the daemon restarts (then the bot is
-// told nobody answered). The first answer wins; any later one is refused. This only carries the
-// question and the answer: it doesn't stop a bot's other tools from running.
-
-export const PermissionRequest = Struct({
-  /** Names this one request; a new one (also after a restart) never reuses it. */
-  id: Schema.String,
-  bot: BotId,
-  /** The tool call that asked, as in the bot's transcript (ToolCallView's `id`), so a client shows the request there. */
-  toolCallId: Schema.String,
-  /** What the bot wants to do, in its words. */
-  action: Schema.String,
-  /** Why, in its words, when it said. */
-  reason: Optional(Schema.String),
-});
-export type PermissionRequest = typeof PermissionRequest.Type;
-
-/** The longest action and reason a bot may ask with. */
-export const MAX_PERMISSION_ACTION = 500;
-export const MAX_PERMISSION_REASON = 1_000;
-
 // ── client → daemon ──────────────────────────────────────────────────────────────
 
 const req = Schema.Int;
@@ -495,7 +488,7 @@ export const ClientFrame = Schema.Union([
    * Answer a bot's permission request (see PermissionRequest). `bot` must be the bot that asked. Refused
    * with a `PermissionError` when it was answered already (on this device or another), or isn't waiting anymore.
    */
-  Struct({ t: Schema.Literal("answerPermission"), req, id: Schema.String, bot: BotId, allow: Schema.Boolean }),
+  Struct({ t: Schema.Literal("answerPermission"), req, id: Schema.Int, bot: BotId, allow: Schema.Boolean }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
