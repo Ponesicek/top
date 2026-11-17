@@ -1,6 +1,3 @@
-// Electron main process. Deliberately thin: the renderer owns the socket and all state, so the
-// same UI runs in a browser (pnpm web) and the main process never sits on the hot path.
-
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,28 +7,17 @@ import { contextMenuItems, runContextMenuAction } from "./context-menu.js";
 import { startUpdates } from "./updates.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-// The profile (cache, settings) lives in Top's home beside the daemon's, not in Electron's default folder.
 const topHome = process.env.TOP_HOME ? resolve(process.env.TOP_HOME.replace(/^~(?=$|\/)/, homedir())) : join(homedir(), ".top");
 app.setPath("userData", process.env.TOP_USER_DATA ?? join(topHome, "desktop"));
 if (process.env.TOP_THEME === "dark" || process.env.TOP_THEME === "light") nativeTheme.themeSource = process.env.TOP_THEME;
 const devUrl = process.env.VITE_DEV_SERVER_URL;
 const query = process.env.TOP_QUERY ?? "";
-/** `pnpm screenshot` captures the page without putting a window where anyone sees it. */
 const headless = process.env.TOP_BENCH === "screenshot";
 
-/**
- * No title bar: the top of the main column (its header) is the window's drag area. The sidebar isn't
- * one: it takes clicks like any other content. macOS keeps its traffic lights inset; Windows and Linux keep their window
- * buttons, drawn over the header's top-right corner in the app's own background (`--background` in
- * styles.css) and text colors.
- */
 const overlay = () =>
   nativeTheme.shouldUseDarkColors ? { color: "#141413", symbolColor: "#eeedea", height: 40 } : { color: "#fefdfc", symbolColor: "#1a1917", height: 40 };
 
-/**
- * Each window's latest right-click: the only menu its page can pick an action from.
- * @type {WeakMap<Electron.WebContents, Electron.ContextMenuParams>}
- */
+/** @type {WeakMap<Electron.WebContents, Electron.ContextMenuParams>} */
 const lastRightClick = new WeakMap();
 
 function createWindow() {
@@ -43,28 +29,21 @@ function createWindow() {
     minHeight: 420,
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#141413" : "#fefdfc",
-    // Linux and Windows show this in the taskbar when no launcher supplies an icon; macOS takes its own from the app bundle.
     icon: join(here, "../assets/icons/512x512.png"),
     titleBarStyle: mac ? "hiddenInset" : "hidden",
     ...(mac ? {} : { titleBarOverlay: overlay() }),
     webPreferences: {
-      // Lets the page set its own zoom (the "Interface size" setting); see preload.cjs.
       preload: join(here, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
-      // Chromium's PDF viewer, for PDFs in the Files panel.
       plugins: true,
-      // Screenshots render in a window nobody sees, so it must keep painting as if in front.
       ...(headless ? { backgroundThrottling: false } : {}),
     },
   });
-  // No File/Edit/View/Window bar on Linux and Windows: typing, copy and paste work without it. macOS
-  // keeps its menu, which lives in the screen's top bar and carries Cmd+C/V/Q.
   if (process.platform !== "darwin") {
     win.removeMenu();
-    // The menu was also how dev builds opened DevTools and reloaded.
     if (devUrl) {
       win.webContents.on("before-input-event", (event, input) => {
         if (input.type !== "keyDown") return;
@@ -80,15 +59,11 @@ function createWindow() {
     }
   }
   if (!mac) {
-    // The app follows the system's light/dark setting; so do the window buttons.
     const recolor = () => !win.isDestroyed() && win.setTitleBarOverlay(overlay());
     nativeTheme.on("updated", recolor);
     win.on("closed", () => nativeTheme.off("updated", recolor));
   }
   if (!headless) win.once("ready-to-show", () => win.show());
-  // Electron draws no new frames for a window that has never been shown, so a capture of one shows the
-  // page as it first loaded, not as the screenshot left it. `pnpm screenshot` shows its window instead:
-  // without focus, see-through and off-screen (where there's no display, inside xvfb anyway).
   else
     win.once("ready-to-show", () => {
       win.setOpacity(0);
@@ -99,8 +74,6 @@ function createWindow() {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
-  // Electron opens no right-click menu by itself. The page draws it (see context-menu.js) and sends back
-  // the action picked, which runs against the right-click that opened the menu.
   win.webContents.on("context-menu", (_event, params) => {
     const items = contextMenuItems(params);
     lastRightClick.delete(win.webContents);
@@ -116,12 +89,6 @@ function createWindow() {
   return win;
 }
 
-// ── Top on the tailnet ──────────────────────────────────────────────────────────
-// The page can't run programs, so finding daemons on the user's tailnet happens here: ask the local
-// Tailscale which devices are online, then ask each for `/.well-known/top` on Top's tailnet port
-// (TAILNET_PORT in apps/server/src/tailscale.ts). A daemon answers only devices it lets in; one that
-// refuses this device still says it's there.
-
 const TAILNET_PORT = 7357;
 /** @type {Partial<Record<NodeJS.Platform, string[]>>} */
 const TAILSCALE = {
@@ -129,10 +96,7 @@ const TAILSCALE = {
   win32: ["tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe"],
 };
 
-/**
- * What this reads of `tailscale status --json` (unchecked: the page checks the answer it builds, see src/bridge.ts).
- * @typedef {{ BackendState?: string; Self?: { DNSName?: string }; Peer?: Record<string, { Online?: boolean; DNSName?: string }> }} TailscaleStatus
- */
+/** @typedef {{ BackendState?: string; Self?: { DNSName?: string }; Peer?: Record<string, { Online?: boolean; DNSName?: string }> }} TailscaleStatus */
 
 /** @returns {Promise<TailscaleStatus>} */
 function tailscaleStatus() {
@@ -167,7 +131,7 @@ async function probe(dnsName, self) {
     if (response.ok) return { device, url: typeof body.url === "string" ? body.url : url, self, serverId: body.serverId, state: "ok" };
     return { device, url, self, state: "refused", ...(typeof body.error === "string" ? { error: body.error } : {}) };
   } catch {
-    return undefined; // no Top there, or the device didn't answer
+    return undefined;
   }
 }
 
@@ -203,7 +167,6 @@ app.whenReady().then(async () => {
   const win = createWindow();
   if (process.env.TOP_BENCH) {
     const { runBench } = await import("./bench-driver.js");
-    // A failed run has to end the app, or whoever started it waits forever.
     await runBench(win).catch((/** @type {unknown} */ error) => {
       process.stdout.write(`BENCH:ERROR ${JSON.stringify(error instanceof Error ? error.message : String(error))}\n`);
       app.exit(1);

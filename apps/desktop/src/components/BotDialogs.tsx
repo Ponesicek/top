@@ -25,7 +25,6 @@ import { Tooltip } from "./ui/tooltip.tsx";
 const isOffline = Schema.is(OfflineError);
 const isTimeout = Schema.is(TimeoutError);
 
-/** What went wrong, in words for the user. The daemon's own refusals already are ("There's already a bot named Atlas."). */
 export function messageOf(error: unknown): string {
   if (isOffline(error)) return "Not connected to the Top daemon. Try again once it's back.";
   if (isTimeout(error)) return "The daemon didn't answer. Try again.";
@@ -33,11 +32,9 @@ export function messageOf(error: unknown): string {
   return message.replace(/^\w+: /, "");
 }
 
-/** How many drawings the picker offers at once. */
 const CHOICES = 8;
 const FIRST_CHOICES: readonly number[] = Array.from({ length: CHOICES }, (_, i) => i);
 
-/** The picked drawing kept in front, then others drawn at random. */
 function shuffleAvatars(picked: number): number[] {
   const next = [picked];
   while (next.length < CHOICES) {
@@ -47,16 +44,10 @@ function shuffleAvatars(picked: number): number[] {
   return next;
 }
 
-/**
- * The bot's icon, first in the form like a profile picture: a tray of drawings of the name as typed (the
- * daemon tidies the name the same way), so the picked one is exactly what the sidebar shows. Shuffle offers
- * more, keeping the picked one. The tray is styled like the app's segmented controls, the picked one raised.
- */
 function AvatarPicker({ name, value, onChange }: { name: string; value: number; onChange: (avatar: number) => void }) {
   const [choices, setChoices] = useState(FIRST_CHOICES);
   const drawn = name.trim().replace(/\s+/g, " ") || "Scout";
   return (
-    // One row of equal cells at any width: the dialog narrows on a phone, and the row must never wrap.
     <div className="grid grid-cols-9 gap-0.5 rounded-field bg-secondary p-0.75">
       <div role="radiogroup" aria-label="Icon" className="col-span-8 grid grid-cols-subgrid">
         {choices.map((avatar, i) => (
@@ -91,7 +82,6 @@ function AvatarPicker({ name, value, onChange }: { name: string; value: number; 
   );
 }
 
-/** The form lives inside the popup, so it starts empty each time the dialog opens. */
 function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; nameRef: RefObject<HTMLInputElement | null> }) {
   const [name, setName] = useState("");
   const [avatar, setAvatar] = useState(0);
@@ -162,7 +152,6 @@ function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; na
   );
 }
 
-/** Focus starts in Name, past the icons above it: most people type a name first. */
 export function NewBotDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (id: BotId) => void }) {
   const nameRef = useRef<HTMLInputElement>(null);
   return (
@@ -207,7 +196,6 @@ function DeleteBotBody({ bot, onDone }: { bot: BotSummary; onDone: () => void })
   );
 }
 
-/** Focus starts on Cancel (the first control): Enter right after opening must not delete. */
 export function DeleteBotDialog({
   bot,
   open,

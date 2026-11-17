@@ -1,12 +1,3 @@
-/**
- * Each real bot owns a folder, `~/.top/bots/<name>` (see home.ts), and works from it: commands start there and
- * relative paths resolve there. Its tools are pi's coding tools (bash, read, write, edit, grep, find,
- * ls), with the same access to the whole computer as the user running the daemon.
- *
- * What a daemon restart does to a tool call it cut off (see tools.ts):
- * - read, ls, grep, find only look, and write puts the same content again, so they re-run;
- * - bash and edit may have half-happened or happened, so the model is told and checks first.
- */
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
@@ -17,10 +8,8 @@ import { defineTool, fromPromise, type ToolResult, type TopTool } from "./tools.
 
 const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
 
-/** The folder inside a bot's own where it puts what it makes for the user; the app shows it (see files.ts). */
 export const FILES_FOLDER = "files";
 
-/** `<bots>/<name>`, with the name made safe as a folder name. */
 export function botFolder(bots: string, name: string): string {
   const safe =
     name
@@ -30,11 +19,9 @@ export function botFolder(bots: string, name: string): string {
   return join(bots, safe);
 }
 
-/** Make the bot's folder if it isn't there. */
 export const ensureFolder = (folder: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => Effect.as(Effect.orDie(fs.makeDirectory(folder, { recursive: true })), folder));
 
-/** What Top takes from one of pi's coding tools (pi's `TypeBoxAgentTool`: each has its own TypeBox parameters). */
 type CodingTool<P extends TSchema & object> = {
   readonly name: string;
   readonly label: string;
@@ -54,13 +41,11 @@ function adapt<P extends TSchema & object>(tool: CodingTool<P>): TopTool {
     ...(tool.prepareArguments ? { prepareArguments: tool.prepareArguments } : {}),
     ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
     replay: REPLAY_SAFE.has(tool.name) ? "safe" : "never",
-    // Its command runs in a process of its own, which a restart of the daemon may leave running.
     ...(tool.name === "bash" ? { cutOff: "The command may even still be running." } : {}),
     run: (args, ctx) => fromPromise(() => tool.execute(ctx.key, args, ctx.signal, ctx.onUpdate)),
   });
 }
 
-/** The tools of a bot working in `folder`. */
 export function computerTools(folder: string): TopTool[] {
   return [
     adapt(createReadTool(folder)),
@@ -73,14 +58,11 @@ export function computerTools(folder: string): TopTool[] {
   ];
 }
 
-/** The `workspace` section of a bot's system prompt. `outdated` says an earlier "no tools" note no longer holds. */
 export function workspaceSection(folder: string, outdated: boolean): string {
   let user = "the user";
   try {
     user = userInfo().username;
-  } catch {
-    // no passwd entry: keep the generic name
-  }
+  } catch {}
   return [
     "<workspace>",
     `Your working folder is ${folder}. It's yours: keep your files, notes and projects there. Commands start there and relative paths resolve from it.`,

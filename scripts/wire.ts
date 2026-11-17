@@ -1,19 +1,3 @@
-/**
- * pnpm wire: how many bytes the real client moves over the network, against a real daemon under load.
- *
- *   node --import tsx scripts/wire.ts [--tree <checkout>] [--seconds 60] [--server-args=--tools]
- *
- * `--tree` points at another checkout to measure it the same way (for before/after comparisons).
- * Bytes are counted on the TCP socket in both directions: WebSocket framing and compression included,
- * TLS and IP headers not (those add about the same to both).
- *
- * Scenarios, each with its own client:
- * - open:    a fresh client opens the bot with a 10,000-message history (no cache)
- * - phone:   a client follows only the bot on screen while every bot works
- * - desktop: a client follows all five bots while every bot works
- * - resume:  a client comes back after 30 s away with its cache, and catches up
- * - idle:    a client connected to a daemon with nothing happening
- */
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -51,7 +35,6 @@ type AnyConversation = {
 };
 const { TopClient } = (await import(join(tree, "packages/client/src/index.ts"))) as { TopClient: new (o: { url: string; WebSocket: unknown }) => AnyClient };
 
-/** A WebSocket that remembers its TCP socket, so its bytes can be counted. */
 function countingWebSocket() {
   const sockets: Socket[] = [];
   class Counting extends WsWebSocket {
@@ -72,7 +55,6 @@ function until(check: () => boolean, timeoutMs = 30_000): Promise<void> {
   });
 }
 
-/** Answers this client has seen for one bot, in either version's shape. */
 function answers(conversation: AnyConversation): Set<string> {
   const seen = new Set<string>();
   for (const item of conversation.getSnapshot().items) {
@@ -117,7 +99,6 @@ const quiet = await startDaemon(["--tps", "100", ...serverArgs]);
 const results: Record<string, { bytes: number; seconds?: number; answers?: number }> = {};
 
 try {
-  // open: the 10,000-message bot, no cache.
   {
     const { client, bytes } = await connect(busy.url);
     const bot = client.conversation(client.getSnapshot().bots[0]!.id);

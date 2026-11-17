@@ -22,7 +22,6 @@ async function setup() {
   return { h, folder: join(h.dir, "files"), bot: h.bot };
 }
 
-/** A watched folder whose reported entries are collected, as the daemon would announce them. */
 async function watched(h: Harness, bot: number, folder: string) {
   const entries: Entry[] = [];
   const scope = await h.run(Scope.make());
@@ -144,8 +143,6 @@ test("files are served on the daemon's port, only with the secret and only insid
   assert.equal((await fetch(`http://127.0.0.1:${port}/files/wrong-secret/${bot}/report.html`)).status, 404);
   assert.equal((await fetch(`http://127.0.0.1:${port}/files/${store.filesSecret}/999/report.html`)).status, 404);
 
-  // A bot's page runs at the daemon's own address, and a sandboxed frame inside it (or inside any web
-  // page) says Origin: null. Neither may open the daemon's WebSocket; the app may.
   const opens = (origin: string) =>
     new Promise<boolean>((resolve) => {
       const socket = new WebSocket(`ws://127.0.0.1:${port}`, { origin });

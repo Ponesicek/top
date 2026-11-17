@@ -1,8 +1,3 @@
-/**
- * Updates: which release the daemon offers on each channel, and installing one from a stand-in for
- * GitHub (downloaded, checked, unpacked beside the running version, `current` moved, the database
- * backed up, and a planned restart), or refusing a damaged download.
- */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -67,9 +62,7 @@ test("each channel is offered only its own newest published release, and only on
   ];
   assert.equal(newestRelease(releases, "nightly", "0.2.0-nightly.20261113.6")?.version, "0.2.0-nightly.20261114.7");
   assert.equal(newestRelease(releases, "stable", "0.1.0")?.version, "0.1.1");
-  // Nothing newer than what runs.
   assert.equal(newestRelease(releases, "stable", "0.1.1"), undefined);
-  // A nightly ahead of every stable release: switching to Stable never goes back.
   assert.equal(newestRelease(releases, "stable", "0.2.0-nightly.20261114.7"), undefined);
   const offered = newestRelease(releases, "nightly", "0.1.0");
   assert.deepEqual(offered?.notes, ["Attach files to messages", "Quote a bot's answers"]);
@@ -83,7 +76,6 @@ test("SHA256SUMS lines are read in both of sha256sum's modes", () => {
   assert.equal(checksumOf(sums, "other"), undefined);
 });
 
-/** A stand-in for GitHub: the releases API, and release files behind a redirect, as GitHub serves them. */
 async function github(work: string, options: { damaged?: boolean } = {}) {
   const archives = new Map<string, Buffer>();
   for (const version of [NIGHTLY, STABLE]) {
@@ -174,7 +166,6 @@ test("installing a release unpacks it beside the running one, moves `current`, b
   assert.equal(readFileSync(layout.trial, "utf8"), `${NIGHTLY} ${BUILD.version} 0\n`);
   assert.ok(existsSync(join(home, "server", `top.sqlite.before-${NIGHTLY}`)));
   assert.equal(await runtime.runPromise(store.flag(Store.PLANNED_RESTART)), true);
-  // Nothing half-done left behind.
   assert.equal(existsSync(join(layout.versions, `.unpacking-${NIGHTLY}`)), false);
   assert.equal(existsSync(join(layout.downloads, daemonArchive(NIGHTLY))), false);
 });
@@ -182,17 +173,14 @@ test("installing a release unpacks it beside the running one, moves `current`, b
 test("trying an update again after a rollback replaces the old backup, which clients and bots see as a restart", async () => {
   const { runtime, updates, store, home, restarts } = await setup({ channel: "nightly", rolledBack: NIGHTLY });
   assert.equal((await runtime.runPromise(updates.view)).rolledBack, NIGHTLY);
-  // What the try before left: its backup, kept by the rollback.
   const backup = join(home, "server", `top.sqlite.before-${NIGHTLY}`);
   writeFileSync(backup, "the first try's backup");
   await runtime.runPromise(updates.install(NIGHTLY));
   assert.equal(restarts(), 1);
-  // This try's outcome, not the last one's, is what the app waits on.
   assert.equal((await runtime.runPromise(updates.view)).rolledBack, undefined);
 
   const db = new DatabaseSync(backup, { readOnly: true });
   const meta = (key: string) => (db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
-  // A different daemon to clients, so they drop what the failed version sent; the bots' recovery is planned.
   assert.ok(meta("id"));
   assert.notEqual(meta("id"), store.id);
   assert.equal(meta(`flag:${Store.PLANNED_RESTART}`), "1");
@@ -218,7 +206,6 @@ test("switching channels looks again on the new one, and remembers it", async ()
   assert.equal(view.channel, "stable");
   assert.equal(view.available?.version, STABLE);
   assert.equal(readFileSync(layout.channel, "utf8").trim(), "stable");
-  // Only the release it offers can be installed.
   const refused = await runtime.runPromise(Effect.flip(updates.install(NIGHTLY)));
   assert.match(refused.message, /isn't the newest Stable release/);
 });

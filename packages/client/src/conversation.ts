@@ -1,21 +1,9 @@
-/**
- * A client's copy of one bot's transcript.
- *
- * Entries are finished and never change, so the copy is a sorted list plus the ranges it doesn't
- * have: older history ("earlier") and holes left by a long disconnect ("gaps"). Both load when
- * scrolled into view. On every (re)connect the client asks only for entries after the newest one it
- * holds, so reopening the app after a while costs the new messages, not the transcript.
- *
- * Messages the user sends show up instantly as pending, survive a dropped connection, and are resent
- * with the same `requestId` (applied once by the daemon) until the daemon has them.
- */
 import { type Attachment, type BotId, Entry, Gap, QueuedMessage, type Seq, type WhenBusy } from "@top/protocol";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { Connection } from "./connection.ts";
 
-/** Runs a client's Effects, in its scope (closing the client stops what's still running). */
 export type ClientRuntime = {
   readonly promise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
   readonly fork: <A, E>(effect: Effect.Effect<A, E>) => void;
@@ -24,42 +12,26 @@ export type ClientRuntime = {
 export type PendingMessage = {
   readonly requestId: string;
   readonly text: string;
-  /** Uploaded already (`TopClient.upload`); the message names them by id. */
   readonly attachments?: readonly Attachment[];
   readonly createdAt: number;
-  /** `sending`: not acknowledged yet (or offline). `accepted`: the daemon has it durably. */
   readonly state: "sending" | "accepted" | "failed";
   readonly error?: string | undefined;
   readonly whenBusy: WhenBusy;
 };
 
-export type TranscriptItem =
-  /** Older entries exist and are not loaded. */
-  | { readonly kind: "earlier" }
-  /** Entries between two loaded ones are missing (after a long disconnect). */
-  | { readonly kind: "gap"; readonly gap: Gap }
-  | { readonly kind: "entry"; readonly entry: Entry };
+export type TranscriptItem = { readonly kind: "earlier" } | { readonly kind: "gap"; readonly gap: Gap } | { readonly kind: "entry"; readonly entry: Entry };
 
-export type ConversationStatus =
-  /** Nothing to show yet. */
-  | "loading"
-  /** Following the daemon. */
-  | "live"
-  /** Showing what we had; reconnecting. */
-  | "stale";
+export type ConversationStatus = "loading" | "live" | "stale";
 
 export type ConversationSnapshot = {
   readonly id: BotId;
   readonly status: ConversationStatus;
   readonly items: readonly TranscriptItem[];
-  /** Messages the daemon has queued for this bot. */
   readonly inbox: readonly QueuedMessage[];
   readonly pending: readonly PendingMessage[];
-  /** Bumped on every change; handy for memo keys and perf counters. */
   readonly revision: number;
 };
 
-/** What a client keeps on disk per bot, to open instantly and to resume with `after`. */
 export const ConversationCache = Schema.Struct({
   version: Schema.Literal(2),
   entries: Schema.Array(Entry),
@@ -85,11 +57,9 @@ export class ConversationSync {
   readonly #listeners = new Set<() => void>();
   readonly #itemOf = new WeakMap<Entry, TranscriptItem>();
 
-  /** Ascending by seq, no duplicates. */
   #entries: Entry[] = [];
   #gaps: Gap[] = [];
   #earlier = false;
-  /** Whether `#entries` reflects the daemon (from a sync or the cache), so `after` can be sent. */
   #known = false;
   #inbox: readonly QueuedMessage[] = [];
   #pending: PendingMessage[] = [];
@@ -105,8 +75,6 @@ export class ConversationSync {
     this.#snapshot = { id, status: "loading", items: [], inbox: [], pending: [], revision: 0 };
   }
 
-  // ── React-friendly store surface (useSyncExternalStore) ───────────────────────
-
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -114,12 +82,9 @@ export class ConversationSync {
 
   getSnapshot = (): ConversationSnapshot => this.#snapshot;
 
-  /** The newest entry held, the one a reconnect resumes after. */
   get newestSeq(): Seq | undefined {
     return this.#entries.at(-1)?.seq;
   }
-
-  // ── lifecycle ─────────────────────────────────────────────────────────────────
 
   get retained() {
     return this.#retained > 0;
@@ -135,7 +100,6 @@ export class ConversationSync {
     this.#watching = false;
   }
 
-  /** (Re)attach after a connect: ask only for what's newer than what we hold. */
   attach() {
     if (this.#retained === 0 || this.#connection.status() !== "open") return;
     const after = this.#known ? (this.newestSeq ?? 0) : undefined;
@@ -147,8 +111,6 @@ export class ConversationSync {
     this.#watching = false;
     if (this.#snapshot.status === "live") this.#publish("stale");
   }
-
-  // ── local cache ───────────────────────────────────────────────────────────────
 
   exportCache(): ConversationCache | undefined {
     if (!this.#known) return undefined;
@@ -163,7 +125,6 @@ export class ConversationSync {
     };
   }
 
-  /** Show a cached copy before the daemon answers; it renders as `stale` until the sync arrives. */
   hydrate(cache: ConversationCache) {
     if (this.#known || cache.version !== 2) return;
     this.#entries = [...cache.entries];
@@ -174,7 +135,6 @@ export class ConversationSync {
     this.#publish("stale");
   }
 
-  /** Forget everything held: it came from another daemon. Messages still being sent stay. */
   reset() {
     this.#entries = [];
     this.#gaps = [];
@@ -183,8 +143,6 @@ export class ConversationSync {
     this.#known = false;
     this.#publish("loading");
   }
-
-  // ── frames from the daemon ───────────────────────────────────────────────────
 
   receiveSync(frame: { entries: readonly Entry[]; gap?: Gap; earlier?: boolean; inbox: readonly QueuedMessage[] }) {
     if (!this.#known) this.#earlier = frame.earlier === true;
@@ -207,8 +165,6 @@ export class ConversationSync {
     this.#retirePending();
     this.#publish();
   }
-
-  // ── history ──────────────────────────────────────────────────────────────────
 
   loadEarlier(): Promise<void> {
     const first = this.#entries[0];
@@ -236,12 +192,9 @@ export class ConversationSync {
     );
   }
 
-  /** One entry in full: untruncated tool output, thinking, tool arguments. `null` for an entry clients don't see. */
   detail(seq: Seq): Promise<Entry | null> {
     return this.#run.promise(this.#connection.request({ t: "detail", bot: this.id, seq }));
   }
-
-  // ── actions ───────────────────────────────────────────────────────────────────
 
   send(text: string, whenBusy: WhenBusy = "followUp", attachments: readonly Attachment[] = []): PendingMessage {
     const message: PendingMessage = {
@@ -272,13 +225,10 @@ export class ConversationSync {
     return this.#run.promise(Effect.asVoid(this.#connection.request({ t: "abort", bot: this.id })));
   }
 
-  // ── internals ────────────────────────────────────────────────────────────────
-
   #merge(incoming: readonly Entry[]) {
     if (!incoming.length) return;
     const last = this.#entries.at(-1);
     if (!last || incoming[0]!.seq > last.seq) {
-      // The common case: newer entries, already in order.
       this.#entries = this.#entries.concat(incoming);
     } else {
       const bySeq = new Map(this.#entries.map((e) => [e.seq, e]));
@@ -304,7 +254,6 @@ export class ConversationSync {
     return items;
   }
 
-  /** Drop pending copies the daemon now has (queued or placed). */
   #retirePending() {
     if (!this.#pending.length) return;
     const known = new Set(this.#inbox.map((q) => q.requestId));
@@ -342,7 +291,7 @@ export class ConversationSync {
   }
 
   #submit(message: PendingMessage) {
-    if (this.#connection.status() !== "open") return; // resent on reconnect
+    if (this.#connection.status() !== "open") return;
     const stillPending = () => this.#pending.some((p) => p.requestId === message.requestId);
     this.#run.fork(
       this.#connection
@@ -358,16 +307,13 @@ export class ConversationSync {
         .pipe(
           Effect.tap(() =>
             Effect.sync(() => {
-              // The daemon has it durably. It shows as queued or placed once the inbox or entry frame lands.
               this.#retirePending();
               if (stillPending()) this.#update(message.requestId, { state: "accepted" });
               else this.#publish();
             }),
           ),
           Effect.catchTags({
-            // A dropped connection is not a failure: the message stays "sending" and goes out again on reconnect.
             OfflineError: () => Effect.void,
-            // No answer in time: the daemon may or may not have it. Resending is safe, the requestId dedupes it.
             TimeoutError: () => Effect.sleep(Duration.seconds(1)).pipe(Effect.andThen(Effect.sync(() => stillPending() && this.#submit(message)))),
           }),
           Effect.catch((error) => Effect.sync(() => this.#update(message.requestId, { state: "failed", error: error.message }))),

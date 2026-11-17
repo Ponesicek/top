@@ -16,7 +16,6 @@ const STATE_DOT: Record<McpServerView["state"], string> = {
   failed: "bg-destructive",
 };
 
-/** The daemon runs elsewhere: a sign-in redirect lands on its computer, not this one (unless it's on the tailnet). */
 const remoteDaemon = (() => {
   try {
     return !["127.0.0.1", "localhost", "[::1]"].includes(new URL(serverUrl).hostname);
@@ -49,7 +48,6 @@ function stateLine(server: McpServerView): string {
   }
 }
 
-/** A bot's toggle: on means the bot gets this server's tools. Flips at once; the daemon's answer settles it. */
 function BotToggle({ server, bot, name }: { server: McpServerView; bot: BotId; name: string }) {
   const [pending, setPending] = useState<boolean>();
   const on = pending ?? server.bots.includes(bot);
@@ -58,9 +56,7 @@ function BotToggle({ server, bot, name }: { server: McpServerView; bot: BotId; n
     setPending(next);
     try {
       await top.assignMcp(server.id, bot, next);
-    } catch {
-      // Not applied: show what the daemon has.
-    }
+    } catch {}
     setPending(undefined);
   };
   return (
@@ -77,7 +73,6 @@ function BotToggle({ server, bot, name }: { server: McpServerView; bot: BotId; n
 function ServerRow({ server, bots, onEdit }: { server: McpServerView; bots: readonly { id: BotId; name: string }[]; onEdit: () => void }) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
-  // On the tailnet, the sign-in redirect comes back through the daemon's tailnet address instead.
   const { tailnetUrl } = useTailnet();
   const act = async (run: () => Promise<void>) => {
     setBusy(true);
@@ -142,15 +137,11 @@ function ServerRow({ server, bots, onEdit }: { server: McpServerView; bots: read
   );
 }
 
-/** The MCP servers on the daemon, and which bots use each. A bot starts with none. */
 export function McpServers() {
   const servers = useClient((snapshot) => snapshot.mcpServers);
-  // Only names and ids: they don't change when a bot's status does.
   const bots = useRoster();
   const [editing, setEditing] = useState<number | "new">();
   const [open, setOpen] = useState(false);
-  // Live while the dialog is open (state and tools change); the last one seen while it animates out
-  // after a removal, so it doesn't flip to "Add" on its way out.
   const last = useRef<McpServerView>(undefined);
   const live = typeof editing === "number" ? servers.find((s) => s.id === editing) : undefined;
   if (live) last.current = live;

@@ -13,7 +13,6 @@ import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { Tooltip } from "./ui/tooltip.tsx";
 
-/** "12 s", "3 min": how long the bot has been at its current step. */
 function Elapsed({ since }: { since: number }) {
   const [, tick] = useState(0);
   useEffect(() => {
@@ -25,10 +24,8 @@ function Elapsed({ since }: { since: number }) {
   return <> · {s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}</>;
 }
 
-/** Opens and closes the Files panel; shows how many files the bot has. Kept well clear of the window buttons. */
 function FilesToggle({ bot, open }: { bot: BotId; open: boolean }) {
   const count = useBotFiles(bot)?.files.length;
-  // A daemon without files folders (or one that hasn't listed this bot's yet): nothing to open.
   if (count === undefined) return null;
   return (
     <Tooltip content={`${open ? "Hide" : "Show"} files (Ctrl+Shift+E)`} side="bottom">
@@ -46,7 +43,6 @@ function FilesToggle({ bot, open }: { bot: BotId; open: boolean }) {
   );
 }
 
-/** The header shares the transcript's column: its avatar sits on the avatar rail. */
 export const Header = memo(function Header({
   sync,
   name,
@@ -64,7 +60,6 @@ export const Header = memo(function Header({
   const state = bot?.status ?? "idle";
   return (
     <header className="h-15 flex-none overflow-hidden border-b [scrollbar-gutter:stable] [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
-      {/* With the Files panel open, the window buttons sit over the panel, not here. */}
       <div
         className={cn(
           "mx-auto flex h-full max-w-220 items-center justify-between gap-4 pl-8 [--column:55rem]",
@@ -87,7 +82,6 @@ export const Header = memo(function Header({
               {bot && bot.queued > 0 && ` · ${bot.queued} queued`}
             </span>
           </div>
-          {/* The sidebar's footer says Reconnecting; it hides that badge in the narrow layout, so only there does the header say it. */}
           {status === "stale" && (
             <Badge
               variant="warning"

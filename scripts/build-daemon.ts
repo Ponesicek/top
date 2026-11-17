@@ -1,16 +1,3 @@
-/**
- * The daemon as a release archive, for Linux x64: `release/top-daemon-<version>-linux-x64.tar.gz`.
- *
- *   top-daemon-<version>-linux-x64/
- *   ├── bin/top          the entry point (`bin/top install`, then systemd runs it; see installation.ts)
- *   ├── server.mjs       Top's own code in one file, with its version and channel compiled in
- *   ├── node_modules/    the third-party packages, installed for production
- *   └── node/            the Node it runs on, so `node:sqlite` behaves as it was tested
- *
- *   pnpm build:daemon [--channel stable|nightly]     the version is the root package.json's
- *
- * Top's packages are bundled because they're TypeScript, which Node won't run from node_modules.
- */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,7 +7,6 @@ import { build } from "esbuild";
 import { BIN_TOP } from "../apps/server/src/installation.ts";
 import { channelOf, daemonArchive } from "../packages/protocol/src/release.ts";
 
-/** The Node shipped with the daemon: the current LTS, which development uses too. */
 const NODE_VERSION = "26.13.0";
 
 const root = resolve(import.meta.dirname, "..");
@@ -37,7 +23,6 @@ mkdirSync(join(out, "bin"), { recursive: true });
 
 const step = (what: string) => console.log(`[build-daemon] ${what}`);
 
-// ── Top's code, bundled; everything third-party stays a package ───────────────────
 step(`bundling Top ${version} (${channel})`);
 await build({
   entryPoints: [join(root, "apps/server/src/main.ts")],
@@ -53,19 +38,15 @@ await build({
     {
       name: "third-party-external",
       setup(b) {
-        // A bare import that isn't one of Top's own packages is loaded from node_modules at runtime.
         b.onResolve({ filter: /^[^./]/ }, (args) => (args.path.startsWith("@top/") ? undefined : { path: args.path, external: true }));
       },
     },
   ],
 });
 
-// ── production dependencies ─────────────────────────────────────────────────────
 step("installing production dependencies");
 const deployed = join(releaseDir, ".deploy");
 rmSync(deployed, { recursive: true, force: true });
-// A production deploy rewrites the workspace's install state as production-only, after which pnpm wants
-// to reinstall the workspace without its dev dependencies; put the state back as it was.
 const workspaceState = join(root, "node_modules/.pnpm-workspace-state-v1.json");
 const savedState = existsSync(workspaceState) ? readFileSync(workspaceState) : undefined;
 try {
@@ -77,7 +58,6 @@ cpSync(join(deployed, "node_modules"), join(out, "node_modules"), { recursive: t
 rmSync(deployed, { recursive: true, force: true });
 writeFileSync(join(out, "package.json"), `${JSON.stringify({ name: "top-daemon", version, private: true, type: "module" }, null, 2)}\n`);
 
-// ── Node ──────────────────────────────────────────────────────────────────────
 const nodeName = `node-v${NODE_VERSION}-linux-x64`;
 const cache = join(releaseDir, ".cache");
 const nodeArchive = join(cache, `${nodeName}.tar.xz`);
@@ -102,7 +82,6 @@ if (!existsSync(nodeArchive) || sha256(nodeArchive) !== expected) {
 mkdirSync(join(out, "node", "bin"), { recursive: true });
 execFileSync("tar", ["-xJf", nodeArchive, "-C", join(out, "node"), "--strip-components=1", `${nodeName}/bin/node`, `${nodeName}/LICENSE`]);
 
-// ── entry point, smoke test, archive ────────────────────────────────────────────
 writeFileSync(join(out, "bin", "top"), BIN_TOP);
 chmodSync(join(out, "bin", "top"), 0o755);
 const reported = execFileSync(join(out, "bin", "top"), ["--version"], { encoding: "utf8" }).trim();

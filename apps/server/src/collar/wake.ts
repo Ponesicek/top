@@ -1,4 +1,3 @@
-/** `collar__wake`: set, list and cancel wake-ups (see wakes.ts). */
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
@@ -6,7 +5,6 @@ import { duration, localTime } from "../time.ts";
 import { defineTool, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
 
-/** Pending wake-ups one bot may have at once, so a confused bot can't pile them up. */
 const MAX_PENDING = 50;
 const MAX_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
 
@@ -36,7 +34,6 @@ export const wakeGroup: CollarGroup = (daemon) => [
       '`action: "list"` shows your wake-ups that haven\'t gone off; `action: "cancel"` with `id` removes one.',
     ].join(" "),
     parameters,
-    // Setting is keyed by the call, so running it again sets nothing new; list and cancel only look or repeat.
     replay: "safe",
     background: false,
     run: (args, ctx) =>

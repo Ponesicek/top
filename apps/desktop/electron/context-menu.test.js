@@ -4,12 +4,10 @@ import { contextMenuItems, runContextMenuAction } from "./context-menu.js";
 
 const flags = { canUndo: true, canRedo: true, canCut: true, canCopy: true, canPaste: true, canDelete: true, canSelectAll: true, canEditRichly: false };
 
-/** A right-click, as Electron describes it, with `over` changed. */
 function click(over = {}) {
   return { isEditable: true, selectionText: "", misspelledWord: "", dictionarySuggestions: /** @type {string[]} */ ([]), editFlags: flags, ...over };
 }
 
-/** A page that records which editing command ran. */
 function fakeTarget() {
   /** @type {string[]} */
   const ran = [];
@@ -25,7 +23,6 @@ function fakeTarget() {
   };
 }
 
-/** Each item as a short string: its action or label, `-` for a separator, `(off)` when disabled. */
 const shape = (/** @type {import("./context-menu.js").ContextMenuItem[]} */ items) =>
   items.map((i) => ("separator" in i ? "-" : `${i.label ?? i.action}${i.enabled ? "" : " (off)"}`));
 

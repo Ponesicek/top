@@ -1,4 +1,3 @@
-/** The daemon's log lines, as they always looked: `[top] …` on stdout, warnings and errors on stderr. */
 import { inspect } from "node:util";
 import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
@@ -14,5 +13,4 @@ export const topLogger = Logger.make<unknown, void>(({ message, logLevel, cause 
   else console.log(line);
 });
 
-/** Replace the default logger with `topLogger`. */
 export const layer = Logger.layer([topLogger]);

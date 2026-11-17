@@ -1,8 +1,3 @@
-/**
- * A daemon for a test: the real services (store, events, bots, and optionally attachments, MCP servers
- * and the HTTP server) on a fresh data folder, run by one `ManagedRuntime`. Tests talk to it through
- * the services' own Effects (`h.run(...)`), and everything closes after the file's tests.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,31 +31,21 @@ export type HarnessOptions = {
   readonly tools?: readonly TopTool[];
   readonly foregroundMs?: number;
   readonly gatherMs?: number;
-  /** The least time between two runs of a repeating background call. */
   readonly repeatGapMs?: number;
-  /** Compact a bot's transcript when it's longer than this many tokens. */
   readonly compactAtTokens?: number;
-  /** An existing data folder: a daemon starting again on the last one's data. */
   readonly dir?: string;
-  /** The bots a fresh store starts with. */
   readonly bots?: readonly string[];
   readonly files?: (bot: Store.BotRow) => string;
   readonly attachments?: boolean;
   readonly mcp?: boolean;
-  /** Bots have skills: the shared library is `<dir>/skills`, a bot's own are `<dir>/bots/<name>/.agents/skills`. */
   readonly skills?: boolean;
-  /** Also listen over HTTP and WebSocket (port 0 picks a free one). */
   readonly serve?: Partial<ServeOptions>;
   readonly tps?: number;
-  /** Sees every model request the bots make. */
   readonly onRequest?: (context: RequestContext, options: RequestOptions) => void;
-  /** Another model than the fake one: its `models`, and `provider/model-id`. */
   readonly model?: { readonly models: Models; readonly id: string };
-  /** The model takes OpenAI's web search (BotKit's `webSearch`). */
   readonly webSearch?: boolean;
 };
 
-/** Where a test daemon's skills are (see `HarnessOptions.skills`). */
 export const skillsConfig = (dir: string) => ({
   library: join(dir, "skills"),
   local: (bot: Pick<Store.BotRow, "name">) => join(dir, "bots", bot.name, LOCAL_SKILLS),
@@ -89,7 +74,6 @@ export async function harness(options: HarnessOptions = {}) {
         models,
         tools: options.tools ?? [],
         thinking: "off",
-        // Bots can be made from a test like from the app (the first ones are made above, without a system message).
         newBot: { model: options.model?.id ?? MODEL, instructions: Daemon.defaultInstructions, declare: [] },
         files: options.files,
         ...(options.skills ? { skills: skillsConfig(dir) } : {}),
@@ -123,7 +107,6 @@ export async function harness(options: HarnessOptions = {}) {
     if (!options.dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  // Attachments and MCP servers exist only when asked for: a test that uses them without asking fails.
   const run = <A, E>(effect: Effect.Effect<A, E, Services | Attachments.Attachments | Mcp.Mcp | NodeServices.NodeServices>): Promise<A> =>
     runtime.runPromise(effect as never);
   const store = await run(Effect.service(Store.Store));
@@ -141,16 +124,13 @@ export async function harness(options: HarnessOptions = {}) {
     tailnetPort: ports.tailnetPort,
     bot: bots[0]!,
     bots,
-    /** Every entry of a bot clients see, oldest first. */
     entries: (bot = bots[0]!) => run(store.after(bot, 0, 1_000)),
-    /** Stop this daemon (its data folder stays until the file's tests end). */
     close,
   };
 }
 
 export type Harness = Awaited<ReturnType<typeof harness>>;
 
-/** Poll `check` (which may read the store) until it gives a value. */
 export async function until<T>(what: string, check: () => T | undefined | false | Promise<T | undefined | false>, timeoutMs = 5_000): Promise<T> {
   const end = Date.now() + timeoutMs;
   for (;;) {
@@ -161,7 +141,6 @@ export async function until<T>(what: string, check: () => T | undefined | false 
   }
 }
 
-/** The bot has nothing running and nothing waiting. */
 export const idle = async (h: Harness, bot = h.bot) => {
   const runner = await h.run(h.daemon.runner(bot));
   return !runner.busy() && (await h.run(h.store.inbox(bot))).length === 0;

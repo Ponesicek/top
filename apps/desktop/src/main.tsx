@@ -9,7 +9,6 @@ import { App } from "./App.tsx";
 import { desktop } from "./bridge.ts";
 import { registry } from "./top.ts";
 
-// macOS draws the window's close/minimize/zoom buttons over the page's top-left corner: the sidebar leaves room.
 if (desktop && navigator.userAgent.includes("Mac")) document.documentElement.dataset.macWindow = "";
 
 createRoot(document.getElementById("root")!).render(

@@ -1,19 +1,3 @@
-/**
- * The daemon installed from a release (`top install`), kept in Top's home and run by systemd:
- *
- *   ~/.top/daemon/
- *   ├── versions/<version>/   one unpacked release each: bin/top, server.mjs, node_modules/, node/ (the Node it runs on)
- *   ├── current -> versions/<version>
- *   ├── top-launch            what systemd runs (LAUNCHER): picks the version, and rolls back one that won't start
- *   ├── args                  the daemon's flags, one per line (`--model`, `--tailscale`, …)
- *   ├── channel               the releases it follows: stable or nightly
- *   ├── trial                 "<version> <previous> <starts>" while a new version hasn't yet run 30 s
- *   ├── rolled-back           a version the launcher gave up on (the daemon reports it, then removes it)
- *   └── downloads/
- *
- * Updates (updates.ts) unpack a new version next to the old ones and move `current`; the old one stays
- * until the new one has run for a while.
- */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -41,17 +25,11 @@ export const installLayout = (home: string) => {
     trial: join(dir, "trial"),
     rolledBack: join(dir, "rolled-back"),
     downloads: join(dir, "downloads"),
-    /** The database as it was before updating to `version`; the launcher puts it back if that version won't start. */
     backup: (version: string) => join(home, "server", `top.sqlite.before-${version}`),
   };
 };
 export type InstallLayout = ReturnType<typeof installLayout>;
 
-/**
- * What systemd runs. It reads the flags from `args`, and decides the version: one on trial gets two
- * starts to stay up (the daemon removes `trial` after 30 s); after that, `current` goes back to the
- * version before it, with the database as it was before the update.
- */
 export const LAUNCHER = `#!/bin/sh
 # Starts the installed Top daemon; systemd runs this (see apps/server/src/installation.ts).
 set -u
@@ -90,7 +68,6 @@ fi
 exec "$DIR/current/bin/top" "$@"
 `;
 
-/** Each release's own entry point: the Node it ships with, on its bundle. */
 export const BIN_TOP = `#!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")/.."
 exec "$HERE/node/bin/node" "$HERE/server.mjs" "$@"
@@ -113,7 +90,6 @@ TimeoutStopSec=30
 WantedBy=default.target
 `;
 
-/** Point `link` at `target` (relative to the link's folder) in one step, so it's never missing. */
 export const swapLink = (target: string, link: string) =>
   Effect.tryPromise({
     try: async () => {
@@ -139,15 +115,10 @@ const io = <A>(what: string, promise: () => Promise<A>) =>
 
 export type InstallOptions = {
   readonly home: string;
-  /** The daemon's flags; `undefined` keeps the ones an earlier install wrote (or, the first time, `--model DEFAULT_MODEL`). */
   readonly args: readonly string[] | undefined;
   readonly start: boolean;
 };
 
-/**
- * `top install`: copy this release into Top's home, and have systemd run it from now on. Run again with
- * other flags to change them; run from a newer release to update by hand.
- */
 export const install = (options: InstallOptions) =>
   Effect.gen(function* () {
     if (!BUILD.channel || process.platform !== "linux")
@@ -158,7 +129,6 @@ export const install = (options: InstallOptions) =>
             : "This Top runs from a checkout. Install from a release: download top-daemon-<version>-linux-x64.tar.gz from https://github.com/Ponesicek/Top/releases, unpack it, and run bin/top install.",
       });
     const layout = installLayout(options.home);
-    // server.mjs sits at the top of the unpacked release (scripts/build-daemon.ts).
     const source = dirname(fileURLToPath(import.meta.url));
     const target = layout.version(BUILD.version);
     if (!existsSync(join(source, "bin", "top"))) return yield* new InstallError({ message: `${source} isn't an unpacked release (it has no bin/top).` });
@@ -211,7 +181,6 @@ export const install = (options: InstallOptions) =>
     );
   });
 
-/** The releases the installed daemon follows: what `channel` says, else the channel it was built for. */
 export const readChannel = (layout: InstallLayout): Effect.Effect<Channel> =>
   Effect.promise(() => readFile(layout.channel, "utf8").catch(() => "")).pipe(
     Effect.map((text): Channel => {

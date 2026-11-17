@@ -1,25 +1,3 @@
-/**
- * The agent loop: ask the model, run the tools it calls, ask again, until it answers without calling
- * one. Top's own, on Effect; pi-ai still talks to the models.
- *
- * - Every step goes through a hook, and the loop waits for it: whatever the hook saves is saved before
- *   the next step starts.
- * - Stop (`stopped()`): no tool starts and no model request goes out after it. The signal tells the
- *   request and the running tools to wind down, and what they come to is kept.
- * - Interrupting the loop (the daemon stopping, the bot deleted) ends it where it is: the signal tells
- *   the request and the tools to stop, and nothing more is saved.
- *
- * It follows pi-agent-core's loop (1.5.0) step for step where Top used it: messages that arrive while
- * the bot works go in at the next turn (steering) or when it would end (follow-ups), all at once; tool
- * calls run in parallel unless one of them must run alone; tools that came or went since the transcript
- * last said so are declared to the model in a system message before its next request.
- *
- * A transcript that has grown past `compact.atTokens` is compacted before the next request (see
- * compaction.ts): the model summarises it, and the summary stands in for it from then on.
- *
- * On OpenAI's Responses API, the model may also search the web with OpenAI's own tool (websearch.ts),
- * inside its request: what it did comes back on the answer, and isn't a tool call the loop runs.
- */
 import {
   type Api,
   type AssistantMessage,
@@ -44,17 +22,11 @@ import { captureWebSearch, searchRefusal, withWebSearch } from "./websearch.ts";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export type LoopHooks = {
-  /** A message the loop added to the transcript: one it took from the user or Top, a system message, the model's answer. */
   readonly added: (message: TranscriptMessage) => Effect.Effect<void>;
-  /** A model request is about to go out. */
   readonly asking: Effect.Effect<void>;
-  /** The model's call is being looked at (it may still not run). */
   readonly toolStart: (call: ToolCall) => Effect.Effect<void>;
-  /** The call checked out and runs next: after a crash, a call recorded here may have taken effect. */
   readonly toolRunning: (call: ToolCall, args: ToolArguments) => Effect.Effect<void>;
-  /** The call's result; `ran` when the tool really ran (not refused, not stopped before it started). */
   readonly toolEnd: (result: ToolResultMessage, ran: boolean) => Effect.Effect<void>;
-  /** OpenAI started searching the web for the answer under way (`on`), or stopped. */
   readonly searching?: ((on: boolean) => Effect.Effect<void>) | undefined;
 };
 
@@ -62,48 +34,25 @@ export type LoopOptions = {
   readonly models: Models;
   readonly model: Model<Api>;
   readonly thinkingLevel: ThinkingLevel;
-  /**
-   * The same for every request of one transcript (a bot's). Providers route on it to the machine that
-   * holds the transcript's prompt cache (OpenAI's `prompt_cache_key`); without it, a request often
-   * lands where nothing is cached and the whole transcript is read again at full price.
-   */
   readonly sessionId: string;
-  /** The transcript. The loop adds to it as it goes. */
   readonly messages: TranscriptMessage[];
-  /** The tools for this run. */
   readonly tools: readonly TopTool[];
-  /** What a tool call gets besides the signal. */
   readonly toolContext: (toolCallId: string) => Omit<ToolContext, "signal">;
-  /** Fires on Stop, or when the loop is interrupted. */
   readonly signal: AbortSignal;
   readonly stopped: () => boolean;
-  /** Messages for the next turn, taken. */
   readonly steering: () => TranscriptMessage[];
-  /** Messages for when the bot would finish, taken. */
   readonly followUps: () => TranscriptMessage[];
-  /** The transcript as the model gets it (images read in, for example). */
   readonly transformContext?: ((messages: readonly TranscriptMessage[]) => Effect.Effect<readonly TranscriptMessage[]>) | undefined;
-  /**
-   * The model takes OpenAI's web search (websearch.ts): `offer` it in this run's requests. Earlier
-   * answers' searches go back in either way. Absent: the model can't search.
-   */
   readonly webSearch?: { readonly offer: boolean } | undefined;
   readonly hooks: LoopHooks;
-  /** Compact the transcript when it's longer than this; without it, never. */
   readonly compact?: Compact | undefined;
 };
 
 export type Compact = {
-  /** In tokens, as `contextTokens` counts them. */
   readonly atTokens: number;
-  /**
-   * Save the summary in place of all but the transcript's last `keep` messages, and answer the
-   * transcript as it is now. `answer` is the model's, whose text is the summary.
-   */
   readonly save: (summary: string, keep: number, answer: AssistantMessage, tokensBefore: number) => Effect.Effect<readonly TranscriptMessage[]>;
 };
 
-/** A tool result as it goes in the transcript. */
 export const toolResultMessage = (toolCallId: string, toolName: string, result: ToolResult, isError: boolean, timestamp: number): ToolResultMessage => ({
   role: "toolResult",
   toolCallId,
@@ -118,7 +67,6 @@ export const toolCallsOf = (message: AssistantMessage): ToolCall[] => message.co
 
 const NO_CHANGES: ToolStateChanges = { toolsAdded: [], toolsRemoved: [] };
 
-/** A system message with its tool fields replaced by `changes`; empty lists leave the field out. */
 function withToolChanges(message: SystemMessage, changes: ToolStateChanges): SystemMessage {
   const { toolsAdded: _added, toolsRemoved: _removed, ...rest } = message;
   return {
@@ -128,11 +76,6 @@ function withToolChanges(message: SystemMessage, changes: ToolStateChanges): Sys
   };
 }
 
-/**
- * `pending` as it goes in, saying which tools came or went since the transcript last said so: on the
- * pending system message if there is one (a prompt change), else on a new one before the first other
- * message. Other messages stay the same objects.
- */
 function declareToolChanges(
   transcript: readonly TranscriptMessage[],
   tools: readonly TopTool[],
@@ -163,10 +106,6 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 type Prepared = { readonly call: ToolCall; readonly tool: TopTool; readonly args: ToolArguments } | { readonly call: ToolCall; readonly result: ToolResult };
 
-/**
- * Run the loop on the transcript in `options.messages`: with `prompts`, they go in first; without,
- * it continues from where the transcript ends (a user message or tool results).
- */
 export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessage[]): Effect.Effect<void> =>
   Effect.gen(function* () {
     const { messages, tools, hooks, signal, stopped } = options;
@@ -180,17 +119,12 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         }
       });
 
-    /**
-     * The model's answer to `transcript`. Every request is made the same way, so they all start alike
-     * and the provider's prompt cache covers what they share.
-     */
     const request = (transcript: readonly TranscriptMessage[]) =>
       Effect.gen(function* () {
         const context = options.transformContext ? yield* options.transformContext(transcript) : transcript;
         const llm = normalizeContext({
           messages: context.filter((m) => m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult"),
         });
-        // Web search is part of every request alike (its tool and earlier searches are in the cached prefix).
         const search = options.webSearch;
         const services = yield* Effect.context<never>();
         const capture = search?.offer
@@ -211,15 +145,12 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         answer.thinkingLevel = options.thinkingLevel;
         const record = capture?.record();
         if (record) answer.webSearch = record;
-        // OpenAI may not let this plan, workspace or model search: say so, rather than a bare 400.
         const refusal = search?.offer && answer.stopReason === "error" ? searchRefusal(answer.errorMessage) : undefined;
         if (refusal) answer.errorMessage = refusal;
         return answer;
       });
 
-    /** A compaction failed in this run: don't ask for another. */
     let compactionFailed = false;
-    /** Compact the transcript if it's grown too long (see compaction.ts). A failure leaves it as it was. */
     const compactIfLong = Effect.gen(function* () {
       const compact = options.compact;
       if (!compact || compactionFailed) return;
@@ -245,7 +176,6 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
       Effect.withSpan("Loop.compact"),
     );
 
-    /** The model's answer. A request that couldn't be made is an answer that failed, so it's retried like one. */
     const ask = Effect.gen(function* () {
       yield* hooks.asking;
       yield* compactIfLong;
@@ -277,7 +207,6 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         return { done, terminate: result.terminate === true };
       });
 
-    /** Check a call and record it, or say why it doesn't run. */
     const prepare = (call: ToolCall) =>
       Effect.gen(function* (): Effect.fn.Return<Prepared> {
         yield* hooks.toolStart(call);
@@ -286,7 +215,6 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         const checked = yield* Effect.result(Effect.try(() => checkArguments(tool, call, call.arguments)));
         if (checked._tag === "Failure") return { call, result: text(message(checked.failure.cause)) };
         const args = checked.success;
-        // Stop means stop: no tool starts after the user asked to stop, whatever the model wants.
         if (stopped()) return { call, result: text("Not run: stopped by the user.") };
         yield* hooks.toolRunning(call, args);
         if (signal.aborted) return { call, result: text("Operation aborted") };
@@ -306,12 +234,10 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         return yield* end(call, ran.result, ran.isError, true);
       });
 
-    /** The calls of one answer, and whether the model should be asked again after them. */
     const runTools = (answer: AssistantMessage, calls: readonly ToolCall[]) =>
       Effect.gen(function* () {
         const results: { done: ToolResultMessage; terminate: boolean }[] = [];
         if (answer.stopReason === "length") {
-          // Cut off by the output limit: every call may have truncated arguments, so none runs.
           for (const call of calls) {
             yield* hooks.toolStart(call);
             const result = text(
@@ -331,7 +257,6 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
             if (signal.aborted) break;
           }
         } else {
-          // Each call is checked and recorded in turn, then they run together; results go in in call order.
           const queued: (Prepared | { done: ToolResultMessage; terminate: boolean })[] = [];
           for (const call of calls) {
             const prepared = yield* prepare(call);
@@ -366,7 +291,6 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
         if (answer.stopReason === "error" || answer.stopReason === "aborted") return;
         const calls = toolCallsOf(answer);
         more = calls.length ? yield* runTools(answer, calls) : false;
-        // ...and no new model request starts after a Stop either (tool results of the stopped turn are kept).
         if (stopped()) return;
         pending = options.steering();
       }

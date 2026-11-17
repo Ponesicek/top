@@ -1,20 +1,3 @@
-/**
- * Top on your tailnet, through the Tailscale already running on this computer.
- *
- * `--tailscale` puts the daemon at `wss://<device>.<tailnet>.ts.net:7357` with Tailscale Serve: a real
- * HTTPS certificate, nothing opened on the network by Top itself. Serve forwards to a second listener
- * on 127.0.0.1 (the tailnet port) that lets in every device on the tailnet, or with
- * `--tailscale-allow` only the people and devices named: each request's `X-Forwarded-For`, which
- * Serve always overwrites with the caller's tailnet address, is looked up with `tailscale whois`.
- * That names tagged devices too (Serve's `Tailscale-User-*` headers are only set for devices a
- * person owns).
- *
- * Why a separate listener: on the local port, a request Serve forwarded would look like one from this
- * computer, which is let in without asking. Anything reaching the tailnet port without an identity
- * (Funnel's public traffic, an address whois doesn't know) is refused.
- *
- * Talks to tailscaled through its CLI, which hides where its socket is on each OS.
- */
 import type { Viewer } from "@top/protocol";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
@@ -28,17 +11,13 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-/** A problem the user can fix: printed as is, without a stack. */
 export class TailscaleError extends Schema.TaggedError<TailscaleError>()("TailscaleError", { message: Schema.String }) {}
 
-/** The `tailscale` CLI failed: `message` is its stderr, or why it couldn't start. */
 export class TailscaleCommandError extends Schema.TaggedError<TailscaleCommandError>()("TailscaleCommandError", {
   message: Schema.String,
-  /** There's no such program. */
   missing: Schema.Boolean,
 }) {}
 
-/** Runs the `tailscale` CLI and answers with its stdout. */
 export type TailscaleCli = (args: readonly string[]) => Effect.Effect<string, TailscaleCommandError | TailscaleError>;
 
 const CANDIDATES: Record<string, readonly string[]> = {
@@ -46,10 +25,8 @@ const CANDIDATES: Record<string, readonly string[]> = {
   win32: ["tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe"],
 };
 
-/** How long one `tailscale` command may take. */
 const CLI_TIMEOUT_MS = 15_000;
 
-/** The system's `tailscale` CLI (`$TOP_TAILSCALE` names another). */
 export const systemCli: Effect.Effect<TailscaleCli, Config.ConfigError, ChildProcessSpawner.ChildProcessSpawner> = Effect.gen(function* () {
   const named = yield* Config.option(Config.String("TOP_TAILSCALE"));
   const candidates = Option.match(named, { onNone: () => CANDIDATES[process.platform] ?? ["tailscale"], onSome: (bin) => [bin] });
@@ -94,23 +71,15 @@ export const systemCli: Effect.Effect<TailscaleCli, Config.ConfigError, ChildPro
   return cli;
 });
 
-// ── this device ──────────────────────────────────────────────────────────────────
-
 export type TailnetSelf = {
-  /** `box.tail1234.ts.net`, without the trailing dot. */
   readonly dnsName: string;
-  /** `box` */
   readonly device: string;
-  /** The device's stable id: a request from it is from this computer. */
   readonly stableId: string;
   readonly tags: readonly string[];
-  /** The login of the person who owns this device; tagged devices have none. */
   readonly owner: string | undefined;
-  /** HTTPS certificates are on for the tailnet (Serve needs them). */
   readonly https: boolean;
 };
 
-// What Top reads of the CLI's JSON. Its Go structs write `null` for empty fields, so every field may be missing or null.
 const Maybe = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
 const Strings = Schema.Array(Schema.String);
 
@@ -125,7 +94,6 @@ const StatusJson = Schema.fromJsonString(
 );
 const decodeStatus = Schema.decodeEffect(StatusJson);
 
-/** What `tailscale status --json` says about this device. Throws a TailscaleError when Top can't use it. */
 export const parseStatus = (json: string): Effect.Effect<TailnetSelf, TailscaleError> =>
   Effect.gen(function* () {
     const status = yield* decodeStatus(json).pipe(
@@ -156,17 +124,11 @@ export const parseStatus = (json: string): Effect.Effect<TailnetSelf, TailscaleE
     };
   });
 
-// ── who is calling ───────────────────────────────────────────────────────────────
-
-/** A device on the tailnet, as `tailscale whois` names it. */
 export type Caller = {
   readonly stableId: string;
-  /** `phone` */
   readonly device: string;
-  /** `phone.tail1234.ts.net` */
   readonly dnsName: string;
   readonly tags: readonly string[];
-  /** Its owner's login and name; a tagged device has none. */
   readonly login: string | undefined;
   readonly name: string | undefined;
 };
@@ -179,7 +141,6 @@ const WhoisJson = Schema.fromJsonString(
 );
 const decodeWhois = Schema.decodeSync(WhoisJson);
 
-/** Throws if `json` isn't `tailscale whois --json` output. */
 export function parseWhois(json: string): Caller | undefined {
   const { Node: node, UserProfile: user } = decodeWhois(json);
   if (!node?.StableID || !node.Name) return undefined;
@@ -195,7 +156,6 @@ export function parseWhois(json: string): Caller | undefined {
   };
 }
 
-/** `--tailscale-allow` values: a login (`you@example.com`), a tag (`tag:laptops`), or a device (`phone`). */
 export type AllowRule = { readonly kind: "login" | "tag" | "device"; readonly value: string };
 
 export function parseAllow(values: readonly string[]): AllowRule[] {
@@ -225,46 +185,27 @@ const callerName = (caller: Caller) => `${caller.device} (${caller.login ?? (cal
 
 export type Admission = { readonly ok: true; readonly viewer: Viewer } | { readonly ok: false; readonly reason: string };
 
-/** How long a whois answer (or a refusal) is reused for the same address. */
 const WHOIS_TTL_MS = 30_000;
-/** The HTTPS port on the tailnet: Top's own port, which is rarely taken by another Serve config (443 often is). */
 export const TAILNET_PORT = 7357;
 
 export type TailnetOptions = {
   readonly self: TailnetSelf;
-  /**
-   * Parsed `--tailscale-allow`. None: every device on the tailnet. Some: only those, and the device's
-   * owner. This computer itself is always let in.
-   */
   readonly allow: readonly AllowRule[];
-  /** The HTTPS port on the tailnet. */
   readonly port?: number | undefined;
   readonly cli: TailscaleCli;
-  /** For tests: who an address is. Defaults to `tailscale whois`. */
   readonly whois?: ((address: string) => Effect.Effect<Caller | undefined>) | undefined;
 };
 
-/** The headers of a request that reached the tailnet listener. */
 export type RequestHeaders = Readonly<Record<string, string | ReadonlyArray<string> | undefined>>;
 
 export type Tailnet = {
   readonly self: TailnetSelf;
-  /** Empty: every device on the tailnet may connect. */
   readonly rules: readonly AllowRule[];
   readonly port: number;
-  /** Where clients reach the daemon on the tailnet. */
   readonly url: string;
-  /** The HTTPS origin of `url`, for links (MCP sign-in redirects). */
   readonly origin: string;
-  /** Who may use Top, for the startup line. */
   readonly describeAllowed: () => string;
-  /** Let a request on the tailnet port in, or say why not. */
   readonly admit: (headers: RequestHeaders) => Effect.Effect<Admission>;
-  /**
-   * Point Tailscale Serve's `https://<device>:<port>` at the tailnet listener on `backendPort`, and take
-   * it off again when the scope closes. Refuses to take over a port that serves something else, or one
-   * open to the internet with Funnel.
-   */
   readonly expose: (backendPort: number) => Effect.Effect<void, TailscaleError, Scope.Scope>;
 };
 
@@ -280,11 +221,9 @@ export const makeTailnet = (options: TailnetOptions): Effect.Effect<Tailnet> =>
       ((address: string) =>
         cli(["whois", "--json", address]).pipe(
           Effect.map(parseWhois),
-          // Not a tailnet address (Funnel's public traffic), or whois failed.
           Effect.orElseSucceed(() => undefined),
         ));
     const callers = yield* Cache.make({ lookup: whois, capacity: 1_000, timeToLive: Duration.millis(WHOIS_TTL_MS) });
-    /** Addresses already warned about, so a retrying client doesn't fill the log. */
     const warned = new Map<string, number>();
 
     const refuse = (address: string, reason: string) =>
@@ -366,7 +305,6 @@ export const makeTailnet = (options: TailnetOptions): Effect.Effect<Tailnet> =>
               }),
             );
           }),
-          // Take Top off the tailnet when it stops.
           () =>
             cli(["serve", `--https=${port}`, "off"]).pipe(Effect.catch((error) => Effect.logWarning(`couldn't turn off Tailscale Serve: ${error.message}`))),
         ),
@@ -389,7 +327,6 @@ const ServeConfig = Schema.fromJsonString(
 );
 const decodeServeConfig = Schema.decodeSync(ServeConfig);
 
-/** Read this device's Tailscale state and set up who may connect. */
 export const connectTailnet = (options: { allow: readonly string[]; port?: number | undefined; cli: TailscaleCli }): Effect.Effect<Tailnet, TailscaleError> =>
   Effect.gen(function* () {
     const status = yield* options

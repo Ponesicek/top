@@ -18,7 +18,6 @@ function Kbd({ children }: { children: ReactNode }) {
   return <kbd className="rounded-sm bg-secondary px-1 py-px font-mono text-[11px] text-secondary-foreground">{children}</kbd>;
 }
 
-/** The settings page fills the main area, in place of a conversation. */
 export function Settings({
   perfHud,
   onPerfHudChange,

@@ -1,5 +1,3 @@
-// Runs inside Electron when TOP_BENCH is set: drives the real window with real input events and
-// prints one JSON result line. Orchestrated by scripts/bench.js, which also kills/restarts the daemon.
 import { app } from "electron";
 
 /** @param {number} ms */
@@ -10,7 +8,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 const out = (tag, value) => process.stdout.write(`BENCH:${tag} ${JSON.stringify(value ?? null)}\n`);
 
-/** Wait for a line on stdin from the orchestrator. */
 /** @type {string[]} */
 const stdinLines = [];
 /** @type {(() => void) | undefined} */
@@ -34,7 +31,6 @@ async function waitFor(line) {
 }
 
 /**
- * `promise`, or an error naming `what` once `ms` have passed.
  * @template T
  * @param {Promise<T>} promise
  * @param {number} ms
@@ -44,7 +40,6 @@ async function waitFor(line) {
 const within = (promise, ms, what) =>
   Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} took longer than ${ms / 1000}s`)), ms))]);
 
-/** Fonts loaded and two frames painted: late layout has landed. */
 const SETTLE = "document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))";
 
 /** @param {import("electron").BrowserWindow} win */
@@ -68,8 +63,6 @@ export async function runBench(win) {
     throw new Error(`timed out waiting for: ${code}\n  state: ${state}`);
   };
 
-  // A screenshot always shows the page's errors, from the start (one can stop it from rendering at all);
-  // TOP_SHOT_CONSOLE=1 shows the rest of its console too.
   if (process.env.TOP_BENCH === "screenshot")
     wc.on("console-message", (event) => {
       if (event.level === "error" || process.env.TOP_SHOT_CONSOLE) process.stdout.write(`[page ${event.level}] ${event.message}\n`);
@@ -82,7 +75,6 @@ export async function runBench(win) {
   const result = { coldStartMs: firstContentAt - t0 };
 
   if (process.env.TOP_BENCH === "screenshot") {
-    // Wait for every bot to be live and a couple of them working, then capture the window.
     await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
     await js(`window.__topSelect(${Number(process.env.TOP_SHOT_BOT ?? 1)})`);
     const shotSelector = JSON.stringify(process.env.TOP_SHOT_WAIT ?? "");
@@ -90,21 +82,16 @@ export async function runBench(win) {
       `window.__top.getSnapshot().bots.filter(b => b.status !== 'idle').length >= ${Number(process.env.TOP_SHOT_BUSY ?? 2)} && document.querySelectorAll('.transcript .row').length >= ${Number(process.env.TOP_SHOT_ROWS ?? 4)} && (!${shotSelector} || !!document.querySelector(${shotSelector}))`,
       60_000,
     );
-    // TOP_SHOT_SCROLL=1 brings the TOP_SHOT_WAIT element into view first (e.g. a tool step).
     if (process.env.TOP_SHOT_SCROLL && process.env.TOP_SHOT_WAIT) await js(`document.querySelector(${shotSelector})?.scrollIntoView({ block: "center" })`);
-    // TOP_SHOT_HOVER=selector points the mouse at the last match (to capture hover states).
     if (process.env.TOP_SHOT_HOVER) {
       const rect = await js(
         `(() => { const all = document.querySelectorAll(${JSON.stringify(process.env.TOP_SHOT_HOVER)}); const r = all[all.length - 1]?.getBoundingClientRect(); return r && { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 20) }; })()`,
       );
       if (rect) wc.sendInputEvent({ type: "mouseMove", x: Math.round(rect.x), y: Math.round(rect.y) });
     }
-    // TOP_SHOT_JS=code runs in the page before the capture (open a dialog, fill a field); a promise is awaited.
     if (process.env.TOP_SHOT_JS) await within(js(process.env.TOP_SHOT_JS), 20_000, "TOP_SHOT_JS");
     await sleep(Number(process.env.TOP_SHOT_DELAY ?? 1200));
     await within(js(SETTLE), 5_000, "Waiting for the page to settle");
-    // Through the DevTools protocol, which renders a fresh frame: `capturePage` can return parts of the
-    // window as they were (a sidebar row still selected after another was picked).
     wc.debugger.attach("1.3");
     const { data } = await within(wc.debugger.sendCommand("Page.captureScreenshot", { format: "png" }), 10_000, "Capturing the window");
     const image = Buffer.from(data, "base64");
@@ -124,9 +111,8 @@ export async function runBench(win) {
   }
 
   await until(`window.__top.getSnapshot().bots.length >= ${Number(process.env.TOP_SHOT_BOTS ?? 5)} && window.__top.getSnapshot().connection === 'open'`);
-  await sleep(1500); // let the load driver get every bot streaming
+  await sleep(1500);
 
-  // ── 1. typing while 5 bots stream ─────────────────────────────────────────
   await js("window.__topSelect(1)");
   await sleep(500);
   await js("document.querySelector('.composer-input').focus()");
@@ -145,7 +131,6 @@ export async function runBench(win) {
   result.typing = { ...(await js("window.__topPerf.report()")), botsBusyAtStart: streaming, keys: typed };
   await js(`(() => { const t = document.querySelector('.composer-input'); t.replaceChildren(); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 
-  // ── 2. scrolling a 10,000-message transcript ──────────────────────────────
   await js("window.__topSelect(0)");
   await until("document.querySelectorAll('.transcript .row').length > 5");
   await sleep(500);
@@ -163,13 +148,12 @@ export async function runBench(win) {
       const before = el.scrollTop;
       el.scrollTop += direction * 90;
       distance += Math.abs(el.scrollTop - before);
-      if (now - start > 6000) direction = 1; // and fling back down for the last 2 s
+      if (now - start > 6000) direction = 1;
       requestAnimationFrame(step);
     }
     requestAnimationFrame(step);
   })`);
 
-  // ── 3. daemon killed with kill -9 mid-turn, message sent while it's down ───
   await js("window.__topSelect(2)");
   await sleep(300);
   out("KILL");
@@ -177,7 +161,6 @@ export async function runBench(win) {
   const lostAt = Date.now();
   await js("window.__benchMsg = window.__top.conversation(window.__top.getSnapshot().bots[2].id).send('sent while the daemon was down').requestId");
   const pendingWhileDown = await js(`window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot().pending.length`);
-  // Shown as its last known state while the daemon is down; the sidebar's footer says Reconnecting.
   const shownStale = await js("window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot().status === 'stale'");
   const rowsWhileDown = await js("document.querySelectorAll('.transcript .row').length");
   out("RESTART");
@@ -185,7 +168,6 @@ export async function runBench(win) {
   const restartedAt = Date.now();
   await until("window.__top.getSnapshot().connection === 'open'", 20_000);
   const reconnectedAt = Date.now();
-  // Durably accepted: the daemon has it (queued in the inbox or placed), the pending copy is gone.
   await until("window.__top.conversation(window.__top.getSnapshot().bots[2].id).getSnapshot().pending.length === 0", 20_000);
   const acceptedAt = Date.now();
   await until(

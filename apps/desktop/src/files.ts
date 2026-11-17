@@ -1,7 +1,3 @@
-/**
- * The Files panel's state: whether it's open, how wide, and which file each bot has open in it. The
- * bots' file listings themselves come from the daemon, through `top`.
- */
 import { useAtomValue } from "@effect/atom-react";
 import type { BotFiles, BotId } from "@top/client";
 import * as Option from "effect/Option";
@@ -15,7 +11,6 @@ export const PANEL_DEFAULT = 460;
 type PanelState = {
   readonly open: boolean;
   readonly width: number;
-  /** The file each bot has open in the panel; none shows the list. */
   readonly selected: Readonly<Record<BotId, string | undefined>>;
 };
 
@@ -26,9 +21,7 @@ function read(): PanelState {
   let saved: typeof SavedPanel.Type | undefined;
   try {
     saved = Option.getOrUndefined(readSaved(localStorage.getItem("top.filesPanel") ?? "{}"));
-  } catch {
-    // disabled storage
-  }
+  } catch {}
   return { open: saved?.open === true, width: saved?.width || PANEL_DEFAULT, selected: {} };
 }
 
@@ -39,9 +32,7 @@ function set(change: Partial<PanelState>) {
   registry.set(panelAtom, state);
   try {
     localStorage.setItem("top.filesPanel", JSON.stringify({ open: state.open, width: state.width }));
-  } catch {
-    // disabled storage: the panel just won't remember
-  }
+  } catch {}
 }
 
 export function usePanel(): PanelState {
@@ -52,22 +43,17 @@ export const togglePanel = () => set({ open: !registry.get(panelAtom).open });
 export const closePanel = () => set({ open: false });
 export const setPanelWidth = (width: number) => set({ width: Math.round(width) });
 
-/** Open one of a bot's files in the panel (opening the panel if it's closed). */
 export function openFile(bot: BotId, path: string) {
   set({ open: true, selected: { ...registry.get(panelAtom).selected, [bot]: path } });
 }
 
-/** Back to the bot's list of files. */
 export function showList(bot: BotId) {
   set({ selected: { ...registry.get(panelAtom).selected, [bot]: undefined } });
 }
 
-/** A bot's files, once the daemon has listed them. */
 export function useBotFiles(bot: BotId | undefined): BotFiles | undefined {
   return useClient((snapshot) => (bot === undefined ? undefined : snapshot.files[bot]));
 }
-
-// ── what a file is ────────────────────────────────────────────────────────────
 
 export type FileKind = "html" | "markdown" | "image" | "pdf" | "video" | "audio" | "table" | "text" | "other";
 
@@ -92,7 +78,6 @@ export const kindOf = (path: string): FileKind => KINDS[extOf(path)] ?? "other";
 export const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 export const dirOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 
-/** The file's absolute path on the daemon's computer, with that computer's separators. */
 export function localPath(files: BotFiles, path: string): string {
   const windows = files.folder.includes("\\") && !files.folder.includes("/");
   const sep = windows ? "\\" : "/";
@@ -105,7 +90,6 @@ export function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** "just now", "5 min ago", "3 h ago", or the date. */
 export function formatAgo(at: number, now = Date.now()): string {
   const s = Math.max(0, (now - at) / 1000);
   if (s < 45) return "just now";
@@ -118,7 +102,6 @@ export function formatAgo(at: number, now = Date.now()): string {
   });
 }
 
-// A driver for `pnpm screenshot` and `pnpm bench`, like `__topSelect`.
 declare global {
   interface Window {
     __topFiles?: { readonly openFile: typeof openFile; readonly showList: typeof showList; readonly togglePanel: typeof togglePanel };

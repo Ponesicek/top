@@ -1,15 +1,9 @@
-/**
- * `collar__background`: run any of the bot's tools as a background job, choosing how long to wait
- * for it and when to give up (see jobs.ts). It's how a bot runs several slow things at once (other
- * agents over MCP, builds, long commands) and hears back from each as it ends.
- */
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { duration } from "../time.ts";
 import { checkArguments, defineTool, type ToolArguments, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
 
-/** The longest a bot may keep its task waiting on one call: past this, it should let it go and end its turn. */
 const MAX_WAIT_MS = 30 * 60 * 1000;
 const MAX_STOP_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -45,15 +39,8 @@ const parameters = Type.Object(
 
 const failed = (value: string): ToolResult => ({ ...text(value), isError: true });
 
-/**
- * The tool a bot means by `name`, forgiving what models get wrong when they name a tool as text: a
- * namespace in front ("functions.bash", as OpenAI models see their tools), the wrong case, or an MCP
- * tool without its server ("create_issue" for github__create_issue). Only an unambiguous match counts;
- * otherwise the error names the likely ones.
- */
 export function findTool<T extends { readonly name: string }>(tools: readonly T[], name: string): { tool: T } | { error: string } {
   const trimmed = name.trim();
-  // Tool names never contain a dot, so anything up to the last one is a namespace.
   const bare = trimmed.slice(trimmed.lastIndexOf(".") + 1);
   const lower = bare.toLowerCase();
   const tiers: ((tool: T) => boolean)[] = [
@@ -92,7 +79,6 @@ export const backgroundGroup: CollarGroup = (daemon) => [
       "See, wait for or stop jobs with collar__jobs.",
     ].join(" "),
     parameters,
-    // It only starts the call; whether that one may run again is its own tool's business, so never replay.
     background: false,
     run: (args, ctx) =>
       Effect.suspend(() => {
@@ -120,7 +106,6 @@ export const backgroundGroup: CollarGroup = (daemon) => [
         const repeatWhile = args.repeat_while;
         if (repeatWhile !== undefined && !repeatWhile.trim())
           return Effect.succeed(failed("`repeat_while` can't be empty: give the text a result has while it should run again."));
-        // The call to `background` is the job's call: its key names the job.
         return daemon.jobs.run(tool, callArgs, ctx, {
           foregroundMs: waitMs,
           ...(stopAfterMs !== undefined ? { stopAfterMs } : {}),

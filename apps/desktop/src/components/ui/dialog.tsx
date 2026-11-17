@@ -5,19 +5,11 @@ import { cn } from "../../lib/utils.ts";
 
 const BACKDROP_CLASS = "fixed inset-0 z-50 bg-overlay transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0";
 
-/**
- * Centers the popup; the viewport, not the popup, is fixed, so the popup's own transform is free to animate.
- * Its one column is as wide as the window (less padding), so a popup's `max-w-full` keeps it inside a narrow one.
- */
 const VIEWPORT_CLASS = "fixed inset-0 z-50 grid grid-cols-[minmax(0,1fr)] place-items-center p-4";
 
 const POPUP_CLASS =
   "w-110 max-w-full rounded-2xl bg-popover text-foreground shadow-dialog outline-none transition duration-150 ease-out [-webkit-app-region:no-drag] data-ending-style:translate-y-1.5 data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:translate-y-1.5 data-starting-style:scale-98 data-starting-style:opacity-0 motion-reduce:transition-none";
 
-/**
- * Keys typed in a dialog stay in it: the app's shortcuts (Ctrl+1…9 switches bots) listen on the window and
- * would act behind it.
- */
 const stopKeys = (e: React.KeyboardEvent) => e.stopPropagation();
 
 const Dialog = DialogPrimitive.Root;
@@ -61,7 +53,6 @@ function DialogError({ className, ...props }: ComponentProps<"p">) {
   return <p role="alert" className={cn("-mt-1 text-small text-destructive-foreground", className)} data-slot="dialog-error" {...props} />;
 }
 
-/** A confirmation: no close on an outside click, and screen readers announce it as an alert. */
 const AlertDialog = AlertDialogPrimitive.Root;
 
 function AlertDialogPopup({ className, children, ...props }: AlertDialogPrimitive.Popup.Props) {

@@ -1,4 +1,3 @@
-/** Transcript items → the rows the transcript renders. Row objects are stable per entry, so rows memoize. */
 import type {
   Attachment,
   BotSummary,
@@ -28,7 +27,6 @@ export type Row =
       readonly key: string;
       readonly text: string;
       readonly attachments?: readonly Attachment[];
-      /** The skill the message asked for with `/<name>`, once the bot took it. */
       readonly skill?: SkillUse;
       readonly at?: number;
       readonly state?: "sending" | "accepted" | "failed" | "queued" | "steer";
@@ -41,9 +39,7 @@ export type Row =
       readonly seq: number;
       readonly text: string;
       readonly tools: readonly ToolCallView[];
-      /** What the model did on the web while it wrote this answer (OpenAI's web search, not one of the bot's tools). */
       readonly searches: readonly WebSearchStep[];
-      /** The pages the answer cites. */
       readonly citations: readonly Citation[];
       readonly hasThinking: boolean;
       readonly at: number;
@@ -51,32 +47,16 @@ export type Row =
     }
   | { readonly kind: "tool"; readonly key: string; readonly entry: ToolEntry }
   | { readonly kind: "notice"; readonly key: string; readonly text: string }
-  /**
-   * A wake-up the bot set came due. It shows nothing: the bot's reply says what came of it. It still ends
-   * the turn before it, so that reply, often hours later, opens a turn of its own.
-   */
   | { readonly kind: "wake"; readonly key: string }
-  /**
-   * A bot asked the user's permission, shown where it asked (its call's result). `answer` once the
-   * `permission` entry naming the request has arrived; until then the daemon's waiting list says
-   * whether it can be answered.
-   */
   | { readonly kind: "permission"; readonly key: string; readonly bot: number; readonly ask: PermissionAsk; readonly answer?: PermissionAnswer }
-  /** Files in the bot's folder changed. */
   | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
 
 const entryRows = new WeakMap<Entry, Row>();
 const NONE: readonly never[] = [];
 
-/**
- * A background job's result, or the user's answer to a permission request, shows no row: the bot's
- * reply that follows says what came of it (and a permission card says what was answered). The bot
- * still gets the message; only the transcript leaves it out. A wake-up leaves an empty `wake` row.
- */
 const hidden = (source: string | undefined) => source === "job" || source === "permission";
 
-/** A permission entry has no row of its own: its request's card shows what came of it (committedRows). */
 function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
   let row = entryRows.get(entry);
   if (row) return row;
@@ -125,7 +105,6 @@ function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
 const itemRowsCache = new WeakMap<readonly TranscriptItem[], Row[]>();
 
 type PermissionRow = Extract<Row, { kind: "permission" }>;
-/** By the call's result: the same row while what came of it is the same, so it doesn't re-render. */
 const permissionRows = new WeakMap<ToolEntry, PermissionRow>();
 
 function permissionRow(entry: ToolEntry, ask: PermissionAsk, settled: PermissionEntry | undefined): PermissionRow {
@@ -136,19 +115,16 @@ function permissionRow(entry: ToolEntry, ask: PermissionAsk, settled: Permission
   return row;
 }
 
-/** Rows for the transcript; recomputed only when `items` changes (entries arrived or loaded). */
 export function committedRows(items: readonly TranscriptItem[]): Row[] {
   let rows = itemRowsCache.get(items);
   if (rows) return rows;
   rows = [];
-  // What came of each permission request, by its id: it settles the card where the bot asked.
   const settled = new Map<number, PermissionEntry>();
   for (const item of items) if (item.kind === "entry" && item.entry.kind === "permission") settled.set(item.entry.request, item.entry);
   for (const item of items) {
     if (item.kind === "earlier") rows.push({ kind: "earlier", key: "earlier" });
     else if (item.kind === "gap") rows.push({ kind: "gap", key: `gap${item.gap.after}`, gap: item.gap });
     else if (item.entry.kind === "user" && hidden(item.entry.source)) continue;
-    // Shown by the card of the request it settles.
     else if (item.entry.kind === "permission") continue;
     else if (item.entry.kind === "tool" && item.entry.permission)
       rows.push(permissionRow(item.entry, item.entry.permission, settled.get(item.entry.permission.id)));
@@ -172,12 +148,10 @@ const WORKING: Row = { kind: "working", key: "working" };
 
 export const isWorking = (status: BotSummary["status"] | undefined) => status === "thinking" || status === "tool" || status === "retrying";
 
-/** Rows after the transcript: what the bot is doing, queued messages, and messages not acknowledged yet. */
 export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[] {
   const rows: Row[] = [];
   if (working) rows.push(WORKING);
   for (const item of snapshot.inbox) {
-    // Top's own messages (a wake-up, a job's result) wait unseen, like the entries they become.
     if (item.source) continue;
     rows.push(
       stable<QueuedMessage>(item, () => ({
@@ -207,12 +181,10 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
   return rows;
 }
 
-/** A run of consecutive tool steps, shown as one collapsed line. */
 export type ToolGroupRow = { readonly kind: "toolgroup"; readonly key: string; readonly entries: readonly ToolEntry[]; readonly at: number };
 export type DisplayRow = Exclude<Row, { kind: "tool" }> | ToolGroupRow;
 export type FilesRow = Extract<Row, { kind: "files" }>;
 
-/** Who a row speaks for, in the styles that group messages by author. */
 export function author(row: DisplayRow): "user" | "bot" | undefined {
   if (row.kind === "user") return "user";
   if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working" || row.kind === "permission") return "bot";
@@ -227,7 +199,6 @@ export function rowTime(row: DisplayRow | undefined): number | undefined {
 
 const groupCache = new Map<string, ToolGroupRow>();
 type AssistantRow = Extract<Row, { kind: "assistant" }>;
-/** Answers without their web search steps, for when steps are hidden: the same object per answer. */
 const withoutSearches = new WeakMap<AssistantRow, AssistantRow>();
 function stepsHidden(row: AssistantRow): AssistantRow {
   if (!row.searches.length) return row;
@@ -239,14 +210,12 @@ function stepsHidden(row: AssistantRow): AssistantRow {
 }
 const filesCache = new Map<string, { parts: readonly FilesRow[]; row: FilesRow }>();
 
-/** What a file went through, as one change: made then edited is "added", made then removed is nothing. */
 const CHANGE: Record<string, Record<string, FileChange["change"] | null>> = {
   added: { added: "added", changed: "added", removed: null },
   changed: { added: "changed", changed: "changed", removed: "removed" },
   removed: { added: "changed", changed: "changed", removed: "removed" },
 };
 
-/** Several files rows as one, keeping its identity while its parts are the same. */
 function mergeFiles(parts: readonly FilesRow[]): FilesRow {
   if (parts.length === 1) return parts[0]!;
   const key = parts[0]!.key;
@@ -267,17 +236,6 @@ function mergeFiles(parts: readonly FilesRow[]): FilesRow {
   return row;
 }
 
-/**
- * Rows as the transcript shows them: reasoning-only and tool-call-only answers disappear (their
- * tool steps follow), and consecutive tool steps fold into one row. Group rows keep their identity
- * while their steps are unchanged, so memoized rows don't re-render.
- *
- * File changes wait for the end of the bot's turn (or its "working" row) and show there as one line,
- * so a turn that wrote a report says so once, under the answer, instead of splitting its steps.
- *
- * With `showTools` off, tool steps are left out altogether, and so are an answer's web searches (its
- * citations stay: they're part of the answer).
- */
 export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[] {
   const out: DisplayRow[] = [];
   let run: ToolEntry[] | null = null;
@@ -311,8 +269,6 @@ export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[
       run.push(row.entry);
       continue;
     }
-    // A tool-call-only answer sits between tool steps; skipping it keeps the run together. One that
-    // searched the web shows its searches.
     if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length) continue;
     flush();
     if (row.kind === "working" || author(row) !== "bot") flushFiles();

@@ -1,7 +1,3 @@
-/**
- * Compaction: a bot whose transcript grew past the limit has it summarised before its next request,
- * keeps what it hasn't answered word for word, and goes on from the summary; the user still sees it all.
- */
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -36,13 +32,9 @@ const result: TranscriptMessage = {
 };
 
 test("the cut keeps what the bot hasn't answered, and a tool call with its results", () => {
-  // New messages after the last answer stay.
   assert.equal(cutIndex([system, user("hi"), answer("hello"), user("next")]), 3);
-  // Nothing after the last answer: everything is summarised.
   assert.equal(cutIndex([system, user("hi"), answer("hello")]), 3);
-  // Calls still being answered stay with their results.
   assert.equal(cutIndex([system, user("hi"), call(), result]), 2);
-  // Nothing new since the last summary, or no answer at all: nothing to do.
   assert.equal(cutIndex([system, summaryMessage("s", 5), call(6), result]), undefined);
   assert.equal(cutIndex([system, user("hi")]), undefined);
 });
@@ -50,19 +42,15 @@ test("the cut keeps what the bot hasn't answered, and a tool call with its resul
 test("the transcript's size is the last answer's count plus what came after, never an answer from before the summary", () => {
   const after = user("x".repeat(400));
   assert.equal(contextTokens([system, user("hi"), answer("hello", 5_000), after]), 5_010 + 100);
-  // An answer kept word for word after a summary counted the transcript that was replaced: estimate instead.
   const estimated = contextTokens([system, summaryMessage("short", 10), answer("hello", 5_000, 3), after]);
   assert.ok(estimated < 200, `estimated ${estimated}`);
-  // One after the summary counts again.
   assert.equal(contextTokens([system, summaryMessage("short", 10), answer("hello", 700, 11), after]), 710 + 100);
 });
 
 test("a transcript is compacted when it's over the limit, and again only once half the limit is new", () => {
-  // 1,000 tokens each, estimated (no usage).
   const long = (timestamp: number): AssistantMessage => ({ ...answer("x".repeat(4_000), 0, timestamp), usage: { ...answer("").usage, output: 0 } });
   assert.equal(compactionCut([system, user("hi"), answer("hello", 500)], 1_000), undefined, "under the limit");
   assert.deepEqual(compactionCut([system, user("hi"), answer("hello", 5_000)], 1_000), { cut: 3, tokens: 5_010 });
-  // A summary of 2,000 tokens, then 1,000 more: over the limit, but only 1,000 new; with 1,000 more, it's due.
   const summary = summaryMessage("y".repeat(8_000), 5);
   assert.equal(compactionCut([system, summary, long(6)], 2_500), undefined);
   assert.equal(compactionCut([system, summary, long(6), long(7)], 2_500)?.cut, 4);
@@ -83,7 +71,6 @@ test("a long transcript is summarised before the next request, from the cache, a
     await send(n);
   }
 
-  // The summary request: the transcript as the bot sends it, up to its last answer, then the request for the summary.
   const at = requests.findIndex((r) => textOf(r.messages.at(-1)?.content as never) === SUMMARY_REQUEST);
   const [before, summarising, next] = [requests[at - 1]!, requests[at]!, requests[at + 1]!];
   assert.deepEqual(summarising.messages.slice(0, before.messages.length), before.messages, "it starts as the last request did");
@@ -92,7 +79,6 @@ test("a long transcript is summarised before the next request, from the cache, a
   const stored = (await h.run(h.store.after(h.bot, 0, 1_000))).length;
   assert.ok(stored > 0);
 
-  // The next request: the system messages, the summary, then the message that came in, word for word.
   assert.deepEqual(
     next.messages.map((m) => m.role),
     [...before.messages.filter((m) => m.role === "system").map(() => "system"), "user", "user"],
@@ -100,12 +86,10 @@ test("a long transcript is summarised before the next request, from the cache, a
   assert.ok(textOf(next.messages.at(-2)!.content as never).startsWith(SUMMARY_HEAD));
   assert.equal(textOf(next.messages.at(-1)!.content as never), `Question ${n}: tell me about topic ${n}`);
 
-  // The user still sees every message; the summary itself isn't shown.
   const shown = await h.entries();
   assert.equal(shown.filter((e) => e.kind === "user").length, n);
   assert.ok(!shown.some((e) => (e.kind as string) === "compaction"));
 
-  // And the bot carries on from the summary: no compaction again right away.
   await send(n + 1);
   assert.equal((await compacted()).length, 1);
 });

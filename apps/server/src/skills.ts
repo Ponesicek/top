@@ -1,23 +1,3 @@
-/**
- * Skills: AgentSkills folders (`<name>/SKILL.md`, with whatever scripts, references and assets sit
- * beside it), read where they are. Top doesn't copy, install or change them.
- *
- * - The shared library is `<home>/skills`: every bot a skill there is switched on for uses the same
- *   files, so a change to one (by the user, or a bot with its tools) changes it for all of them.
- * - A bot's own skills are in its folder, `.agents/skills`. One of its own takes the place of a shared
- *   skill with the same name, for that bot only, even when its own can't be used (it says why, rather
- *   than falling back to the other one).
- * - Finding a skill gives it to no bot. A bot has the names switched on for it (`bot_skills` in the
- *   store), and a new bot has none. Those skills are listed in its system prompt (the `skills`
- *   section: name, description, where SKILL.md is), and it reads one with its tools when a task
- *   matches. A message starting with `/<name>` brings that skill's SKILL.md with it.
- *
- * A skill's folder name is its name and must follow the spec (lowercase letters, digits, hyphens), and
- * SKILL.md's frontmatter must give the same name and a description. One that doesn't is listed with
- * the reason and can't be switched on; it never stops the rest from loading. Links are followed: a
- * skill folder may be a symlink to one kept elsewhere, and its path stays the one in the skills folder.
- * Hidden entries and plain files in a skills folder are skipped.
- */
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
@@ -39,13 +19,10 @@ import * as Semaphore from "effect/Semaphore";
 import type { UserText } from "./messages.ts";
 import { type BotRow, Store } from "./store.ts";
 
-/** Where a bot keeps its own skills, inside its folder. */
 export const LOCAL_SKILLS = join(".agents", "skills");
 const SKILL_FILE = "SKILL.md";
-/** A SKILL.md larger than this isn't read: it would crowd the bot's context when it's used. */
 export const MAX_SKILL_BYTES = 256 * 1024;
 
-/** Where the skills are: the shared library, and each bot's own folder. */
 export type SkillsConfig = {
   readonly library: string;
   readonly local: (bot: BotRow) => string;
@@ -56,7 +33,6 @@ const messageOf = (error: unknown) => {
   return cause instanceof Error ? cause.message : String(cause);
 };
 
-/** Why SKILL.md's frontmatter can't be used, or its description. */
 function checkFrontmatter(name: string, content: string): { description: string; error?: string } {
   let frontmatter: Record<string, unknown>;
   try {
@@ -74,7 +50,6 @@ function checkFrontmatter(name: string, content: string): { description: string;
   return { description };
 }
 
-/** One entry of a skills folder: a skill (maybe one that can't be used), or `undefined` when it isn't a folder. */
 const readSkill = (dir: string, name: string): Effect.Effect<SkillView | undefined, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -83,7 +58,6 @@ const readSkill = (dir: string, name: string): Effect.Effect<SkillView | undefin
     const skill = (description: string, error?: string): SkillView => ({ name, description, path, ...(error ? { error } : {}) });
     const info = yield* Effect.result(fs.stat(folder));
     if (info._tag === "Failure") {
-      // A link to something that's gone is a skill someone meant to have; anything else vanished meanwhile.
       const link = yield* Effect.result(fs.readLink(folder));
       return link._tag === "Success" ? skill("", `It's a link to ${link.success}, which isn't there.`) : undefined;
     }
@@ -100,7 +74,6 @@ const readSkill = (dir: string, name: string): Effect.Effect<SkillView | undefin
     return skill(checked.description, checked.error);
   });
 
-/** Every skill in a skills folder, sorted by name. A folder that isn't there has none. */
 export const scanSkills = (dir: string): Effect.Effect<SkillView[], never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -117,7 +90,6 @@ const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&
 
 const folderOf = (skill: Pick<SkillView, "path">) => skill.path.slice(0, -(SKILL_FILE.length + 1));
 
-/** The `skills` section of a bot's system prompt: the skills it can use. `null` (no section) when it has none. */
 export function skillsSection(skills: readonly ActiveSkill[], where: { readonly library: string; readonly local: string }): string | null {
   const usable = skills.filter((skill) => !skill.error);
   if (!usable.length) return null;
@@ -142,12 +114,10 @@ export function skillsSection(skills: readonly ActiveSkill[], where: { readonly 
   ].join("\n");
 }
 
-/** What goes with a message that asks for a skill: its SKILL.md as it is now, or why it can't be used. */
 export const invocationNote = (skill: ActiveSkill): Effect.Effect<UserText, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const where = skill.source === "shared" ? "a shared skill: every bot that has it uses these same files" : "one of your own skills";
-    // Read again: it may have changed since the folders were last read.
     const read: { readonly content: string } | { readonly error: string } = skill.error
       ? { error: skill.error }
       : yield* Effect.gen(function* () {
@@ -175,23 +145,16 @@ export const invocationNote = (skill: ActiveSkill): Effect.Effect<UserText, neve
   });
 
 export type Skills = {
-  /** What was found when the folders were last read, and which bots have which. */
   readonly view: () => SkillsView;
-  /** Read the folders again, and announce the result if it changed. */
   readonly rescan: Effect.Effect<void>;
-  /** Switch a skill on or off for a bot. On needs a skill by that name the bot can use. */
   readonly enable: (bot: BotRow, name: string, on: boolean) => Effect.Effect<void, SkillError>;
-  /** A bot's `skills` section, from its folders as they are now. */
   readonly section: (bot: BotRow) => Effect.Effect<string | null>;
-  /** What a message the bot takes brings with it: the skill its `/<name>` asks for, if the bot has it. */
   readonly note: (bot: BotRow, text: string) => Effect.Effect<UserText | undefined>;
 };
 
-/** The skills of the daemon's bots, found in `config`'s folders. `announce` hears every change of the view. */
 export const makeSkills = Effect.fnUntraced(function* (config: SkillsConfig, announce: (view: SkillsView) => Effect.Effect<void>) {
   const store = yield* Store;
   const fs = yield* FileSystem.FileSystem;
-  // A missing library is an empty one; making it shows the user where shared skills go.
   yield* Effect.ignore(fs.makeDirectory(config.library, { recursive: true }));
   const provide = Effect.provideService(FileSystem.FileSystem, fs);
   let current: SkillsView = { library: config.library, shared: [], bots: [] };
@@ -200,7 +163,6 @@ export const makeSkills = Effect.fnUntraced(function* (config: SkillsConfig, ann
   const botSkills = (bot: BotRow, enabled: readonly string[]): Effect.Effect<BotSkills> =>
     Effect.map(provide(scanSkills(config.local(bot))), (local) => ({ bot: bot.id, folder: config.local(bot), local, enabled }));
 
-  /** The view of one bot only, as it is on disk now. */
   const viewOf = (bot: BotRow) =>
     Effect.gen(function* () {
       const enabled = (yield* store.enabledSkills).get(bot.id) ?? [];

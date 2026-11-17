@@ -1,6 +1,3 @@
-/** Times and durations as bots and users read them. */
-
-/** "250ms", "45s", "4m 12s", "2h 5m", "3d 4h". */
 export function duration(ms: number): string {
   if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
   const s = Math.round(ms / 1000);
@@ -13,7 +10,6 @@ export function duration(ms: number): string {
   return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
 }
 
-/** The daemon's local time with its UTC offset, e.g. "2026-11-06 14:32 (UTC+01:00)": unambiguous for a model. */
 export function localTime(ms: number): string {
   const t = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");

@@ -1,8 +1,3 @@
-/**
- * Always-on, near-free performance counters, so the UX bar is measured instead of argued about.
- * Read by the HUD (Ctrl+Shift+P) and by `pnpm bench` through `window.__topPerf`.
- */
-
 const WINDOW_MS = 5_000;
 
 type Sample = { at: number; value: number };
@@ -47,11 +42,9 @@ export const perf = {
     if (!this.firstContentAt) this.firstContentAt = Date.now();
   },
 
-  /** Time from a key event to the frame that shows it. */
   trackInput(event: { timeStamp: number }) {
     const start = event.timeStamp;
     requestAnimationFrame(() => {
-      // rAF runs before paint; the message lands right after the frame is produced.
       const channel = new MessageChannel();
       channel.port1.onmessage = () => this.input.push(performance.now() - start);
       channel.port2.postMessage(null);
@@ -80,7 +73,6 @@ export const perf = {
       inputP50: percentile(input, 50),
       inputP99: percentile(input, 99),
       inputMax: input.length ? Math.max(...input) : 0,
-      /** Keystrokes that did not make the next 60 Hz frame (16.7 ms of vsync wait + 4 ms slack). */
       inputMissedFrame: input.filter((v) => v > 20.7).length,
       longTasks: this.longTasks.all().length,
       longTaskMax: this.longTasks.all().length ? Math.max(...this.longTasks.all()) : 0,
@@ -88,7 +80,6 @@ export const perf = {
   },
 };
 
-// The frame loop costs a wakeup per vsync, so it only runs while someone is looking (HUD or bench).
 let last = 0;
 let running = false;
 function tick(now: number) {
@@ -109,9 +100,7 @@ try {
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) perf.longTasks.push(entry.duration);
   }).observe({ type: "longtask", buffered: true });
-} catch {
-  // not supported outside Chromium
-}
+} catch {}
 
 declare global {
   interface Window {

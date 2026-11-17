@@ -1,4 +1,3 @@
-/** The line under a turn that says which files the bot's folder gained or changed; each one opens in the Files panel. */
 import type { BotId } from "@top/client";
 import { memo } from "react";
 import { nameOf, openFile } from "../../files.ts";
@@ -10,7 +9,6 @@ const SHOWN = 4;
 const LABEL = { added: "new", changed: "updated", removed: "removed" } as const;
 
 export const FilesLine = memo(function FilesLine({ row, bot, className }: { row: FilesRow; bot: BotId; className?: string }) {
-  // New and updated files first: they're the ones worth opening.
   const files = [...row.files].sort((a, b) => Number(a.change === "removed") - Number(b.change === "removed"));
   const shown = files.slice(0, SHOWN);
   const rest = files.length - shown.length;

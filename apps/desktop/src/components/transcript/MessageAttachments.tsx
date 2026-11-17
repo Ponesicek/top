@@ -1,7 +1,3 @@
-/**
- * What a message was sent with: images as pictures (one large, several as a grid; click for full size)
- * and other files as cards that open them. Sizes are fixed before images load, so rows don't jump.
- */
 import { type Attachment, MODEL_IMAGE_TYPES } from "@top/client";
 import { memo, useState } from "react";
 import { sizeLabel } from "../../attachments.ts";
@@ -10,7 +6,6 @@ import { top } from "../../top.ts";
 import { FileIcon } from "../files/FileIcon.tsx";
 import { Lightbox } from "../Lightbox.tsx";
 
-/** "PDF", "TXT", …: what a file is, in a word. */
 function kindLabel(attachment: Attachment): string {
   const ext = attachment.name.includes(".") ? attachment.name.split(".").pop()! : "";
   return ext && ext.length <= 6 ? ext.toUpperCase() : attachment.mimeType === "text/plain" ? "Text" : "File";

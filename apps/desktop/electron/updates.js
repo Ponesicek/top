@@ -1,16 +1,7 @@
-// The desktop app's own updates, through electron-updater and the GitHub releases of Ponesicek/Top.
-// Only a released AppImage updates itself: one run from a checkout (`pnpm desktop`) follows no channel.
-// Like the daemon, it only looks (now and then, and when asked) and installs when the user says so.
-//
-// Channels (see packages/protocol/src/release.ts): on Stable it takes GitHub's latest release and its
-// latest-linux.yml; on Nightly the newest `-nightly.` prerelease and its nightly-linux.yml. Switching
-// never goes back to an older version.
-
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, ipcMain } from "electron";
 
-/** The channel this build was made for, compiled in by scripts/build-desktop.ts; absent from a checkout. */
 const BUILT_FOR = typeof __TOP_CHANNEL__ === "string" && (__TOP_CHANNEL__ === "stable" || __TOP_CHANNEL__ === "nightly") ? __TOP_CHANNEL__ : undefined;
 const CHECK_EVERY_MS = 6 * 60 * 60_000;
 const FIRST_CHECK_MS = 15_000;
@@ -30,7 +21,6 @@ const FIRST_CHECK_MS = 15_000;
  */
 
 /**
- * The release notes' list items; electron-updater has them as GitHub's HTML.
  * @param {unknown} notes
  * @returns {string[]}
  */
@@ -54,7 +44,7 @@ function notesOf(notes) {
 /** @param {unknown} error */
 const firstLine = (error) => (error instanceof Error ? error.message : String(error)).split("\n")[0];
 
-/** @param {() => Electron.WebContents[]} pages Where to tell about changes. */
+/** @param {() => Electron.WebContents[]} pages */
 export function startUpdates(pages) {
   const settingsPath = join(app.getPath("userData"), "updates.json");
   /** @returns {Channel | undefined} */
@@ -67,7 +57,6 @@ export function startUpdates(pages) {
     }
   };
 
-  // An AppImage replaces itself; nothing else of ours does (yet).
   const updatable = app.isPackaged && BUILT_FOR !== undefined && process.platform === "linux" && !!process.env.APPIMAGE;
   /** @type {AppUpdates} */
   let state = {
@@ -75,7 +64,7 @@ export function startUpdates(pages) {
     ...(BUILT_FOR ? { channel: savedChannel() ?? BUILT_FOR } : {}),
     state: updatable ? "idle" : "unavailable",
   };
-  /** @param {{ [K in keyof AppUpdates]?: AppUpdates[K] | undefined }} change `undefined` removes a field. */
+  /** @param {{ [K in keyof AppUpdates]?: AppUpdates[K] | undefined }} change */
   const set = (change) => {
     /** @type {Record<string, unknown>} */
     const next = { ...state, ...change };
@@ -84,13 +73,11 @@ export function startUpdates(pages) {
     for (const page of pages()) if (!page.isDestroyed()) page.send("top:updates:changed", state);
   };
 
-  // Loaded only where it's used: a checkout's app never needs it.
   const updater = updatable
     ? import("electron-updater").then(({ default: { autoUpdater } }) => {
         autoUpdater.autoDownload = false;
         autoUpdater.autoInstallOnAppQuit = false;
         autoUpdater.logger = null;
-        // Failures also reject the call that hit them, which reports them; an unheard "error" event would throw.
         autoUpdater.on("error", () => {});
         autoUpdater.on("download-progress", (info) => set({ state: "downloading", progress: Math.round(info.percent) }));
         return autoUpdater;
@@ -103,7 +90,6 @@ export function startUpdates(pages) {
     if (!autoUpdater) return;
     autoUpdater.allowPrerelease = channel === "nightly";
     autoUpdater.channel = channel === "nightly" ? "nightly" : "latest";
-    // Setting a channel allows downgrades; never go back to an older version.
     autoUpdater.allowDowngrade = false;
   };
 
@@ -132,7 +118,6 @@ export function startUpdates(pages) {
     try {
       await autoUpdater.downloadUpdate();
       set({ state: "installing" });
-      // Quits, swaps the AppImage, and starts the new one.
       setImmediate(() => autoUpdater.quitAndInstall(true, true));
     } catch (error) {
       set({ state: "failed", error: `Couldn't download the app update: ${firstLine(error)}` });
@@ -145,9 +130,7 @@ export function startUpdates(pages) {
     if (!updatable || (channel !== "stable" && channel !== "nightly")) return state;
     try {
       writeFileSync(settingsPath, JSON.stringify({ channel }));
-    } catch {
-      // Kept for this run only.
-    }
+    } catch {}
     await follow(channel);
     set({ channel, available: undefined });
     return check();

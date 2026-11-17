@@ -1,5 +1,3 @@
-// pnpm desktop: Vite dev server + Electron pointed at it.
-
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -13,7 +11,6 @@ await server.listen();
 const url = server.resolvedUrls.local[0];
 console.log(`[desktop] renderer at ${url}`);
 
-// Linux dev installs usually lack the setuid chrome-sandbox helper.
 const args = ["."];
 if (process.platform === "linux") args.push("--no-sandbox");
 const child = spawn(electron, args, {

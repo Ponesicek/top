@@ -1,12 +1,3 @@
-/**
- * The version a release gets, from the root package.json's (the next stable version on `nightly`):
- *
- *   node --import tsx scripts/release-version.ts --channel stable                      0.2.0
- *   node --import tsx scripts/release-version.ts --channel nightly --run 7             0.2.0-nightly.20261114.7
- *   … --write    also puts it in every package.json, for the build (CI does this; it isn't committed)
- *
- * Prints `version=` and `tag=` lines, and appends them to $GITHUB_OUTPUT when it's set.
- */
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { type Channel, parseVersion, releaseTag } from "../packages/protocol/src/release.ts";

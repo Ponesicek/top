@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { botFilePath, renderMarkdown } from "../src/markdown.ts";
 
-/** The src markdown-it gives an image, which is what the transcript sees. */
 const srcOf = (markdown: string) => /src="([^"]*)"/.exec(renderMarkdown(markdown))?.[1] ?? "";
 
 describe("botFilePath", () => {

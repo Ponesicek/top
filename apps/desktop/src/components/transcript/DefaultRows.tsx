@@ -1,9 +1,3 @@
-/**
- * The default style: answers as a column of text beside the bot's avatar, your messages in bubbles on
- * the right. Tool calls fold into one quiet line, reasoning stays out of view, and a turn's time shows
- * under it while you point anywhere in it.
- */
-
 import { Globe, Loader2 } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
@@ -33,17 +27,14 @@ import {
   WebSearches,
 } from "./parts.tsx";
 
-/** The divider that opens a stretch of conversation: the time today, the day and time before that. */
 function stretchLabel(at: number): string {
   const d = new Date(at);
   if (d.toDateString() === new Date().toDateString()) return time(at);
   return `${d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} · ${time(at)}`;
 }
 
-/** A time divider opens each stretch of conversation (messages 5+ minutes apart). */
 const NEW_STRETCH_MS = 5 * 60_000;
 
-/** The key of the row that opens `index`'s turn: a bot turn spans its answers and tool groups. */
 function turnOf(rows: readonly DisplayRow[], index: number): string {
   if (author(rows[index]!) !== "bot") return rows[index]!.key;
   let i = index;
@@ -51,10 +42,6 @@ function turnOf(rows: readonly DisplayRow[], index: number): string {
   return rows[i]!.key;
 }
 
-/**
- * The turn's time, under its last row. The transcript reveals it (by `data-turn-time`) while the pointer is
- * anywhere in the turn; it's also one tab stop, so the keyboard can reach it.
- */
 function TurnTime({ at, turn, align }: { at: number | undefined; turn: string; align: "start" | "end" }) {
   if (!at) return <div className="h-1" />;
   return (
@@ -64,7 +51,6 @@ function TurnTime({ at, turn, align }: { at: number | undefined; turn: string; a
         data-turn-time={turn}
         dateTime={new Date(at).toISOString()}
         title={new Date(at).toLocaleString()}
-        // Focusable so keyboard users can reveal it (it shows on hover otherwise).
         // biome-ignore lint/a11y/noNoninteractiveTabindex: see above
         tabIndex={0}
       >
@@ -99,7 +85,6 @@ const UserRow = memo(function UserRow({ row }: { row: UserRowData }) {
   );
 });
 
-/** An answer right after another answer or a tool group continues the same turn: no second avatar. */
 const AssistantRow = memo(function AssistantRow({ row, cont, turn, end }: { row: AssistantRowData; cont: boolean; turn: string; end: boolean }) {
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
@@ -130,7 +115,6 @@ const ToolGroupLine = memo(function ToolGroupLine({ row, cont, turn, end }: { ro
   );
 });
 
-/** What the bot is doing right now, with how long it has been at it. */
 function WorkingRow({ cont }: { cont: boolean }) {
   const bot = useBotStatus();
   const seconds = useElapsed(bot);
@@ -141,7 +125,6 @@ function WorkingRow({ cont }: { cont: boolean }) {
       {cont ? <span className="w-7 flex-none" /> : <BotAvatar size="sm" className="-mt-0.5" />}
       <div className="min-w-0 flex-1">
         <div className={cn("inline-flex items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
-          {/* Amber while thinking, blue while a tool runs or OpenAI searches the web. */}
           <StepIcon className={tool || searching ? "bg-tool-surface text-tool" : "bg-warning-surface text-warning"}>
             {searching ? (
               <Globe size={12} strokeWidth={2.4} className="animate-pulse motion-reduce:animate-none" />
@@ -166,7 +149,6 @@ export const renderDefaultRow: RowRenderer = (rows, index) => {
   const next = rows[index + 1];
   const cont = !!prev && author(prev) === "bot" && row.kind !== "user";
   const end = !next || author(next) !== "bot";
-  // A centered time divider where a turn opens a new stretch of conversation.
   const opensTurn = row.kind === "user" || ((row.kind === "assistant" || row.kind === "toolgroup") && !cont);
   const at = opensTurn ? row.at : undefined;
   const before = at ? prevTime(rows, index) : undefined;

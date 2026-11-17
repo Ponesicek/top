@@ -2,7 +2,6 @@ import { Menu } from "@base-ui/react/menu";
 import { useEffect, useRef, useState } from "react";
 import { type ContextMenu, contextMenu } from "../bridge.ts";
 
-// The bot menu's look (Sidebar.tsx), so every right-click menu in the app matches.
 const POPUP =
   "min-w-48 origin-(--transform-origin) rounded-xl bg-popover p-1 text-foreground shadow-popover outline-none transition duration-100 data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0 data-instant:duration-0 [-webkit-app-region:no-drag]";
 const ITEM =
@@ -19,7 +18,6 @@ const LABELS: Record<string, string> = {
 const mac = navigator.userAgent.includes("Mac");
 const KEYS: Record<string, string> = { cut: "X", copy: "C", paste: "V", "select-all": "A" };
 
-/** Puts focus and the selection back where the right-click left them, for the edit to act on. */
 function rememberFocus(): () => void {
   const element = document.activeElement;
   const selection = getSelection();
@@ -36,16 +34,10 @@ function rememberFocus(): () => void {
   };
 }
 
-/**
- * The desktop app's right-click menu: spelling fixes, then cut, copy, paste and select all. Electron
- * decides what it offers and runs the edit (electron/context-menu.js); this draws it in the app's own
- * look. A browser keeps its own menu, so outside the desktop app this renders nothing.
- */
 export function EditMenu() {
   const [menu, setMenu] = useState<ContextMenu>();
   const [open, setOpen] = useState(false);
   const restore = useRef<() => void>(undefined);
-  /** What to do once the menu has closed, when base-ui is done moving focus: the edit runs on the field. */
   const afterClose = useRef<() => void>(undefined);
   useEffect(
     () =>
@@ -57,7 +49,6 @@ export function EditMenu() {
       }),
     [],
   );
-  // A system menu closes when the window loses focus; so does this one.
   useEffect(() => {
     const close = () => setOpen(false);
     addEventListener("blur", close);
@@ -72,7 +63,6 @@ export function EditMenu() {
       modal={false}
       onOpenChange={(next, details) => {
         setOpen(next);
-        // Escape gives the field back its focus and selection; a click elsewhere goes where it was aimed.
         if (!next && details.reason === "escape-key") afterClose.current = restore.current;
       }}
       onOpenChangeComplete={(isOpen) => {

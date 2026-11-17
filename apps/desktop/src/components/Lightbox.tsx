@@ -1,7 +1,3 @@
-/**
- * An image at full size over everything: ← and → (or the buttons) step through the others it came
- * with, Esc or a click outside closes it. Shared by the composer's attachments and sent messages.
- */
 import { Dialog } from "@base-ui/react/dialog";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { useState } from "react";
@@ -25,7 +21,6 @@ export function Lightbox({ images, start, onClose }: { images: readonly Lightbox
           aria-label={image.name}
           className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 p-6 outline-none [-webkit-app-region:no-drag]"
           onKeyDown={(e) => {
-            // The app's own shortcuts listen on the window: keys stay here.
             e.stopPropagation();
             if (many && e.key === "ArrowRight") step(1);
             else if (many && e.key === "ArrowLeft") step(-1);

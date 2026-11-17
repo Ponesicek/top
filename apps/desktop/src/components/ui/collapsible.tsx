@@ -9,7 +9,6 @@ function CollapsibleTrigger({ className, ...props }: CollapsiblePrimitive.Trigge
   return <CollapsiblePrimitive.Trigger className={cn("cursor-pointer", className)} data-slot="collapsible-trigger" {...props} />;
 }
 
-/** No height animation: panels live in the virtualized transcript, which re-measures rows as they resize. */
 function CollapsiblePanel(props: CollapsiblePrimitive.Panel.Props) {
   return <CollapsiblePrimitive.Panel data-slot="collapsible-panel" {...props} />;
 }

@@ -1,5 +1,3 @@
-/** Pieces every transcript style shares: the bot it shows, times, tool steps, the folded tool group, notes. */
-
 import type { BotSummary, Citation, ConversationSync, SkillUse, ToolOutcome, WebSearchStep } from "@top/client";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, Globe, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
 import { type ComponentProps, createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
@@ -16,12 +14,6 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 export type UserRowData = Extract<Row, { kind: "user" }>;
 export type AssistantRowData = Extract<Row, { kind: "assistant" }>;
 
-/**
- * The bot a transcript shows: its conversation, name and drawing. Transcript.tsx provides it, the same
- * object while those stay the same, and the pieces that need it read it here (its avatar, its files'
- * links, a retry), instead of every style handing it down through its rows. Not what the bot is doing:
- * that changes all the time, and only the row showing it subscribes to it (`useBotStatus`).
- */
 export type BotIdentity = { readonly sync: ConversationSync; readonly name: string; readonly avatar: number | undefined };
 
 const Identity = createContext<BotIdentity | undefined>(undefined);
@@ -33,18 +25,15 @@ export function useIdentity(): BotIdentity {
   return identity;
 }
 
-/** The transcript's bot as it is now, for the row that says what it's doing; re-renders that row alone. */
 export function useBotStatus(): BotSummary | undefined {
   return useBot(useIdentity().sync.id);
 }
 
-/** The transcript's bot's avatar; `titled` names it on hover. */
 export function BotAvatar({ titled, ...props }: Omit<ComponentProps<typeof Avatar>, "name" | "avatar" | "title"> & { titled?: boolean }) {
   const { name, avatar } = useIdentity();
   return <Avatar name={name} avatar={avatar} {...(titled ? { title: name } : {})} {...props} />;
 }
 
-/** One style's rendering of the row at `index`. The bot comes from `useIdentity`. */
 export type RowRenderer = (rows: readonly DisplayRow[], index: number) => React.ReactNode;
 
 export function time(at: number | undefined): string {
@@ -55,7 +44,6 @@ const DAY = 86_400_000;
 const startOfDay = (at: number) => new Date(at).setHours(0, 0, 0, 0);
 export const sameDay = (a: number, b: number) => startOfDay(a) === startOfDay(b);
 
-/** "Today", "Yesterday", or "16 October 2026". */
 export function dayLabel(at: number): string {
   const days = Math.round((startOfDay(Date.now()) - startOfDay(at)) / DAY);
   if (days === 0) return "Today";
@@ -63,7 +51,6 @@ export function dayLabel(at: number): string {
   return new Date(at).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" });
 }
 
-/** The time of the nearest timed row before `index`. */
 export function prevTime(rows: readonly DisplayRow[], index: number): number | undefined {
   for (let i = index - 1; i >= 0; i--) {
     const r = rows[i]!;
@@ -72,7 +59,6 @@ export function prevTime(rows: readonly DisplayRow[], index: number): number | u
   return undefined;
 }
 
-/** Seconds since the bot started what it's doing, ticking. */
 export function useElapsed(bot: BotSummary | undefined): number {
   const [, tick] = useState(0);
   useEffect(() => {
@@ -104,7 +90,6 @@ export function AnswerError({ error, className }: { error: string; className?: s
   );
 }
 
-/** The chevron of a disclosure: points right, turns down while its panel is open. */
 export const chevron = "transition-transform duration-120 group-data-panel-open/disclosure:rotate-90";
 
 const OUTCOME_ICON: Record<ToolOutcome, typeof Check> = {
@@ -123,7 +108,6 @@ const OUTCOME_LABEL: Record<ToolOutcome, string> = {
   stopped: "Stopped",
 };
 
-/** The 18px circle every step starts with: green done, red failed, amber or blue while live. */
 export function StepIcon({ className, children }: { className: string; children: React.ReactNode }) {
   return (
     <span className={cn("grid size-4.5 flex-none place-items-center rounded-full", className)} aria-hidden>
@@ -134,7 +118,6 @@ export function StepIcon({ className, children }: { className: string; children:
 
 const failedStep = (entry: ToolEntry) => !!entry.isError || entry.outcome === "interrupted" || entry.outcome === "stopped";
 
-/** One finished tool call on one line; truncated output opens below. */
 const ToolStep = memo(function ToolStep({ entry }: { entry: ToolEntry }) {
   const { sync } = useIdentity();
   const [full, setFull] = useState<string | undefined>();
@@ -185,16 +168,11 @@ function Outcome({ outcome, failed }: { outcome: ToolOutcome; failed: boolean })
   );
 }
 
-/** "bash, read, grep +2": the distinct tool names, in order. */
 function toolNames(entries: readonly ToolEntry[]): string {
   const names = [...new Set(entries.map((e) => e.name))];
   return names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
 }
 
-/**
- * A run of tool calls as one quiet line ("Used 4 tools · bash, read"), opening into the steps.
- * `trigger` styles the line for the transcript style it sits in.
- */
 export const ToolGroup = memo(function ToolGroup({
   row,
   className,
@@ -231,7 +209,6 @@ export const ToolGroup = memo(function ToolGroup({
   );
 });
 
-/** `url` if it's a web address (the daemon passes on only those; this keeps it so). */
 function webHref(url: string | undefined): string | undefined {
   if (!url) return undefined;
   try {
@@ -242,7 +219,6 @@ function webHref(url: string | undefined): string | undefined {
   }
 }
 
-/** A page as a short line: its host and path, without OpenAI's `utm_source`. */
 function pageLabel(href: string): string {
   const url = new URL(href);
   url.searchParams.delete("utm_source");
@@ -250,7 +226,6 @@ function pageLabel(href: string): string {
   return `${url.hostname.replace(/^www\./, "")}${path}${url.search}`;
 }
 
-/** A link to a page on the web; it opens outside the app. */
 function PageLink({ href, className, children }: { href: string; className?: string; children?: React.ReactNode }) {
   return (
     <a href={href} target="_blank" rel="noreferrer noopener" title={href} className={cn("min-w-0 truncate text-link hover:underline", className)}>
@@ -261,7 +236,6 @@ function PageLink({ href, className, children }: { href: string; className?: str
 
 const quoted = (queries: readonly string[] | undefined) => (queries?.length ? queries.map((q) => `“${q}”`).join(", ") : "");
 
-/** One thing the model did on the web; a search's pages list below it once they're loaded. */
 function SearchStep({ step, sources }: { step: WebSearchStep; sources: readonly string[] | undefined }) {
   const href = webHref(step.url);
   const verb = step.action === "search" ? "Searched" : step.action === "open_page" ? "Opened" : "Looked in";
@@ -298,11 +272,6 @@ function SearchStep({ step, sources }: { step: WebSearchStep; sources: readonly 
   );
 }
 
-/**
- * What the model did on the web while it wrote an answer, as one quiet line ("Searched the web ·
- * “query”") opening into its steps. OpenAI ran them, not the bot's tools. Opening it loads the pages
- * each search looked at.
- */
 export const WebSearches = memo(function WebSearches({
   row,
   className,
@@ -353,7 +322,6 @@ export const WebSearches = memo(function WebSearches({
   );
 });
 
-/** The pages an answer cites, under it: each a link that opens outside the app. */
 export const Sources = memo(function Sources({ citations, className }: { citations: readonly Citation[]; className?: string }) {
   const links = citations.flatMap((c) => {
     const href = webHref(c.url);
@@ -389,7 +357,6 @@ const USER_STATE: Record<NonNullable<UserRowData["state"]>, string> = {
   failed: "Not sent",
 };
 
-/** A pending message's state ("Queued", "Not sent · Retry · Discard"), or nothing once it's in. */
 export function UserState({ row, className }: { row: UserRowData; className?: string }) {
   const { sync } = useIdentity();
   if (!row.state) return null;
@@ -420,7 +387,6 @@ export function UserState({ row, className }: { row: UserRowData; className?: st
   );
 }
 
-/** A pending message's bubble treatment, shared by the bubble styles. */
 export const USER_BUBBLE_STATE: Record<NonNullable<UserRowData["state"]>, string | undefined> = {
   sending: "opacity-65",
   accepted: undefined,
@@ -429,7 +395,6 @@ export const USER_BUBBLE_STATE: Record<NonNullable<UserRowData["state"]>, string
   failed: "inset-ring-[1.5px] inset-ring-destructive",
 };
 
-/** Three dots bouncing in turn: the bot is thinking. */
 export function Dots({ className }: { className?: string }) {
   return (
     <span className={cn("inline-flex gap-0.5", className)}>
@@ -449,15 +414,8 @@ export function RetryNote({ bot }: { bot: BotSummary | undefined }) {
   );
 }
 
-/**
- * HTML from markdown.ts: model text rendered with raw HTML off, so it is escaped; the one place it
- * enters the DOM. `answer` is the seq of the bot's answer it shows, which makes its text quotable (Quotes.tsx).
- * In a transcript, its `files/…` images and links load from its bot's files (elsewhere, as in the Files
- * panel, there's no bot to load them from).
- */
 export function Markdown({ html, answer }: { html: string; answer?: number }) {
   const bot = useContext(Identity)?.sync.id;
-  // From cache, a transcript shows before the daemon says where files are: resolve again once it has.
   const hasFiles = useClient((snapshot) => snapshot.hasFiles);
   // biome-ignore lint/correctness/useExhaustiveDependencies: hasFiles changes what top.fileUrl returns
   const shown = useMemo(() => (bot === undefined ? html : withBotFiles(html, (path) => top.fileUrl(bot, path))), [html, bot, hasFiles]);
@@ -465,7 +423,6 @@ export function Markdown({ html, answer }: { html: string; answer?: number }) {
   return <div className="md" data-answer={answer} dangerouslySetInnerHTML={{ __html: shown }} />;
 }
 
-/** The `/<name>` a message started with, marked as the skill it asked for: where it came from, or why it couldn't be used. */
 function SkillTag({ skill }: { skill: SkillUse }) {
   const from = skill.source === "shared" ? "the shared library" : "the bot's own skills";
   return (
@@ -481,14 +438,8 @@ function SkillTag({ skill }: { skill: SkillUse }) {
   );
 }
 
-/**
- * What you sent. Passages you quoted (quotes.ts) show where you put them, each with your comment on
- * it, and take you back to the answer they came from. A skill the message asked for with `/<name>`
- * shows as a tag. Its parent keeps line breaks.
- */
 export function UserText({ text, skill }: { text: string; skill?: SkillUse | undefined }) {
   const bot = String(useIdentity().sync.id);
-  // The skill's `/<name>` is its tag; the rest is what the user asked of it.
   const tagged = skill !== undefined && text.startsWith(`/${skill.name}`);
   const rest = tagged ? text.slice(skill.name.length + 1).replace(/^\s/, "") : text;
   const parts = useMemo(() => messageParts(rest), [rest]);
@@ -519,7 +470,6 @@ export function UserText({ text, skill }: { text: string; skill?: SkillUse | und
   return tag ? [tag, ...shown] : shown;
 }
 
-/** A rule across the column with a short line in the middle: "Load earlier messages", notices. */
 export const DIVIDER =
   "flex items-center gap-3 py-4 text-meta leading-snug font-medium text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
 
@@ -534,7 +484,6 @@ export function AutoLoad({ onVisible, label }: { onVisible: () => Promise<void>;
       .catch(() => setFailed(true))
       .finally(() => setBusy(false));
   }, [busy, onVisible]);
-  // Load as soon as the marker is rendered, i.e. scrolled into (over)view; once.
   // biome-ignore lint/correctness/useExhaustiveDependencies: on mount only
   useEffect(() => {
     run();

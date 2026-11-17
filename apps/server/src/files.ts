@@ -1,19 +1,3 @@
-/**
- * Each bot's files folder: what it makes for the user (pages, reports, images, notes). The daemon
- * watches it, keeps its listing in the store, and reports what changed as a `files` entry in the
- * bot's transcript, which clients show and the model never sees. The files themselves are served by
- * serve.ts.
- *
- * Anything may change the folder: the bot's `write` and `edit`, a script it runs with `bash`, the user
- * in their editor. So changes come from the folder itself, not from tool calls:
- *
- * - The OS watcher says something changed; the folder is listed again once writes have settled
- *   (a burst of writes is one change), and at most every few seconds while they keep coming.
- * - A slow poll lists it again now and then, for what the watcher misses (network drives, a watcher
- *   that failed).
- * - The listing is saved with the entry that reports it, so a change made while the daemon was down,
- *   or cut off by a crash before it was reported, is reported when it starts.
- */
 import { join } from "node:path";
 import { type FileChange, type FileView, MAX_FILES } from "@top/protocol";
 import * as Clock from "effect/Clock";
@@ -28,20 +12,16 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { type FileStat, Store, type StoredEntry } from "./store.ts";
 
-/** Writes this close together are one change. */
 const SETTLE_MS = 400;
-/** While writes keep coming, the folder is still listed this often. */
 const MAX_WAIT_MS = 4_000;
 const POLL_MS = 15_000;
 const MAX_DEPTH = 8;
-/** Never the user's files; hidden names (`.git`, `.DS_Store`) are skipped too. */
 const SKIP = new Set(["node_modules", "__pycache__"]);
 
 export type Listing = { readonly files: ReadonlyMap<string, FileStat>; readonly more: boolean };
 
 const EMPTY: Listing = { files: new Map(), more: false };
 
-/** The files under `folder`, by path relative to it (`/` between parts), at most `MAX_FILES`. */
 export const scan = (folder: string): Effect.Effect<Listing, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -60,7 +40,6 @@ export const scan = (folder: string): Effect.Effect<Listing, never, FileSystem.F
             continue;
           }
           if (entry.type !== "File" && entry.type !== "SymbolicLink") continue;
-          // Follows a link; a link to a folder isn't walked (it could loop). One removed while listing is skipped.
           const info = yield* Effect.option(fs.stat(join(dir, entry.name)));
           if (Option.isNone(info) || info.value.type !== "File") continue;
           if (files.size >= MAX_FILES) {
@@ -74,7 +53,6 @@ export const scan = (folder: string): Effect.Effect<Listing, never, FileSystem.F
     return { files, more };
   });
 
-/** What changed between two listings, by path. */
 export function diff(before: ReadonlyMap<string, FileStat>, after: ReadonlyMap<string, FileStat>): FileChange[] {
   const changes: FileChange[] = [];
   for (const [path, stat] of after) {
@@ -91,16 +69,10 @@ export const fileViews = (listing: Listing): FileView[] => [...listing.files].ma
 export type FilesFolder = {
   readonly bot: number;
   readonly folder: string;
-  /** What was listed last (empty until the first listing). */
   readonly listing: () => Listing;
-  /** List the folder now and report what changed. Listings run one at a time. */
   readonly rescan: Effect.Effect<void>;
 };
 
-/**
- * One bot's files folder, watched for as long as the scope it's made in. It's made, listed and watched
- * before this returns. `onChange` gets the new listing, and the entry when something changed.
- */
 export const makeFilesFolder = Effect.fnUntraced(function* (
   bot: number,
   folder: string,
@@ -109,17 +81,14 @@ export const makeFilesFolder = Effect.fnUntraced(function* (
   const store = yield* Store;
   const fs = yield* FileSystem.FileSystem;
   const scope = yield* Effect.scope;
-  /** What the store holds; `undefined` until the folder was first listed (then nothing is reported). */
   let known: ReadonlyMap<string, FileStat> | undefined = yield* store.files(bot);
   let listing: Listing = EMPTY;
-  /** A change to look at: `true` to list at once (the poll, a broken watcher), `false` once writes settle. */
   const signals = yield* Queue.unbounded<boolean>();
   const signal = (now: boolean) => Queue.offerUnsafe(signals, now);
   const scanning = yield* Semaphore.make(1);
   const watcher = yield* FiberHandle.make();
   let watching = false;
 
-  /** Watch the folder (recursively: macOS, Windows and Linux with Node ≥ 20). If it's removed or the watcher breaks, the poll goes on and it's watched again. */
   const watch = Effect.gen(function* () {
     if (watching) return;
     yield* Effect.ignore(fs.makeDirectory(folder, { recursive: true }));
@@ -158,7 +127,6 @@ export const makeFilesFolder = Effect.fnUntraced(function* (
     .withPermits(1)(scanOnce)
     .pipe(Effect.withSpan("FilesFolder.rescan", { attributes: { bot } }));
 
-  /** Wait for writes to settle (`SETTLE_MS` of quiet), but list at most `MAX_WAIT_MS` after the first. */
   const settle = Effect.fnUntraced(function* (now: boolean) {
     const deadline = (yield* Clock.currentTimeMillis) + MAX_WAIT_MS;
     let immediate = now;

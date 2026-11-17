@@ -16,7 +16,6 @@ afterAll(() => {
   for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A skill folder with a SKILL.md: `frontmatter` between `---` lines (none when undefined), then `body`. */
 function writeSkill(root: string, folder: string, frontmatter: string | undefined, body = "Follow these steps.") {
   mkdirSync(join(root, folder), { recursive: true });
   writeFileSync(join(root, folder, "SKILL.md"), frontmatter === undefined ? body : `---\n${frontmatter}\n---\n${body}\n`);
@@ -24,7 +23,6 @@ function writeSkill(root: string, folder: string, frontmatter: string | undefine
 const meta = (name: string, description: string) => `name: ${name}\ndescription: ${description}`;
 
 let requests = 0;
-/** Send the bot a message and wait until it has answered. */
 async function send(h: Harness, bot: number, text: string) {
   await h.run(h.daemon.submit(bot, `skills-${++requests}`, text, "followUp", null));
   await until("the bot to finish", () => idle(h, bot), 10_000);
@@ -38,7 +36,6 @@ const refusal = async (h: Harness, bot: number, name: string) => {
   return `${exit._tag}: ${exit.message}`;
 };
 
-/** A daemon whose shared library and Atlas's own folder are filled before it starts. */
 async function setup(fill: (where: { library: string; atlas: string; scout: string }) => void = () => {}, dir?: string) {
   const home = dir ?? mkdtempSync(join(tmpdir(), "top-skills-"));
   if (!dir) scratch.push(home);
@@ -72,7 +69,6 @@ test("the library is read as it is: bad skills say why, and don't keep the good 
     mkdirSync(join(library, "empty"), { recursive: true });
     writeSkill(library, ".hidden", meta("hidden", "Hidden folders are skipped."));
     writeFileSync(join(library, "README.md"), "Not a skill.");
-    // A link to a skill kept elsewhere is followed; one to nothing is reported.
     const elsewhere = mkdtempSync(join(tmpdir(), "top-skill-elsewhere-"));
     scratch.push(elsewhere);
     writeSkill(elsewhere, "linked", meta("linked", "Kept in another folder."));
@@ -103,7 +99,6 @@ test("a bot starts with no skills, however many are installed, and gets only the
     writeSkill(library, "deploy", meta("deploy", "Ship the web app."));
     writeSkill(atlas, "notes", meta("notes", "Keep Atlas's notes tidy."));
   });
-  // Found, and given to no one.
   assert.deepEqual(
     view(h).bots.map((b) => [b.bot, b.local.map((s) => s.name), b.enabled]),
     [
@@ -113,14 +108,12 @@ test("a bot starts with no skills, however many are installed, and gets only the
   );
   await send(h, atlas, "hello");
   assert.doesNotMatch(await prompt(h, atlas), /<skills>/);
-  // A bot made later starts clean too.
   const fresh = await h.run(h.daemon.createBot("Nova", ""));
   assert.deepEqual(view(h).bots.find((b) => b.bot === fresh)?.enabled, []);
 
   await enable(h, atlas, "pdf");
   await enable(h, atlas, "notes");
   assert.deepEqual(view(h).bots.find((b) => b.bot === atlas)?.enabled, ["notes", "pdf"]);
-  // It reaches the bot with its next message: names, descriptions, and where each SKILL.md is.
   await send(h, atlas, "hello again");
   const atlasPrompt = await prompt(h, atlas);
   assert.match(atlasPrompt, /<skills>/);
@@ -131,11 +124,9 @@ test("a bot starts with no skills, however many are installed, and gets only the
   assert.match(atlasPrompt, /relative to its folder, the one holding SKILL.md, not to your working folder/);
   assert.match(atlasPrompt, /changing a shared skill changes it for all of them/);
   assert.doesNotMatch(atlasPrompt, /deploy/);
-  // Scout has none of Atlas's.
   await send(h, scout, "hello");
   assert.doesNotMatch(await prompt(h, scout), /<skills>/);
 
-  // Switched off, it leaves the prompt with the next message.
   await enable(h, atlas, "pdf", false);
   await enable(h, atlas, "notes", false);
   await send(h, atlas, "and again");
@@ -149,7 +140,6 @@ test("switching on needs a usable skill the bot can see; switching off takes any
   });
   assert.match(await refusal(h, atlas, "nothing"), /SkillError: Atlas has no skill named nothing/);
   assert.match(await refusal(h, atlas, "broken"), /SkillError: broken can't be used: .*no description/);
-  // Atlas's own skill isn't Scout's.
   assert.match(await refusal(h, scout, "notes"), /SkillError: Scout has no skill named notes/);
   await enable(h, scout, "nothing", false);
   assert.deepEqual(view(h).bots.find((b) => b.bot === scout)?.enabled, []);
@@ -176,7 +166,6 @@ test("a bot's own skill takes the place of a shared one with its name, for that 
   assert.doesNotMatch(atlasPrompt, /The shared PDF skill/);
   assert.match(await prompt(h, scout), /The shared PDF skill/);
 
-  // An own skill that's broken still takes the shared one's place: the bot has no pdf, and the view says why.
   writeSkill(local({ name: "Atlas" }), "pdf", "name: pdf");
   await rescan(h);
   assert.match(activeSkills(view(h), atlas)[0]!.error!, /no description/);
@@ -202,18 +191,15 @@ test("/<name> brings the skill's SKILL.md with the message, with its folder for 
   assert.match(note.text, new RegExp(`Paths in it are relative to ${join(library, "pdf")}`));
   assert.match(note.text, /every bot that has it uses these same files/);
   assert.match(note.text, /Run scripts\/fill.py with the form's path./);
-  // The client sees what the user wrote, and which skill it used.
   const wire = toWire(stored);
   assert.ok(wire?.kind === "user");
   assert.equal(wire.text, "/pdf fill in tax.pdf");
   assert.deepEqual(wire.skill, { name: "pdf", source: "shared", path });
 
-  // A name the bot doesn't have is only text.
   await send(h, atlas, "/other please");
   const plain = (await h.entries(atlas)).findLast((e) => e.kind === "user")!;
   assert.equal(plain.kind === "user" && plain.message.content, "/other please");
 
-  // A skill that broke since it was switched on: the bot is told it can't be used, and the client sees why.
   writeFileSync(path, "no frontmatter now");
   await send(h, atlas, "/pdf again");
   const failed = toWire((await h.entries(atlas)).findLast((e) => e.kind === "user")!);
@@ -230,13 +216,11 @@ test("which skills a bot has survives a restart; edits on disk reach it with its
 
   const again = await setup(() => {}, first.home);
   assert.deepEqual(view(again.h).bots.find((b) => b.bot === first.atlas)?.enabled, ["pdf"]);
-  // Nothing changed: the restart adds no system message.
   const systemCount = async () => (await again.h.run(again.h.store.context(first.atlas))).filter((m) => m.role === "system").length;
   const before = await systemCount();
   await send(again.h, first.atlas, "back");
   assert.equal(await systemCount(), before);
 
-  // An edit is read before the next message, and once the view is rescanned it's announced.
   const announced = await again.h.run(
     Effect.gen(function* () {
       const scope = yield* Scope.make();

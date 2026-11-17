@@ -1,9 +1,3 @@
-/**
- * Pretend updates, for trying the update button in `pnpm dev:fake` without a release, a packaged app or
- * an installed daemon: `?fakeUpdates=available` (both have one), `=server`, `=app`, `=current` (up to
- * date), `=fail` (the server's download fails), `=rollback` (the new server doesn't start). Nothing real
- * is checked, downloaded or restarted. Only in development builds: production has `undefined` here.
- */
 import type { ConnectionStatus, UpdateView } from "@top/client";
 import type { AppUpdates } from "./bridge.ts";
 import type { ServerSide } from "./updateFlow.ts";
@@ -48,7 +42,6 @@ function makeFake(scenario: string): FakeUpdates {
     checkedAt: Date.now() - 4 * 60_000,
     ...(offerApp ? { available: { version: appNext, notes: NOTES } } : {}),
   };
-  // One object per change, so React sees a new snapshot only when something changed.
   let snapshot = { server: { version, update, connection } as ServerSide, app };
   const publish = () => {
     snapshot = { server: { version, update, connection }, app };
@@ -77,9 +70,7 @@ function makeFake(scenario: string): FakeUpdates {
     },
     installServer: async (target) => {
       if (update.state !== "idle" && update.state !== "failed") throw new Error("The server is already checking for or installing an update.");
-      // Answered at once, like the daemon: the work goes on in the background.
       void (async () => {
-        // A new try clears the last one's failure and rollback, as the daemon does.
         const { error: _error, rolledBack: _rolledBack, ...rest } = update;
         update = rest;
         setServer({ state: "downloading" });
@@ -92,7 +83,6 @@ function makeFake(scenario: string): FakeUpdates {
         await wait(2200);
         if (scenario === "rollback") {
           connection = "open";
-          // Like the daemon: it starts again on the old version, idle, and says what happened.
           return setServer({ state: "idle", rolledBack: target, error: `Top ${target} didn't start, so the server went back to ${version} (pretend).` });
         }
         version = target;
@@ -114,7 +104,6 @@ function makeFake(scenario: string): FakeUpdates {
         await wait(350);
       }
       setApp({ state: "installing" });
-      // The real app quits here and starts the new one; pretend it came back.
       await wait(1500);
       const { available, progress: _progress, ...left } = app;
       app = { ...left, version: available?.version ?? app.version, state: "idle" };

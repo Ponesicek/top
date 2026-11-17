@@ -1,9 +1,3 @@
-/**
- * The team style, like a team chat: everyone on the left, a name and time over each run of messages,
- * date rules between days, and the row you point at lit up. A run continues while the same author
- * keeps talking within a few minutes; its later rows show their time in the gutter on hover.
- */
-
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderCached } from "../../markdown.ts";
@@ -30,7 +24,6 @@ import {
   WebSearches,
 } from "./parts.tsx";
 
-/** A run of messages from one author breaks after this long a pause. */
 const RUN_MS = 7 * 60_000;
 
 function stamp(at: number): string {
@@ -61,10 +54,6 @@ function YouAvatar() {
   );
 }
 
-/**
- * One row: with a header (avatar, name, time) when it opens a run, or just its content, its time in
- * the gutter on hover.
- */
 function Shell({ head, who, at, children }: { head: boolean; who: "user" | "bot"; at: number | undefined; children: React.ReactNode }) {
   const { name } = useIdentity();
   return (
@@ -150,7 +139,6 @@ const Tools = memo(function Tools({ row, head }: { row: ToolGroupRow; head: bool
   );
 });
 
-/** "Atlas is running bash…", with dots, where a typing indicator would be. */
 function Typing() {
   const { name } = useIdentity();
   const bot = useBotStatus();

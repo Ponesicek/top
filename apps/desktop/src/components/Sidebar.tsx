@@ -12,13 +12,11 @@ import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { Tooltip } from "./ui/tooltip.tsx";
 
-/** The sidebar's short status, beside the name; the header spells out the tool. */
 const SHORT: Record<BotSummary["status"], string> = { idle: "", thinking: "Thinking", tool: "Running", retrying: "Retrying", failed: "Failed" };
 
 export function statusLabel(bot: BotSummary): string {
   switch (bot.status) {
     case "idle":
-      // Its permission requests are in its conversation, waiting for an answer.
       return bot.approvals ? "Waiting for your approval" : "Idle";
     case "thinking":
       return bot.searching ? "Searching the web" : "Thinking";
@@ -31,7 +29,6 @@ export function statusLabel(bot: BotSummary): string {
   }
 }
 
-/** "Wakes 14:32" today, "Wakes Fri 09:00" this week, else the date. */
 function wakeLabel(at: number): string {
   const when = new Date(at);
   const now = new Date();
@@ -46,7 +43,6 @@ const MENU_POPUP =
 const MENU_ITEM =
   "flex cursor-default items-center gap-2.5 rounded-lg px-2.5 py-1.75 text-small leading-none font-label outline-none select-none data-highlighted:bg-foreground/7 [&_svg]:text-muted-foreground";
 
-/** A bot's right-click menu: pin it to the top (or unpin it), or delete it. `children` is what opens it. */
 function BotMenu({
   bot,
   pinned,
@@ -65,7 +61,6 @@ function BotMenu({
       <ContextMenu.Trigger className={className}>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Positioner className="z-40" collisionPadding={8}>
-          {/* Keys stay in the menu: the app's shortcuts listen on the window. */}
           <ContextMenu.Popup className={MENU_POPUP} onKeyDown={(e) => e.stopPropagation()}>
             <ContextMenu.Item className={MENU_ITEM} onClick={() => (pinned ? unpin(bot.id) : pin(bot.id))}>
               {pinned ? <PinOff size={15} strokeWidth={1.9} /> : <Pin size={15} strokeWidth={1.9} />}
@@ -97,7 +92,6 @@ type ItemProps = {
 
 const shortcutFor = (index: number) => (index < 9 ? ` (Ctrl+${index + 1})` : "");
 
-/** On a bot's avatar where its name and badges don't show (a pinned tile, the narrow sidebar): it waits for your approval. */
 function ApprovalMark({ className }: { className?: string }) {
   return (
     <span className={cn("absolute -top-0.5 -right-0.5 grid size-3.75 place-items-center rounded-full bg-(--avatar-ring)", className)} aria-hidden>
@@ -106,13 +100,10 @@ function ApprovalMark({ className }: { className?: string }) {
   );
 }
 
-/** A pinned bot: a tile in the grid above the list, its avatar large and its name under it. */
 const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
-  // Waiting for your approval says more than "something new": it wins the shoulder and the tooltip.
   const asking = !busy && !!bot.approvals;
   const fresh = unread && !busy && !asking;
-  // Working or something new: the status sits on the avatar's shoulder (a failed bot's red dot is the avatar's own).
   const mark = (busy && bot.status !== "failed") || fresh;
   const status = fresh ? "Idle · new messages" : statusLabel(bot);
   return (
@@ -155,12 +146,10 @@ const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSe
 
 const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
-  // A working bot shows its work, not "unread"; an idle bot with something new swaps its gray ring for blue.
   const fresh = unread && !busy;
   const failed = bot.status === "failed";
   const shortcut = shortcutFor(index);
   return (
-    // Delete shows on hover (or keyboard focus), in place of the status beside the name.
     <BotMenu bot={bot} pinned={false} onDelete={onDelete} className="group/bot relative flex flex-col">
       <button
         type="button"
@@ -176,7 +165,6 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
       >
         <span className="relative flex">
           <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} />
-          {/* Wide, the badge beside the name says so. */}
           {!!bot.approvals && <ApprovalMark className="hidden narrow:grid" />}
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-px narrow:hidden">
@@ -269,7 +257,6 @@ export function Sidebar({
   const pins = usePins();
   const { pinned, rest } = sidebarGroups(bots, pins);
   const item = (Item: typeof BotItem, bot: BotSummary, index: number) => {
-    // While settings fill the main area, no bot is open.
     const isSelected = !settingsOpen && bot.id === selected;
     return (
       <Item
@@ -295,14 +282,11 @@ export function Sidebar({
   return (
     <aside className="flex min-w-0 flex-col border-r bg-sidebar">
       <nav className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-2.5 pb-2.5 mac-window:pt-11">
-        {/* Pinned bots, as Grok Bot shows them: a grid of large avatars above the list, in the order they were pinned. */}
         {pinned.length > 0 && <div className="grid grid-cols-3 gap-1 narrow:grid-cols-1">{pinned.map((bot, i) => item(PinnedTile, bot, i))}</div>}
         {pinned.length > 0 && rest.length > 0 && <div className="mx-2 my-1.5 hidden h-px bg-border narrow:block" aria-hidden />}
         {rest.map((bot, i) => item(BotItem, bot, pinned.length + i))}
       </nav>
-      {/* Always mounted: a dialog that mounts already open has no closed state to animate in from. */}
       <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />
-      {/* The sidebar's width is fixed: if the row still doesn't fit (a larger font), the badge's word gives way, never a button. */}
       <div className="relative flex flex-none items-center gap-2 px-3 pt-2 pb-3 narrow:flex-col-reverse narrow:px-0">
         <Tooltip content="Settings (Ctrl+,)" side="right">
           <Button
@@ -314,7 +298,6 @@ export function Sidebar({
             aria-current={settingsOpen ? "page" : undefined}
           >
             <Settings size={16} strokeWidth={1.8} />
-            {/* Beside a connection badge there's no room for the word too; the icon, its tooltip and its label stay. */}
             <span className={cn("narrow:hidden", connection !== "open" && "hidden")}>Settings</span>
           </Button>
         </Tooltip>

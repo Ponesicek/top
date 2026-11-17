@@ -1,16 +1,3 @@
-/**
- * Fake bots for development, tests and benchmarks: Pi AI's faux provider, scripted to answer in
- * markdown (prose, lists, code blocks, tables) at a fixed token rate, and to call tools when a message
- * asks for one ("deploy web", "email the team", "check status", "write a report", "crash", "ask permission to …", or a tool by name:
- * `call echo__echo {"text": "hi"}`). Everything above the model is
- * the real daemon: storage, the agent loop, tools, recovery.
- *
- * "Search the web for …" plays OpenAI's hosted web search (see websearch.ts): the model sends the events
- * OpenAI's Responses API sends (a search, a page it opened, citations on its answer) through the same
- * hooks the real requests go through, so everything Top does with them runs. It searches only when the
- * request offers the tool, and "… refused" / "… fails" play OpenAI refusing it or a search failing.
- */
-
 import type { SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { type FauxResponseFactory, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Duration from "effect/Duration";
@@ -83,9 +70,7 @@ function paragraph(): string {
   return Array.from({ length: 2 + Math.floor(Math.random() * 4) }, () => sentence()).join(" ");
 }
 
-/** A request's transcript, as the provider gets it. */
 export type Context = Parameters<FauxResponseFactory>[0];
-/** What a request asks besides its context: its session id, reasoning level, signal. */
 export type RequestOptions = Parameters<FauxResponseFactory>[1];
 type ContextMessage = Context["messages"][number];
 
@@ -96,7 +81,6 @@ function contentText(message: ContextMessage | undefined): string {
   return content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
 }
 
-/** Tool results since the last assistant message, newest last. */
 function trailingToolResults(context: Context): ContextMessage[] {
   const results: ContextMessage[] = [];
   for (let i = context.messages.length - 1; i >= 0; i--) {
@@ -112,19 +96,12 @@ type JsonObject = Parameters<typeof fauxToolCall>[1];
 const jsonObject = Schema.decodeOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)));
 const call = (name: string, args: JsonObject) => fauxToolCall(name, args, { id: `call_${Date.now().toString(36)}_${++callCounter}` });
 
-/**
- * The tool a message asks for, if any: "deploy web 3s", "email the team", "check status", "write a report", "crash",
- * "ask permission to delete old backups" (Collar's ask_permission, with the rest as the action), "call server__tool {…}".
- */
 export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
-  // An MCP tool by its full name, with JSON arguments.
   const named = /\bcall ([A-Za-z0-9-]+__[A-Za-z0-9_-]+)(?:\s+(\{.*\}))?/s.exec(prompt);
   if (named) {
-    // Not a JSON object: call it without arguments.
     const args = named[2] ? Option.getOrElse(jsonObject(named[2]), () => ({})) : {};
     return call(named[1]!, args);
   }
-  // Before the others: the action it asks about ("…to deploy web") mustn't run that tool.
   const asking = /\bask (?:for )?permission(?: to)?\s+(.+)/is.exec(prompt);
   if (asking) return call(ASK_PERMISSION, { action: asking[1]!.trim(), reason: "You asked me to check with you first." });
   const text = prompt.toLowerCase();
@@ -148,7 +125,6 @@ function lastUserText(context: Context): string {
 
 const failedOnce = new Set<string>();
 
-/** Pages the fake web search finds: the reserved example domains, so nothing real is named or fetched. */
 const FAKE_PAGES = [
   { url: "https://example.com/guides/backoff", title: "Retry with backoff · Example Guides" },
   { url: "https://example.org/notes/websocket-reconnects", title: "Notes on WebSocket reconnects" },
@@ -171,10 +147,6 @@ const pause = (ms: number, signal: AbortSignal | undefined) =>
     );
   });
 
-/**
- * "Search the web for X", the way OpenAI's Responses API reports it: the request must offer the tool
- * (Top's `onPayload` adds it), then a search, a page opened, and an answer citing what it found.
- */
 async function searchTheWeb(prompt: string, options: SimpleStreamOptions | undefined) {
   const offered = (await options?.onPayload?.({ input: [], tools: [] }, undefined as never)) as { tools?: { type?: string }[] } | undefined;
   if (!offered?.tools?.some((tool) => tool.type === "web_search"))
@@ -239,19 +211,15 @@ async function searchTheWeb(prompt: string, options: SimpleStreamOptions | undef
   return fauxAssistantMessage(text);
 }
 
-/** One scripted model response: a tool call when the message asks for one, else an answer. "fail once" and "fail always" fail the request. */
 export function respond(context: Context, options?: SimpleStreamOptions) {
   const results = trailingToolResults(context);
   if (results.length) {
     const lines = results.map((r) => `- **${"toolName" in r ? r.toolName : "tool"}**: ${contentText(r)}`).join("\n");
-    // Asking isn't doing: the answer comes later, as a message.
     if (results.every((r) => "toolName" in r && r.toolName === ASK_PERMISSION && !r.isError))
       return fauxAssistantMessage("I've asked you. I'll wait for your answer before I do it.");
     return fauxAssistantMessage(`Done. Here is what happened:\n\n${lines}\n\n${sentence()}`);
   }
   const prompt = lastUserText(context);
-  // Top's own messages (a wake-up, a background job's result) are answered, never acted on: their text
-  // quotes the tool call that started them ("deploy …"), which would otherwise start it again.
   if (/^\[Permission\]/.test(prompt)) return fauxAssistantMessage(`Got your answer. ${prompt.replace(/^\[Permission\] /, "")}`);
   if (/^\[(Wake-up|Background job)/.test(prompt)) return fauxAssistantMessage(`Noted: ${prompt.split("\n")[0]}`);
   const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider overloaded (test)" });
@@ -269,7 +237,6 @@ export function respond(context: Context, options?: SimpleStreamOptions) {
   return fauxAssistantMessage(fakeAnswer(prompt));
 }
 
-/** One markdown answer, roughly 150–700 tokens. */
 export function fakeAnswer(prompt: string): string {
   const parts: string[] = [];
   const topic = prompt.trim().split("\n")[0]!.slice(0, 80);
@@ -292,7 +259,6 @@ export function fakeAnswer(prompt: string): string {
   return parts.join("\n\n");
 }
 
-/** Load prompts that make the bots use tools (`--tools`). */
 export const TOOL_PROMPTS = ["Check status of the build", "Deploy the web service 1s", "Email the team the status 1s"] as const;
 
 export const FAKE_PROMPTS = [
@@ -306,10 +272,6 @@ export const FAKE_PROMPTS = [
   "List the open TODOs in the client package",
 ] as const;
 
-/**
- * The scripted model at `tokensPerSecond`, its script kept topped up by a fiber for as long as the scope lasts.
- * `onRequest` sees each request (tests check what goes out with it).
- */
 export const makeFakeModelProvider = (tokensPerSecond: number, onRequest?: (context: Context, options: RequestOptions) => void) =>
   Effect.gen(function* () {
     const faux = fauxProvider({
@@ -322,7 +284,6 @@ export const makeFakeModelProvider = (tokensPerSecond: number, onRequest?: (cont
       onRequest?.(context, options);
       return respond(context, options);
     };
-    // The faux provider consumes one scripted step per request; keep the script topped up forever.
     const topUp = Effect.sync(() => {
       if (faux.getPendingResponseCount() < 256) faux.appendResponses(Array.from({ length: 1024 }, () => factory));
     });

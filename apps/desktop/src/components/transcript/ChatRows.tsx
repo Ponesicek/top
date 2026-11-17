@@ -1,9 +1,3 @@
-/**
- * The chat style, like a messenger: your bubbles on the right, the bot's on the left, a tail on the
- * first bubble of each run, the time inside each message and day chips between days. Tables and code
- * blocks stand on their own between the bot's bubbles, so they keep the full width.
- */
-
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderSegments } from "../../markdown.ts";
@@ -32,17 +26,14 @@ import {
 
 const BUBBLE = "chat-bubble relative w-fit max-w-[min(75%,540px)] rounded-[9px] pt-1.25 pr-2.25 pb-1.75 pl-2.5 shadow-bubble";
 
-/** The last line of rendered prose: the closing tags of its last paragraph, item or heading. */
 const LAST_LINE = /(<\/(?:p|li|h[1-6])>\s*(?:<\/(?:ul|ol|li|blockquote)>\s*)*)$/;
 
-/** Puts the time's reserved space at the end of the last line, so the time tucks in beside it. */
 function withStampSpace(html: string, label: string): string {
   const space = `<span class="stamp-space" aria-hidden="true">${label}</span>`;
   const trimmed = html.trimEnd();
   return LAST_LINE.test(trimmed) ? trimmed.replace(LAST_LINE, `${space}$1`) : trimmed + space;
 }
 
-/** The little corner a run's first bubble hangs from. */
 function Tail({ side }: { side: "in" | "out" }) {
   return side === "in" ? (
     <svg viewBox="0 0 8 13" className="absolute top-0 -left-2 h-3.25 w-2 fill-chat-in drop-shadow-[0_1px_0.5px_rgba(40,24,12,0.06)]" aria-hidden>
@@ -55,7 +46,6 @@ function Tail({ side }: { side: "in" | "out" }) {
   );
 }
 
-/** The time, in the bubble's bottom-right corner, over the space the last line keeps for it. */
 function Stamp({ at }: { at: number | undefined }) {
   if (!at) return null;
   return (
@@ -111,14 +101,12 @@ const UserBubble = memo(function UserBubble({ row, first }: { row: Extract<Displ
   );
 });
 
-/** An answer: its prose in bubbles, its tables and code blocks between them, the time in the last bubble. */
 const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<DisplayRow, { kind: "assistant" }>; first: boolean }) {
   const segments = useMemo(() => (row.text ? renderSegments(row.key, row.text) : []), [row]);
   const last = segments.length - 1;
   return (
     <div className={cn("flex flex-col items-start gap-0.75 pl-2", first ? "pt-2.5" : "pt-0.5")} data-answer={row.seq}>
       {row.searches.length > 0 && <WebSearches row={row} className="w-fit max-w-[min(80%,620px)] rounded-[10px] bg-chat-in/75 px-2.75 py-1 shadow-bubble" />}
-      {/* An entry never changes, so neither do its segments: their index is a stable key. */}
       {segments.map((segment, i) =>
         segment.kind === "prose" ? (
           // biome-ignore lint/suspicious/noArrayIndexKey: segments of an immutable entry
@@ -153,7 +141,6 @@ const ToolCard = memo(function ToolCard({ row, first }: { row: ToolGroupRow; fir
   );
 });
 
-/** A typing bubble: dots, and what the bot is doing. */
 function Typing({ first }: { first: boolean }) {
   const bot = useBotStatus();
   const seconds = useElapsed(bot);

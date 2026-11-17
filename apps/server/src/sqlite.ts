@@ -1,13 +1,3 @@
-/**
- * Effect SQL on Node's own SQLite (`node:sqlite`), one connection, statements run synchronously.
- *
- * Modeled on Effect's `@effect/sql-sqlite-bun` driver, which maps onto `DatabaseSync` almost line for
- * line, plus a cache of prepared statements (Node's `prepare` doesn't keep one). Explicit transactions
- * use `BEGIN IMMEDIATE`, so a transaction that starts by reading can't fail later upgrading its lock.
- *
- * The caller sets durability (Top wants `synchronous=FULL`, see store.ts); this only opens the file,
- * waits up to 5 s for a busy database, and turns WAL on.
- */
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -22,13 +12,10 @@ import { classifySqliteError, SqlError } from "effect/sql/SqlError";
 import * as Statement from "effect/sql/Statement";
 
 export type SqliteConfig = {
-  /** A path, or `:memory:`. */
   readonly filename: string;
-  /** How long a statement waits for a database another process holds. */
   readonly busyTimeoutMs?: number | undefined;
 };
 
-/** Prepared statements kept per connection; Top's queries are a fixed set, so this stays small. */
 const MAX_CACHED_STATEMENTS = 500;
 
 const failure = (operation: string, message: string) => (cause: unknown) => new SqlError({ reason: classifySqliteError(cause, { message, operation }) });
@@ -88,7 +75,6 @@ const makeConnection = (config: SqliteConfig): Effect.Effect<SqliteConnection, S
     } satisfies SqliteConnection;
   });
 
-/** A scoped `SqlClient` on one SQLite file. */
 export const make = (config: SqliteConfig): Effect.Effect<Client.SqlClient, SqlError, Scope.Scope | Reactivity.Reactivity> =>
   Effect.gen(function* () {
     const connection = yield* makeConnection(config);
@@ -111,6 +97,5 @@ export const make = (config: SqliteConfig): Effect.Effect<Client.SqlClient, SqlE
     });
   });
 
-/** Provides `SqlClient` for one SQLite file, closed with the layer. */
 export const layer = (config: SqliteConfig): Layer.Layer<Client.SqlClient, SqlError> =>
   Layer.effect(Client.SqlClient, make(config)).pipe(Layer.provide(Reactivity.layer));

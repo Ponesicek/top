@@ -1,8 +1,3 @@
-/**
- * Which daemon the app talks to, and the daemons on the user's tailnet. A daemon started with
- * `--tailscale` is at `wss://<device>.<tailnet>.ts.net:7357` and lets in the tailnet's devices (or only
- * those `--tailscale-allow` names); it tells the app who Tailscale says it is.
- */
 import { Check, Copy, RefreshCw } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { type Discovery, type FoundDaemon, findTailnetDaemons } from "../bridge.ts";
@@ -117,7 +112,6 @@ function Address() {
   );
 }
 
-/** Connected some other way: this is where phones and other computers reach the same daemon. */
 function TailnetAddress({ url }: { url: string }) {
   const [copied, copy] = useCopied();
   return (
@@ -138,7 +132,6 @@ function TailnetAddress({ url }: { url: string }) {
 
 function Found({ daemon }: { daemon: FoundDaemon }) {
   const serverId = useClient((snapshot) => snapshot.serverId);
-  // The same data is the same daemon, whichever address the app reached it at.
   const current = sameAddress(daemon.url, serverUrl) || (daemon.serverId !== undefined && daemon.serverId === serverId);
   return (
     <div className="flex items-center justify-between gap-4 py-1.5">
@@ -168,7 +161,6 @@ function Discover() {
   const [result, setResult] = useState<Discovery>();
   const [looking, setLooking] = useState(false);
   const look = useCallback(async () => {
-    // Only the desktop app can ask Tailscale; in a browser there's no list.
     if (!findTailnetDaemons) return;
     setLooking(true);
     try {
