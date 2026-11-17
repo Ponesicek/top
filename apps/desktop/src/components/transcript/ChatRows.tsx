@@ -4,7 +4,6 @@
  * blocks stand on their own between the bot's bubbles, so they keep the full width.
  */
 
-import type { BotId, BotSummary } from "@top/client";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderSegments } from "../../markdown.ts";
@@ -18,7 +17,6 @@ import {
   Markdown,
   prevTime,
   RetryNote,
-  type RowContext,
   type RowRenderer,
   sameDay,
   ToolGroup,
@@ -26,6 +24,7 @@ import {
   USER_BUBBLE_STATE,
   UserState,
   UserText,
+  useBotStatus,
   useElapsed,
 } from "./parts.tsx";
 
@@ -76,7 +75,7 @@ function DayChip({ at }: { at: number }) {
   );
 }
 
-const UserBubble = memo(function UserBubble({ row, ctx, first }: { row: Extract<DisplayRow, { kind: "user" }>; ctx: RowContext; first: boolean }) {
+const UserBubble = memo(function UserBubble({ row, first }: { row: Extract<DisplayRow, { kind: "user" }>; first: boolean }) {
   return (
     <div className={cn("flex flex-col items-end pr-2", first ? "pt-2.5" : "pt-0.5")}>
       {row.attachments && (
@@ -97,7 +96,7 @@ const UserBubble = memo(function UserBubble({ row, ctx, first }: { row: Extract<
         >
           {first && !row.attachments && <Tail side="out" />}
           <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">
-            <UserText text={row.text} bot={String(ctx.sync.id)} />
+            <UserText text={row.text} />
             <span className="stamp-space" aria-hidden>
               {time(row.at)}
             </span>
@@ -105,13 +104,13 @@ const UserBubble = memo(function UserBubble({ row, ctx, first }: { row: Extract<
           <Stamp at={row.at} />
         </div>
       )}
-      <UserState row={row} sync={ctx.sync} className="mt-1" />
+      <UserState row={row} className="mt-1" />
     </div>
   );
 });
 
 /** An answer: its prose in bubbles, its tables and code blocks between them, the time in the last bubble. */
-const BotBubbles = memo(function BotBubbles({ row, first, bot }: { row: Extract<DisplayRow, { kind: "assistant" }>; first: boolean; bot: BotId }) {
+const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<DisplayRow, { kind: "assistant" }>; first: boolean }) {
   const segments = useMemo(() => (row.text ? renderSegments(row.key, row.text) : []), [row]);
   const last = segments.length - 1;
   return (
@@ -122,13 +121,13 @@ const BotBubbles = memo(function BotBubbles({ row, first, bot }: { row: Extract<
           // biome-ignore lint/suspicious/noArrayIndexKey: segments of an immutable entry
           <div key={i} className={cn(BUBBLE, "bg-chat-in text-foreground", first && i === 0 && "rounded-tl-none")}>
             {first && i === 0 && <Tail side="in" />}
-            <Markdown html={i === last ? withStampSpace(segment.html, time(row.at)) : segment.html} bot={bot} />
+            <Markdown html={i === last ? withStampSpace(segment.html, time(row.at)) : segment.html} />
             {i === last && <Stamp at={row.at} />}
           </div>
         ) : (
           // biome-ignore lint/suspicious/noArrayIndexKey: segments of an immutable entry
           <div key={i} className="chat-block max-w-full overflow-x-auto px-px pb-0.5">
-            <Markdown html={segment.html} bot={bot} />
+            <Markdown html={segment.html} />
             {i === last && (
               <time className="block pt-0.5 pl-1 text-[11px] text-muted-foreground tabular-nums" dateTime={new Date(row.at).toISOString()}>
                 {time(row.at)}
@@ -142,16 +141,17 @@ const BotBubbles = memo(function BotBubbles({ row, first, bot }: { row: Extract<
   );
 });
 
-const ToolCard = memo(function ToolCard({ row, ctx, first }: { row: ToolGroupRow; ctx: RowContext; first: boolean }) {
+const ToolCard = memo(function ToolCard({ row, first }: { row: ToolGroupRow; first: boolean }) {
   return (
     <div className={cn("pl-2", first ? "pt-2.5" : "pt-0.75")}>
-      <ToolGroup row={row} sync={ctx.sync} className="w-fit max-w-[min(80%,620px)] rounded-[10px] bg-chat-in/75 px-2.75 py-1 shadow-bubble" panel="mb-1" />
+      <ToolGroup row={row} className="w-fit max-w-[min(80%,620px)] rounded-[10px] bg-chat-in/75 px-2.75 py-1 shadow-bubble" panel="mb-1" />
     </div>
   );
 });
 
 /** A typing bubble: dots, and what the bot is doing. */
-function Typing({ bot, first }: { bot: BotSummary | undefined; first: boolean }) {
+function Typing({ first }: { first: boolean }) {
+  const bot = useBotStatus();
   const seconds = useElapsed(bot);
   return (
     <div className={cn("pl-2", first ? "pt-2.5" : "pt-0.75")}>
@@ -168,7 +168,7 @@ function Typing({ bot, first }: { bot: BotSummary | undefined; first: boolean })
   );
 }
 
-export const renderChatRow: RowRenderer = (rows, index, ctx, bot) => {
+export const renderChatRow: RowRenderer = (rows, index) => {
   const row = rows[index]!;
   const prev = rows[index - 1];
   const at = rowTime(row);
@@ -179,13 +179,13 @@ export const renderChatRow: RowRenderer = (rows, index, ctx, bot) => {
     <>
       {newDay && at ? <DayChip at={at} /> : null}
       {row.kind === "user" ? (
-        <UserBubble row={row} ctx={ctx} first={first} />
+        <UserBubble row={row} first={first} />
       ) : row.kind === "assistant" ? (
-        <BotBubbles row={row} first={first} bot={ctx.sync.id} />
+        <BotBubbles row={row} first={first} />
       ) : row.kind === "toolgroup" ? (
-        <ToolCard row={row} ctx={ctx} first={first} />
+        <ToolCard row={row} first={first} />
       ) : row.kind === "working" ? (
-        <Typing bot={bot} first={first} />
+        <Typing first={first} />
       ) : null}
     </>
   );

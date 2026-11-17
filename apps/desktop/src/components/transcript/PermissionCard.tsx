@@ -17,6 +17,7 @@ import type { Row } from "../../rows.ts";
 import { top, useClient } from "../../top.ts";
 import { messageOf } from "../BotDialogs.tsx";
 import { Button } from "../ui/button.tsx";
+import { useIdentity } from "./parts.tsx";
 
 type PermissionRow = Extract<Row, { kind: "permission" }>;
 
@@ -26,7 +27,8 @@ const SETTLED = {
   withdrawn: { icon: CircleSlash, text: "Not answered: the request was withdrawn", tone: "text-muted-foreground" },
 } as const;
 
-export const PermissionCard = memo(function PermissionCard({ row, name, className }: { row: PermissionRow; name: string; className?: string }) {
+export const PermissionCard = memo(function PermissionCard({ row, className }: { row: PermissionRow; className?: string }) {
+  const { name } = useIdentity();
   const id = row.ask.id;
   const waiting = useClient((s) => s.permissions.some((p) => p.id === id));
   const online = useClient((s) => s.connection === "open");

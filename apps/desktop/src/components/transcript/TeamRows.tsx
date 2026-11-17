@@ -4,28 +4,28 @@
  * keeps talking within a few minutes; its later rows show their time in the gutter on hover.
  */
 
-import type { BotSummary } from "@top/client";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderCached } from "../../markdown.ts";
 import { author, type DisplayRow, rowTime, type ToolGroupRow } from "../../rows.ts";
-import { Avatar } from "../Avatar.tsx";
 import { statusLabel } from "../Sidebar.tsx";
 import { MessageAttachments } from "./MessageAttachments.tsx";
 import {
   AnswerError,
+  BotAvatar,
   Dots,
   Markdown,
   prevTime,
   RetryNote,
-  type RowContext,
   type RowRenderer,
   sameDay,
   ToolGroup,
   time,
   UserState,
   UserText,
+  useBotStatus,
   useElapsed,
+  useIdentity,
 } from "./parts.tsx";
 
 /** A run of messages from one author breaks after this long a pause. */
@@ -63,26 +63,13 @@ function YouAvatar() {
  * One row: with a header (avatar, name, time) when it opens a run, or just its content, its time in
  * the gutter on hover.
  */
-function Shell({
-  head,
-  who,
-  name,
-  avatar,
-  at,
-  children,
-}: {
-  head: boolean;
-  who: "user" | "bot";
-  name: string;
-  avatar?: number | undefined;
-  at: number | undefined;
-  children: React.ReactNode;
-}) {
+function Shell({ head, who, at, children }: { head: boolean; who: "user" | "bot"; at: number | undefined; children: React.ReactNode }) {
+  const { name } = useIdentity();
   return (
     <div className={cn("group/msg relative px-4 hover:bg-muted", head ? "mt-3.5 flex gap-4 py-1" : "py-0.5 pl-18")}>
       {head ? (
         <>
-          {who === "user" ? <YouAvatar /> : <Avatar name={name} avatar={avatar} size="md" className="mt-0.5 size-10" />}
+          {who === "user" ? <YouAvatar /> : <BotAvatar size="md" className="mt-0.5 size-10" />}
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
               <span className="text-body leading-snug font-heading tracking-name text-foreground">{who === "user" ? "You" : name}</span>
@@ -115,9 +102,9 @@ function Shell({
   );
 }
 
-const UserMessage = memo(function UserMessage({ row, ctx, head }: { row: Extract<DisplayRow, { kind: "user" }>; ctx: RowContext; head: boolean }) {
+const UserMessage = memo(function UserMessage({ row, head }: { row: Extract<DisplayRow, { kind: "user" }>; head: boolean }) {
   return (
-    <Shell head={head} who="user" name={ctx.name} at={row.at}>
+    <Shell head={head} who="user" at={row.at}>
       {row.text && (
         <div
           className={cn(
@@ -126,7 +113,7 @@ const UserMessage = memo(function UserMessage({ row, ctx, head }: { row: Extract
             row.state === "failed" && "text-destructive-foreground",
           )}
         >
-          <UserText text={row.text} bot={String(ctx.sync.id)} />
+          <UserText text={row.text} />
         </div>
       )}
       {row.attachments && (
@@ -136,31 +123,33 @@ const UserMessage = memo(function UserMessage({ row, ctx, head }: { row: Extract
           className={cn("my-1 max-w-[min(100%,600px)]", row.state === "sending" && "opacity-60")}
         />
       )}
-      <UserState row={row} sync={ctx.sync} className="mt-0.5" />
+      <UserState row={row} className="mt-0.5" />
     </Shell>
   );
 });
 
-const BotMessage = memo(function BotMessage({ row, ctx, head }: { row: Extract<DisplayRow, { kind: "assistant" }>; ctx: RowContext; head: boolean }) {
+const BotMessage = memo(function BotMessage({ row, head }: { row: Extract<DisplayRow, { kind: "assistant" }>; head: boolean }) {
   const html = useMemo(() => renderCached(row.key, row.text), [row]);
   return (
-    <Shell head={head} who="bot" name={ctx.name} avatar={ctx.avatar} at={row.at}>
-      {row.text && <Markdown html={html} answer={row.seq} bot={ctx.sync.id} />}
+    <Shell head={head} who="bot" at={row.at}>
+      {row.text && <Markdown html={html} answer={row.seq} />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
   );
 });
 
-const Tools = memo(function Tools({ row, ctx, head }: { row: ToolGroupRow; ctx: RowContext; head: boolean }) {
+const Tools = memo(function Tools({ row, head }: { row: ToolGroupRow; head: boolean }) {
   return (
-    <Shell head={head} who="bot" name={ctx.name} avatar={ctx.avatar} at={row.at}>
-      <ToolGroup row={row} sync={ctx.sync} className="py-0.5" />
+    <Shell head={head} who="bot" at={row.at}>
+      <ToolGroup row={row} className="py-0.5" />
     </Shell>
   );
 });
 
 /** "Atlas is running bash…", with dots, where a typing indicator would be. */
-function Typing({ name, bot }: { name: string; bot: BotSummary | undefined }) {
+function Typing() {
+  const { name } = useIdentity();
+  const bot = useBotStatus();
   const seconds = useElapsed(bot);
   return (
     <div className="px-4 pt-1.5 pb-1 pl-18">
@@ -176,7 +165,7 @@ function Typing({ name, bot }: { name: string; bot: BotSummary | undefined }) {
   );
 }
 
-export const renderTeamRow: RowRenderer = (rows, index, ctx, bot) => {
+export const renderTeamRow: RowRenderer = (rows, index) => {
   const row = rows[index]!;
   const prev = rows[index - 1];
   const at = rowTime(row);
@@ -187,13 +176,13 @@ export const renderTeamRow: RowRenderer = (rows, index, ctx, bot) => {
     <>
       {newDay && at ? <DateRule at={at} /> : null}
       {row.kind === "user" ? (
-        <UserMessage row={row} ctx={ctx} head={head} />
+        <UserMessage row={row} head={head} />
       ) : row.kind === "assistant" ? (
-        <BotMessage row={row} ctx={ctx} head={head} />
+        <BotMessage row={row} head={head} />
       ) : row.kind === "toolgroup" ? (
-        <Tools row={row} ctx={ctx} head={head} />
+        <Tools row={row} head={head} />
       ) : row.kind === "working" ? (
-        <Typing name={ctx.name} bot={bot} />
+        <Typing />
       ) : null}
     </>
   );

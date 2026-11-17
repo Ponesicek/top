@@ -16,7 +16,7 @@ import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { findPassage, onJump } from "../quotes.ts";
 import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows } from "../rows.ts";
-import { useBot, useConversation } from "../top.ts";
+import { useClient, useConversation } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
 import { FilesLine } from "./files/FilesLine.tsx";
@@ -24,7 +24,7 @@ import { highlight, QuoteMenu } from "./Quotes.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
 import { PermissionCard } from "./transcript/PermissionCard.tsx";
-import { AutoLoad, DIVIDER, type RowContext, type RowRenderer } from "./transcript/parts.tsx";
+import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider, type RowRenderer } from "./transcript/parts.tsx";
 import { renderTeamRow } from "./transcript/TeamRows.tsx";
 
 const BOTTOM_SLACK = 48;
@@ -63,21 +63,22 @@ function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: bo
 
 export const Transcript = memo(function Transcript({
   sync,
-  name,
-  avatar,
   style = "default",
   showTools = false,
 }: {
   sync: ConversationSync;
-  name: string;
-  avatar?: number | undefined;
   style?: ChatStyle;
   showTools?: boolean;
 }) {
   const look = STYLES[style];
   const snapshot = useConversation(sync);
-  const bot = useBot(sync.id);
-  const rows = useRows(snapshot, isWorking(bot?.status), showTools);
+  // Only what the transcript itself needs of the bot's summary, so its other changes (a new preview, a
+  // queued count) don't render it again: who the bot is, and whether to show the working row.
+  const name = useClient((s) => s.bots.find((b) => b.id === sync.id)?.name ?? "");
+  const avatar = useClient((s) => s.bots.find((b) => b.id === sync.id)?.avatar);
+  const working = useClient((s) => isWorking(s.bots.find((b) => b.id === sync.id)?.status));
+  const identity = useMemo<BotIdentity>(() => ({ sync, name, avatar }), [sync, name, avatar]);
+  const rows = useRows(snapshot, working, showTools);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -200,7 +201,6 @@ export const Transcript = memo(function Transcript({
   );
 
   const loadEarlier = useCallback(() => sync.loadEarlier(), [sync]);
-  const ctx = useMemo<RowContext>(() => ({ sync, name, avatar }), [sync, name, avatar]);
 
   // The default style shows a turn's time under it while the pointer is anywhere in the turn (which
   // spans several rows): one unlayered rule shows the hovered turn's time, without re-rendering rows.
@@ -231,37 +231,39 @@ export const Transcript = memo(function Transcript({
     >
       <style ref={turnStyle} />
       <QuoteMenu bot={String(sync.id)} container={scrollRef} />
-      <div ref={innerRef} className={cn("relative mx-auto w-full", look.inner)} style={{ height: virtualizer.getTotalSize() }}>
-        {items.map((item) => {
-          const row = rows[item.index]!;
-          return (
-            <div
-              key={item.key}
-              data-index={item.index}
-              ref={virtualizer.measureElement}
-              // Placed with `top`, not a transform: a transformed row (worse, one promoted with
-              // will-change) gets its own GPU layer, where Chromium drops ClearType for grayscale text
-              // and can land glyphs between pixels, so the conversation reads blurry beside the sidebar.
-              className={cn("row absolute left-0 w-full", look.row)}
-              style={{ top: item.start }}
-            >
-              {row.kind === "earlier" ? (
-                <AutoLoad onVisible={loadEarlier} label="Load earlier messages" />
-              ) : row.kind === "gap" ? (
-                <AutoLoad onVisible={() => sync.fillGap(row.gap)} label="Load missed messages" />
-              ) : row.kind === "notice" ? (
-                <div className={DIVIDER}>{row.text}</div>
-              ) : row.kind === "files" ? (
-                <FilesLine row={row} bot={sync.id} className={look.files} />
-              ) : row.kind === "permission" ? (
-                <PermissionCard row={row} name={name} className={look.files} />
-              ) : (
-                look.render(rows, item.index, ctx, bot)
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <IdentityProvider value={identity}>
+        <div ref={innerRef} className={cn("relative mx-auto w-full", look.inner)} style={{ height: virtualizer.getTotalSize() }}>
+          {items.map((item) => {
+            const row = rows[item.index]!;
+            return (
+              <div
+                key={item.key}
+                data-index={item.index}
+                ref={virtualizer.measureElement}
+                // Placed with `top`, not a transform: a transformed row (worse, one promoted with
+                // will-change) gets its own GPU layer, where Chromium drops ClearType for grayscale text
+                // and can land glyphs between pixels, so the conversation reads blurry beside the sidebar.
+                className={cn("row absolute left-0 w-full", look.row)}
+                style={{ top: item.start }}
+              >
+                {row.kind === "earlier" ? (
+                  <AutoLoad onVisible={loadEarlier} label="Load earlier messages" />
+                ) : row.kind === "gap" ? (
+                  <AutoLoad onVisible={() => sync.fillGap(row.gap)} label="Load missed messages" />
+                ) : row.kind === "notice" ? (
+                  <div className={DIVIDER}>{row.text}</div>
+                ) : row.kind === "files" ? (
+                  <FilesLine row={row} bot={sync.id} className={look.files} />
+                ) : row.kind === "permission" ? (
+                  <PermissionCard row={row} className={look.files} />
+                ) : (
+                  look.render(rows, item.index)
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </IdentityProvider>
       {rows.length === 0 && (
         <Empty>
           {snapshot.status === "loading" ? (
