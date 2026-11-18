@@ -60,7 +60,7 @@ function Editor({ bot, file, onSaved }: { bot: BotId; file: ContextFileView; onS
           rows={12}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "s" && (e.ctrlKey || e.metaKey) && dirty) {
+            if (e.key === "s" && (e.ctrlKey || e.metaKey) && dirty && !stale) {
               e.preventDefault();
               void save();
             }

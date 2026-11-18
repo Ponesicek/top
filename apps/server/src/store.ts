@@ -554,8 +554,9 @@ const make = Effect.gen(function* () {
       bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
       createBot: (name, model, avatar = 0) =>
         Effect.map(first(sql`INSERT INTO bots (name, avatar, model) VALUES (${name}, ${avatar}, ${model}) RETURNING id`), (row) => Number(row!.id)),
-      legacySouls: Effect.map(rows(sql`SELECT bot, name, description FROM legacy_souls ORDER BY bot`), (r) =>
-        r.map((row) => ({ bot: Number(row.bot), name: String(row.name), description: String(row.description) })),
+      legacySouls: Effect.map(
+        rows(sql`SELECT bot, legacy_souls.name, description FROM legacy_souls JOIN bots ON bots.id = legacy_souls.bot WHERE bots.deleted = 0 ORDER BY bot`),
+        (r) => r.map((row) => ({ bot: Number(row.bot), name: String(row.name), description: String(row.description) })),
       ),
       settleLegacySoul: (bot) => Effect.asVoid(q(sql`DELETE FROM legacy_souls WHERE bot = ${bot}`)),
       markDeleted: (bot) =>

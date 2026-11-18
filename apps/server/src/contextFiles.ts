@@ -69,8 +69,8 @@ export function contextSections(folder: string, handle: string, files: readonly 
 export function soulIdentity(content: string | undefined): { name?: string; about?: string } {
   const lines = (content ?? "").replace(/^\uFEFF/, "").split(/\r?\n/);
   const at = lines.findIndex((line) => line.trim() !== "");
-  if (at === -1 || !/^#\s+\S/.test(lines[at]!)) return {};
-  const name = lines[at]!.replace(/^#\s+/, "")
+  if (at === -1 || !/^ {0,3}#\s+\S/.test(lines[at]!)) return {};
+  const name = lines[at]!.replace(/^ {0,3}#\s+/, "")
     .replace(/\s+#+\s*$/, "")
     .replace(/(\*\*|__|`)/g, "")
     .trim()
@@ -103,8 +103,7 @@ export const saveContextFile = (folder: string, name: ContextFileName, content: 
     if (Buffer.byteLength(content) > MAX_CONTEXT_FILE_BYTES) return yield* new BotError({ message: tooBig(name) });
     const current = yield* readContextFile(folder, name);
     if (current.error) return yield* new BotError({ message: `${name} can't be saved here: ${current.error}` });
-    if (current.version !== version)
-      return yield* new BotError({ message: `${name} changed since you opened it, maybe by the bot. Reload it to see the change.` });
+    if (current.version !== version) return yield* new BotError({ message: `${name} changed since you opened it, maybe by the bot.` });
     yield* Effect.andThen(fs.makeDirectory(folder, { recursive: true }), replace(fs, current.path, content)).pipe(
       Effect.mapError((error) => new BotError({ message: `${name} wasn't saved: ${messageOf(error)}` })),
     );
@@ -121,7 +120,7 @@ export const hasContextFiles = (folder: string) =>
     ),
   );
 
-export const seedSoul = (folder: string, name: string, about: string) =>
+export const seedSoul = (folder: string, name: string, about: string, exclusive = false) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = join(folder, "SOUL.md");
@@ -136,6 +135,7 @@ export const seedSoul = (folder: string, name: string, about: string) =>
       return true;
     }).pipe(Effect.ensuring(Effect.ignore(fs.remove(temp))));
     if (created) return "written" as const;
+    if (exclusive) return yield* new BotError({ message: "its folder already has a SOUL.md" });
     const existing = yield* fs.readFileString(path);
     const blocks = `\n\n${existing.replace(/\r\n/g, "\n").trim()}\n\n`;
     if (!text || blocks.includes(`\n\n${text.replace(/\r\n/g, "\n")}\n\n`)) return "kept" as const;

@@ -122,7 +122,17 @@ export const ensureBots = (names: readonly string[], newBot: NewBot, folder: ((b
 export const moveLegacySouls = (folder: (bot: Pick<BotRow, "name">) => string) =>
   Effect.gen(function* () {
     const store = yield* Store;
+    const claimed = new Map<string, string>();
     for (const soul of yield* store.legacySouls) {
+      const path = folder(soul).toLowerCase();
+      const first = claimed.get(path);
+      if (first !== undefined) {
+        yield* Effect.logError(
+          `${soul.name}: its folder is ${first}'s too, so its name and description stay in the database rather than go into ${first}'s SOUL.md`,
+        );
+        continue;
+      }
+      claimed.set(path, soul.name);
       const moved = yield* Effect.result(seedSoul(folder(soul), soul.name, soul.description));
       if (moved._tag === "Failure") {
         yield* Effect.logError(`${soul.name}: couldn't move its name and description into SOUL.md; they stay in the database until it can`, moved.failure);
@@ -380,7 +390,7 @@ const make = Effect.gen(function* () {
         const left = yield* hasContextFiles(path).pipe(Effect.provideService(FileSystem.FileSystem, fs));
         if (left.length)
           return yield* new BotError({ message: `${path} still has ${left.join(", ")} from an earlier bot. Move them away, or pick another name.` });
-        yield* seedSoul(path, name, description).pipe(
+        yield* seedSoul(path, name, description, true).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.mapError((error) => new BotError({ message: `Couldn't write ${name}'s SOUL.md: ${error.message}` })),
         );

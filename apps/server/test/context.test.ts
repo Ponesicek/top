@@ -356,6 +356,22 @@ test("bots from before context files get their name and description in SOUL.md, 
   );
 });
 
+test("two bots from before whose names share a folder don't merge into one SOUL.md", async () => {
+  const setup = await harness({ bots: ["Sc/out", "Sc_out"], context: true });
+  const dir = setup.dir;
+  await setup.close();
+  const db = new DatabaseSync(join(dir, "top.sqlite"));
+  db.exec(BEFORE_CONTEXT_FILES);
+  db.exec("UPDATE bots SET description = 'Second.' WHERE name = 'Sc_out'");
+  db.close();
+  const h = await harness({ dir, context: true });
+  assert.equal(readFileSync(join(dir, "bots", "Sc_out", "SOUL.md"), "utf8"), "# Sc/out\n");
+  assert.deepEqual(
+    (await h.run(h.store.legacySouls)).map((s) => [s.name, s.description]),
+    [["Sc_out", "Second."]],
+  );
+});
+
 test("SOUL.md names the bot in the app; the folder keeps the name it was made with", async () => {
   const { h } = await recording();
   const made = await h.run(h.daemon.createBot("Scout", "Watches the build and reports breakages."));
