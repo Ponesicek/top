@@ -35,7 +35,7 @@ test("bots from before icons could be picked keep the drawing of their name, and
       assert.deepEqual(yield* store.legacySouls, [{ bot: 1, name: "Atlas", description: "Watches the build." }]);
       yield* store.createBot("Lark", "fake/model", 42);
       assert.equal((yield* store.ask(1, "1:2:call_1", "deploy web", undefined)).state, "pending");
-      yield* store.enableSkill(1, "pdf", true);
+      yield* store.enableSkills(1, ["pdf"], true);
       assert.deepEqual([...(yield* store.enabledSkills)], [[1, ["pdf"]]]);
       return yield* store.bots;
     }),

@@ -389,7 +389,7 @@ export class Store extends Context.Service<
     readonly assignMcp: (server: number, bot: number, on: boolean) => Effect.Effect<void>;
 
     readonly enabledSkills: Effect.Effect<Map<number, string[]>>;
-    readonly enableSkill: (bot: number, name: string, on: boolean) => Effect.Effect<void>;
+    readonly enableSkills: (bot: number, names: readonly string[], on: boolean) => Effect.Effect<void>;
 
     readonly append: <K extends EntryKind>(bot: number, kind: K, message: EntryBody[K], extra?: AppendExtra) => Effect.Effect<StoredEntry>;
     readonly entry: (seq: number) => Effect.Effect<StoredEntry | undefined>;
@@ -658,10 +658,17 @@ const make = Effect.gen(function* () {
           return map;
         },
       ),
-      enableSkill: (bot, name, on) =>
-        Effect.asVoid(
-          q(
-            on ? sql`INSERT OR IGNORE INTO bot_skills (bot, name) VALUES (${bot}, ${name})` : sql`DELETE FROM bot_skills WHERE bot = ${bot} AND name = ${name}`,
+      enableSkills: (bot, names, on) =>
+        transaction(
+          Effect.forEach(
+            names,
+            (name) =>
+              q(
+                on
+                  ? sql`INSERT OR IGNORE INTO bot_skills (bot, name) VALUES (${bot}, ${name})`
+                  : sql`DELETE FROM bot_skills WHERE bot = ${bot} AND name = ${name}`,
+              ),
+            { discard: true },
           ),
         ),
 

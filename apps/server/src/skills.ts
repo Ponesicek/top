@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
   type ActiveSkill,
@@ -8,6 +9,9 @@ import {
   MAX_SKILL_NAME,
   SKILL_NAME,
   SkillError,
+  type SkillFolder,
+  type SkillFolderAdded,
+  type SkillFolderEntry,
   type SkillsView,
   type SkillUse,
   type SkillView,
@@ -21,6 +25,8 @@ import { type BotRow, Store } from "./store.ts";
 
 export const LOCAL_SKILLS = join(".agents", "skills");
 const SKILL_FILE = "SKILL.md";
+/** Agent Skills frontmatter (as in Claude Code): `true` keeps the skill out of the bot's instructions, for `/<name>` only. */
+const DISABLE_MODEL_INVOCATION = "disable-model-invocation";
 export const MAX_SKILL_BYTES = 256 * 1024;
 
 export type SkillsConfig = {
@@ -33,7 +39,9 @@ const messageOf = (error: unknown) => {
   return cause instanceof Error ? cause.message : String(cause);
 };
 
-function checkFrontmatter(name: string, content: string): { description: string; error?: string } {
+type Checked = { readonly description: string; readonly manual?: true; readonly error?: string };
+
+function checkFrontmatter(name: string, content: string): Checked {
   let frontmatter: Record<string, unknown>;
   try {
     frontmatter = parseFrontmatter(content).frontmatter;
@@ -42,12 +50,15 @@ function checkFrontmatter(name: string, content: string): { description: string;
   }
   const description = typeof frontmatter.description === "string" ? frontmatter.description.trim() : "";
   const fail = (error: string) => ({ description, error });
-  if (!content.replace(/^﻿/, "").startsWith("---")) return fail("SKILL.md has no frontmatter: it starts with --- and gives a name and a description.");
+  if (!content.replace(/^\uFEFF/, "").startsWith("---")) return fail("SKILL.md has no frontmatter: it starts with --- and gives a name and a description.");
   if (frontmatter.name === undefined) return fail("Its frontmatter has no name.");
   if (frontmatter.name !== name) return fail(`Its frontmatter's name (${JSON.stringify(frontmatter.name)}) isn't its folder's name.`);
   if (!description) return fail("Its frontmatter has no description, which is how a bot knows when to use it.");
   if (description.length > MAX_SKILL_DESCRIPTION) return fail(`Its description is over ${MAX_SKILL_DESCRIPTION} characters.`);
-  return { description };
+  const manual = frontmatter[DISABLE_MODEL_INVOCATION];
+  if (manual === undefined || manual === null || manual === false || manual === "false") return { description };
+  if (manual === true || manual === "true") return { description, manual: true };
+  return fail(`Its frontmatter's ${DISABLE_MODEL_INVOCATION} is ${JSON.stringify(manual)}, which isn't true or false.`);
 }
 
 const readSkill = (dir: string, name: string): Effect.Effect<SkillView | undefined, never, FileSystem.FileSystem> =>
@@ -55,23 +66,29 @@ const readSkill = (dir: string, name: string): Effect.Effect<SkillView | undefin
     const fs = yield* FileSystem.FileSystem;
     const folder = join(dir, name);
     const path = join(folder, SKILL_FILE);
-    const skill = (description: string, error?: string): SkillView => ({ name, description, path, ...(error ? { error } : {}) });
+    const link = yield* Effect.result(fs.readLink(folder));
+    const linkedFrom = link._tag === "Success" ? dirname(resolve(dir, link.success)) : undefined;
+    const skill = (checked: Checked): SkillView => ({
+      name,
+      description: checked.description,
+      path,
+      ...(checked.error ? { error: checked.error } : {}),
+      ...(checked.manual && !checked.error ? { manual: true } : {}),
+      ...(linkedFrom ? { linkedFrom } : {}),
+    });
+    const broken = (error: string) => skill({ description: "", error });
     const info = yield* Effect.result(fs.stat(folder));
-    if (info._tag === "Failure") {
-      const link = yield* Effect.result(fs.readLink(folder));
-      return link._tag === "Success" ? skill("", `It's a link to ${link.success}, which isn't there.`) : undefined;
-    }
+    if (info._tag === "Failure") return link._tag === "Success" ? broken(`It's a link to ${link.success}, which isn't there.`) : undefined;
     if (info.success.type !== "Directory") return undefined;
     if (name.length > MAX_SKILL_NAME || !SKILL_NAME.test(name))
-      return skill("", `Its folder's name is its name, which takes lowercase letters, digits and single hyphens (up to ${MAX_SKILL_NAME}).`);
+      return broken(`Its folder's name is its name, which takes lowercase letters, digits and single hyphens (up to ${MAX_SKILL_NAME}).`);
     const file = yield* Effect.result(fs.stat(path));
-    if (file._tag === "Failure") return skill("", "There's no SKILL.md in its folder.");
-    if (file.success.type !== "File") return skill("", "Its SKILL.md isn't a file.");
-    if (Number(file.success.size) > MAX_SKILL_BYTES) return skill("", `Its SKILL.md is over ${MAX_SKILL_BYTES / 1024} KB.`);
+    if (file._tag === "Failure") return broken("There's no SKILL.md in its folder.");
+    if (file.success.type !== "File") return broken("Its SKILL.md isn't a file.");
+    if (Number(file.success.size) > MAX_SKILL_BYTES) return broken(`Its SKILL.md is over ${MAX_SKILL_BYTES / 1024} KB.`);
     const content = yield* Effect.result(fs.readFileString(path));
-    if (content._tag === "Failure") return skill("", `Its SKILL.md can't be read: ${messageOf(content.failure)}`);
-    const checked = checkFrontmatter(name, content.success);
-    return skill(checked.description, checked.error);
+    if (content._tag === "Failure") return broken(`Its SKILL.md can't be read: ${messageOf(content.failure)}`);
+    return skill(checkFrontmatter(name, content.success));
   });
 
 export const scanSkills = (dir: string): Effect.Effect<SkillView[], never, FileSystem.FileSystem> =>
@@ -91,7 +108,8 @@ export const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/
 const folderOf = (skill: Pick<SkillView, "path">) => skill.path.slice(0, -(SKILL_FILE.length + 1));
 
 export function skillsSection(skills: readonly ActiveSkill[], where: { readonly library: string; readonly local: string }): string | null {
-  const usable = skills.filter((skill) => !skill.error);
+  // A skill that asks not to be invoked by the model stays out: the bot gets it only with a message that starts with /<name>.
+  const usable = skills.filter((skill) => !skill.error && !skill.manual);
   if (!usable.length) return null;
   return [
     "<skills>",
@@ -144,10 +162,75 @@ export const invocationNote = (skill: ActiveSkill): Effect.Effect<UserText, neve
     };
   });
 
+/** A skill in a folder being added, and the folder the library would link to. */
+type Candidate = SkillFolderEntry & { readonly source: string };
+
+const expandHome = (path: string) => (path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+
+/**
+ * What adding `raw` to the library would do. It's a folder of skill folders (a collection, like a cloned repository's
+ * skills/) or one skill's own folder. Nothing in the library is replaced: a name that's taken stays as it is.
+ */
+export const inspectSkillFolder = (
+  library: string,
+  raw: string,
+): Effect.Effect<{ readonly folder: string; readonly skills: readonly Candidate[] }, SkillError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const given = expandHome(raw.trim());
+    if (!given) return yield* new SkillError({ message: "Give the path of a folder of skills on the daemon's computer." });
+    if (!isAbsolute(given))
+      return yield* new SkillError({ message: `Give the folder's full path on the daemon's computer (it may start with ~): ${raw.trim()} isn't one.` });
+    const folder = resolve(given);
+    const info = yield* Effect.result(fs.stat(folder));
+    if (info._tag === "Failure") return yield* new SkillError({ message: `There's no folder at ${folder}.` });
+    if (info.success.type !== "Directory") return yield* new SkillError({ message: `${folder} isn't a folder.` });
+    const real = (path: string) => Effect.orElseSucceed(fs.realPath(path), () => undefined);
+    const realFolder = yield* real(folder);
+    const realLibrary = (yield* real(library)) ?? library;
+    const within = (path: string | undefined, dir: string) => path !== undefined && (path === dir || path.startsWith(dir + sep));
+    if (within(folder, resolve(library)) || within(realFolder, realLibrary))
+      return yield* new SkillError({ message: `${folder} is in the shared library already: its skills are there to switch on.` });
+
+    const single = yield* Effect.result(fs.stat(join(folder, SKILL_FILE)));
+    const found: { skill: SkillView; source: string }[] = [];
+    if (single._tag === "Success") {
+      const skill = yield* readSkill(dirname(folder), basename(folder));
+      if (skill) found.push({ skill, source: folder });
+    } else {
+      for (const skill of yield* scanSkills(folder)) found.push({ skill, source: join(folder, skill.name) });
+    }
+
+    const skills: Candidate[] = [];
+    for (const { skill: scanned, source } of found) {
+      const { linkedFrom: _, ...skill } = scanned;
+      if (skill.error) {
+        skills.push({ skill, source, state: "broken", reason: skill.error });
+        continue;
+      }
+      const entry = join(library, skill.name);
+      const there = yield* Effect.result(fs.lstat(entry));
+      if (there._tag === "Failure") {
+        skills.push({ skill, source, state: "new" });
+        continue;
+      }
+      const target = yield* real(entry);
+      const same = target !== undefined && target === (yield* real(source));
+      skills.push(
+        same
+          ? { skill, source, state: "added" }
+          : { skill, source, state: "taken", reason: `The library already has something named ${skill.name} (${entry}), which stays as it is.` },
+      );
+    }
+    return { folder, skills };
+  });
+
 export type Skills = {
   readonly view: () => SkillsView;
   readonly rescan: Effect.Effect<void>;
-  readonly enable: (bot: BotRow, name: string, on: boolean) => Effect.Effect<void, SkillError>;
+  readonly enable: (bot: BotRow, names: readonly string[], on: boolean) => Effect.Effect<void, SkillError>;
+  readonly preview: (folder: string) => Effect.Effect<SkillFolder, SkillError>;
+  readonly addFolder: (folder: string, bots: readonly BotRow[]) => Effect.Effect<SkillFolderAdded, SkillError>;
   readonly section: (bot: BotRow) => Effect.Effect<string | null>;
   readonly note: (bot: BotRow, text: string) => Effect.Effect<UserText | undefined>;
 };
@@ -170,33 +253,78 @@ export const makeSkills = Effect.fnUntraced(function* (config: SkillsConfig, ann
       return { library: config.library, shared, bots: [yield* botSkills(bot, enabled)] } satisfies SkillsView;
     });
 
-  const rescan = lock.withPermits(1)(
-    Effect.gen(function* () {
-      const enabled = yield* store.enabledSkills;
-      const shared = yield* provide(scanSkills(config.library));
-      const bots: BotSkills[] = [];
-      for (const bot of yield* store.bots) bots.push(yield* botSkills(bot, enabled.get(bot.id) ?? []));
-      const next: SkillsView = { library: config.library, shared, bots };
-      if (JSON.stringify(next) === JSON.stringify(current)) return;
-      current = next;
-      yield* announce(next);
-    }),
-  );
+  const scan = Effect.gen(function* () {
+    const enabled = yield* store.enabledSkills;
+    const shared = yield* provide(scanSkills(config.library));
+    const bots: BotSkills[] = [];
+    for (const bot of yield* store.bots) bots.push(yield* botSkills(bot, enabled.get(bot.id) ?? []));
+    const next: SkillsView = { library: config.library, shared, bots };
+    if (JSON.stringify(next) === JSON.stringify(current)) return;
+    current = next;
+    yield* announce(next);
+  });
+  const rescan = lock.withPermits(1)(scan);
   yield* rescan;
+
+  const preview = (folder: string) =>
+    Effect.map(provide(inspectSkillFolder(config.library, folder)), ({ folder, skills }) => ({
+      folder,
+      skills: skills.map(({ source: _, ...entry }) => entry),
+    }));
+
+  const addFolder = (folder: string, bots: readonly BotRow[]) =>
+    lock.withPermits(1)(
+      Effect.gen(function* () {
+        const inspected = yield* provide(inspectSkillFolder(config.library, folder));
+        const added: string[] = [];
+        const usable: string[] = [];
+        const skipped: { name: string; reason: string }[] = [];
+        for (const entry of inspected.skills) {
+          const name = entry.skill.name;
+          if (entry.state === "added") usable.push(name);
+          else if (entry.state !== "new") skipped.push({ name, reason: entry.reason ?? "It can't be added." });
+          else {
+            // A link is made only where nothing is: if something took the name since the folder was read, it stays.
+            const linked = yield* Effect.result(fs.symlink(entry.source, join(config.library, name)));
+            if (linked._tag === "Failure") skipped.push({ name, reason: `It couldn't be linked into the library: ${messageOf(linked.failure)}` });
+            else {
+              added.push(name);
+              usable.push(name);
+            }
+          }
+        }
+        const enabled: { bot: BotRow["id"]; names: string[] }[] = [];
+        for (const bot of bots) {
+          const own = new Set((yield* provide(scanSkills(config.local(bot)))).map((s) => s.name));
+          const names = usable.filter((name) => !own.has(name));
+          for (const name of usable.filter((name) => own.has(name)))
+            skipped.push({ name, reason: `${bot.name} has its own ${name}, which it keeps using: switch that one on under its own skills.` });
+          yield* store.enableSkills(bot.id, names, true);
+          enabled.push({ bot: bot.id, names });
+        }
+        yield* scan;
+        return { folder: inspected.folder, added, enabled, skipped } satisfies SkillFolderAdded;
+      }),
+    );
 
   return {
     view: () => current,
     rescan,
-    enable: (bot, name, on) =>
+    preview,
+    addFolder,
+    enable: (bot, names, on) =>
       Effect.gen(function* () {
+        const unique = [...new Set(names)];
         if (on) {
           const view = yield* viewOf(bot);
-          const local = view.bots[0]!.local.find((s) => s.name === name);
-          const found = local ?? view.shared.find((s) => s.name === name);
-          if (!found) return yield* new SkillError({ message: `${bot.name} has no skill named ${name}. Rescan if it was just added.` });
-          if (found.error) return yield* new SkillError({ message: `${name} can't be used: ${found.error}` });
+          for (const name of unique) {
+            const local = view.bots[0]!.local.find((s) => s.name === name);
+            const found = local ?? view.shared.find((s) => s.name === name);
+            if (!found) return yield* new SkillError({ message: `${bot.name} has no skill named ${name}. Rescan if it was just added.` });
+            if (found.error) return yield* new SkillError({ message: `${name} can't be used: ${found.error}` });
+          }
         }
-        yield* store.enableSkill(bot.id, name, on);
+        yield* store.enableSkills(bot.id, unique, on);
         yield* rescan;
       }),
     section: (bot) => Effect.map(viewOf(bot), (view) => skillsSection(activeSkills(view, bot.id), { library: config.library, local: config.local(bot) })),

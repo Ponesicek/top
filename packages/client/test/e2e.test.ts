@@ -569,14 +569,38 @@ test("skills from the app: found in the home and the bot's folder, switched on p
     "the bot's own skill",
   );
 
-  await a.top.enableSkill(a.id, "pdf", true);
+  await a.top.enableSkills(a.id, ["pdf"], true);
   await until(
     b.top.subscribe,
     () => mine(b.top)?.enabled,
     (e) => e?.[0] === "pdf",
     "the skill switched on, on the other client",
   );
-  await assert.rejects(a.top.enableSkill(a.id, "nope", true), /no skill named nope/);
+  await assert.rejects(a.top.enableSkills(a.id, ["nope"], true), /no skill named nope/);
+
+  const pack = mkdtempSync(join(tmpdir(), "top-e2e-pack-"));
+  cleanup.push(() => rmSync(pack, { recursive: true, force: true }));
+  skill(pack, "review", "Review a change.");
+  skill(pack, "pdf", "Another PDF skill.");
+  const preview = await a.top.previewSkillFolder(pack);
+  assert.deepEqual(
+    preview.skills.map((x) => [x.skill.name, x.state]),
+    [
+      ["pdf", "taken"],
+      ["review", "new"],
+    ],
+  );
+  const added = await a.top.addSkillFolder(pack, [a.id]);
+  assert.deepEqual(added.added, ["review"]);
+  assert.deepEqual(added.enabled, [{ bot: a.id, names: ["review"] }]);
+  await until(
+    b.top.subscribe,
+    () => mine(b.top)?.enabled,
+    (e) => e?.join() === "pdf,review",
+    "the folder's skill linked and switched on, on the other client",
+  );
+  assert.equal(skillsOf(b.top)?.shared.find((x) => x.name === "review")?.linkedFrom, pack);
+  await assert.rejects(a.top.addSkillFolder("relative/path", []), /full path/);
 
   a.bot.send("/pdf fill in the form");
   const s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "user").some((u) => u.skill), "the message that used the skill");
@@ -594,7 +618,7 @@ test("skills from the app: found in the home and the bot's folder, switched on p
     (x) => !!x,
     "the skills after a restart",
   );
-  assert.deepEqual(after!.enabled, ["pdf"]);
+  assert.deepEqual(after!.enabled, ["pdf", "review"]);
 });
 
 test("no MCP server may take the name of Top's own tools (Collar)", async () => {

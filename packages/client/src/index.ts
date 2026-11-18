@@ -14,6 +14,8 @@ import {
   PROTOCOL_VERSION,
   type ResultOf,
   type ServerFrame,
+  type SkillFolder,
+  type SkillFolderAdded,
   type SkillsView,
   type UpdateView,
   type Viewer,
@@ -55,6 +57,9 @@ export type {
   PermissionRequest,
   QueuedMessage,
   Seq,
+  SkillFolder,
+  SkillFolderAdded,
+  SkillFolderEntry,
   SkillSource,
   SkillsView,
   SkillUse,
@@ -253,8 +258,18 @@ export class TopClient {
     return this.#command({ t: "assignMcp", server, bot, on });
   }
 
-  enableSkill(bot: BotId, name: string, on: boolean): Promise<void> {
-    return this.#command({ t: "enableSkill", bot, name, on });
+  enableSkills(bot: BotId, names: readonly string[], on: boolean): Promise<void> {
+    return this.#command({ t: "enableSkills", bot, names, on });
+  }
+
+  /** What adding a folder of skills (on the daemon's computer) would link, and what it would leave out. Changes nothing. */
+  previewSkillFolder(folder: string): Promise<SkillFolder> {
+    return this.#request({ t: "previewSkillFolder", folder });
+  }
+
+  /** Links the folder's new skills into the shared library and switches its usable ones on for `bots`. */
+  addSkillFolder(folder: string, bots: readonly BotId[]): Promise<SkillFolderAdded> {
+    return this.#request({ t: "addSkillFolder", folder, bots });
   }
 
   setWebSearch(bot: BotId, on: boolean): Promise<void> {
