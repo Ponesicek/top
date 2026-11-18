@@ -370,6 +370,10 @@ test("two bots from before whose names share a folder don't merge into one SOUL.
     (await h.run(h.store.legacySouls)).map((s) => [s.name, s.description]),
     [["Sc_out", "Second."]],
   );
+  await h.close();
+  const again = await harness({ dir, context: true });
+  assert.equal(readFileSync(join(dir, "bots", "Sc_out", "SOUL.md"), "utf8"), "# Sc/out\n", "nor on any later start");
+  assert.equal((await again.run(again.store.legacySouls)).length, 1);
 });
 
 test("SOUL.md names the bot in the app; the folder keeps the name it was made with", async () => {

@@ -60,9 +60,9 @@ function Editor({ bot, file, onSaved }: { bot: BotId; file: ContextFileView; onS
           rows={12}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "s" && (e.ctrlKey || e.metaKey) && dirty && !stale) {
+            if (e.key === "s" && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
-              void save();
+              if (dirty && !stale) void save();
             }
           }}
           className="max-h-[60vh] min-h-40 w-full resize-y rounded-field bg-background px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-foreground inset-ring inset-ring-input outline-none transition-shadow duration-90 placeholder:text-muted-foreground focus:inset-ring-primary focus:shadow-focus"

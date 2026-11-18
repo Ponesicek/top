@@ -122,17 +122,16 @@ export const ensureBots = (names: readonly string[], newBot: NewBot, folder: ((b
 export const moveLegacySouls = (folder: (bot: Pick<BotRow, "name">) => string) =>
   Effect.gen(function* () {
     const store = yield* Store;
-    const claimed = new Map<string, string>();
+    const owners = new Map<string, BotRow>();
+    for (const bot of yield* store.bots) if (!owners.has(folder(bot).toLowerCase())) owners.set(folder(bot).toLowerCase(), bot);
     for (const soul of yield* store.legacySouls) {
-      const path = folder(soul).toLowerCase();
-      const first = claimed.get(path);
-      if (first !== undefined) {
+      const owner = owners.get(folder(soul).toLowerCase());
+      if (owner && owner.id !== soul.bot) {
         yield* Effect.logError(
-          `${soul.name}: its folder is ${first}'s too, so its name and description stay in the database rather than go into ${first}'s SOUL.md`,
+          `${soul.name}: its folder is ${owner.name}'s too, so its name and description stay in the database rather than go into ${owner.name}'s SOUL.md`,
         );
         continue;
       }
-      claimed.set(path, soul.name);
       const moved = yield* Effect.result(seedSoul(folder(soul), soul.name, soul.description));
       if (moved._tag === "Failure") {
         yield* Effect.logError(`${soul.name}: couldn't move its name and description into SOUL.md; they stay in the database until it can`, moved.failure);
