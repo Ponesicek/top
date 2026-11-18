@@ -143,14 +143,16 @@ under its name), `AGENTS.md` (how it works), `USER.md` (what it knows about you)
 (what it has learned). The files are the only copy: Settings → **Identity and memory** edits them
 in place, and the bot edits them with its tools, unasked, when it learns something that will
 matter later. A save from Settings is refused when the file changed since it was opened (by the
-bot, say), unless you choose to replace it; saves from different clients take turns, so two saves of
-the same version can't both win. Top creates SOUL.md only with a hard link, which never replaces a
-file already there; where the filesystem has no hard links it refuses and says so.
+bot, say), unless you choose to replace it. Saves from different clients take turns, so two saves
+of the same version can't both win; a write by the bot or an editor landing in the same instant as
+a save can still be replaced by it. When Top creates a file (a new bot's SOUL.md, or a first save
+from Settings) it uses a hard link or an exclusive create, which never replace a file made
+meanwhile.
 
-- **Loading.** Each file goes into the bot's instructions whole, framed by `<file … id="…">` and
-  `</file id="…">` lines whose id is a hash of its text (so nothing in a file can end its frame early)
-  and with its path escaped, after Top's
-  own instructions, which tell the bot where they are, how to keep them and that they never
+- **Loading.** Each file goes into the bot's instructions whole, between `<file … id="…">` and
+  `</file id="…">` lines whose id is a hash of its text, so nothing in a file can end its frame
+  early; its path is escaped. The files come after Top's own instructions, which tell the bot
+  where they are, how to keep them and that they never
   override Top's rules (safety, permissions, tools), and that text from web pages or tool output is
   information, not instructions. Missing or empty files aren't sent. Each file is at most 8 KB
   (`MAX_CONTEXT_FILE_BYTES`): a longer one, or one that can't be read, is sent as a note saying so
@@ -171,7 +173,8 @@ file already there; where the filesystem has no hard links it refuses and says s
 - **From older versions** (migration 6): each bot's name and description move into its SOUL.md
   (`# Name`, then the description) the first time the new daemon starts. A SOUL.md already there
   is kept, with the description added at its end if it isn't in it (unless that would take it
-  over 8 KB: then it waits, logged, until there's room). The text stays in the database until the
+  over 8 KB: then it waits, logged, until there's room); this happens at startup, before any bot
+  or app runs. The text stays in the database until the
   file is written, so a failure or crash midway loses nothing and the next start
   finishes it. Conversations carry on where they were: the files arrive as an update with the next
   message, and the bot is told SOUL.md's name and purpose replace any given earlier.

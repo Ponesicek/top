@@ -112,31 +112,42 @@ test("nothing in a file, its path or an error can end its frame early or forge a
   assert.ok(guide.endsWith("</context_files>"));
 });
 
-test("SOUL.md is never written over: no hard links means a clear refusal, and one created meanwhile is kept", async () => {
+test("Top only ever creates SOUL.md, or a file Settings saves for the first time, where none exists: never over one made meanwhile", async () => {
   const { h } = await recording();
   const folder = join(h.dir, "seed");
-  const linkFails = (tag: "Unknown" | "AlreadyExists") =>
+  const someoneElse = "# Someone else\n";
+  const linkFails = (tag: "Unknown" | "AlreadyExists", meanwhile: boolean) =>
     Effect.provideServiceEffect(
       FileSystem.FileSystem,
       Effect.map(FileSystem.FileSystem, (fs) => ({
         ...fs,
         link: (_from: string, to: string) =>
           Effect.gen(function* () {
-            if (tag === "AlreadyExists") yield* Effect.orDie(fs.writeFileString(to, "# Someone else\n"));
+            if (meanwhile) yield* Effect.orDie(fs.writeFileString(to, someoneElse));
             return yield* PlatformError.systemError({ _tag: tag, module: "FileSystem", method: "link", description: `test: ${tag}`, pathOrDescriptor: to });
           }),
       })),
     );
-  await assert.rejects(
-    node(seedSoul(folder, "Scout", "Watches.").pipe(linkFails("Unknown"))),
-    /Top makes it with a hard link, which failed .*create SOUL\.md there yourself/s,
-  );
-  assert.equal(existsSync(join(folder, "SOUL.md")), false, "nothing written");
-  assert.deepEqual(readdirSync(folder), [], "and no temporary file left");
+  const soul = () => readFileSync(join(folder, "SOUL.md"), "utf8");
 
-  assert.equal(await node(seedSoul(folder, "Scout", "").pipe(linkFails("AlreadyExists"))), "kept");
-  assert.equal(readFileSync(join(folder, "SOUL.md"), "utf8"), "# Someone else\n", "the one written meanwhile stays");
+  assert.equal(await node(seedSoul(folder, "Scout", "Watches.").pipe(linkFails("Unknown", false))), "written", "no hard links: an exclusive create instead");
+  assert.equal(soul(), "# Scout\n\nWatches.\n");
+  assert.deepEqual(readdirSync(folder), ["SOUL.md"], "no temporary file left");
+
+  rmSync(join(folder, "SOUL.md"));
+  assert.equal(await node(seedSoul(folder, "Scout", "").pipe(linkFails("Unknown", true))), "kept", "made after the link failed, before the exclusive create");
+  assert.equal(soul(), someoneElse);
+  rmSync(join(folder, "SOUL.md"));
+  assert.equal(await node(seedSoul(folder, "Scout", "").pipe(linkFails("AlreadyExists", true))), "kept", "made before the link");
+  assert.equal(soul(), someoneElse);
   await assert.rejects(node(seedSoul(folder, "Scout", "", true)), /already has a SOUL\.md/);
+  assert.deepEqual(readdirSync(folder), ["SOUL.md"]);
+
+  for (const tag of ["AlreadyExists", "Unknown"] as const) {
+    rmSync(join(folder, "SOUL.md"), { force: true });
+    await assert.rejects(node(saveContextFile(folder, "SOUL.md", "# Mine\n", "").pipe(linkFails(tag, true))), /changed since you opened it/);
+    assert.equal(soul(), someoneElse, `${tag}: Settings creating the file doesn't replace one made meanwhile`);
+  }
   assert.deepEqual(readdirSync(folder), ["SOUL.md"]);
 });
 
@@ -144,7 +155,10 @@ test("two clients making the same bot at once: one gets it, the other is refused
   const { h } = await recording();
   const made = await Promise.allSettled(["Watches A.", "Watches B."].map((about) => h.run(h.daemon.createBot("Twin", about))));
   assert.equal(made.filter((m) => m.status === "fulfilled").length, 1);
-  assert.match(String((made.find((m) => m.status === "rejected") as PromiseRejectedResult).reason), /already a bot named Twin|already has a SOUL\.md/);
+  assert.match(
+    String((made.find((m) => m.status === "rejected") as PromiseRejectedResult).reason),
+    /already a bot named Twin|already has a SOUL\.md|still has SOUL\.md/,
+  );
   const soul = readFileSync(join(folderOf(h, "Twin"), "SOUL.md"), "utf8");
   assert.ok(soul === "# Twin\n\nWatches A.\n" || soul === "# Twin\n\nWatches B.\n", soul);
   assert.equal(h.daemon.bots().filter((b) => b.name === "Twin").length, 1);
@@ -184,7 +198,6 @@ test("saving a file needs the version it was opened at, so an edit made since is
 test("two Top clients saving the same version at once: one wins, the other is told, nothing is lost silently", async () => {
   const { h } = await recording();
   put(h, "USER.md", "v0\n");
-  const [, , user] = await h.run(h.daemon.contextFiles(h.bot));
   for (let round = 0; round < 5; round++) {
     const [opened] = (await h.run(h.daemon.contextFiles(h.bot))).filter((f) => f.name === "USER.md");
     const saves = await Promise.allSettled(["A", "B"].map((who) => h.run(h.daemon.saveContextFile(h.bot, "USER.md", `${who}${round}\n`, opened!.version))));
@@ -195,7 +208,6 @@ test("two Top clients saving the same version at once: one wins, the other is to
     const winner = saves.indexOf(won[0]!) === 0 ? "A" : "B";
     assert.equal(readFileSync(join(folderOf(h), "USER.md"), "utf8"), `${winner}${round}\n`);
   }
-  assert.ok(user);
 });
 
 test("files go with the first request; an edit adds just that file's new version at the next message, after the same prefix", async () => {
