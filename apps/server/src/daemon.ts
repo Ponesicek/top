@@ -24,6 +24,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import { Attachments } from "./attachments.ts";
 import { collarTools } from "./collar/index.ts";
 import { contextSections, hasContextFiles, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
@@ -198,6 +199,7 @@ const make = Effect.gen(function* () {
   const bots = new Map<number, LiveBot>();
   const toolSources = new Map<number, () => readonly TopTool[]>();
   const dirty = yield* FiberMap.make<number>();
+  const saving = yield* Semaphore.make(1);
 
   if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot, kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
   if (kit.folder) yield* moveLegacySouls(kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
@@ -410,7 +412,9 @@ const make = Effect.gen(function* () {
       const row = bots.has(bot) ? yield* store.bot(bot) : undefined;
       if (!row) return yield* new UnknownBotError({ bot });
       if (!kit.folder) return yield* new BotError({ message: "This daemon's bots have no folder for their files." });
-      const saved = yield* saveContextFile(kit.folder(row), name, content, version).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+      const saved = yield* saving.withPermits(1)(
+        saveContextFile(kit.folder(row), name, content, version).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
+      );
       yield* touch(bot);
       return { version: saved };
     }),
