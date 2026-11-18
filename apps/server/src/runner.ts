@@ -85,7 +85,6 @@ export const makeRunner = Effect.fnUntraced(function* (
   const messages: TranscriptMessage[] = yield* store.context(id);
   let looping = false;
   let steering: TranscriptMessage[] = [];
-  let followUps: TranscriptMessage[] = [];
   const requestIds = new WeakMap<object, string>();
   const delivered = new Set<string>();
   let runningTools = 0;
@@ -118,7 +117,8 @@ export const makeRunner = Effect.fnUntraced(function* (
             Effect.gen(function* () {
               const at = yield* now;
               const cut = messages.length - keep;
-              const after = contextTokens([...messages.slice(0, cut).filter((m) => m.role === "system"), summaryMessage(summary, at), ...messages.slice(cut)]);
+              const baseline = getCurrentSystemMessage(messages.slice(0, cut));
+              const after = contextTokens([...(baseline ? [baseline] : []), summaryMessage(summary, at), ...messages.slice(cut)]);
               const notice = yield* store.compact(
                 id,
                 keep,
@@ -158,12 +158,11 @@ export const makeRunner = Effect.fnUntraced(function* (
 
   const deliver = (row: InboxRow) =>
     Effect.gen(function* () {
-      if (delivered.has(row.requestId)) return;
+      if (row.mode !== "steer" || delivered.has(row.requestId)) return;
       const message = yield* userMessage(row);
       if (delivered.has(row.requestId)) return;
       delivered.add(row.requestId);
-      if (row.mode === "steer") steering.push(message);
-      else followUps.push(message);
+      steering.push(message);
     });
 
   const saveMessage = (message: TranscriptMessage) =>
@@ -218,7 +217,6 @@ export const makeRunner = Effect.fnUntraced(function* (
           signal,
           stopped: () => abortRequested,
           steering: () => take(steering),
-          followUps: () => take(followUps),
           transformContext: attachments ? (context) => withImageData(context, attachments) : undefined,
           webSearch: options.webSearch ? { offer: searchOn } : undefined,
           hooks: {
@@ -270,7 +268,6 @@ export const makeRunner = Effect.fnUntraced(function* (
       refreshTools();
       searchOn = options.webSearch ? yield* options.webSearch : false;
       steering = [];
-      followUps = [];
       delivered.clear();
       for (const row of prompted) delivered.add(row.requestId);
       for (const row of queued) yield* deliver(row);

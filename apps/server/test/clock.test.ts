@@ -15,7 +15,7 @@ const store = Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: ":memory:"
 
 const setup = Effect.gen(function* () {
   const store = yield* StoreService;
-  const bot = yield* store.createBot("Atlas", "", "fake/model");
+  const bot = yield* store.createBot("Atlas", "fake/model");
   const delivered: InboxRow[] = [];
   const deliver = (row: InboxRow) =>
     Effect.sync(() => {

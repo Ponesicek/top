@@ -86,7 +86,7 @@ export const scanSkills = (dir: string): Effect.Effect<SkillView[], never, FileS
     return found;
   });
 
-const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+export const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const folderOf = (skill: Pick<SkillView, "path">) => skill.path.slice(0, -(SKILL_FILE.length + 1));
 

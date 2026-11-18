@@ -141,13 +141,12 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           newBot: {
             model,
             declare: [],
-            instructions: (name, description) =>
-              [
-                `You are ${name}, one of the user's bots, running in Top: a daemon that keeps you running 24/7 while the user's desktop and phone apps attach and detach.`,
-                ...(description ? [Daemon.purpose(description)] : []),
-                "Your answers arrive whole, not streamed, often on a phone, so lead with the answer and keep it tight. Use Markdown where it helps.",
-              ].join("\n"),
+            instructions: [
+              "You are one of the user's bots, running in Top: a daemon that keeps you running 24/7 while the user's desktop and phone apps attach and detach.",
+              "Your answers arrive whole, not streamed, often on a phone, so lead with the answer and keep it tight. Use Markdown where it helps.",
+            ].join("\n"),
           },
+          folder: (bot) => botFolder(home.bots, bot.name),
           firstBots: ["Atlas"],
           files: (bot) => join(botFolder(home.bots, bot.name), FILES_FOLDER),
           skills: skillsOf(home),
@@ -169,13 +168,14 @@ const fakeBots = (args: Args, home: Home.Layout) =>
       const model = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
       const models = createModels();
       models.setProvider((yield* makeFakeModelProvider(args.tps)).provider);
-      const filesOf = (bot: Store.BotRow) => join(botFolder(home.bots, bot.name), FILES_FOLDER);
+      const filesOf = (bot: Pick<Store.BotRow, "name">) => join(botFolder(home.bots, bot.name), FILES_FOLDER);
       const tools = yield* makeFakeTools(join(home.server, "effects.jsonl"), (id) => Effect.map(store.bot(id), (bot) => bot && filesOf(bot)));
       return Daemon.BotKit.of({
         models,
         tools,
         thinking: "off",
-        newBot: { model, instructions: Daemon.defaultInstructions, declare: tools },
+        newBot: { model, instructions: Daemon.DEFAULT_INSTRUCTIONS, declare: tools },
+        folder: (bot) => botFolder(home.bots, bot.name),
         firstBots: BOT_NAMES,
         seed: args.seed,
         files: filesOf,

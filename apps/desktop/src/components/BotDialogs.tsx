@@ -130,7 +130,7 @@ function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; na
             rows={4}
             value={description}
             maxLength={MAX_BOT_DESCRIPTION}
-            placeholder="What is this bot for? It reads this as part of its instructions."
+            placeholder="What is this bot for? It goes in the bot's SOUL.md, which you and the bot can edit later in Settings."
             onChange={(e) => setDescription(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {

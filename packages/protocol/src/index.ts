@@ -6,7 +6,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 export const DEFAULT_PORT = 7357;
 
 const Struct = Schema.Struct;
@@ -139,6 +139,20 @@ export function activeSkills(view: SkillsView, bot: BotId): ActiveSkill[] {
     return shared ? [{ ...shared, source: "shared" }] : [];
   });
 }
+
+export const CONTEXT_FILES = ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
+export const ContextFileName = Schema.Literals(CONTEXT_FILES);
+export type ContextFileName = typeof ContextFileName.Type;
+export const MAX_CONTEXT_FILE_BYTES = 8 * 1024;
+
+export const ContextFileView = Struct({
+  name: ContextFileName,
+  path: Schema.String,
+  content: Optional(Schema.String),
+  version: Schema.String,
+  error: Optional(Schema.String),
+});
+export type ContextFileView = typeof ContextFileView.Type;
 
 export const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const MAX_SKILL_NAME = 64;
@@ -325,6 +339,8 @@ export const ClientFrame = Schema.Union([
     avatar: Optional(Schema.Int),
   }),
   Struct({ t: Schema.Literal("deleteBot"), req, bot: BotId }),
+  Struct({ t: Schema.Literal("contextFiles"), req, bot: BotId }),
+  Struct({ t: Schema.Literal("saveContextFile"), req, bot: BotId, name: ContextFileName, content: Schema.String, version: Schema.String }),
   Struct({
     t: Schema.Literal("saveMcpServer"),
     req,
@@ -365,6 +381,8 @@ export const RequestResult = {
   abort: Schema.Null,
   createBot: Struct({ id: BotId }),
   deleteBot: Schema.Null,
+  contextFiles: List(ContextFileView),
+  saveContextFile: Struct({ version: Schema.String }),
   saveMcpServer: Struct({ id: McpServerId }),
   deleteMcpServer: Schema.Null,
   assignMcp: Schema.Null,

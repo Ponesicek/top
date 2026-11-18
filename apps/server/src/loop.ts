@@ -41,7 +41,6 @@ export type LoopOptions = {
   readonly signal: AbortSignal;
   readonly stopped: () => boolean;
   readonly steering: () => TranscriptMessage[];
-  readonly followUps: () => TranscriptMessage[];
   readonly transformContext?: ((messages: readonly TranscriptMessage[]) => Effect.Effect<readonly TranscriptMessage[]>) | undefined;
   readonly webSearch?: { readonly offer: boolean } | undefined;
   readonly hooks: LoopHooks;
@@ -279,22 +278,18 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
 
     if (prompts) yield* add(prompts);
     let pending = options.steering();
-    for (;;) {
-      let more = true;
-      while (more || pending.length) {
-        yield* add(pending);
-        pending = [];
-        if (stopped()) return;
-        const answer = yield* ask;
-        messages.push(answer);
-        yield* hooks.added(answer);
-        if (answer.stopReason === "error" || answer.stopReason === "aborted") return;
-        const calls = toolCallsOf(answer);
-        more = calls.length ? yield* runTools(answer, calls) : false;
-        if (stopped()) return;
-        pending = options.steering();
-      }
-      pending = options.followUps();
-      if (!pending.length) return;
+    let more = true;
+    while (more || pending.length) {
+      yield* add(pending);
+      pending = [];
+      if (stopped()) return;
+      const answer = yield* ask;
+      messages.push(answer);
+      yield* hooks.added(answer);
+      if (answer.stopReason === "error" || answer.stopReason === "aborted") return;
+      const calls = toolCallsOf(answer);
+      more = calls.length ? yield* runTools(answer, calls) : false;
+      if (stopped()) return;
+      pending = options.steering();
     }
   });

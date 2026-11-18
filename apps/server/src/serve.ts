@@ -270,6 +270,10 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         );
       case "deleteBot":
         return answer(frame, daemon.deleteBot(frame.bot));
+      case "contextFiles":
+        return answer(frame, daemon.contextFiles(frame.bot));
+      case "saveContextFile":
+        return answer(frame, daemon.saveContextFile(frame.bot, frame.name, frame.content, frame.version));
       case "saveMcpServer":
         return answer(
           frame,

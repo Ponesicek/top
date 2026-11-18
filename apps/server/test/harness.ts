@@ -19,6 +19,7 @@ import { LOCAL_SKILLS } from "../src/skills.ts";
 import * as Sqlite from "../src/sqlite.ts";
 import * as Store from "../src/store.ts";
 import type { TopTool } from "../src/tools.ts";
+import { botFolder } from "../src/workspace.ts";
 
 const open: (() => Promise<void>)[] = [];
 afterAll(async () => {
@@ -26,6 +27,13 @@ afterAll(async () => {
 });
 
 export const MODEL = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
+
+export const BEFORE_CONTEXT_FILES = [
+  "ALTER TABLE bots ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE bots ADD COLUMN instructions TEXT NOT NULL DEFAULT ''",
+  "DROP TABLE legacy_souls",
+  "DELETE FROM effect_sql_migrations WHERE migration_id >= 6",
+].join(";");
 
 export type HarnessOptions = {
   readonly tools?: readonly TopTool[];
@@ -44,6 +52,7 @@ export type HarnessOptions = {
   readonly onRequest?: (context: RequestContext, options: RequestOptions) => void;
   readonly model?: { readonly models: Models; readonly id: string };
   readonly webSearch?: boolean;
+  readonly context?: boolean;
 };
 
 export const skillsConfig = (dir: string) => ({
@@ -61,7 +70,7 @@ export async function harness(options: HarnessOptions = {}) {
   const firstBots = Layer.effectDiscard(
     Effect.gen(function* () {
       const store = yield* Store.Store;
-      if ((yield* store.bots).length === 0) for (const name of options.bots ?? ["Atlas"]) yield* store.createBot(name, "", options.model?.id ?? MODEL);
+      if ((yield* store.bots).length === 0) for (const name of options.bots ?? ["Atlas"]) yield* store.createBot(name, options.model?.id ?? MODEL);
     }),
   );
   const kit = Layer.effect(
@@ -74,7 +83,8 @@ export async function harness(options: HarnessOptions = {}) {
         models,
         tools: options.tools ?? [],
         thinking: "off",
-        newBot: { model: options.model?.id ?? MODEL, instructions: Daemon.defaultInstructions, declare: [] },
+        newBot: { model: options.model?.id ?? MODEL, instructions: Daemon.DEFAULT_INSTRUCTIONS, declare: [] },
+        ...(options.context ? { folder: (bot: Pick<Store.BotRow, "name">) => botFolder(join(dir, "bots"), bot.name) } : {}),
         files: options.files,
         ...(options.skills ? { skills: skillsConfig(dir) } : {}),
         foregroundMs: options.foregroundMs ?? 30_000,
