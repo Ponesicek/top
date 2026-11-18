@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll as after, test } from "vitest";
-import { type BotSummary, type ConversationSnapshot, type ConversationSync, type Entry, TopClient } from "../src/index.ts";
+import { type BotSummary, type ConversationSnapshot, type ConversationSync, type Entry, TopClient, type WaitingAsk } from "../src/index.ts";
 
 const serverMain = resolve(import.meta.dirname, "../../../apps/server/src/main.ts");
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -173,7 +173,7 @@ test("send, crash mid-answer, send while down, restart: nothing lost or doubled"
     const s = bot.getSnapshot();
     const b = top.getSnapshot().bots.find((x) => x.id === id);
     throw new Error(
-      `${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "files" ? e.files.length : e.kind === "permission" ? e.answer : e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`,
+      `${error.message}: ${JSON.stringify({ status: s.status, pending: s.pending, inbox: s.inbox, bot: b, entries: entries(s).map((e) => [e.seq, e.kind, e.kind === "files" ? e.files.length : e.kind === "answer" ? e.answer : e.kind === "user" ? e.text : e.text.slice(0, 30)]) })}\n${daemon.output.slice(-1500)}`,
     );
   });
   assert.deepEqual(
@@ -616,60 +616,64 @@ test("a bot's permission request reaches every client; the first answer wins, an
   const waiting = (top: TopClient, n = 1) =>
     until(
       top.subscribe,
-      () => top.getSnapshot().permissions,
+      () => top.getSnapshot().asks,
       (p) => p.length === n,
       `${n} waiting`,
     );
-  const answerOf = (s: ConversationSnapshot, id: number) => ofKind(s, "permission").find((e) => e.request === id)?.answer;
+  const answerOf = (s: ConversationSnapshot, id: number) => ofKind(s, "answer").find((e) => e.request === id)?.answer;
+  const target = (waiting: WaitingAsk | undefined) => ({ id: waiting!.ask.id, bot: waiting!.bot });
 
   a.bot.send("ask permission to rotate the API keys");
-  const [request] = await waiting(a.top);
-  assert.deepEqual(request, { id: request!.id, bot: a.id, action: "rotate the API keys", reason: "You asked me to check with you first." });
-  let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "tool").some((e) => e.permission), "the call's result");
-  assert.deepEqual(ofKind(s, "tool").at(-1)!.permission, { id: request!.id, action: "rotate the API keys", reason: "You asked me to check with you first." });
-  assert.deepEqual((await waiting(b.top))[0], request, "the other device sees the same request");
+  const [waited] = await waiting(a.top);
+  const request = target(waited);
+  const ask = { kind: "permission", id: request.id, action: "rotate the API keys", reason: "You asked me to check with you first." };
+  assert.deepEqual(waited, { bot: a.id, ask });
+  let s = await untilBot(a.bot, (x) => settled(x) && ofKind(x, "tool").some((e) => e.ask), "the call's result");
+  assert.deepEqual(ofKind(s, "tool").at(-1)!.ask, ask);
+  assert.deepEqual((await waiting(b.top))[0], waited, "the other device sees the same request");
 
   const late = new TopClient({ url: daemon.url });
   cleanup.push(() => late.close());
-  assert.equal((await waiting(late))[0]!.id, request!.id);
+  assert.equal((await waiting(late))[0]!.ask.id, request.id);
 
-  await b.top.answerPermission(request!, false);
+  await b.top.answerPermission(request, false);
   await assert.rejects(
-    a.top.answerPermission(request!, true),
-    (error: Error) => error.name === "PermissionError" && /already answered/.test(error.message),
+    a.top.answerPermission(request, true),
+    (error: Error) => error.name === "AskError" && /already answered/.test(error.message),
     "a later Allow is refused",
   );
   for (const top of [a.top, b.top, late]) await waiting(top, 0);
-  for (const sync of [a.bot, b.bot]) await untilBot(sync, (x) => answerOf(x, request!.id) === "denied", "the answer's entry");
+  for (const sync of [a.bot, b.bot]) await untilBot(sync, (x) => answerOf(x, request.id) === "denied", "the answer's entry");
   s = await untilBot(
     a.bot,
-    (x) => settled(x) && ofKind(x, "user").filter((e) => e.source === "permission").length === 1 && ofKind(x, "assistant").length >= 3,
+    (x) => settled(x) && ofKind(x, "user").filter((e) => e.source === "answer").length === 1 && ofKind(x, "assistant").length >= 3,
     "the bot's reply",
   );
-  assert.equal(ofKind(s, "user").find((e) => e.source === "permission")!.text, "[Permission] The user denied: rotate the API keys. Don't do it.");
+  assert.equal(ofKind(s, "user").find((e) => e.source === "answer")!.text, "[Permission] The user denied: rotate the API keys. Don't do it.");
 
   a.bot.send("ask permission to purge the cache");
-  const [second] = await waiting(a.top);
-  await untilBot(a.bot, (x) => ofKind(x, "tool").some((e) => e.permission?.id === second!.id), "the second call's result");
+  const [secondWaiting] = await waiting(a.top);
+  const second = target(secondWaiting);
+  await untilBot(a.bot, (x) => ofKind(x, "tool").some((e) => e.ask?.id === second.id), "the second call's result");
   await daemon.kill();
   await until(
     a.top.subscribe,
     () => a.top.getSnapshot(),
-    (x) => x.connection !== "open" && x.permissions.length === 0,
+    (x) => x.connection !== "open" && x.asks.length === 0,
     "the list dropped while offline: it can't be answered then",
   );
   await daemon.start();
-  assert.deepEqual((await waiting(a.top))[0], second, "still waiting after the restart");
-  await a.top.answerPermission(second!, true);
+  assert.deepEqual((await waiting(a.top))[0], secondWaiting, "still waiting after the restart");
+  await a.top.answerPermission(second, true);
   s = await untilBot(
     a.bot,
-    (x) => settled(x) && answerOf(x, second!.id) === "allowed" && ofKind(x, "user").filter((e) => e.source === "permission").length === 2,
+    (x) => settled(x) && answerOf(x, second.id) === "allowed" && ofKind(x, "user").filter((e) => e.source === "answer").length === 2,
     "the second answer",
   );
-  assert.equal(ofKind(s, "tool").filter((e) => e.permission).length, 2, "not asked again");
+  assert.equal(ofKind(s, "tool").filter((e) => e.ask).length, 2, "not asked again");
 
   a.bot.send("ask permission to reboot the router");
-  const [third] = await waiting(a.top);
+  const third = target((await waiting(a.top))[0]);
   await a.bot.abort();
   await waiting(a.top, 0);
   const fresh = new TopClient({ url: daemon.url });
@@ -677,8 +681,65 @@ test("a bot's permission request reaches every client; the first answer wins, an
   await until(fresh.subscribe, fresh.getSnapshot, (x) => x.ready, "the roster");
   const reloaded = fresh.conversation(a.id);
   reloaded.retain();
-  await untilBot(reloaded, (x) => x.status === "live" && answerOf(x, third!.id) === "withdrawn", "the withdrawal, after a reload");
-  assert.equal(ofKind(reloaded.getSnapshot(), "user").filter((e) => e.source === "permission").length, 2, "nothing reached the bot about it");
+  await untilBot(reloaded, (x) => x.status === "live" && answerOf(x, third.id) === "withdrawn", "the withdrawal, after a reload");
+  assert.equal(ofKind(reloaded.getSnapshot(), "user").filter((e) => e.source === "answer").length, 2, "nothing reached the bot about it");
+});
+
+test("a secret goes from the card to a file only the bot's commands read: never into the conversation, the logs or the daemon's database", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const a = await connect(daemon, 0);
+  const asked = (n: number) =>
+    until(
+      a.top.subscribe,
+      () => a.top.getSnapshot().asks,
+      (p) => p.length === n,
+      `${n} waiting`,
+    );
+  const secret = "tok_e2e_7f3a9c1d5b2e";
+
+  a.bot.send("ask me for a token");
+  const [waiting] = await asked(1);
+  assert.equal(waiting!.ask.kind, "secret");
+  assert.deepEqual(waiting!.ask, {
+    kind: "secret",
+    id: waiting!.ask.id,
+    label: "Deploy token for staging",
+    reason: "To push the build to staging.",
+    placeholder: "tok_…",
+    url: "https://example.com/settings/tokens",
+  });
+  await assert.rejects(a.top.saveSecret({ id: waiting!.ask.id, bot: a.id }, "   "), /Enter the secret first/);
+  await a.top.saveSecret({ id: waiting!.ask.id, bot: a.id }, `  ${secret}\n`.trimEnd());
+  await asked(0);
+  const s = await untilBot(
+    a.bot,
+    (x) => settled(x) && ofKind(x, "tool").some((e) => e.name === "use_secret") && ofKind(x, "assistant").length >= 3,
+    "the bot to use it",
+  );
+  const used = ofKind(s, "tool").find((e) => e.name === "use_secret")!;
+  assert.equal(used.text, "Signed in to staging with [secret hidden by Top].", "a command that prints it shows the placeholder");
+  assert.equal(ofKind(s, "answer").find((e) => e.request === waiting!.ask.id)?.answer, "saved");
+  const told = ofKind(s, "user").find((e) => e.source === "answer")!.text;
+  const path = /in the file (.+?)\. You never see/.exec(told)![1]!;
+  assert.equal(readFileSync(path, "utf8"), secret, "the file holds it, trimmed");
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.equal(statSync(join(path, "..")).mode & 0o777, 0o700);
+
+  const everything = JSON.stringify(s) + daemon.output + readFileSync(join(daemon.dataDir, "server", "top.sqlite")).toString("latin1");
+  assert.ok(!everything.includes(secret), "not in the conversation, the logs or the database");
+  for (const wal of ["top.sqlite-wal", "top.sqlite-journal"]) {
+    try {
+      assert.ok(
+        !readFileSync(join(daemon.dataDir, "server", wal))
+          .toString("latin1")
+          .includes(secret),
+        wal,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
 });
 
 test("a bot's files have links once the daemon says where they are", async () => {

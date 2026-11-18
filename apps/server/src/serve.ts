@@ -133,7 +133,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (daemon.skills) yield* send({ t: "skills", skills: daemon.skills.view() });
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
-  yield* send({ t: "permissions", requests: yield* daemon.permissions.waiting });
+  yield* send({ t: "asks", asks: yield* daemon.asks.waiting });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -163,8 +163,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "account", account: event.view });
       case "Update":
         return send({ t: "update", update: event.view });
-      case "Permissions":
-        return Effect.flatMap(daemon.permissions.waiting, (requests) => send({ t: "permissions", requests }));
+      case "Asks":
+        return Effect.flatMap(daemon.asks.waiting, (asks) => send({ t: "asks", asks }));
     }
   };
   yield* Effect.forkScoped(
@@ -363,8 +363,10 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(updatesOf(), (u) => u.setChannel(frame.channel)),
         );
-      case "answerPermission":
-        return answer(frame, daemon.permissions.answer(frame.id, frame.bot, frame.allow));
+      case "answer":
+        return answer(frame, daemon.asks.answer(frame.id, frame.bot, frame.reply));
+      case "saveSecret":
+        return answer(frame, daemon.asks.saveSecret(frame.id, frame.bot, frame.value));
     }
   };
 

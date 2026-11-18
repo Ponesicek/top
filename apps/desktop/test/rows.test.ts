@@ -8,16 +8,22 @@ let seq = 0;
 const entry = (e: Record<string, unknown>): TranscriptItem => ({ kind: "entry", entry: { seq: ++seq, bot: BOT, at: 1_000 + seq, ...e } as Entry });
 const said = () => entry({ kind: "assistant", text: "I'll check with you first.", tools: [{ id: "call_1", name: ASK, summary: "action: deploy web" }] });
 const asked = (id: number, toolCallId = "call_1") =>
-  entry({ kind: "tool", toolCallId, name: ASK, text: "Asked the user: deploy web.", permission: { id, action: "deploy web", reason: "It's Friday." } });
-const settled = (request: number, answer: string) => entry({ kind: "permission", request, answer });
+  entry({
+    kind: "tool",
+    toolCallId,
+    name: ASK,
+    text: "Asked the user: deploy web.",
+    ask: { kind: "permission", id, action: "deploy web", reason: "It's Friday." },
+  });
+const settled = (request: number, answer: string, reply?: unknown) => entry({ kind: "answer", request, answer, ...(reply ? { reply } : {}) });
 const message = (request: number) =>
-  entry({ kind: "user", text: "[Permission] The user allowed: deploy web.", source: "permission", requestId: `permission:${request}` });
-const cards = (items: TranscriptItem[]) => displayRows(committedRows(items)).filter((r) => r.kind === "permission");
+  entry({ kind: "user", text: "[Permission] The user allowed: deploy web.", source: "answer", requestId: `answer:${request}` });
+const cards = (items: TranscriptItem[]) => displayRows(committedRows(items)).filter((r) => r.kind === "ask");
 
-describe("permission rows", () => {
+describe("ask rows", () => {
   it("waits where the bot asked, in place of the call's tool step", () => {
     const rows = displayRows(committedRows([said(), asked(1)]), true);
-    expect(rows.map((r) => r.kind)).toEqual(["assistant", "permission"]);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "ask"]);
     expect(rows[1]).toMatchObject({ bot: BOT, ask: { id: 1, action: "deploy web", reason: "It's Friday." } });
     expect(rows[1]).not.toHaveProperty("answer");
   });
@@ -26,7 +32,7 @@ describe("permission rows", () => {
     for (const answer of ["allowed", "denied", "withdrawn"]) {
       const items = [said(), asked(5), settled(5, answer), ...(answer === "withdrawn" ? [] : [message(5)])];
       const rows = displayRows(committedRows(items), true);
-      expect(rows.map((r) => r.kind)).toEqual(["assistant", "permission"]);
+      expect(rows.map((r) => r.kind)).toEqual(["assistant", "ask"]);
       expect(rows[1]).toMatchObject({ ask: { id: 5 }, answer });
     }
   });
@@ -45,7 +51,40 @@ describe("permission rows", () => {
   });
 
   it("shows with tool steps hidden too: it's a question, not a step", () => {
-    expect(displayRows(committedRows([said(), asked(1)]), false).map((r) => r.kind)).toEqual(["assistant", "permission"]);
+    expect(displayRows(committedRows([said(), asked(1)]), false).map((r) => r.kind)).toEqual(["assistant", "ask"]);
+  });
+
+  it("a question settles with the reply the user gave, which the card shows; the answer that reached the bot shows nothing", () => {
+    const question = entry({
+      kind: "tool",
+      toolCallId: "call_1",
+      name: "collar__ask_question",
+      text: "Asked the user: Which environment?",
+      ask: { kind: "question", id: 7, question: "Which environment?", options: [{ label: "Staging" }, { label: "Production" }], other: true },
+    });
+    const rows = displayRows(committedRows([said(), question, settled(7, "answered", { choices: [0], text: "after 5pm" }), message(7)]), true);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "ask"]);
+    expect(rows[1]).toMatchObject({ ask: { kind: "question", id: 7 }, answer: "answered", reply: { choices: [0], text: "after 5pm" } });
+  });
+
+  it("a secret request settles as saved or declined, and nothing about the value is in the row", () => {
+    const secret = entry({
+      kind: "tool",
+      toolCallId: "call_1",
+      name: "collar__request_secret",
+      text: "Asked the user for GitHub token.",
+      ask: { kind: "secret", id: 8, label: "GitHub token", reason: "To open the PR." },
+    });
+    for (const answer of ["saved", "declined"]) {
+      const [row] = cards([said(), secret, settled(8, answer)]);
+      expect(row).toEqual({
+        kind: "ask",
+        key: expect.any(String),
+        bot: BOT,
+        ask: { kind: "secret", id: 8, label: "GitHub token", reason: "To open the PR." },
+        answer,
+      });
+    }
   });
 
   it("keeps the same row object while nothing about it changes, so it doesn't re-render", () => {

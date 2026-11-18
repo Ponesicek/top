@@ -1,10 +1,10 @@
 import {
+  AskError,
   AttachmentError,
   BotError,
   BusyError,
   type ClientFrame,
   McpServerError,
-  PermissionError,
   PROTOCOL_VERSION,
   parseServerFrame,
   RequestResult,
@@ -46,23 +46,14 @@ export class TimeoutError extends Schema.TaggedError<TimeoutError>()("TimeoutErr
 
 export class RequestError extends Schema.TaggedError<RequestError>()("RequestError", { message: Schema.String }) {}
 
-export type RequestFailure =
-  | OfflineError
-  | TimeoutError
-  | RequestError
-  | BotError
-  | BusyError
-  | AttachmentError
-  | McpServerError
-  | PermissionError
-  | SkillError;
+export type RequestFailure = OfflineError | TimeoutError | RequestError | BotError | BusyError | AttachmentError | McpServerError | AskError | SkillError;
 
 const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   BotError: (message) => new BotError({ message }),
   BusyError: (message) => new BusyError({ message }),
   AttachmentError: (message) => new AttachmentError({ message }),
   McpServerError: (message) => new McpServerError({ message }),
-  PermissionError: (message) => new PermissionError({ message }),
+  AskError: (message) => new AskError({ message }),
   SkillError: (message) => new SkillError({ message }),
 };
 

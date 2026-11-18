@@ -31,6 +31,7 @@ import { signInHere, signOutHere } from "./login.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import * as Mcp from "./mcp.ts";
 import { RetryDelaysMs } from "./runner.ts";
+import * as Secrets from "./secrets.ts";
 import { serve } from "./serve.ts";
 import { LOCAL_SKILLS } from "./skills.ts";
 import * as Sqlite from "./sqlite.ts";
@@ -229,6 +230,7 @@ const program = (args: Args) =>
         Layer.mergeAll(
           Mcp.layer({ oauthPort, redirectOrigin: tailnet?.origin, clientInfo: { name: "Top", version: BUILD.version } }),
           Attachments.layer(home.server),
+          Secrets.layer(home.server),
         ),
       ),
       Layer.provideMerge(Events.layer),
