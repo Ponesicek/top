@@ -176,14 +176,16 @@ function SkillPack({
             bots.map((bot) => {
               const mine = ofBot(bot.id);
               // A bot's own skill with one of these names stays as it is: switching the name on or off would switch its own.
-              const names = skills.filter((s) => !s.error && !mine?.local.some((l) => l.name === s.name)).map((s) => s.name);
+              const theirs = skills.filter((s) => !mine?.local.some((l) => l.name === s.name));
+              const names = theirs.filter((s) => !s.error).map((s) => s.name);
               const has = names.filter((name) => mine?.enabled.includes(name)).length;
               const all = names.length > 0 && has === names.length;
               return (
                 <BotToggle
                   key={bot.id}
                   bot={bot}
-                  names={names}
+                  // Off takes the broken ones too, so none stays on unseen.
+                  names={all ? theirs.map((s) => s.name) : names}
                   on={all}
                   disabled={names.length === 0}
                   title={all ? `${bot.name} has all ${names.length}. Click to take them away.` : `Give ${bot.name} all ${names.length}`}

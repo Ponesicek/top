@@ -55,10 +55,10 @@ function checkFrontmatter(name: string, content: string): Checked {
   if (frontmatter.name !== name) return fail(`Its frontmatter's name (${JSON.stringify(frontmatter.name)}) isn't its folder's name.`);
   if (!description) return fail("Its frontmatter has no description, which is how a bot knows when to use it.");
   if (description.length > MAX_SKILL_DESCRIPTION) return fail(`Its description is over ${MAX_SKILL_DESCRIPTION} characters.`);
+  // Anything but a clear "no" keeps it out of the bot's instructions: it stays usable with /<name> either way.
   const manual = frontmatter[DISABLE_MODEL_INVOCATION];
-  if (manual === undefined || manual === null || manual === false || manual === "false") return { description };
-  if (manual === true || manual === "true") return { description, manual: true };
-  return fail(`Its frontmatter's ${DISABLE_MODEL_INVOCATION} is ${JSON.stringify(manual)}, which isn't true or false.`);
+  const off = manual === undefined || manual === null || manual === false || (typeof manual === "string" && /^(false|no|off)$/i.test(manual.trim()));
+  return off ? { description } : { description, manual: true };
 }
 
 const readSkill = (dir: string, name: string): Effect.Effect<SkillView | undefined, never, FileSystem.FileSystem> =>
@@ -199,6 +199,12 @@ export const inspectSkillFolder = (
       if (skill) found.push({ skill, source: folder });
     } else {
       for (const skill of yield* scanSkills(folder)) found.push({ skill, source: join(folder, skill.name) });
+    }
+
+    if (single._tag === "Failure" && !found.some(({ skill }) => !skill.error)) {
+      const nested = yield* Effect.result(fs.stat(join(folder, "skills")));
+      if (nested._tag === "Success" && nested.success.type === "Directory")
+        return yield* new SkillError({ message: `There are no skills directly in ${folder}. Did you mean ${join(folder, "skills")}?` });
     }
 
     const skills: Candidate[] = [];

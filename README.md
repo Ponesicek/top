@@ -256,8 +256,9 @@ found and which bots have which; a new bot has none, however many are installed.
   description, where SKILL.md is), read again before it starts on a new message, so a change shows from
   its next task. It reads a skill's SKILL.md with its tools when a task matches. Paths in a skill are
   relative to its folder, and the bot is told so: it runs a skill's scripts by their full path or from
-  the skill's folder. A skill whose frontmatter says `disable-model-invocation: true` isn't listed: the
-  bot gets it only when you ask for it, and Settings marks it **Only when asked**.
+  the skill's folder. A skill whose frontmatter sets `disable-model-invocation` (to anything but
+  `false`) isn't listed: the bot gets it only when you ask for it, and Settings marks it **Only when
+  asked**.
 - **Asking for one.** Start a message with `/<name>` (type `/` to pick from the bot's skills, those only
   for asking included): the skill's SKILL.md, as it is then, goes with the message, and the message
   shows which skill it used.

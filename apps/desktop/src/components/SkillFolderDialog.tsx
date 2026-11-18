@@ -142,7 +142,7 @@ function SkillFolderForm({ onDone }: { onDone: () => void }) {
             placeholder="~/src/my-skills/skills"
             spellCheck={false}
             autoFocus
-            disabled={!!result}
+            disabled={!!result || busy}
             className="font-mono text-[13px]"
             onValueChange={(value) => {
               setFolder(value);

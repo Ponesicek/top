@@ -590,6 +590,12 @@ test("skills from the app: found in the home and the bot's folder, switched on p
       ["review", "new"],
     ],
   );
+  await assert.rejects(a.top.addSkillFolder(pack, [a.id, 9_999]), /9999/);
+  assert.equal(
+    skillsOf(a.top)?.shared.find((x) => x.name === "review"),
+    undefined,
+    "an unknown bot stops it before anything is linked",
+  );
   const added = await a.top.addSkillFolder(pack, [a.id]);
   assert.deepEqual(added.added, ["review"]);
   assert.deepEqual(added.enabled, [{ bot: a.id, names: ["review"] }]);

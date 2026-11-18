@@ -266,15 +266,16 @@ test("disable-model-invocation keeps a skill out of the bot's instructions, and 
     writeSkill(library, "quoted", `${meta("quoted", "Quoted true.")}\ndisable-model-invocation: "true"`);
     writeSkill(library, "allowed", `${meta("allowed", "Explicitly allowed.")}\ndisable-model-invocation: false`);
     writeSkill(library, "unclear", `${meta("unclear", "Not a boolean.")}\ndisable-model-invocation: sometimes`);
+    writeSkill(library, "said-no", `${meta("said-no", "A plain no.")}\ndisable-model-invocation: "No"`);
   });
   const by = (name: string) => view(h).shared.find((s) => s.name === name)!;
   assert.deepEqual(by("release"), { name: "release", description: "Cut a release.", path: join(library, "release", "SKILL.md"), manual: true });
   assert.equal(by("quoted").manual, true);
   assert.equal(by("allowed").manual, undefined);
   assert.equal(by("pdf").manual, undefined);
-  assert.match(by("unclear").error!, /disable-model-invocation is "sometimes", which isn't true or false/);
-  assert.equal(by("unclear").manual, undefined);
-  assert.match(await refusal(h, atlas, "unclear"), /can't be used/);
+  assert.equal(by("unclear").manual, true, "an unclear value keeps it out of the instructions, and it stays usable");
+  assert.equal(by("unclear").error, undefined);
+  assert.equal(by("said-no").manual, undefined);
 
   await enable(h, atlas, "release");
   await send(h, atlas, "hello");
@@ -434,6 +435,7 @@ test("a folder that is one skill is added as that skill; other folders are refus
   assert.match(await refused(join(skills, "install.sh")), /SkillError: .*install\.sh isn't a folder/);
   assert.match(await refused(library), /SkillError: .* is in the shared library already/);
   assert.match(await refused(join(library, "review")), /SkillError: .* is in the shared library already/);
+  assert.match(await refused(join(skills, "..")), new RegExp(`SkillError: There are no skills directly in .*Did you mean ${skills}\\?`));
   const empty = join(skills, "..", "empty");
   mkdirSync(empty);
   assert.deepEqual(await h.run(h.daemon.skills!.preview(empty)), { folder: join(skills, "..", "empty"), skills: [] });
