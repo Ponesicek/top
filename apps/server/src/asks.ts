@@ -50,7 +50,7 @@ export function secretText(ask: SecretAsk, saved: { readonly path: string; reado
   if (!saved) return `[Secret] The user declined to give ${ask.label}. Don't ask for it in chat or another way; say what's blocked and carry on without it.`;
   return [
     `[Secret] The user saved ${ask.label} for your commands, in the file ${saved.path}. You never see the value, and Top hides it if a command prints it.`,
-    `Give it to the command that uses it without putting it in the command's arguments, where other users of the computer can see it: from the file or standard input (\`gh auth login --with-token < ${shellQuoted(saved.path)}\`, \`docker login --password-stdin < ${shellQuoted(saved.path)}\`), or as an environment variable (\`TOKEN="$(cat ${shellQuoted(saved.path)})" some-command\`). Never print, copy or store it anywhere: not in a message, a file, memory, git or a command's output.`,
+    `Hand it to the command that uses it from the file or standard input, like \`gh auth login --with-token < ${shellQuoted(saved.path)}\` or \`docker login --password-stdin < ${shellQuoted(saved.path)}\`, or in an environment variable the program reads by itself, like \`GH_TOKEN="$(cat ${shellQuoted(saved.path)})" gh pr create …\`. Never put it in a command's arguments, where other users of the computer can see it: \`curl -H "Authorization: Bearer $TOKEN"\` does exactly that. Never print, copy or store it anywhere: not in a message, a file, memory, git or a command's output.`,
     `The file is deleted in ${saved.minutes} minute${saved.minutes === 1 ? "" : "s"}; if you need it after that, ask again with request_secret.`,
   ].join("\n");
 }
@@ -119,10 +119,11 @@ export function makeAsks(store: Store["Service"], secrets: Secrets["Service"], e
         if (value.length < MIN_SECRET) return yield* refuse(`That's too short for Top to keep hidden: a secret has at least ${MIN_SECRET} characters.`);
         if (Buffer.byteLength(value) > MAX_SECRET_BYTES) return yield* refuse(`That's longer than a secret can be (${MAX_SECRET_BYTES / 1024} KB).`);
         if (/[\r\n]/.test(value)) return yield* refuse("Secrets are one line. Paste it without line breaks.");
-        const saved = yield* secrets.save(bot, value);
-        const text = secretText(ask, { path: saved.path, minutes: Math.max(1, Math.round(secrets.ttlMs / 60_000)) });
-        const done = yield* settle(bot, id, "saved", { text }).pipe(
-          Effect.onExit((exit) => (Exit.isSuccess(exit) && exit.value ? Effect.void : secrets.discard(saved.path))),
+        const minutes = Math.max(1, Math.round(secrets.ttlMs / 60_000));
+        const done = yield* Effect.acquireUseRelease(
+          secrets.save(bot, value),
+          (saved) => settle(bot, id, "saved", { text: secretText(ask, { path: saved.path, minutes }) }),
+          (saved, exit) => (Exit.isSuccess(exit) && exit.value ? Effect.void : secrets.discard(saved.path)),
         );
         if (!done) return yield* refuse(NOT_WAITING);
       }),

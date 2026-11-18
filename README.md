@@ -285,10 +285,11 @@ cards (no answer reaches it); deleting the bot removes them.
 - **Secret** (`request_secret`): one password, token or key (one line, at least 4 characters), with what it's for
   and, if the bot gives one, a link to the page where you make it. Save sends it to the daemon, which writes it to a
   file of its own in `server/secrets/` (owner-only, `0600` in a `0700` folder) and tells the bot only the path. The
-  bot is told to hand it to the command that needs it from the file, standard input or an environment variable,
-  never as a command argument, which other users of the computer can read. The value never goes into the
+  bot is told to hand it to the command that needs it from the file, standard input or an environment variable the
+  program reads itself, never as a command argument, which other users of the computer can read. The value never goes into the
   conversation, the database, the logs or the bot's context. Top replaces it with `[secret hidden by Top]` in
-  everything a tool returns (its output, details, progress, errors, and the full output pi keeps of a long command),
+  everything a tool returns (its output, details, progress, errors, and the full output pi keeps of a long command,
+  deleted instead if it's too big to clean),
   as is and URL- or JSON-encoded, so a command that prints it doesn't hand it to the model. That holds while the file
   lives and, for values of 8 characters or more, until the daemon restarts, since a command may have copied it
   somewhere. It's protection against accidents, not against a bot set on getting it: part of the value, or the value

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { AskError } from "@top/protocol";
 import * as Cause from "effect/Cause";
@@ -18,6 +19,9 @@ export const MIN_SECRET = 4;
 const KEEP_HIDING = 8;
 const MAX_KEPT = 200;
 const NAME = /^b(\d+)-[0-9a-f]{32}$/;
+const MAX_SCRUBBED_BYTES = 64 * 1024 * 1024;
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const PI_LOG = new RegExp(`${escaped(join(tmpdir(), "pi-"))}[\\w-]+\\.log`, "g");
 
 type Live = { readonly bot: number; readonly value: string; readonly expiresAt: number };
 
@@ -94,9 +98,9 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
         Effect.gen(function* () {
           const path = join(dir, name);
           const match = NAME.exec(name);
-          const info = yield* fs.stat(path).pipe(Effect.orElseSucceed(() => undefined));
-          const savedAt = info?.mtime._tag === "Some" ? info.mtime.value.getTime() : 0;
-          if (!match || info?.type !== "File" || savedAt + ttlMs <= now) return yield* remove(path, false);
+          const info = yield* Effect.tryPromise(() => lstat(path)).pipe(Effect.orElseSucceed(() => undefined));
+          const savedAt = info?.mtimeMs ?? 0;
+          if (!match || !info?.isFile() || savedAt + ttlMs <= now) return yield* remove(path, false);
           const value = yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
           if (value === undefined) return yield* remove(path, false);
           live.set(path, { bot: Number(match[1]), value, expiresAt: savedAt + ttlMs });
@@ -131,22 +135,29 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
           ...(result.structuredContent === undefined ? {} : { structuredContent: deep(result.structuredContent) }),
         };
       };
-      const fullOutput = (details: JsonValue | undefined) => {
-        const path = details && typeof details === "object" && "fullOutputPath" in details ? details.fullOutputPath : undefined;
-        if (typeof path !== "string") return undefined;
-        const full = resolve(path);
-        return dirname(full) === resolve(tmpdir()) && /^pi-[\w-]+\.log$/.test(basename(full)) ? full : undefined;
-      };
-      const scrubFullOutput = (result: ToolResult) =>
+      const piLogs = (text: string) => [...new Set(text.match(PI_LOG) ?? [])];
+      const scrubLog = (path: string) =>
         Effect.gen(function* () {
-          const path = fullOutput(result.details);
-          if (!path || !hidden.length) return;
+          const info = yield* fs.stat(path);
+          if (info.type !== "File") return;
+          if (Number(info.size) > MAX_SCRUBBED_BYTES) return yield* fs.remove(path);
           const text = yield* fs.readFileString(path);
           const clean = redact(text);
           if (clean !== text) yield* fs.writeFileString(path, clean);
-        }).pipe(Effect.catchCause((cause) => Effect.logWarning("couldn't hide secrets in a tool's full output", Cause.squash(cause))));
-      const finish = (result: ToolResult) => Effect.as(scrubFullOutput(result), clean(result));
-      const cleanError = (error: unknown) => new ToolError({ message: redact(error instanceof Error ? error.message : String(error)) });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.andThen(
+              Effect.logWarning("couldn't hide secrets in a tool's full output, so it's deleted", Cause.squash(cause)),
+              fs.remove(path, { force: true }).pipe(Effect.ignore),
+            ),
+          ),
+        );
+      const scrubLogsIn = (text: string) => (hidden.length ? Effect.forEach(piLogs(text), scrubLog, { discard: true }) : Effect.void);
+      const finish = (result: ToolResult) => Effect.as(scrubLogsIn(JSON.stringify([result.content, result.details ?? null])), clean(result));
+      const cleanError = (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        return Effect.as(scrubLogsIn(message), new ToolError({ message: redact(message) }));
+      };
 
       return Secrets.of({
         dir,
@@ -182,8 +193,8 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
           run: (args, ctx) =>
             tool.run(args, ctx.onUpdate ? { ...ctx, onUpdate: (partial) => ctx.onUpdate?.(clean(partial)) } : ctx).pipe(
               Effect.flatMap(finish),
-              Effect.mapError(cleanError),
-              Effect.catchDefect((defect) => Effect.fail(cleanError(defect))),
+              Effect.catch((error) => Effect.flatMap(cleanError(error), Effect.fail)),
+              Effect.catchDefect((defect) => Effect.flatMap(cleanError(defect), Effect.fail)),
             ),
           ...(tool.recover
             ? {

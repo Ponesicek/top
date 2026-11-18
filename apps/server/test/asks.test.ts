@@ -369,8 +369,8 @@ test("a saved secret goes to a private file the bot is told the path of: never i
   const told = textOf((await messages(h))[0]!);
   assert.ok(told.startsWith(`[Secret] The user saved Deploy token for staging for your commands, in the file ${path}. You never see the value`));
   assert.ok(told.includes(`gh auth login --with-token < '${path}'`), "it's told to pass it by file, stdin or environment");
-  assert.ok(told.includes(`TOKEN="$(cat '${path}')" some-command`));
-  assert.match(told, /without putting it in the command's arguments/);
+  assert.ok(told.includes(`GH_TOKEN="$(cat '${path}')" gh pr create`), "or an environment variable the program reads itself");
+  assert.match(told, /Never put it in a command's arguments/);
   assert.match(told, /deleted in 60 minutes/);
   const used = (await ofKind(h, "tool")).find((e) => e.message.toolName === "use_secret")!;
   assert.equal(textOf(used), `Signed in with ${HIDDEN}.`);
@@ -438,12 +438,16 @@ test("an expired file left by a daemon that stopped is removed when the next one
   const live = await first.run(first.secrets.save(first.bot, "tok_still_live_66"));
   await first.close();
   symlinkSync(join(first.dir, "nowhere"), join(first.secrets.dir, "b1-00000000000000000000000000000000"));
+  writeFileSync(join(first.dir, "elsewhere"), "not-a-secret-of-ours");
+  symlinkSync(join(first.dir, "elsewhere"), join(first.secrets.dir, "b1-11111111111111111111111111111111"));
   writeFileSync(join(first.secrets.dir, "a-stray-file"), "x");
   utimesSync(saved.path, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
   const h = await harness({ dir: first.dir, secretTtlMs: 60_000 });
   assert.equal(existsSync(saved.path), false);
   assert.equal(h.secrets.redact("tok_left_behind_55"), "tok_left_behind_55");
-  assert.deepEqual(readdirSync(h.secrets.dir), [basename(live.path)], "the dangling link and the stray file are gone, the live one kept");
+  assert.deepEqual(readdirSync(h.secrets.dir), [basename(live.path)], "the links and the stray file are gone, the live one kept");
+  assert.equal(h.secrets.redact("not-a-secret-of-ours"), "not-a-secret-of-ours", "a link's target is never read");
+  assert.equal(readFileSync(join(first.dir, "elsewhere"), "utf8"), "not-a-secret-of-ours");
   assert.equal(h.secrets.redact("tok_still_live_66"), HIDDEN);
 });
 
@@ -470,6 +474,20 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
     assert.equal(readFileSync(full, "utf8"), `line 1\n${HIDDEN}\nline 3`);
     await h.run(tool(elsewhere).run({}, { key: "k", bot: h.bot }));
     assert.equal(readFileSync(elsewhere, "utf8"), value, "only pi's own temp logs are rewritten");
+
+    writeFileSync(full, `${value}\nstill running`);
+    const timedOut = h.secrets.guard(
+      defineTool({
+        name: "bash",
+        label: "Bash",
+        description: "",
+        parameters: Type.Object({}),
+        run: () => Effect.fail(new ToolError({ message: `${value}\n\n[Full output: ${full}]\n\nCommand timed out after 1 seconds` })),
+      }),
+    );
+    const failed = await h.run(Effect.flip(timedOut.run({}, { key: "k", bot: h.bot })));
+    assert.ok(!failed.message.includes(value));
+    assert.equal(readFileSync(full, "utf8"), `${HIDDEN}\nstill running`, "a command that timed out or was stopped too");
   } finally {
     rmSync(full, { force: true });
   }
