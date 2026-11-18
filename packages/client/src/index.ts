@@ -10,8 +10,8 @@ import {
   type McpServerConfig,
   type McpServerId,
   type McpServerView,
-  type PermissionRequest,
   PROTOCOL_VERSION,
+  type QuestionReply,
   type ResultOf,
   type ServerFrame,
   type SkillFolder,
@@ -19,6 +19,7 @@ import {
   type SkillsView,
   type UpdateView,
   type Viewer,
+  type WaitingAsk,
 } from "@top/protocol";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -35,6 +36,9 @@ const parseAttachment = Schema.decodeOption(Schema.fromJsonString(Attachment));
 export type {
   AccountView,
   ActiveSkill,
+  Ask,
+  AskKind,
+  AskOutcome,
   Attachment,
   BotId,
   BotSkills,
@@ -52,10 +56,12 @@ export type {
   McpServerId,
   McpServerState,
   McpServerView,
-  PermissionAnswer,
   PermissionAsk,
-  PermissionRequest,
+  QuestionAsk,
+  QuestionOption,
+  QuestionReply,
   QueuedMessage,
+  SecretAsk,
   Seq,
   SkillFolder,
   SkillFolderAdded,
@@ -69,6 +75,7 @@ export type {
   UpdateRelease,
   UpdateView,
   Viewer,
+  WaitingAsk,
   WebSearchStep,
   WhenBusy,
 } from "@top/protocol";
@@ -134,9 +141,11 @@ export type TopSnapshot = {
   readonly viewer: Viewer | undefined;
   readonly server: { readonly version: string | undefined; readonly channel: Channel | undefined } | undefined;
   readonly update: UpdateView | undefined;
-  readonly permissions: readonly PermissionRequest[];
+  readonly asks: readonly WaitingAsk[];
   readonly outdated: "client" | "server" | undefined;
 };
+
+export type AskTarget = { readonly id: number; readonly bot: BotId };
 
 export class TopClient {
   readonly clientId: string;
@@ -174,7 +183,7 @@ export class TopClient {
       viewer: undefined,
       server: undefined,
       update: undefined,
-      permissions: [],
+      asks: [],
       outdated: undefined,
     };
     this.#connection = Effect.runSync(
@@ -197,7 +206,7 @@ export class TopClient {
             this.#publish({
               connection: status,
               attempt: this.#connection.attempt(),
-              ...(status !== "open" && this.#snapshot.permissions.length ? { permissions: [] } : {}),
+              ...(status !== "open" && this.#snapshot.asks.length ? { asks: [] } : {}),
             });
           },
         },
@@ -320,8 +329,20 @@ export class TopClient {
     return this.#command({ t: "setUpdateChannel", channel });
   }
 
-  answerPermission(request: Pick<PermissionRequest, "id" | "bot">, allow: boolean): Promise<void> {
-    return this.#command({ t: "answerPermission", id: request.id, bot: request.bot, allow });
+  answerPermission(request: AskTarget, allow: boolean): Promise<void> {
+    return this.#command({ t: "answer", id: request.id, bot: request.bot, reply: { kind: "permission", allow } });
+  }
+
+  answerQuestion(request: AskTarget, reply: QuestionReply): Promise<void> {
+    return this.#command({ t: "answer", id: request.id, bot: request.bot, reply: { kind: "question", ...reply } });
+  }
+
+  decline(request: AskTarget): Promise<void> {
+    return this.#command({ t: "answer", id: request.id, bot: request.bot, reply: { kind: "decline" } });
+  }
+
+  saveSecret(request: AskTarget, value: string): Promise<void> {
+    return this.#command({ t: "saveSecret", id: request.id, bot: request.bot, value });
   }
 
   #request<F extends RequestFrame>(frame: F): Promise<ResultOf<F["t"]>> {
@@ -456,8 +477,8 @@ export class TopClient {
       case "update":
         this.#publish({ update: frame.update });
         return;
-      case "permissions":
-        this.#publish({ permissions: frame.requests });
+      case "asks":
+        this.#publish({ asks: frame.asks });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);

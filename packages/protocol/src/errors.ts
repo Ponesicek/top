@@ -10,7 +10,7 @@ export class McpServerError extends Schema.TaggedError<McpServerError>()("McpSer
 
 export class SkillError extends Schema.TaggedError<SkillError>()("SkillError", { message: Schema.String }) {}
 
-export class PermissionError extends Schema.TaggedError<PermissionError>()("PermissionError", { message: Schema.String }) {}
+export class AskError extends Schema.TaggedError<AskError>()("AskError", { message: Schema.String }) {}
 
 export class UnknownBotError extends Schema.TaggedError<UnknownBotError>()("UnknownBotError", { bot: Schema.Int }) {
   override get message(): string {
@@ -24,4 +24,4 @@ export class UnknownEntryError extends Schema.TaggedError<UnknownEntryError>()("
   }
 }
 
-export type DaemonRefusal = BotError | BusyError | AttachmentError | McpServerError | PermissionError | SkillError | UnknownBotError | UnknownEntryError;
+export type DaemonRefusal = BotError | BusyError | AttachmentError | McpServerError | AskError | SkillError | UnknownBotError | UnknownEntryError;

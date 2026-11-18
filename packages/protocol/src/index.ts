@@ -34,7 +34,7 @@ export const BotSummary = Struct({
   preview: Schema.String,
   queued: Schema.Int,
   background: Optional(Schema.Int),
-  approvals: Optional(Schema.Int),
+  asks: Optional(Schema.Int),
   wakeAt: Optional(Schema.Number),
   lastSeq: Seq,
   webSearch: Optional(Schema.Boolean),
@@ -77,21 +77,64 @@ export const MODEL_IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", 
 export const isModelImage = (attachment: Pick<Attachment, "mimeType" | "size">) =>
   MODEL_IMAGE_TYPES.includes(attachment.mimeType) && attachment.size <= MAX_IMAGE_BYTES;
 
-export const PermissionAsk = Struct({
-  id: Schema.Int,
-  action: Schema.String,
-  reason: Optional(Schema.String),
-});
-export type PermissionAsk = typeof PermissionAsk.Type;
-
-export const PermissionRequest = Struct({ ...PermissionAsk.fields, bot: BotId });
-export type PermissionRequest = typeof PermissionRequest.Type;
-
-export const PermissionAnswer = Schema.Literals(["allowed", "denied", "withdrawn"]);
-export type PermissionAnswer = typeof PermissionAnswer.Type;
-
 export const MAX_PERMISSION_ACTION = 500;
 export const MAX_PERMISSION_REASON = 1_000;
+export const MAX_QUESTION = 500;
+export const MAX_QUESTION_DETAIL = 1_000;
+export const MAX_QUESTION_OPTIONS = 6;
+export const MAX_OPTION_LABEL = 100;
+export const MAX_OPTION_DESCRIPTION = 300;
+export const MAX_ANSWER_TEXT = 2_000;
+export const MAX_SECRET_LABEL = 80;
+export const MAX_SECRET_REASON = 500;
+export const MAX_SECRET_PLACEHOLDER = 80;
+export const MAX_SECRET_URL = 2_000;
+export const MAX_SECRET_BYTES = 8 * 1024;
+
+export const QuestionOption = Struct({ label: Schema.String, description: Optional(Schema.String) });
+export type QuestionOption = typeof QuestionOption.Type;
+
+export const PermissionAsk = Struct({ kind: Schema.Literal("permission"), id: Schema.Int, action: Schema.String, reason: Optional(Schema.String) });
+export type PermissionAsk = typeof PermissionAsk.Type;
+export const QuestionAsk = Struct({
+  kind: Schema.Literal("question"),
+  id: Schema.Int,
+  question: Schema.String,
+  detail: Optional(Schema.String),
+  options: List(QuestionOption),
+  multiple: Optional(Schema.Literal(true)),
+  other: Optional(Schema.Literal(true)),
+});
+export type QuestionAsk = typeof QuestionAsk.Type;
+export const SecretAsk = Struct({
+  kind: Schema.Literal("secret"),
+  id: Schema.Int,
+  label: Schema.String,
+  reason: Schema.String,
+  placeholder: Optional(Schema.String),
+  url: Optional(Schema.String),
+});
+export type SecretAsk = typeof SecretAsk.Type;
+
+export const Ask = Schema.Union([PermissionAsk, QuestionAsk, SecretAsk]);
+export type Ask = typeof Ask.Type;
+export type AskKind = Ask["kind"];
+
+export const WaitingAsk = Struct({ bot: BotId, ask: Ask });
+export type WaitingAsk = typeof WaitingAsk.Type;
+
+export const AskOutcome = Schema.Literals(["allowed", "denied", "answered", "saved", "declined", "withdrawn"]);
+export type AskOutcome = typeof AskOutcome.Type;
+
+export const QuestionReply = Struct({ choices: List(Schema.Int), text: Optional(Schema.String) });
+export type QuestionReply = typeof QuestionReply.Type;
+
+export const AskReply = Schema.Union([
+  Struct({ kind: Schema.Literal("permission"), allow: Schema.Boolean }),
+  Struct({ kind: Schema.Literal("question"), ...QuestionReply.fields }),
+  Struct({ kind: Schema.Literal("decline") }),
+]);
+export type AskReply = typeof AskReply.Type;
 
 export const SkillSource = Schema.Literals(["shared", "local"]);
 export type SkillSource = typeof SkillSource.Type;
@@ -191,7 +234,7 @@ const entryBase = { seq: Seq, bot: BotId, at: Schema.Number };
 export const FileChange = Struct({ path: Schema.String, change: Schema.Literals(["added", "changed", "removed"]) });
 export type FileChange = typeof FileChange.Type;
 
-export const MessageSource = Schema.Literals(["wake", "job", "permission"]);
+export const MessageSource = Schema.Literals(["wake", "job", "answer"]);
 export type MessageSource = typeof MessageSource.Type;
 
 export const Entry = Schema.Union([
@@ -225,9 +268,9 @@ export const Entry = Schema.Union([
     truncated: Optional(Schema.Literal(true)),
     isError: Optional(Schema.Literal(true)),
     outcome: Optional(ToolOutcome),
-    permission: Optional(PermissionAsk),
+    ask: Optional(Ask),
   }),
-  Struct({ ...entryBase, kind: Schema.Literal("permission"), request: Schema.Int, answer: PermissionAnswer }),
+  Struct({ ...entryBase, kind: Schema.Literal("answer"), request: Schema.Int, answer: AskOutcome, reply: Optional(QuestionReply) }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),
   Struct({
     ...entryBase,
@@ -388,7 +431,8 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("checkForUpdate"), req }),
   Struct({ t: Schema.Literal("installUpdate"), req, version: Schema.String }),
   Struct({ t: Schema.Literal("setUpdateChannel"), req, channel: Channel }),
-  Struct({ t: Schema.Literal("answerPermission"), req, id: Schema.Int, bot: BotId, allow: Schema.Boolean }),
+  Struct({ t: Schema.Literal("answer"), req, id: Schema.Int, bot: BotId, reply: AskReply }),
+  Struct({ t: Schema.Literal("saveSecret"), req, id: Schema.Int, bot: BotId, value: Schema.String }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
@@ -426,7 +470,8 @@ export const RequestResult = {
   checkForUpdate: Schema.Null,
   installUpdate: Schema.Null,
   setUpdateChannel: Schema.Null,
-  answerPermission: Schema.Null,
+  answer: Schema.Null,
+  saveSecret: Schema.Null,
 } as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
 export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
 
@@ -471,7 +516,7 @@ export const ServerFrame = Schema.Union([
   Struct({ t: Schema.Literal("entry"), entry: Entry }),
   Struct({ t: Schema.Literal("files"), bot: BotId, folder: Schema.String, files: List(FileView), more: Optional(Schema.Literal(true)) }),
   Struct({ t: Schema.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
-  Struct({ t: Schema.Literal("permissions"), requests: List(PermissionRequest) }),
+  Struct({ t: Schema.Literal("asks"), asks: List(WaitingAsk) }),
   Struct({ t: Schema.Literal("update"), update: UpdateView }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(true), value: Schema.Unknown }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(false), error: Schema.String }),
@@ -484,6 +529,8 @@ export type Parsed<T> = { readonly ok: true; readonly frame: T } | { readonly ok
 const formatIssue = SchemaIssue.makeFormatterDefault();
 
 type FrameSchema = Schema.Decoder<unknown> & { readonly fields: { readonly t: { readonly literal: string } } };
+
+const SENSITIVE_FRAMES: ReadonlySet<string> = new Set(["saveSecret"]);
 
 function frameParser<M extends FrameSchema>(union: { readonly members: ReadonlyArray<M> }): (text: string) => Parsed<M["Type"]> {
   const byTag = new Map<string, M[]>();
@@ -509,6 +556,7 @@ function frameParser<M extends FrameSchema>(union: { readonly members: ReadonlyA
     if (!decode) return fail(`Unknown frame ${JSON.stringify(t)}`);
     const result = decode(value);
     if (Result.isSuccess(result)) return { ok: true, frame: result.success };
+    if (SENSITIVE_FRAMES.has(String(t))) return fail(`Bad ${String(t)} frame`);
     return fail(`Bad ${String(t)} frame: ${formatIssue(result.failure.issue)}`);
   };
 }

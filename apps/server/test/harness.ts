@@ -14,6 +14,7 @@ import * as Daemon from "../src/daemon.ts";
 import * as Events from "../src/events.ts";
 import { FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider, type Context as RequestContext, type RequestOptions } from "../src/fake-bots.ts";
 import * as Mcp from "../src/mcp.ts";
+import * as Secrets from "../src/secrets.ts";
 import { type ServeOptions, serve } from "../src/serve.ts";
 import { LOCAL_SKILLS } from "../src/skills.ts";
 import * as Sqlite from "../src/sqlite.ts";
@@ -28,7 +29,15 @@ afterAll(async () => {
 
 export const MODEL = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
 
+export const BEFORE_ASKS = [
+  "DROP TABLE asks",
+  "CREATE TABLE permissions (id INTEGER PRIMARY KEY AUTOINCREMENT, bot INTEGER NOT NULL REFERENCES bots(id), key TEXT NOT NULL UNIQUE, action TEXT NOT NULL, reason TEXT, state TEXT NOT NULL DEFAULT 'pending', at INTEGER NOT NULL)",
+  "CREATE INDEX permissions_pending ON permissions(state, bot)",
+  "DELETE FROM effect_sql_migrations WHERE migration_id >= 7",
+].join(";");
+
 export const BEFORE_CONTEXT_FILES = [
+  BEFORE_ASKS,
   "ALTER TABLE bots ADD COLUMN description TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE bots ADD COLUMN instructions TEXT NOT NULL DEFAULT ''",
   "DROP TABLE legacy_souls",
@@ -53,6 +62,7 @@ export type HarnessOptions = {
   readonly model?: { readonly models: Models; readonly id: string };
   readonly webSearch?: boolean;
   readonly context?: boolean;
+  readonly secretTtlMs?: number;
 };
 
 export const skillsConfig = (dir: string) => ({
@@ -62,7 +72,7 @@ export const skillsConfig = (dir: string) => ({
 
 class Ports extends Context.Service<Ports, { readonly port: number; readonly tailnetPort: number | undefined }>()("test/Ports") {}
 
-type Services = Store.Store | Events.Events | Daemon.Daemon | Daemon.BotKit;
+type Services = Store.Store | Events.Events | Daemon.Daemon | Daemon.BotKit | Secrets.Secrets;
 
 export async function harness(options: HarnessOptions = {}) {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "top-test-"));
@@ -96,7 +106,11 @@ export async function harness(options: HarnessOptions = {}) {
       });
     }),
   );
-  const extras = Layer.mergeAll(options.attachments ? Attachments.layer(dir) : Layer.empty, options.mcp ? Mcp.layer({ oauthPort: 0 }) : Layer.empty);
+  const extras = Layer.mergeAll(
+    options.attachments ? Attachments.layer(dir) : Layer.empty,
+    options.mcp ? Mcp.layer({ oauthPort: 0 }) : Layer.empty,
+    Secrets.layer(dir, options.secretTtlMs === undefined ? {} : { ttlMs: options.secretTtlMs }),
+  );
   const daemon = Daemon.layer.pipe(
     Layer.provideMerge(Layer.mergeAll(kit, extras, firstBots)),
     Layer.provideMerge(base),
@@ -129,6 +143,7 @@ export async function harness(options: HarnessOptions = {}) {
     daemon: await run(Effect.service(Daemon.Daemon)),
     events: await run(Effect.service(Events.Events)),
     attachments: options.attachments ? await run(Effect.service(Attachments.Attachments)) : undefined,
+    secrets: await run(Effect.service(Secrets.Secrets)),
     mcp: options.mcp ? await run(Effect.service(Mcp.Mcp)) : undefined,
     port: ports.port,
     tailnetPort: ports.tailnetPort,

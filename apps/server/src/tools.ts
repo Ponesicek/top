@@ -209,6 +209,17 @@ export const makeFakeTools = Effect.fnUntraced(function* (
         }),
     }),
     defineTool({
+      name: "use_secret",
+      label: "Use a secret",
+      description: "Testing only: reads a secret's file and signs in to staging with it, echoing what it sent.",
+      parameters: schema({ path: Str() }),
+      run: (args) =>
+        fs.readFileString(args.path).pipe(
+          Effect.map((value) => text(`Signed in to staging with ${value.trim()}.`)),
+          Effect.mapError(() => new ToolError({ message: `Couldn't read ${args.path}: it's gone, or was never there.` })),
+        ),
+    }),
+    defineTool({
       name: "crash_daemon",
       label: "Crash the daemon",
       description: "Testing only: kills the daemon process.",

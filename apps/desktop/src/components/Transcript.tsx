@@ -13,9 +13,9 @@ import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
 import { FilesLine } from "./files/FilesLine.tsx";
 import { highlight, QuoteMenu } from "./Quotes.tsx";
+import { AskCard } from "./transcript/AskCard.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
-import { PermissionCard } from "./transcript/PermissionCard.tsx";
 import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider, type RowRenderer } from "./transcript/parts.tsx";
 import { renderTeamRow } from "./transcript/TeamRows.tsx";
 
@@ -28,7 +28,7 @@ function estimate(row: DisplayRow | undefined): number {
   if (row.kind === "user") return 64 + Math.ceil(row.text.length / 90) * 22 + (row.attachments ? 200 : 0);
   if (row.kind === "assistant") return 80 + Math.ceil(row.text.length / 110) * 24;
   if (row.kind === "toolgroup" || row.kind === "files") return 34;
-  if (row.kind === "permission") return 120;
+  if (row.kind === "ask") return row.ask.kind === "question" && !row.answer ? 120 + row.ask.options.length * 44 : 140;
   return 48;
 }
 
@@ -225,8 +225,8 @@ export const Transcript = memo(function Transcript({
                   <div className={DIVIDER}>{row.text}</div>
                 ) : row.kind === "files" ? (
                   <FilesLine row={row} bot={sync.id} className={look.files} />
-                ) : row.kind === "permission" ? (
-                  <PermissionCard row={row} className={look.files} />
+                ) : row.kind === "ask" ? (
+                  <AskCard row={row} className={look.files} />
                 ) : (
                   look.render(rows, item.index)
                 )}
