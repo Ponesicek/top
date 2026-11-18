@@ -14,6 +14,7 @@ import {
 } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
+import { oneLine } from "../asks.ts";
 import type { AskBody, AskRow } from "../store.ts";
 import { defineTool, type ToolContext, type ToolResult, text } from "../tools.ts";
 import type { CollarDaemon, CollarGroup } from "./index.ts";
@@ -111,7 +112,7 @@ export const asksGroup: CollarGroup = (daemon) => [
     background: false,
     recover: recover(daemon),
     run: (args, ctx) => {
-      const action = args.action.trim().replace(/\.+$/, "");
+      const action = oneLine(args.action).replace(/\.+$/, "");
       if (!action) return Effect.succeed(failed("Say what you want to do in `action`."));
       const reason = args.reason?.trim();
       return ask(daemon, ctx, { kind: "permission", action, ...(reason ? { reason } : {}) });
@@ -130,9 +131,9 @@ export const asksGroup: CollarGroup = (daemon) => [
     background: false,
     recover: recover(daemon),
     run: (args, ctx) => {
-      const text = args.question.trim();
+      const text = oneLine(args.question);
       if (!text) return Effect.succeed(failed("Write the question in `question`."));
-      const options = (args.options ?? []).map((o) => ({ label: o.label.trim(), ...(o.description?.trim() ? { description: o.description.trim() } : {}) }));
+      const options = (args.options ?? []).map((o) => ({ label: oneLine(o.label), ...(o.description?.trim() ? { description: o.description.trim() } : {}) }));
       if (options.some((o) => !o.label)) return Effect.succeed(failed("Give every option a label."));
       if (options.length === 1) return Effect.succeed(failed("Give at least two options, or none for a free answer."));
       if (new Set(options.map((o) => o.label.toLowerCase())).size !== options.length) return Effect.succeed(failed("Give each option its own label."));
@@ -152,7 +153,7 @@ export const asksGroup: CollarGroup = (daemon) => [
     label: "Ask for a secret",
     description: [
       "Ask the user for one secret (a password, token, API key or pairing code) on a card in the app. Ask for each value separately; never ask for one in chat or with ask_question.",
-      "You don't wait here, and you never see the value: if the user saves it, a message tells you the path of a file your commands can read, deleted an hour later; Top hides the value if a command prints it. Use it only inside the command that needs it.",
+      "You don't wait here, and you never see the value: if the user saves it, a message tells you the path of a file your commands can read, deleted an hour later; Top hides the value if a command prints it. Hand it only to the command that needs it, from the file, standard input or an environment variable, never as a command argument.",
       "If they decline, or stop you first, go on without it and don't ask for it another way.",
       ELSEWHERE,
     ].join(" "),
@@ -160,7 +161,7 @@ export const asksGroup: CollarGroup = (daemon) => [
     background: false,
     recover: recover(daemon),
     run: (args, ctx) => {
-      const label = args.label.trim();
+      const label = oneLine(args.label);
       const reason = args.reason.trim();
       if (!label || !reason) return Effect.succeed(failed("Say what the secret is in `label` and what it's for in `reason`."));
       const url = args.url?.trim() ? safeUrl(args.url.trim()) : undefined;

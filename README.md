@@ -282,16 +282,21 @@ cards (no answer reaches it); deleting the bot removes them.
 - **Question** (`ask_question`): a question, with up to 6 options to pick (one, or several when the bot allows it)
   and a field to write your own answer (unless the bot left it out), or Skip. An answer is information, never a
   permission: it can't settle a permission card, and the bot is told to ask with `ask_permission` for that.
-- **Secret** (`request_secret`): one password, token or key, with what it's for and, if the bot gives one, a link to
-  the page where you make it. Save sends it to the daemon, which writes it to a file of its own in `server/secrets/`
-  (owner-only, `0600` in a `0700` folder) and tells the bot only the path, to read inside the command that needs it
-  (`"$(cat '…')"`). The value never goes into the conversation, the database, the logs or the bot's context, and
-  while the file lives Top replaces it with `[secret hidden by Top]` in everything a tool returns (its output,
-  details, progress and errors), so a command that prints it doesn't leak it to the model. The file is deleted an
-  hour after you saved it, when the bot is deleted, or at the next start once that hour has passed; after that the
-  bot asks again. Decline tells the bot to go on without it and not to ask another way.
-  The file protects it from other users on the computer, not from the bot's own commands or other bots: they all run
-  as you, with full access (see Run it).
+- **Secret** (`request_secret`): one password, token or key (one line, at least 4 characters), with what it's for
+  and, if the bot gives one, a link to the page where you make it. Save sends it to the daemon, which writes it to a
+  file of its own in `server/secrets/` (owner-only, `0600` in a `0700` folder) and tells the bot only the path. The
+  bot is told to hand it to the command that needs it from the file, standard input or an environment variable,
+  never as a command argument, which other users of the computer can read. The value never goes into the
+  conversation, the database, the logs or the bot's context. Top replaces it with `[secret hidden by Top]` in
+  everything a tool returns (its output, details, progress, errors, and the full output pi keeps of a long command),
+  as is and URL- or JSON-encoded, so a command that prints it doesn't hand it to the model. That holds while the file
+  lives and, for values of 8 characters or more, until the daemon restarts, since a command may have copied it
+  somewhere. It's protection against accidents, not against a bot set on getting it: part of the value, or the value
+  transformed (base64, reversed), isn't recognised.
+  The file is deleted an hour after you saved it, when the bot is deleted, or at the next start once that hour has
+  passed; after that the bot asks again. Stop withdraws a waiting card but leaves a saved file to its hour. Decline
+  tells the bot to go on without it and not to ask another way. The file keeps it from other users on the computer,
+  not from the bot's own commands or other bots: they all run as you, with full access (see Run it).
 
 Cards from other MCP servers don't reach Top. T3 Code's `request_secret`, for one, opens its card in a T3 Code thread
 and only works for an agent running in one, and its secret references only work in T3 Code's own tools. Top doesn't

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { AskError } from "@top/protocol";
 import * as Cause from "effect/Cause";
@@ -13,7 +14,9 @@ import { ToolError, type ToolResult, type TopTool } from "./tools.ts";
 
 export const SECRET_TTL_MS = 60 * 60_000;
 export const HIDDEN = "[secret hidden by Top]";
-const MIN_REDACTED = 4;
+export const MIN_SECRET = 4;
+const KEEP_HIDING = 8;
+const MAX_KEPT = 200;
 const NAME = /^b(\d+)-[0-9a-f]{32}$/;
 
 type Live = { readonly bot: number; readonly value: string; readonly expiresAt: number };
@@ -33,6 +36,11 @@ export class Secrets extends Context.Service<
   }
 >()("top/Secrets") {}
 
+function forms(value: string): string[] {
+  const all = new Set([value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]);
+  return [...all];
+}
+
 export const layer = (serverDir: string, options: { readonly ttlMs?: number } = {}): Layer.Layer<Secrets, never, FileSystem.FileSystem> =>
   Layer.effect(
     Secrets,
@@ -42,10 +50,31 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
       const dir = join(serverDir, "secrets");
       const ttlMs = options.ttlMs ?? SECRET_TTL_MS;
       const live = new Map<string, Live>();
+      const kept = new Set<string>();
+      let hidden: string[] = [];
 
-      const remove = (path: string) =>
+      const refresh = () => {
+        const values = new Set([...[...live.values()].map((s) => s.value), ...kept]);
+        hidden = [...values]
+          .filter((v) => v.length >= MIN_SECRET)
+          .flatMap(forms)
+          .sort((a, b) => b.length - a.length);
+      };
+
+      const forget = (path: string, keepHiding: boolean) => {
+        const secret = live.get(path);
+        live.delete(path);
+        if (secret && keepHiding && secret.value.length >= KEEP_HIDING) {
+          kept.delete(secret.value);
+          kept.add(secret.value);
+          if (kept.size > MAX_KEPT) kept.delete(kept.values().next().value!);
+        }
+        refresh();
+      };
+
+      const remove = (path: string, keepHiding: boolean) =>
         Effect.suspend(() => {
-          live.delete(path);
+          forget(path, keepHiding);
           return fs.remove(path, { force: true }).pipe(Effect.catchCause((cause) => Effect.logWarning("couldn't delete a secret's file", Cause.squash(cause))));
         });
 
@@ -53,7 +82,7 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
         Effect.gen(function* () {
           const wait = expiresAt - (yield* Clock.currentTimeMillis);
           if (wait > 0) yield* Effect.sleep(Duration.millis(wait));
-          if (live.get(path)?.expiresAt === expiresAt) yield* remove(path);
+          if (live.get(path)?.expiresAt === expiresAt) yield* remove(path, true);
         }).pipe(Effect.forkIn(scope), Effect.asVoid);
 
       const ensureDir = Effect.gen(function* () {
@@ -61,30 +90,30 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
         yield* fs.chmod(dir, 0o700);
       });
 
+      const restore = (name: string, now: number) =>
+        Effect.gen(function* () {
+          const path = join(dir, name);
+          const match = NAME.exec(name);
+          const info = yield* fs.stat(path).pipe(Effect.orElseSucceed(() => undefined));
+          const savedAt = info?.mtime._tag === "Some" ? info.mtime.value.getTime() : 0;
+          if (!match || info?.type !== "File" || savedAt + ttlMs <= now) return yield* remove(path, false);
+          const value = yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
+          if (value === undefined) return yield* remove(path, false);
+          live.set(path, { bot: Number(match[1]), value, expiresAt: savedAt + ttlMs });
+          refresh();
+          yield* expireAt(path, savedAt + ttlMs);
+        });
+
       yield* Effect.gen(function* () {
         if (!(yield* fs.exists(dir))) return;
         yield* fs.chmod(dir, 0o700);
         const now = yield* Clock.currentTimeMillis;
-        for (const name of yield* fs.readDirectory(dir)) {
-          const path = join(dir, name);
-          const match = NAME.exec(name);
-          const info = yield* fs.stat(path);
-          const savedAt = info.mtime._tag === "Some" ? info.mtime.value.getTime() : 0;
-          if (!match || info.type !== "File" || savedAt + ttlMs <= now) {
-            yield* remove(path);
-            continue;
-          }
-          const value = yield* fs.readFileString(path);
-          live.set(path, { bot: Number(match[1]), value, expiresAt: savedAt + ttlMs });
-          yield* expireAt(path, savedAt + ttlMs);
-        }
+        for (const name of yield* fs.readDirectory(dir)) yield* restore(name, now);
       }).pipe(Effect.catchCause((cause) => Effect.logWarning("couldn't look through the saved secrets", Cause.squash(cause))));
 
       const redact = (text: string): string => {
-        if (!live.size) return text;
         let out = text;
-        const values = [...live.values()].map((s) => s.value).filter((v) => v.length >= MIN_REDACTED);
-        for (const value of values.sort((a, b) => b.length - a.length)) if (out.includes(value)) out = out.split(value).join(HIDDEN);
+        for (const value of hidden) if (out.includes(value)) out = out.split(value).join(HIDDEN);
         return out;
       };
       const deep = (value: JsonValue): JsonValue => {
@@ -94,7 +123,7 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
         return value;
       };
       const clean = (result: ToolResult): ToolResult => {
-        if (!live.size) return result;
+        if (!hidden.length) return result;
         return {
           ...result,
           content: result.content.map((part) => (part.type === "text" ? { ...part, text: redact(part.text) } : part)),
@@ -102,6 +131,21 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
           ...(result.structuredContent === undefined ? {} : { structuredContent: deep(result.structuredContent) }),
         };
       };
+      const fullOutput = (details: JsonValue | undefined) => {
+        const path = details && typeof details === "object" && "fullOutputPath" in details ? details.fullOutputPath : undefined;
+        if (typeof path !== "string") return undefined;
+        const full = resolve(path);
+        return dirname(full) === resolve(tmpdir()) && /^pi-[\w-]+\.log$/.test(basename(full)) ? full : undefined;
+      };
+      const scrubFullOutput = (result: ToolResult) =>
+        Effect.gen(function* () {
+          const path = fullOutput(result.details);
+          if (!path || !hidden.length) return;
+          const text = yield* fs.readFileString(path);
+          const clean = redact(text);
+          if (clean !== text) yield* fs.writeFileString(path, clean);
+        }).pipe(Effect.catchCause((cause) => Effect.logWarning("couldn't hide secrets in a tool's full output", Cause.squash(cause))));
+      const finish = (result: ToolResult) => Effect.as(scrubFullOutput(result), clean(result));
       const cleanError = (error: unknown) => new ToolError({ message: redact(error instanceof Error ? error.message : String(error)) });
 
       return Secrets.of({
@@ -114,6 +158,7 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
             yield* fs.writeFileString(path, value, { flag: "wx", mode: 0o600 });
             const expiresAt = (yield* Clock.currentTimeMillis) + ttlMs;
             live.set(path, { bot, value, expiresAt });
+            refresh();
             yield* expireAt(path, expiresAt);
             return { path, expiresAt };
           }).pipe(
@@ -124,11 +169,11 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
               ),
             ),
           ),
-        discard: remove,
+        discard: (path) => remove(path, false),
         removeBot: (bot) =>
           Effect.forEach(
             [...live].filter(([, s]) => s.bot === bot),
-            ([path]) => remove(path),
+            ([path]) => remove(path, true),
             { discard: true },
           ),
         redact,
@@ -136,11 +181,18 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
           ...tool,
           run: (args, ctx) =>
             tool.run(args, ctx.onUpdate ? { ...ctx, onUpdate: (partial) => ctx.onUpdate?.(clean(partial)) } : ctx).pipe(
-              Effect.map(clean),
+              Effect.flatMap(finish),
               Effect.mapError(cleanError),
               Effect.catchDefect((defect) => Effect.fail(cleanError(defect))),
             ),
-          ...(tool.recover ? { recover: (args, ctx) => tool.recover!(args, ctx).pipe(Effect.map((result) => (result ? clean(result) : result))) } : {}),
+          ...(tool.recover
+            ? {
+                recover: (args, ctx) =>
+                  tool.recover!(args, ctx).pipe(
+                    Effect.flatMap((result): Effect.Effect<ToolResult | false | undefined> => (result ? finish(result) : Effect.succeed(result))),
+                  ),
+              }
+            : {}),
         }),
       });
     }),

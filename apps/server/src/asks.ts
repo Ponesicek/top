@@ -10,7 +10,8 @@ import {
   type WaitingAsk,
 } from "@top/protocol";
 import * as Effect from "effect/Effect";
-import type { Secrets } from "./secrets.ts";
+import * as Exit from "effect/Exit";
+import { MIN_SECRET, type Secrets } from "./secrets.ts";
 import type { AskBody, AskRow, InboxRow, Store, StoredEntry } from "./store.ts";
 
 export type Asks = {
@@ -31,6 +32,8 @@ export type AsksEvents = {
 const NOT_WAITING = "That request was already answered, or isn't waiting anymore.";
 const refuse = (message: string) => new AskError({ message });
 
+export const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
 const shellQuoted = (path: string) => `'${path.replace(/'/g, `'\\''`)}'`;
 
 const permissionText = (allow: boolean, action: string) =>
@@ -47,7 +50,7 @@ export function secretText(ask: SecretAsk, saved: { readonly path: string; reado
   if (!saved) return `[Secret] The user declined to give ${ask.label}. Don't ask for it in chat or another way; say what's blocked and carry on without it.`;
   return [
     `[Secret] The user saved ${ask.label} for your commands, in the file ${saved.path}. You never see the value, and Top hides it if a command prints it.`,
-    `Read it only inside the command that uses it, like "$(cat ${shellQuoted(saved.path)})" or a tool's option to read it from a file. Never print, copy or store it anywhere: not in a message, a file, memory, git or a command's output.`,
+    `Give it to the command that uses it without putting it in the command's arguments, where other users of the computer can see it: from the file or standard input (\`gh auth login --with-token < ${shellQuoted(saved.path)}\`, \`docker login --password-stdin < ${shellQuoted(saved.path)}\`), or as an environment variable (\`TOKEN="$(cat ${shellQuoted(saved.path)})" some-command\`). Never print, copy or store it anywhere: not in a message, a file, memory, git or a command's output.`,
     `The file is deleted in ${saved.minutes} minute${saved.minutes === 1 ? "" : "s"}; if you need it after that, ask again with request_secret.`,
   ].join("\n");
 }
@@ -56,7 +59,7 @@ function checkReply(ask: QuestionAsk, reply: Extract<AskReply, { kind: "question
   const choices = [...new Set(reply.choices)];
   if (choices.some((i) => !Number.isInteger(i) || i < 0 || i >= ask.options.length)) return Effect.fail(refuse("That option isn't one of the question's."));
   if (choices.length > 1 && !ask.multiple) return Effect.fail(refuse("Pick one option."));
-  const text = reply.text?.trim() ?? "";
+  const text = oneLine(reply.text ?? "");
   if (text && ask.options.length && !ask.other) return Effect.fail(refuse("This question takes one of its options."));
   if (text.length > MAX_ANSWER_TEXT) return Effect.fail(refuse(`Keep the answer under ${MAX_ANSWER_TEXT + 1} characters.`));
   if (!choices.length && !text) return Effect.fail(refuse(ask.options.length ? "Pick an option first." : "Write an answer first."));
@@ -113,15 +116,15 @@ export function makeAsks(store: Store["Service"], secrets: Secrets["Service"], e
         if (ask.kind !== "secret") return yield* refuse("That request doesn't take a secret.");
         const value = raw.trim();
         if (!value) return yield* refuse("Enter the secret first.");
+        if (value.length < MIN_SECRET) return yield* refuse(`That's too short for Top to keep hidden: a secret has at least ${MIN_SECRET} characters.`);
         if (Buffer.byteLength(value) > MAX_SECRET_BYTES) return yield* refuse(`That's longer than a secret can be (${MAX_SECRET_BYTES / 1024} KB).`);
         if (/[\r\n]/.test(value)) return yield* refuse("Secrets are one line. Paste it without line breaks.");
         const saved = yield* secrets.save(bot, value);
         const text = secretText(ask, { path: saved.path, minutes: Math.max(1, Math.round(secrets.ttlMs / 60_000)) });
-        const done = yield* settle(bot, id, "saved", { text });
-        if (!done) {
-          yield* secrets.discard(saved.path);
-          return yield* refuse(NOT_WAITING);
-        }
+        const done = yield* settle(bot, id, "saved", { text }).pipe(
+          Effect.onExit((exit) => (Exit.isSuccess(exit) && exit.value ? Effect.void : secrets.discard(saved.path))),
+        );
+        if (!done) return yield* refuse(NOT_WAITING);
       }),
     withdraw: (bot) =>
       Effect.gen(function* () {

@@ -1,6 +1,6 @@
 import type { AskOutcome, PermissionAsk, QuestionAsk, QuestionReply, SecretAsk } from "@top/client";
 import { Check, CircleSlash, ExternalLink, KeyRound, LockKeyhole, X } from "lucide-react";
-import { memo, type ReactNode, type RefObject, useId, useRef, useState } from "react";
+import { memo, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
 import { cn } from "../../lib/utils.ts";
 import type { Row } from "../../rows.ts";
 import { top, useClient } from "../../top.ts";
@@ -254,6 +254,10 @@ function SecretCard({ row, ask, className }: { row: AskRow; ask: SecretAsk; clas
   const noteId = useId();
   const { target, off, online, error, send } = useAnswering(row, card);
   const [value, setValue] = useState("");
+  const settled = !!row.answer;
+  useEffect(() => {
+    if (settled) setValue("");
+  }, [settled]);
   const host = ask.url ? hostOf(ask.url) : undefined;
   const save = async () => {
     if (!value.trim()) return;
