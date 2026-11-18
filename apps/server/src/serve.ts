@@ -191,6 +191,13 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const updatesOf = () => (updates ? Effect.succeed(updates) : Effect.fail(new NoUpdates()));
   const skillsOf = () => (daemon.skills ? Effect.succeed(daemon.skills) : Effect.fail(new NoSkills()));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
+  const botRow = (id: number) =>
+    Effect.gen(function* () {
+      yield* known(id);
+      const bot = yield* store.bot(id);
+      if (!bot) return yield* new UnknownBotError({ bot: id });
+      return bot;
+    });
 
   const watch = (frame: Extract<ClientFrame, { t: "watch" }>) =>
     Effect.gen(function* () {
@@ -306,14 +313,26 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(mcpOf(), (m) => m.retry(frame.id)),
         );
-      case "enableSkill":
+      case "enableSkills":
         return answer(
           frame,
           Effect.gen(function* () {
             const skills = yield* skillsOf();
-            const bot = daemon.has(frame.bot) ? yield* store.bot(frame.bot) : undefined;
-            if (!bot) return yield* new UnknownBotError({ bot: frame.bot });
-            yield* skills.enable(bot, frame.name, frame.on);
+            yield* skills.enable(yield* botRow(frame.bot), frame.names, frame.on);
+          }),
+        );
+      case "previewSkillFolder":
+        return answer(
+          frame,
+          Effect.flatMap(skillsOf(), (s) => s.preview(frame.folder)),
+        );
+      case "addSkillFolder":
+        return answer(
+          frame,
+          Effect.gen(function* () {
+            const skills = yield* skillsOf();
+            const bots = yield* Effect.forEach([...new Set(frame.bots)], botRow);
+            return yield* skills.addFolder(frame.folder, bots);
           }),
         );
       case "setWebSearch":

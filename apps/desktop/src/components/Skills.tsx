@@ -1,28 +1,32 @@
-import type { BotId, SkillView } from "@top/client";
-import { RefreshCw } from "lucide-react";
+import type { BotId, BotSkills, SkillsView, SkillView } from "@top/client";
+import { ChevronRight, Plus, RefreshCw } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { cn } from "../lib/utils.ts";
 import { type RosterBot, top, useClient, useRoster } from "../top.ts";
 import { messageOf } from "./BotDialogs.tsx";
 import { BotChip, Section } from "./SettingsSection.tsx";
+import { SkillFolderDialog } from "./SkillFolderDialog.tsx";
 import { Button } from "./ui/button.tsx";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "./ui/collapsible.tsx";
 
 const PATH = "font-mono text-[11.5px]";
 
 function BotToggle({
   bot,
-  name,
+  names,
   on,
   disabled,
   title,
   onError,
+  children,
 }: {
   bot: RosterBot;
-  name: string;
+  names: readonly string[];
   on: boolean;
   disabled?: boolean;
   title: string;
   onError: (error: string) => void;
+  children?: ReactNode;
 }) {
   const [pending, setPending] = useState<boolean>();
   const shown = pending ?? on;
@@ -30,7 +34,7 @@ function BotToggle({
     const next = !shown;
     setPending(next);
     try {
-      await top.enableSkill(bot.id, name, next);
+      await top.enableSkills(bot.id, names, next);
     } catch (err) {
       onError(messageOf(err));
     }
@@ -38,7 +42,7 @@ function BotToggle({
   };
   return (
     <BotChip on={shown} disabled={disabled} onClick={() => void toggle()} title={title}>
-      {bot.name}
+      {children ?? bot.name}
     </BotChip>
   );
 }
@@ -59,7 +63,7 @@ function SkillRow({
   badge,
   children,
 }: {
-  skill: Pick<SkillView, "name" | "description" | "path" | "error">;
+  skill: Pick<SkillView, "name" | "description" | "path" | "error" | "manual">;
   badge?: ReactNode;
   children: (onError: (e: string) => void) => ReactNode;
 }) {
@@ -71,6 +75,13 @@ function SkillRow({
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate text-small leading-snug font-label">{skill.name}</span>
           {badge}
+          {skill.manual && (
+            <Tag
+              title={`Its frontmatter says disable-model-invocation: a bot that has it isn't told about it, and uses it only when a message starts with /${skill.name}.`}
+            >
+              Only when asked
+            </Tag>
+          )}
         </span>
         {skill.description && <span className="line-clamp-2 text-meta text-muted-foreground">{skill.description}</span>}
         {skill.path && (
@@ -100,11 +111,129 @@ function Tag({ children, title }: { children: ReactNode; title?: string }) {
 const toggleTitle = (bot: RosterBot, name: string, on: boolean, error: string | undefined) =>
   error && !on ? `${name} can't be used, so it can't be switched on` : on ? `${bot.name} has ${name}. Click to take it away.` : `Give ${bot.name} ${name}`;
 
+function SharedSkillRow({ skill, bots, ofBot }: { skill: SkillView; bots: readonly RosterBot[]; ofBot: (bot: BotId) => BotSkills | undefined }) {
+  return (
+    <SkillRow skill={skill} badge={<Tag title="In the shared library: every bot that has it uses these files">Shared</Tag>}>
+      {(onError) =>
+        bots.length === 0 ? (
+          <span className="text-meta text-muted-foreground">Make a bot to give it this skill.</span>
+        ) : (
+          bots.map((bot) => {
+            const mine = ofBot(bot.id);
+            if (mine?.local.some((s) => s.name === skill.name)) return <Shadowed key={bot.id} bot={bot} name={skill.name} />;
+            const on = mine?.enabled.includes(skill.name) ?? false;
+            return (
+              <BotToggle
+                key={bot.id}
+                bot={bot}
+                names={[skill.name]}
+                on={on}
+                disabled={!!skill.error && !on}
+                title={toggleTitle(bot, skill.name, on, skill.error)}
+                onError={onError}
+              />
+            );
+          })
+        )
+      }
+    </SkillRow>
+  );
+}
+
+/** Shared skills linked in from one folder: switched on or off for a bot all at once, listed one by one when opened. */
+function SkillPack({
+  folder,
+  skills,
+  bots,
+  ofBot,
+}: {
+  folder: string;
+  skills: readonly SkillView[];
+  bots: readonly RosterBot[];
+  ofBot: (bot: BotId) => BotSkills | undefined;
+}) {
+  const [error, setError] = useState<string>();
+  const manual = skills.filter((s) => s.manual && !s.error).length;
+  const broken = skills.filter((s) => s.error).length;
+  const details = [`${skills.length} skills`, manual && `${manual} only when asked`, broken && `${broken} can't be used`].filter(Boolean).join(" · ");
+  return (
+    <Collapsible className="flex flex-col">
+      <div className="flex flex-col gap-2.5 px-4.5 py-3.5">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={cn(PATH, "truncate text-small leading-snug")} title={folder}>
+              {folder}
+            </span>
+            <Tag title="Linked into the shared library from this folder: its files stay there">Linked</Tag>
+          </span>
+          <span className="text-meta text-muted-foreground">{details}</span>
+        </div>
+        {error && <p className="m-0 line-clamp-3 text-meta leading-normal text-destructive-foreground">{error}</p>}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {bots.length === 0 ? (
+            <span className="text-meta text-muted-foreground">Make a bot to give it these skills.</span>
+          ) : (
+            bots.map((bot) => {
+              const mine = ofBot(bot.id);
+              // A bot's own skill with one of these names stays as it is: switching the name on or off would switch its own.
+              const theirs = skills.filter((s) => !mine?.local.some((l) => l.name === s.name));
+              const names = theirs.filter((s) => !s.error).map((s) => s.name);
+              const has = names.filter((name) => mine?.enabled.includes(name)).length;
+              const all = names.length > 0 && has === names.length;
+              return (
+                <BotToggle
+                  key={bot.id}
+                  bot={bot}
+                  // Off takes the broken ones too, so none stays on unseen.
+                  names={all ? theirs.map((s) => s.name) : names}
+                  on={all}
+                  disabled={names.length === 0}
+                  title={all ? `${bot.name} has all ${names.length}. Click to take them away.` : `Give ${bot.name} all ${names.length}`}
+                  onError={setError}
+                >
+                  <span>
+                    {bot.name}
+                    {has > 0 && !all && <span className="text-muted-foreground">{` · ${has} of ${names.length}`}</span>}
+                  </span>
+                </BotToggle>
+              );
+            })
+          )}
+        </div>
+        <CollapsibleTrigger
+          render={<Button variant="link" size="link" className="group self-start" />}
+          nativeButton
+          className="text-muted-foreground not-disabled:hover:text-foreground"
+        >
+          <ChevronRight size={12.5} strokeWidth={2.2} className="transition-transform duration-120 group-data-panel-open:rotate-90" />
+          One by one
+        </CollapsibleTrigger>
+      </div>
+      <CollapsiblePanel className="flex flex-col divide-y border-t">
+        {skills.map((skill) => (
+          <SharedSkillRow key={skill.name} skill={skill} bots={bots} ofBot={ofBot} />
+        ))}
+      </CollapsiblePanel>
+    </Collapsible>
+  );
+}
+
+/** Shared skills grouped by the folder they're linked from; a folder with one skill in the library isn't a group. */
+function packsOf(view: SkillsView) {
+  const byFolder = new Map<string, SkillView[]>();
+  for (const skill of view.shared) if (skill.linkedFrom) byFolder.set(skill.linkedFrom, [...(byFolder.get(skill.linkedFrom) ?? []), skill]);
+  const packs = [...byFolder].filter(([, skills]) => skills.length > 1);
+  const grouped = new Set(packs.flatMap(([, skills]) => skills));
+  return { packs, loose: view.shared.filter((skill) => !grouped.has(skill)) };
+}
+
 export function Skills() {
   const view = useClient((snapshot) => snapshot.skills);
   const bots = useRoster();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string>();
+  const [adding, setAdding] = useState(false);
+  const [session, setSession] = useState(0);
   const refresh = async () => {
     setRefreshing(true);
     setRefreshError(undefined);
@@ -132,90 +261,89 @@ export function Skills() {
     if (!bot) return [];
     return b.enabled.filter((name) => !b.local.some((s) => s.name === name) && !view.shared.some((s) => s.name === name)).map((name) => ({ bot, name }));
   });
+  const { packs, loose } = packsOf(view);
   const empty = view.shared.length === 0 && own.length === 0 && missing.length === 0;
 
   return (
-    <Section
-      title="Skills"
-      action={
-        <Button variant="link" size="link" disabled={refreshing} onClick={() => void refresh()}>
-          <RefreshCw size={12.5} strokeWidth={2.2} className={cn(refreshing && "animate-spin motion-reduce:animate-none")} />
-          Rescan
-        </Button>
-      }
-    >
-      <p className="m-0 px-4.5 py-3.5 text-meta leading-normal text-muted-foreground">
-        A skill is a folder with a <span className={PATH}>SKILL.md</span>. Shared skills are in <span className={cn(PATH, "break-all")}>{view.library}</span>:
-        every bot you switch one on for uses the same files, so a change to it (yours or a bot's) reaches all of them. A bot's own skills are in{" "}
-        <span className={PATH}>.agents/skills</span> in its folder, and take the place of a shared one with the same name. A bot uses only the skills you switch
-        on for it; type <span className={PATH}>/</span> in its message box to ask for one.
-        {refreshError && <span className="mt-1 block text-destructive-foreground">{refreshError}</span>}
-      </p>
-      {empty && <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">No skills found yet. Add a folder and press Rescan.</p>}
-      {view.shared.map((skill) => (
-        <SkillRow key={`shared:${skill.name}`} skill={skill} badge={<Tag title="In the shared library: every bot that has it uses these files">Shared</Tag>}>
-          {(onError) =>
-            bots.length === 0 ? (
-              <span className="text-meta text-muted-foreground">Make a bot to give it this skill.</span>
-            ) : (
-              bots.map((bot) => {
-                const mine = ofBot(bot.id);
-                if (mine?.local.some((s) => s.name === skill.name)) return <Shadowed key={bot.id} bot={bot} name={skill.name} />;
-                const on = mine?.enabled.includes(skill.name) ?? false;
-                return (
-                  <BotToggle
-                    key={bot.id}
-                    bot={bot}
-                    name={skill.name}
-                    on={on}
-                    disabled={!!skill.error && !on}
-                    title={toggleTitle(bot, skill.name, on, skill.error)}
-                    onError={onError}
-                  />
-                );
-              })
-            )
-          }
-        </SkillRow>
-      ))}
-      {own.map(({ bot, skill, enabled }) => {
-        const replaces = view.shared.some((s) => s.name === skill.name);
-        return (
+    <>
+      <Section
+        title="Skills"
+        action={
+          <span className="flex items-center gap-4">
+            <Button
+              variant="link"
+              size="link"
+              onClick={() => {
+                setSession((n) => n + 1);
+                setAdding(true);
+              }}
+            >
+              <Plus size={13} strokeWidth={2.2} />
+              Add from folder
+            </Button>
+            <Button variant="link" size="link" disabled={refreshing} onClick={() => void refresh()}>
+              <RefreshCw size={12.5} strokeWidth={2.2} className={cn(refreshing && "animate-spin motion-reduce:animate-none")} />
+              Rescan
+            </Button>
+          </span>
+        }
+      >
+        <p className="m-0 px-4.5 py-3.5 text-meta leading-normal text-muted-foreground">
+          A skill is a folder with a <span className={PATH}>SKILL.md</span>. Shared skills are in <span className={cn(PATH, "break-all")}>{view.library}</span>:
+          every bot you switch one on for uses the same files, so a change to it (yours or a bot's) reaches all of them. A bot's own skills are in{" "}
+          <span className={PATH}>.agents/skills</span> in its folder, and take the place of a shared one with the same name. A bot uses only the skills you
+          switch on for it; type <span className={PATH}>/</span> in its message box to ask for one.
+          {refreshError && <span className="mt-1 block text-destructive-foreground">{refreshError}</span>}
+        </p>
+        {empty && (
+          <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">No skills found yet. Add a folder of them, or put one in and press Rescan.</p>
+        )}
+        {packs.map(([folder, skills]) => (
+          <SkillPack key={`pack:${folder}`} folder={folder} skills={skills} bots={bots} ofBot={ofBot} />
+        ))}
+        {loose.map((skill) => (
+          <SharedSkillRow key={`shared:${skill.name}`} skill={skill} bots={bots} ofBot={ofBot} />
+        ))}
+        {own.map(({ bot, skill, enabled }) => {
+          const replaces = view.shared.some((s) => s.name === skill.name);
+          return (
+            <SkillRow
+              key={`local:${bot.id}:${skill.name}`}
+              skill={skill}
+              badge={
+                <Tag title={`In ${bot.name}'s own folder: only ${bot.name} can use it${replaces ? ", in place of the shared one" : ""}`}>
+                  {bot.name}'s own{replaces ? " · replaces shared" : ""}
+                </Tag>
+              }
+            >
+              {(onError) => (
+                <BotToggle
+                  bot={bot}
+                  names={[skill.name]}
+                  on={enabled}
+                  disabled={!!skill.error && !enabled}
+                  title={toggleTitle(bot, skill.name, enabled, skill.error)}
+                  onError={onError}
+                />
+              )}
+            </SkillRow>
+          );
+        })}
+        {missing.map(({ bot, name }) => (
           <SkillRow
-            key={`local:${bot.id}:${skill.name}`}
-            skill={skill}
-            badge={
-              <Tag title={`In ${bot.name}'s own folder: only ${bot.name} can use it${replaces ? ", in place of the shared one" : ""}`}>
-                {bot.name}'s own{replaces ? " · replaces shared" : ""}
-              </Tag>
-            }
+            key={`missing:${bot.id}:${name}`}
+            skill={{
+              name,
+              description: "",
+              path: "",
+              error: `Switched on for ${bot.name}, but there's no skill by this name anymore. Switch it off, or put it back.`,
+            }}
           >
-            {(onError) => (
-              <BotToggle
-                bot={bot}
-                name={skill.name}
-                on={enabled}
-                disabled={!!skill.error && !enabled}
-                title={toggleTitle(bot, skill.name, enabled, skill.error)}
-                onError={onError}
-              />
-            )}
+            {(onError) => <BotToggle bot={bot} names={[name]} on title={`Switch ${name} off for ${bot.name}`} onError={onError} />}
           </SkillRow>
-        );
-      })}
-      {missing.map(({ bot, name }) => (
-        <SkillRow
-          key={`missing:${bot.id}:${name}`}
-          skill={{
-            name,
-            description: "",
-            path: "",
-            error: `Switched on for ${bot.name}, but there's no skill by this name anymore. Switch it off, or put it back.`,
-          }}
-        >
-          {(onError) => <BotToggle bot={bot} name={name} on title={`Switch ${name} off for ${bot.name}`} onError={onError} />}
-        </SkillRow>
-      ))}
-    </Section>
+        ))}
+      </Section>
+      <SkillFolderDialog open={adding} session={session} onOpenChange={setAdding} />
+    </>
   );
 }

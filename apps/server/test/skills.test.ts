@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { activeSkills, type SkillsView, skillInvocation } from "@top/protocol";
 import * as Effect from "effect/Effect";
@@ -30,9 +30,9 @@ async function send(h: Harness, bot: number, text: string) {
 const prompt = async (h: Harness, bot: number) => getCurrentSystemPrompt(await h.run(h.store.context(bot)));
 const view = (h: Harness): SkillsView => h.daemon.skills!.view();
 const rescan = (h: Harness) => h.run(h.daemon.skills!.rescan);
-const enable = async (h: Harness, bot: number, name: string, on = true) => h.run(h.daemon.skills!.enable((await h.run(h.store.bot(bot)))!, name, on));
+const enable = async (h: Harness, bot: number, name: string, on = true) => h.run(h.daemon.skills!.enable((await h.run(h.store.bot(bot)))!, [name], on));
 const refusal = async (h: Harness, bot: number, name: string) => {
-  const exit = await h.run(Effect.flip(h.daemon.skills!.enable((await h.run(h.store.bot(bot)))!, name, true)));
+  const exit = await h.run(Effect.flip(h.daemon.skills!.enable((await h.run(h.store.bot(bot)))!, [name], true)));
   return `${exit._tag}: ${exit.message}`;
 };
 
@@ -83,7 +83,12 @@ test("the library is read as it is: bad skills say why, and don't keep the good 
   );
   const by = (name: string) => shared.find((s) => s.name === name)!;
   assert.deepEqual(by("pdf"), { name: "pdf", description: "Fill in and read PDF forms.", path: join(library, "pdf", "SKILL.md") });
-  assert.deepEqual(by("linked"), { name: "linked", description: "Kept in another folder.", path: join(library, "linked", "SKILL.md") });
+  assert.deepEqual(by("linked"), {
+    name: "linked",
+    description: "Kept in another folder.",
+    path: join(library, "linked", "SKILL.md"),
+    linkedFrom: dirname(readlinkSync(join(library, "linked"))),
+  });
   assert.match(by("Bad_Name").error!, /lowercase letters, digits and single hyphens/);
   assert.match(by("no-description").error!, /no description/);
   assert.match(by("mismatch").error!, /isn't its folder's name/);
@@ -252,4 +257,194 @@ test("a deleted bot's skills go with it, and its folder's skills leave the view"
   );
   await until("the bot to be purged", async () => !(await h.run(h.store.bot(atlas))));
   assert.deepEqual([...(await h.run(h.store.enabledSkills))], [[scout, ["pdf"]]]);
+});
+
+test("disable-model-invocation keeps a skill out of the bot's instructions, and /<name> still brings it", async () => {
+  const { h, atlas, library } = await setup(({ library }) => {
+    writeSkill(library, "pdf", meta("pdf", "Fill in PDF forms."));
+    writeSkill(library, "release", `${meta("release", "Cut a release.")}\ndisable-model-invocation: true`, "Tag it, then publish.");
+    writeSkill(library, "quoted", `${meta("quoted", "Quoted true.")}\ndisable-model-invocation: "true"`);
+    writeSkill(library, "allowed", `${meta("allowed", "Explicitly allowed.")}\ndisable-model-invocation: false`);
+    writeSkill(library, "unclear", `${meta("unclear", "Not a boolean.")}\ndisable-model-invocation: sometimes`);
+    writeSkill(library, "said-no", `${meta("said-no", "A plain no.")}\ndisable-model-invocation: "No"`);
+  });
+  const by = (name: string) => view(h).shared.find((s) => s.name === name)!;
+  assert.deepEqual(by("release"), { name: "release", description: "Cut a release.", path: join(library, "release", "SKILL.md"), manual: true });
+  assert.equal(by("quoted").manual, true);
+  assert.equal(by("allowed").manual, undefined);
+  assert.equal(by("pdf").manual, undefined);
+  assert.equal(by("unclear").manual, true, "an unclear value keeps it out of the instructions, and it stays usable");
+  assert.equal(by("unclear").error, undefined);
+  assert.equal(by("said-no").manual, undefined);
+
+  await enable(h, atlas, "release");
+  await send(h, atlas, "hello");
+  assert.doesNotMatch(await prompt(h, atlas), /<skills>/, "a bot with only manual skills isn't told about skills at all");
+
+  await enable(h, atlas, "pdf");
+  await enable(h, atlas, "allowed");
+  await send(h, atlas, "hello again");
+  const listed = await prompt(h, atlas);
+  assert.match(listed, /<name>pdf<\/name>/);
+  assert.match(listed, /<name>allowed<\/name>/);
+  assert.doesNotMatch(listed, /release/);
+  assert.deepEqual(
+    activeSkills(view(h), atlas).map((s) => s.name),
+    ["allowed", "pdf", "release"],
+    "the composer's / menu still offers it",
+  );
+
+  await send(h, atlas, "/release v2");
+  const stored = (await h.entries(atlas)).findLast((e) => e.kind === "user")!;
+  const parts = stored.kind === "user" && typeof stored.message.content !== "string" ? stored.message.content : [];
+  const note = parts.find((p) => p.type === "text" && p.skill);
+  assert.ok(note && note.type === "text");
+  assert.deepEqual(note.skill, { name: "release", source: "shared", path: join(library, "release", "SKILL.md") });
+  assert.match(note.text, /Tag it, then publish\./);
+  assert.match(note.text, /disable-model-invocation: true/, "SKILL.md goes as it is, frontmatter included");
+});
+
+test("switching several on is all or nothing", async () => {
+  const { h, atlas } = await setup(({ library }) => {
+    writeSkill(library, "pdf", meta("pdf", "PDFs."));
+    writeSkill(library, "deploy", meta("deploy", "Deploys."));
+    writeSkill(library, "broken", "name: broken");
+  });
+  const enableMany = async (names: string[], on: boolean) => h.run(Effect.result(h.daemon.skills!.enable((await h.run(h.store.bot(atlas)))!, names, on)));
+  const refused = await enableMany(["pdf", "deploy", "broken"], true);
+  assert.equal(refused._tag, "Failure");
+  assert.deepEqual(view(h).bots.find((b) => b.bot === atlas)?.enabled, []);
+  assert.equal((await enableMany(["pdf", "deploy", "pdf"], true))._tag, "Success");
+  assert.deepEqual(view(h).bots.find((b) => b.bot === atlas)?.enabled, ["deploy", "pdf"]);
+  assert.equal((await enableMany(["pdf", "deploy", "gone"], false))._tag, "Success");
+  assert.deepEqual(view(h).bots.find((b) => b.bot === atlas)?.enabled, []);
+});
+
+function collection() {
+  const root = mkdtempSync(join(tmpdir(), "top-skill-pack-"));
+  scratch.push(root);
+  const skills = join(root, "skills");
+  writeSkill(skills, "plan", `${meta("plan", "Plan the work.")}\ndisable-model-invocation: true`, "Write the plan. See ../review/SKILL.md.");
+  writeSkill(skills, "review", meta("review", "Review a change."));
+  writeSkill(skills, "pdf", meta("pdf", "The collection's PDF skill."));
+  writeSkill(skills, "notes", meta("notes", "The collection's notes."));
+  writeSkill(skills, "Bad_Name", meta("Bad_Name", "Not a skill name."));
+  writeSkill(skills, "no-description", "name: no-description");
+  writeFileSync(join(skills, "install.sh"), "#!/bin/sh\ntouch ran\n");
+  writeSkill(skills, ".git", meta("git", "Hidden."));
+  return skills;
+}
+
+test("adding a folder of skills links each new one into the library, replaces nothing, and switches them on for chosen bots", async () => {
+  const skills = collection();
+  const { h, atlas, scout, library } = await setup(({ library, atlas }) => {
+    writeSkill(library, "pdf", meta("pdf", "The library's own PDF skill."));
+    writeSkill(atlas, "notes", meta("notes", "Atlas's own notes."));
+  });
+  const fs = await import("node:fs");
+  const libraryPdf = fs.readFileSync(join(library, "pdf", "SKILL.md"), "utf8");
+
+  const preview = await h.run(h.daemon.skills!.preview(`${skills}/`));
+  assert.equal(preview.folder, skills);
+  assert.deepEqual(
+    preview.skills.map((s) => [s.skill.name, s.state, s.skill.manual ?? false]),
+    [
+      ["Bad_Name", "broken", false],
+      ["no-description", "broken", false],
+      ["notes", "new", false],
+      ["pdf", "taken", false],
+      ["plan", "new", true],
+      ["review", "new", false],
+    ],
+  );
+  assert.match(preview.skills.find((s) => s.skill.name === "pdf")!.reason!, /already has something named pdf .*stays as it is/);
+  assert.equal(preview.skills.find((s) => s.skill.name === "plan")!.skill.path, join(skills, "plan", "SKILL.md"));
+  assert.deepEqual(fs.readdirSync(library), ["pdf"], "a preview changes nothing");
+
+  const added = await h.run(h.daemon.skills!.addFolder(skills, [(await h.run(h.store.bot(atlas)))!]));
+  assert.deepEqual(added.added, ["notes", "plan", "review"]);
+  assert.deepEqual(added.enabled, [{ bot: atlas, names: ["plan", "review"] }]);
+  assert.deepEqual(
+    added.skipped.map((s) => s.name),
+    ["Bad_Name", "no-description", "pdf", "notes"],
+  );
+  assert.match(added.skipped.at(-1)!.reason, /Atlas has its own notes, which it keeps using/);
+
+  for (const name of ["notes", "plan", "review"]) {
+    assert.ok(fs.lstatSync(join(library, name)).isSymbolicLink());
+    assert.equal(fs.readlinkSync(join(library, name)), join(skills, name));
+  }
+  assert.equal(fs.readFileSync(join(library, "pdf", "SKILL.md"), "utf8"), libraryPdf, "the skill already there is untouched");
+  assert.ok(!fs.existsSync(join(library, "Bad_Name")) && !fs.existsSync(join(library, "no-description")) && !fs.existsSync(join(library, "git")));
+  assert.ok(!fs.existsSync(join(skills, "ran")) && !fs.existsSync(join(library, "ran")), "nothing in the folder is run");
+
+  const shared = view(h).shared;
+  assert.deepEqual(
+    shared.map((s) => [s.name, s.linkedFrom]),
+    [
+      ["notes", skills],
+      ["pdf", undefined],
+      ["plan", skills],
+      ["review", skills],
+    ],
+  );
+  assert.deepEqual(view(h).bots.find((b) => b.bot === atlas)?.enabled, ["plan", "review"]);
+  assert.deepEqual(view(h).bots.find((b) => b.bot === scout)?.enabled, []);
+  assert.equal(
+    activeSkills(view(h), atlas).find((s) => s.name === "notes"),
+    undefined,
+  );
+
+  await send(h, atlas, "hello");
+  const listed = await prompt(h, atlas);
+  assert.match(listed, /<name>review<\/name>/);
+  assert.doesNotMatch(listed, /<name>plan<\/name>/);
+  await send(h, atlas, "/plan the launch");
+  const stored = (await h.entries(atlas)).findLast((e) => e.kind === "user")!;
+  const note =
+    stored.kind === "user" && typeof stored.message.content !== "string" ? stored.message.content.find((p) => p.type === "text" && p.skill) : undefined;
+  assert.ok(note?.type === "text");
+  assert.match(note.text, /Write the plan\. See \.\.\/review\/SKILL\.md\./, "the upstream text, unchanged");
+
+  const again = await h.run(h.daemon.skills!.preview(skills));
+  assert.deepEqual(
+    again.skills.filter((s) => s.state === "added").map((s) => s.skill.name),
+    ["notes", "plan", "review"],
+  );
+  const scoutToo = await h.run(h.daemon.skills!.addFolder(skills, [(await h.run(h.store.bot(scout)))!]));
+  assert.deepEqual(scoutToo.added, []);
+  assert.deepEqual(scoutToo.enabled, [{ bot: scout, names: ["notes", "plan", "review"] }]);
+  assert.deepEqual(view(h).bots.find((b) => b.bot === scout)?.enabled, ["notes", "plan", "review"]);
+});
+
+test("a folder that is one skill is added as that skill; other folders are refused with a reason", async () => {
+  const skills = collection();
+  const { h, library } = await setup();
+  const fs = await import("node:fs");
+  const one = await h.run(h.daemon.skills!.addFolder(join(skills, "review"), []));
+  assert.deepEqual(one.added, ["review"]);
+  assert.equal(fs.readlinkSync(join(library, "review")), join(skills, "review"));
+
+  const refused = async (folder: string) => {
+    const exit = await h.run(Effect.flip(h.daemon.skills!.preview(folder)));
+    return `${exit._tag}: ${exit.message}`;
+  };
+  assert.match(await refused(""), /SkillError: Give the path/);
+  assert.match(await refused("skills"), /SkillError: Give the folder's full path/);
+  assert.match(await refused(join(skills, "missing")), /SkillError: There's no folder at/);
+  assert.match(await refused(join(skills, "install.sh")), /SkillError: .*install\.sh isn't a folder/);
+  assert.match(await refused(library), /SkillError: .* is in the shared library already/);
+  assert.match(await refused(join(library, "review")), /SkillError: .* is in the shared library already/);
+  assert.match(await refused(join(skills, "..")), new RegExp(`SkillError: There are no skills directly in .*Did you mean ${skills}\\?`));
+  const empty = join(skills, "..", "empty");
+  mkdirSync(empty);
+  assert.deepEqual(await h.run(h.daemon.skills!.preview(empty)), { folder: join(skills, "..", "empty"), skills: [] });
+
+  fs.rmSync(join(library, "review"));
+  fs.symlinkSync(join(skills, "elsewhere"), join(library, "review"));
+  const dangling = await h.run(h.daemon.skills!.preview(skills));
+  assert.equal(dangling.skills.find((s) => s.skill.name === "review")?.state, "taken", "a dangling link with the name is still not replaced");
+  const kept = await h.run(h.daemon.skills!.addFolder(skills, []));
+  assert.ok(!kept.added.includes("review"));
+  assert.equal(fs.readlinkSync(join(library, "review")), join(skills, "elsewhere"));
 });

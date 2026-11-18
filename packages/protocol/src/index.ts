@@ -6,7 +6,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 export const DEFAULT_PORT = 7357;
 
 const Struct = Schema.Struct;
@@ -101,6 +101,10 @@ export const SkillView = Struct({
   description: Schema.String,
   path: Schema.String,
   error: Optional(Schema.String),
+  /** Its frontmatter says `disable-model-invocation: true`: the bot isn't told about it, and gets it only from `/<name>`. */
+  manual: Optional(Schema.Literal(true)),
+  /** Its folder is a link into this folder: a collection of skills kept elsewhere, such as a cloned repository. */
+  linkedFrom: Optional(Schema.String),
 });
 export type SkillView = typeof SkillView.Type;
 
@@ -126,6 +130,25 @@ export const SkillUse = Struct({
   error: Optional(Schema.String),
 });
 export type SkillUse = typeof SkillUse.Type;
+
+/** What adding a folder of skills would do with each one: link it, find it already linked, or leave it out and say why. */
+export const SkillFolderEntry = Struct({
+  skill: SkillView,
+  state: Schema.Literals(["new", "added", "taken", "broken"]),
+  reason: Optional(Schema.String),
+});
+export type SkillFolderEntry = typeof SkillFolderEntry.Type;
+
+export const SkillFolder = Struct({ folder: Schema.String, skills: List(SkillFolderEntry) });
+export type SkillFolder = typeof SkillFolder.Type;
+
+export const SkillFolderAdded = Struct({
+  folder: Schema.String,
+  added: List(Schema.String),
+  enabled: List(Struct({ bot: BotId, names: List(Schema.String) })),
+  skipped: List(Struct({ name: Schema.String, reason: Schema.String })),
+});
+export type SkillFolderAdded = typeof SkillFolderAdded.Type;
 
 export type ActiveSkill = SkillView & { readonly source: SkillSource };
 
@@ -353,7 +376,9 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("mcpSignIn"), req, id: McpServerId }),
   Struct({ t: Schema.Literal("mcpSignOut"), req, id: McpServerId }),
   Struct({ t: Schema.Literal("mcpRetry"), req, id: McpServerId }),
-  Struct({ t: Schema.Literal("enableSkill"), req, bot: BotId, name: Schema.String, on: Schema.Boolean }),
+  Struct({ t: Schema.Literal("enableSkills"), req, bot: BotId, names: List(Schema.String), on: Schema.Boolean }),
+  Struct({ t: Schema.Literal("previewSkillFolder"), req, folder: Schema.String }),
+  Struct({ t: Schema.Literal("addSkillFolder"), req, folder: Schema.String, bots: List(BotId) }),
   Struct({ t: Schema.Literal("setWebSearch"), req, bot: BotId, on: Schema.Boolean }),
   Struct({ t: Schema.Literal("rescanSkills"), req }),
   Struct({ t: Schema.Literal("chatgptSignIn"), req, backgroundConsent: Schema.Literal(true) }),
@@ -389,7 +414,9 @@ export const RequestResult = {
   mcpSignIn: Struct({ url: Schema.String }),
   mcpSignOut: Schema.Null,
   mcpRetry: Schema.Null,
-  enableSkill: Schema.Null,
+  enableSkills: Schema.Null,
+  previewSkillFolder: SkillFolder,
+  addSkillFolder: SkillFolderAdded,
   setWebSearch: Schema.Null,
   rescanSkills: Schema.Null,
   chatgptSignIn: Struct({ url: Schema.String }),

@@ -230,7 +230,7 @@ headers or environment variables for keys. Their values stay on the daemon: the 
 
 Skills are [AgentSkills](https://agentskills.io) folders: `<name>/SKILL.md` (frontmatter with a `name`
 and a `description`, then instructions), with any scripts, references and assets beside it. Top reads
-them where they are and never installs, copies or updates one. Settings → **Skills** lists what it
+them where they are and never copies, changes or updates one. Settings → **Skills** lists what it
 found and which bots have which; a new bot has none, however many are installed.
 
 - **Where.** Shared skills are in Top's home, `~/.top/skills` (fake bots: in their home). Every bot a
@@ -242,13 +242,26 @@ found and which bots have which; a new bot has none, however many are installed.
   that isn't a skill name, a frontmatter `name` that isn't the folder's, no description, bad YAML, a
   dangling link). A broken skill can't be switched on and never stops the others loading. Folders may
   be links to skills kept elsewhere.
+- **Adding a folder of them.** **Add from folder** takes a folder on the daemon's computer: a
+  collection of skill folders (a cloned repository's `skills/`, say) or one skill's folder. It shows
+  what it found first, then links each new, usable skill into the shared library (`~/.top/skills/<name>`
+  → the skill's folder), so the files stay where they are, unchanged, and pulling the repository
+  updates them. It never replaces anything: a name the library already has stays as it is, and a
+  broken skill is left out, each with the reason. Nothing in the folder is run. It can switch the
+  skills on for the bots you pick, except where a bot has its own skill by that name. Adding the same
+  folder again links only what's new.
+- **Collections.** Shared skills linked in from one folder show as one row, with a chip per bot that
+  switches all of them on or off (`3 of 57` when some are), and **One by one** to list them.
 - **What the bot gets.** The skills switched on for it are listed in its instructions (name,
   description, where SKILL.md is), read again before it starts on a new message, so a change shows from
   its next task. It reads a skill's SKILL.md with its tools when a task matches. Paths in a skill are
   relative to its folder, and the bot is told so: it runs a skill's scripts by their full path or from
-  the skill's folder.
-- **Asking for one.** Start a message with `/<name>` (type `/` to pick from the bot's skills): the
-  skill's SKILL.md, as it is then, goes with the message, and the message shows which skill it used.
+  the skill's folder. A skill whose frontmatter sets `disable-model-invocation` (to anything but
+  `false`) isn't listed: the bot gets it only when you ask for it, and Settings marks it **Only when
+  asked**.
+- **Asking for one.** Start a message with `/<name>` (type `/` to pick from the bot's skills, those only
+  for asking included): the skill's SKILL.md, as it is then, goes with the message, and the message
+  shows which skill it used.
 - **Rescan** reads the folders again after you add or edit a skill; opening Settings does too.
 
 ### Web search
