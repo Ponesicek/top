@@ -4,6 +4,8 @@ import {
   type BotId,
   type BotSummary,
   type Channel,
+  type ContextFileName,
+  type ContextFileView,
   type FileView,
   type McpServerConfig,
   type McpServerId,
@@ -37,6 +39,8 @@ export type {
   BotStatus,
   Channel,
   Citation,
+  ContextFileName,
+  ContextFileView,
   Entry,
   FileChange,
   FileView,
@@ -70,6 +74,7 @@ export {
   CHATGPT_BACKGROUND_NOTICE,
   CHATGPT_REDIRECT,
   CHATGPT_USAGE_URL,
+  CONTEXT_FILES,
   channelName,
   channelOf,
   compareVersions,
@@ -79,6 +84,7 @@ export {
   MAX_BOT_AVATAR,
   MAX_BOT_DESCRIPTION,
   MAX_BOT_NAME,
+  MAX_CONTEXT_FILE_BYTES,
   MAX_IMAGE_BYTES,
   MAX_IMAGE_EDGE,
   MAX_MCP_NAME,
@@ -225,6 +231,14 @@ export class TopClient {
 
   deleteBot(id: BotId): Promise<void> {
     return this.#command({ t: "deleteBot", bot: id });
+  }
+
+  contextFiles(bot: BotId): Promise<readonly ContextFileView[]> {
+    return this.#request({ t: "contextFiles", bot });
+  }
+
+  saveContextFile(bot: BotId, name: ContextFileName, content: string, version: string): Promise<string> {
+    return this.#request({ t: "saveContextFile", bot, name, content, version }).then((result) => result.version);
   }
 
   saveMcpServer(id: McpServerId | undefined, name: string, config: McpServerConfig): Promise<McpServerId> {

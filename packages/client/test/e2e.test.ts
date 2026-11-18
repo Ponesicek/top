@@ -428,6 +428,19 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   await assert.rejects(a.top.createBot("Wren", "", 1.5), /Expected an integer/);
   await assert.rejects(a.top.createBot("Wren", "", 10_000), /icon doesn't exist/);
 
+  const files = await a.top.contextFiles(id);
+  assert.deepEqual(
+    files.map((f) => f.name),
+    ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"],
+  );
+  assert.equal(files[0]!.content, "# Scout\n\nWatches the build and reports breakages.\n");
+  assert.equal(files[0]!.path, join(daemon.dataDir, "bots", "Scout", "SOUL.md"));
+  assert.deepEqual(files[3], { name: "MEMORY.md", path: join(daemon.dataDir, "bots", "Scout", "MEMORY.md"), content: "", version: "" });
+  const version = await a.top.saveContextFile(id, "SOUL.md", "# Scout\n\nWatches the build, nightly.\n", files[0]!.version);
+  await untilSummary(b.top, id, (bot) => bot.description === "Watches the build, nightly.", "the edited SOUL.md on the other client");
+  await assert.rejects(a.top.saveContextFile(id, "SOUL.md", "# Old\n", files[0]!.version), /changed since you opened it/);
+  assert.equal((await a.top.contextFiles(id))[0]!.version, version);
+
   const scout = a.top.conversation(id);
   scout.retain();
   await untilBot(scout, (s) => s.status === "live", "the new bot's first sync");

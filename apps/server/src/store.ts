@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
+import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
 import { type Attachment, Attachment as AttachmentSchema, type FileChange, McpServerConfig, MessageSource, ToolOutcome } from "@top/protocol";
 import * as Clock from "effect/Clock";
@@ -65,15 +66,15 @@ export type StoredEntry = typeof StoredEntry.Type;
 export const BotRow = Schema.Struct({
   id: Int,
   name: Text,
-  description: Text,
   avatar: Int,
-  instructions: Text,
   model: Text,
   runActive: Schema.BooleanFromBit,
   restarts: Int,
   webSearch: Schema.BooleanFromBit,
 }).pipe(Schema.encodeKeys({ runActive: "run_active", webSearch: "web_search" }));
 export type BotRow = typeof BotRow.Type;
+
+export type LegacySoul = { readonly bot: number; readonly name: string; readonly description: string };
 
 const InboxColumns = Schema.Struct({
   id: Int,
@@ -300,6 +301,13 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     )`;
   }),
   "5_bot_web_search": addColumn("bots", "web_search", "INTEGER NOT NULL DEFAULT 0"),
+  "6_context_files": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE legacy_souls (bot INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL)`;
+    yield* sql`INSERT INTO legacy_souls (bot, name, description) SELECT id, name, description FROM bots WHERE deleted = 0`;
+    yield* sql`ALTER TABLE bots DROP COLUMN description`;
+    yield* sql`ALTER TABLE bots DROP COLUMN instructions`;
+  }),
 };
 
 const refuseNewerData = Effect.gen(function* () {
@@ -354,7 +362,9 @@ export class Store extends Context.Service<
 
     readonly bots: Effect.Effect<BotRow[]>;
     readonly bot: (id: number) => Effect.Effect<BotRow | undefined>;
-    readonly createBot: (name: string, instructions: string, model: string, description?: string, avatar?: number) => Effect.Effect<number>;
+    readonly createBot: (name: string, model: string, avatar?: number) => Effect.Effect<number>;
+    readonly legacySouls: Effect.Effect<LegacySoul[]>;
+    readonly settleLegacySoul: (bot: number) => Effect.Effect<void>;
     readonly markDeleted: (bot: number) => Effect.Effect<void>;
     readonly purgeBot: (bot: number) => Effect.Effect<void>;
     readonly flag: (key: string) => Effect.Effect<boolean>;
@@ -505,9 +515,13 @@ const make = Effect.gen(function* () {
       const latest = yield* first(sql`SELECT message FROM entries WHERE bot = ${bot} AND kind = 'compaction' ORDER BY seq DESC LIMIT 1`);
       if (!latest) return items;
       const compaction = compactionOf(latest.message);
-      const before = items.filter((item) => item.seq! < compaction.keptFrom && item.message.role === "system");
+      const baseline = getCurrentSystemMessage(items.filter((item) => item.seq! < compaction.keptFrom).map((item) => item.message));
       const after = items.filter((item) => item.seq! >= compaction.keptFrom);
-      return [...before, { seq: undefined, message: summaryMessage(compaction.summary, compaction.timestamp) }, ...after];
+      return [
+        ...(baseline ? [{ seq: undefined, message: baseline }] : []),
+        { seq: undefined, message: summaryMessage(compaction.summary, compaction.timestamp) },
+        ...after,
+      ];
     });
 
   const inboxRow = (requestId: string) => Effect.map(first(sql`SELECT * FROM inbox WHERE request_id = ${requestId}`), (row) => row && inboxOf(row));
@@ -522,7 +536,7 @@ const make = Effect.gen(function* () {
   const purgeBot = (bot: number) =>
     transaction(
       Effect.gen(function* () {
-        for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "bot_skills", "files", "wakes", "jobs", "permissions", "attachments"])
+        for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "bot_skills", "files", "wakes", "jobs", "permissions", "attachments", "legacy_souls"])
           yield* q(sql.unsafe(`DELETE FROM ${table} WHERE bot = ?`, [bot]));
         yield* q(sql`DELETE FROM bots WHERE id = ${bot}`);
       }),
@@ -538,13 +552,12 @@ const make = Effect.gen(function* () {
 
       bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY id`), (r) => r.map(botOf)),
       bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
-      createBot: (name, instructions, model, description = "", avatar = 0) =>
-        Effect.map(
-          first(
-            sql`INSERT INTO bots (name, description, avatar, instructions, model) VALUES (${name}, ${description}, ${avatar}, ${instructions}, ${model}) RETURNING id`,
-          ),
-          (row) => Number(row!.id),
-        ),
+      createBot: (name, model, avatar = 0) =>
+        Effect.map(first(sql`INSERT INTO bots (name, avatar, model) VALUES (${name}, ${avatar}, ${model}) RETURNING id`), (row) => Number(row!.id)),
+      legacySouls: Effect.map(rows(sql`SELECT bot, name, description FROM legacy_souls ORDER BY bot`), (r) =>
+        r.map((row) => ({ bot: Number(row.bot), name: String(row.name), description: String(row.description) })),
+      ),
+      settleLegacySoul: (bot) => Effect.asVoid(q(sql`DELETE FROM legacy_souls WHERE bot = ${bot}`)),
       markDeleted: (bot) =>
         transaction(
           Effect.gen(function* () {

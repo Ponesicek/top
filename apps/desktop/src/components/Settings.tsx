@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { AVATAR_STYLES, type AvatarStyle } from "../avatarStyle.ts";
 import { CHAT_STYLES, type ChatStyle } from "../chatStyle.ts";
 import { canScale, SCALES, type Scale } from "../scale.ts";
+import { BotContext } from "./BotContext.tsx";
 import { AccountSection } from "./ChatGPT.tsx";
 import { DaemonSettings } from "./DaemonSettings.tsx";
 import { McpServers } from "./McpServers.tsx";
@@ -83,6 +84,7 @@ export function Settings({
             )}
           </Section>
           <AccountSection />
+          <BotContext />
           <WebSearch />
           <McpServers />
           <Skills />

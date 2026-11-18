@@ -5,6 +5,8 @@ import {
   BotError,
   type BotSummary,
   BusyError,
+  type ContextFileName,
+  type ContextFileView,
   MAX_ATTACHMENTS,
   MAX_BOT_AVATAR,
   MAX_BOT_DESCRIPTION,
@@ -24,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import { Attachments } from "./attachments.ts";
 import { collarTools } from "./collar/index.ts";
+import { contextSections, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
 import { Events } from "./events.ts";
 import { type FilesFolder, makeFilesFolder } from "./files.ts";
 import { type Jobs, makeJobs } from "./jobs.ts";
@@ -63,14 +66,11 @@ export function lastLine(text: string): string {
 
 export type NewBot = {
   readonly model: string;
-  readonly instructions: (name: string, description: string) => string;
+  readonly instructions: string;
   readonly declare: readonly TopTool[];
 };
 
-export const defaultInstructions = (name: string, description: string) =>
-  [`You are ${name}, one of the user's bots.`, ...(description ? [purpose(description)] : [])].join("\n");
-
-export const purpose = (description: string) => `What the user made you for: ${description}`;
+export const DEFAULT_INSTRUCTIONS = "You are one of the user's bots.";
 
 export class BotKit extends Context.Service<
   BotKit,
@@ -79,6 +79,7 @@ export class BotKit extends Context.Service<
     readonly tools: readonly TopTool[] | ((bot: BotRow) => Effect.Effect<readonly TopTool[]>);
     readonly thinking: ThinkingLevel;
     readonly sections?: ((bot: BotRow) => Effect.Effect<Readonly<Record<string, string>>>) | undefined;
+    readonly folder?: ((bot: Pick<BotRow, "name">) => string) | undefined;
     readonly newBot?: NewBot | undefined;
     readonly firstBots?: readonly string[] | undefined;
     readonly seed?: number | undefined;
@@ -93,26 +94,43 @@ export class BotKit extends Context.Service<
   }
 >()("top/BotKit") {}
 
-const addBot = (name: string, description: string, newBot: NewBot, avatar = 0) =>
+const addBot = (name: string, newBot: NewBot, avatar = 0) =>
   Effect.gen(function* () {
     const store = yield* Store;
-    const instructions = newBot.instructions(name, description);
     return yield* store.transaction(
       Effect.gen(function* () {
-        const id = yield* store.createBot(name, instructions, newBot.model, description, avatar);
-        const system = createInitialSystemMessage(instructions, newBot.declare.map(toToolDeclaration));
+        const id = yield* store.createBot(name, newBot.model, avatar);
+        const system = createInitialSystemMessage(newBot.instructions, newBot.declare.map(toToolDeclaration));
         if (system) yield* store.append(id, "system", system);
         return id;
       }),
     );
   });
 
-export const ensureBots = (names: readonly string[], newBot: NewBot) =>
+export const ensureBots = (names: readonly string[], newBot: NewBot, folder: ((bot: Pick<BotRow, "name">) => string) | undefined) =>
   Effect.gen(function* () {
     const store = yield* Store;
     if (yield* store.flag("seeded")) return;
-    if ((yield* store.bots).length === 0) for (const name of names) yield* addBot(name, "", newBot);
+    if ((yield* store.bots).length === 0)
+      for (const name of names) {
+        if (folder) yield* Effect.orDie(seedSoul(folder({ name }), name, ""));
+        yield* addBot(name, newBot);
+      }
     yield* store.setFlag("seeded");
+  });
+
+export const moveLegacySouls = (folder: (bot: Pick<BotRow, "name">) => string) =>
+  Effect.gen(function* () {
+    const store = yield* Store;
+    for (const soul of yield* store.legacySouls) {
+      const moved = yield* Effect.result(seedSoul(folder(soul), soul.name, soul.description));
+      if (moved._tag === "Failure") {
+        yield* Effect.logError(`${soul.name}: couldn't move its name and description into SOUL.md; they stay in the database until it can`, moved.failure);
+        continue;
+      }
+      yield* store.settleLegacySoul(soul.bot);
+      if (moved.success === "appended") yield* Effect.log(`${soul.name}: its SOUL.md was there already, so its old description was added at the end`);
+    }
   });
 
 type LiveBot = {
@@ -130,6 +148,13 @@ export class Daemon extends Context.Service<
     readonly runner: (bot: number) => Effect.Effect<BotRunner, UnknownBotError>;
     readonly runners: () => BotRunner[];
     readonly createBot: (name: string, description: string, avatar?: number) => Effect.Effect<number, BotError>;
+    readonly contextFiles: (bot: number) => Effect.Effect<readonly ContextFileView[], UnknownBotError | BotError>;
+    readonly saveContextFile: (
+      bot: number,
+      name: ContextFileName,
+      content: string,
+      version: string,
+    ) => Effect.Effect<{ version: string }, UnknownBotError | BotError>;
     readonly setWebSearch: (bot: number, on: boolean) => Effect.Effect<void, UnknownBotError | BotError>;
     readonly deleteBot: (id: number) => Effect.Effect<void, UnknownBotError>;
     readonly submit: (
@@ -165,7 +190,8 @@ const make = Effect.gen(function* () {
   const toolSources = new Map<number, () => readonly TopTool[]>();
   const dirty = yield* FiberMap.make<number>();
 
-  if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot);
+  if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot, kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+  if (kit.folder) yield* moveLegacySouls(kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
   if (kit.newBot) for (const bot of yield* store.bots) if (bot.model !== kit.newBot.model) yield* store.setModel(bot.id, kit.newBot.model);
   const seeded = (yield* store.bots)[0];
   if (kit.seed && seeded) yield* seedHistory(seeded.id, kit.seed);
@@ -183,10 +209,13 @@ const make = Effect.gen(function* () {
       const row = (yield* store.bot(bot))!;
       const status = runner?.status() ?? { status: "idle" as const, since: yield* Clock.currentTimeMillis };
       const answer = yield* store.lastAnswer(bot);
+      const soul = kit.folder
+        ? soulIdentity((yield* readContextFile(kit.folder(row), "SOUL.md").pipe(Effect.provideService(FileSystem.FileSystem, fs))).content)
+        : {};
       return {
         id: bot,
-        name: row.name,
-        description: row.description,
+        name: soul.name ?? row.name,
+        description: soul.about ?? "",
         ...(row.avatar ? { avatar: row.avatar } : {}),
         status: status.status,
         ...(status.tool ? { tool: status.tool } : {}),
@@ -258,9 +287,13 @@ const make = Effect.gen(function* () {
       const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map(jobs.wrap)] : () => wrapped;
       const fixed = kit.sections ? yield* kit.sections(bot) : undefined;
       const searchOn = Effect.map(store.bot(bot.id), (row) => row?.webSearch === true);
+      const folder = kit.folder?.(bot);
       const changing = [
         ...(skills ? [Effect.map(skills.section(bot), (section) => ({ skills: section }))] : []),
         ...(kit.webSearch ? [Effect.map(searchOn, (on) => ({ web_search: on ? WEB_SEARCH_SECTION : null }))] : []),
+        ...(folder
+          ? [Effect.map(readContextFiles(folder).pipe(Effect.provideService(FileSystem.FileSystem, fs)), (files) => contextSections(folder, bot.name, files))]
+          : []),
       ];
       const sections =
         changing.length > 0
@@ -327,6 +360,7 @@ const make = Effect.gen(function* () {
       if (!newBot) return yield* new BotError({ message: "This daemon can't make bots." });
       const name = rawName.trim().replace(/\s+/g, " ");
       const description = rawDescription.trim();
+      const folder = kit.folder;
       if (!name) return yield* new BotError({ message: "Give the bot a name." });
       if (name.length > MAX_BOT_NAME) return yield* new BotError({ message: `Keep the name under ${MAX_BOT_NAME + 1} characters.` });
       if (description.length > MAX_BOT_DESCRIPTION)
@@ -334,11 +368,30 @@ const make = Effect.gen(function* () {
       if (avatar < 0 || avatar > MAX_BOT_AVATAR) return yield* new BotError({ message: "That icon doesn't exist." });
       const taken = [...bots.values()].some((live) => live.runner.name.toLowerCase() === name.toLowerCase());
       if (taken) return yield* new BotError({ message: `There's already a bot named ${name}.` });
-      const id = yield* addBot(name, description, newBot, avatar).pipe(Effect.provideService(Store, store));
+      if (folder)
+        yield* seedSoul(folder({ name }), name, description).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.mapError((error) => new BotError({ message: `Couldn't write ${name}'s SOUL.md: ${error.message}` })),
+        );
+      const id = yield* addBot(name, newBot, avatar).pipe(Effect.provideService(Store, store));
       const live = yield* add((yield* store.bot(id))!);
       yield* events.publish({ _tag: "Bot", summary: live.summary });
       if (skills) yield* skills.rescan;
       return id;
+    }),
+    contextFiles: Effect.fn("Daemon.contextFiles")(function* (bot) {
+      const row = bots.has(bot) ? yield* store.bot(bot) : undefined;
+      if (!row) return yield* new UnknownBotError({ bot });
+      if (!kit.folder) return yield* new BotError({ message: "This daemon's bots have no folder for their files." });
+      return yield* readContextFiles(kit.folder(row)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+    }),
+    saveContextFile: Effect.fn("Daemon.saveContextFile")(function* (bot, name, content, version) {
+      const row = bots.has(bot) ? yield* store.bot(bot) : undefined;
+      if (!row) return yield* new UnknownBotError({ bot });
+      if (!kit.folder) return yield* new BotError({ message: "This daemon's bots have no folder for their files." });
+      const saved = yield* saveContextFile(kit.folder(row), name, content, version).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+      yield* touch(bot);
+      return { version: saved };
     }),
     setWebSearch: Effect.fn("Daemon.setWebSearch")(function* (bot, on) {
       if (!bots.has(bot)) return yield* new UnknownBotError({ bot });
