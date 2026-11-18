@@ -187,6 +187,8 @@ test("saving a file needs the version it was opened at, so an edit made since is
   await assert.rejects(node(saveContextFile(folder, "USER.md", "x".repeat(MAX_CONTEXT_FILE_BYTES + 1), versionOf("Lives in Brno.\n"))), /under 8 KB/);
   await node(saveContextFile(folder, "USER.md", "", versionOf("Lives in Brno.\n")));
   assert.equal(readFileSync(join(folder, "USER.md"), "utf8"), "");
+  await node(saveContextFile(folder, "USER.md", "Lives in Prague again.\n", ""));
+  assert.equal(readFileSync(join(folder, "USER.md"), "utf8"), "Lives in Prague again.\n", 'an empty file is opened at version "" and saved over');
 
   const big = "x".repeat(MAX_CONTEXT_FILE_BYTES + 1);
   writeFileSync(join(folder, "MEMORY.md"), big);
