@@ -117,7 +117,8 @@ export const makeRunner = Effect.fnUntraced(function* (
             Effect.gen(function* () {
               const at = yield* now;
               const cut = messages.length - keep;
-              const after = contextTokens([...messages.slice(0, cut).filter((m) => m.role === "system"), summaryMessage(summary, at), ...messages.slice(cut)]);
+              const baseline = getCurrentSystemMessage(messages.slice(0, cut));
+              const after = contextTokens([...(baseline ? [baseline] : []), summaryMessage(summary, at), ...messages.slice(cut)]);
               const notice = yield* store.compact(
                 id,
                 keep,

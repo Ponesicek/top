@@ -81,7 +81,8 @@ test("the name and the line under it in the app come from SOUL.md", () => {
     name: "Nova",
     about: "Watches the build and reports breakages.",
   });
-  assert.deepEqual(soulIdentity("Some notes\n# **Nova** #\n"), { name: "Nova" });
+  assert.deepEqual(soulIdentity("\n# **Nova** #\n"), { name: "Nova" });
+  assert.deepEqual(soulIdentity("Some notes\n\n# Personality\nDry."), {}, "a heading further down isn't a name");
   assert.deepEqual(soulIdentity("No heading at all"), {});
   assert.deepEqual(soulIdentity(undefined), {});
   assert.equal(soulIdentity(`# ${"N".repeat(60)}`).name?.length, 40);
@@ -98,6 +99,12 @@ test("saving a file needs the version it was opened at, so an edit made since is
   await assert.rejects(node(saveContextFile(folder, "USER.md", "x".repeat(MAX_CONTEXT_FILE_BYTES + 1), versionOf("Lives in Brno.\n"))), /under 8 KB/);
   await node(saveContextFile(folder, "USER.md", "", versionOf("Lives in Brno.\n")));
   assert.equal(readFileSync(join(folder, "USER.md"), "utf8"), "");
+
+  const big = "x".repeat(MAX_CONTEXT_FILE_BYTES + 1);
+  writeFileSync(join(folder, "MEMORY.md"), big);
+  const unreadable = (await node(readContextFile(folder, "MEMORY.md"))).version;
+  await assert.rejects(node(saveContextFile(folder, "MEMORY.md", "short", unreadable)), /can't be saved here: It's 8\.0 KB/);
+  assert.equal(readFileSync(join(folder, "MEMORY.md"), "utf8"), big, "a file Settings couldn't show is never overwritten from it");
 });
 
 test("files go with the first request; an edit adds just that file's new version at the next message, after the same prefix", async () => {
@@ -239,6 +246,18 @@ test("a restart between saving an update and asking the model doesn't send the u
   );
 });
 
+test("a follow-up queued while a turn retries and fails is answered after it, in order", async () => {
+  const { h } = await recording();
+  await h.run(h.daemon.submit(h.bot, "fails", "fail always", "followUp", null));
+  await until("the retry", async () => (await h.run(h.daemon.runner(h.bot))).status().status === "retrying");
+  await h.run(h.daemon.submit(h.bot, "next", "and then?", "followUp", null));
+  await until("both turns", async () => (await idle(h)) && (await h.entries()).filter((e) => e.kind === "assistant").length === 2, 10_000);
+  const kinds = (await h.entries()).map((e) =>
+    e.kind === "user" ? textOf(e.message.content as never) : e.kind === "assistant" ? (e.message.errorMessage ? "failed" : "answer") : e.kind,
+  );
+  assert.deepEqual(kinds, ["fail always", "failed", "and then?", "answer"]);
+});
+
 test("a failed request is retried with the same context, and the update isn't added again", async () => {
   const { h, requests } = await recording();
   put(h, "MEMORY.md", "v1\n");
@@ -321,6 +340,20 @@ test("bots from before context files get their name and description in SOUL.md, 
   const resumed = await harness({ dir, context: true });
   assert.equal(soul("Atlas"), "# Atlas\n\nWatches the build.\n", "a migration cut off after the file was written finishes without writing it twice");
   assert.deepEqual(await resumed.run(resumed.store.legacySouls), []);
+  await resumed.close();
+
+  const full = `# Lark\n\n${"y".repeat(MAX_CONTEXT_FILE_BYTES - 20)}\n`;
+  writeFileSync(join(dir, "bots", "Lark", "SOUL.md"), full);
+  const later = new DatabaseSync(join(dir, "top.sqlite"));
+  later.exec("INSERT INTO legacy_souls (bot, name, description) SELECT id, name, 'Answers mail, and much more besides.' FROM bots WHERE name = 'Lark'");
+  later.close();
+  const waiting = await harness({ dir, context: true });
+  assert.equal(soul("Lark"), full, "no room: SOUL.md isn't pushed over the limit");
+  assert.deepEqual(
+    (await waiting.run(waiting.store.legacySouls)).map((s) => s.name),
+    ["Lark"],
+    "and the description waits in the database",
+  );
 });
 
 test("SOUL.md names the bot in the app; the folder keeps the name it was made with", async () => {
@@ -338,9 +371,20 @@ test("SOUL.md names the bot in the app; the folder keeps the name it was made wi
   assert.ok(existsSync(join(folderOf(h, "Scout"), "SOUL.md")));
   await assert.rejects(h.run(h.daemon.saveContextFile(made, "SOUL.md", "# Other\n", soul!.version)), /changed since you opened it/);
 
+  await assert.rejects(h.run(h.daemon.createBot("nova", "")), /already a bot named nova\./);
+  await assert.rejects(h.run(h.daemon.createBot("Scout", "")), /already a bot named Scout \(it's called Nova now\)/);
+  await h.run(h.daemon.createBot("Sc/out", ""));
+  await assert.rejects(h.run(h.daemon.createBot("Sc_out", "")), /would share Sc\/out's folder/);
+
   rmSync(join(folderOf(h, "Scout"), "SOUL.md"));
   await ask(h, "who are you?", made);
   await until("the name it was made with", () => summary().name === "Scout");
+
+  await h.run(h.daemon.deleteBot(made));
+  await until("the bot to go", () => !h.daemon.has(made));
+  put(h, "MEMORY.md", "Scout's notes.\n", "Scout");
+  await assert.rejects(h.run(h.daemon.createBot("Scout", "")), /still has MEMORY\.md from an earlier bot/);
+  assert.equal(readFileSync(join(folderOf(h, "Scout"), "MEMORY.md"), "utf8"), "Scout's notes.\n");
 });
 
 class SignedIn implements CredentialStore {

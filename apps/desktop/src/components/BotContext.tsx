@@ -31,6 +31,7 @@ function Editor({ bot, file, onSaved }: { bot: BotId; file: ContextFileView; onS
   }, [draft, file.version]);
 
   const save = async () => {
+    if (busy) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -39,6 +40,7 @@ function Editor({ bot, file, onSaved }: { bot: BotId; file: ContextFileView; onS
       setDraft(undefined);
     } catch (err) {
       setError(messageOf(err));
+      await onSaved().catch(() => {});
     }
     setBusy(false);
   };
@@ -66,9 +68,9 @@ function Editor({ bot, file, onSaved }: { bot: BotId; file: ContextFileView; onS
           className="max-h-[60vh] min-h-40 w-full resize-y rounded-field bg-background px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-foreground inset-ring inset-ring-input outline-none transition-shadow duration-90 placeholder:text-muted-foreground focus:inset-ring-primary focus:shadow-focus"
         />
       )}
-      {(error ?? stale) && (
+      {(stale || error) && (
         <p className="m-0 text-meta leading-normal text-destructive-foreground">
-          {error ?? "It changed since you started editing, maybe by the bot. Revert to see the new version, or replace it with yours."}
+          {stale ? "It changed since you started editing, maybe by the bot. Revert to see the new version, or replace it with yours." : error}
         </p>
       )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">

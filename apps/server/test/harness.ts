@@ -19,6 +19,7 @@ import { LOCAL_SKILLS } from "../src/skills.ts";
 import * as Sqlite from "../src/sqlite.ts";
 import * as Store from "../src/store.ts";
 import type { TopTool } from "../src/tools.ts";
+import { botFolder } from "../src/workspace.ts";
 
 const open: (() => Promise<void>)[] = [];
 afterAll(async () => {
@@ -83,7 +84,7 @@ export async function harness(options: HarnessOptions = {}) {
         tools: options.tools ?? [],
         thinking: "off",
         newBot: { model: options.model?.id ?? MODEL, instructions: Daemon.DEFAULT_INSTRUCTIONS, declare: [] },
-        ...(options.context ? { folder: (bot: Pick<Store.BotRow, "name">) => join(dir, "bots", bot.name) } : {}),
+        ...(options.context ? { folder: (bot: Pick<Store.BotRow, "name">) => botFolder(join(dir, "bots"), bot.name) } : {}),
         files: options.files,
         ...(options.skills ? { skills: skillsConfig(dir) } : {}),
         foregroundMs: options.foregroundMs ?? 30_000,

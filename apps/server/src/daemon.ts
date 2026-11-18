@@ -26,7 +26,7 @@ import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import { Attachments } from "./attachments.ts";
 import { collarTools } from "./collar/index.ts";
-import { contextSections, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
+import { contextSections, hasContextFiles, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
 import { Events } from "./events.ts";
 import { type FilesFolder, makeFilesFolder } from "./files.ts";
 import { type Jobs, makeJobs } from "./jobs.ts";
@@ -366,13 +366,25 @@ const make = Effect.gen(function* () {
       if (description.length > MAX_BOT_DESCRIPTION)
         return yield* new BotError({ message: `Keep the description under ${MAX_BOT_DESCRIPTION + 1} characters.` });
       if (avatar < 0 || avatar > MAX_BOT_AVATAR) return yield* new BotError({ message: "That icon doesn't exist." });
-      const taken = [...bots.values()].some((live) => live.runner.name.toLowerCase() === name.toLowerCase());
-      if (taken) return yield* new BotError({ message: `There's already a bot named ${name}.` });
-      if (folder)
-        yield* seedSoul(folder({ name }), name, description).pipe(
+      const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+      for (const live of bots.values()) {
+        if (same(live.runner.name, name) || same(live.summary.name, name))
+          return yield* new BotError({
+            message: `There's already a bot named ${name}${same(live.summary.name, name) ? "" : ` (it's called ${live.summary.name} now)`}.`,
+          });
+        if (folder && same(folder(live.runner), folder({ name })))
+          return yield* new BotError({ message: `${name} would share ${live.summary.name}'s folder, ${folder({ name })}. Pick another name.` });
+      }
+      if (folder) {
+        const path = folder({ name });
+        const left = yield* hasContextFiles(path).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+        if (left.length)
+          return yield* new BotError({ message: `${path} still has ${left.join(", ")} from an earlier bot. Move them away, or pick another name.` });
+        yield* seedSoul(path, name, description).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.mapError((error) => new BotError({ message: `Couldn't write ${name}'s SOUL.md: ${error.message}` })),
         );
+      }
       const id = yield* addBot(name, newBot, avatar).pipe(Effect.provideService(Store, store));
       const live = yield* add((yield* store.bot(id))!);
       yield* events.publish({ _tag: "Bot", summary: live.summary });

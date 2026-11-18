@@ -94,7 +94,8 @@ Their home is `apps/server/.data/fake`, laid out like `~/.top` (a reset clears t
 Real mode starts with one bot, Atlas. Make more with the **+** beside "Bots" (a name, an icon
 drawn from the name, with more to shuffle through, and a description that starts its SOUL.md);
 hover over a bot to delete it. Deleting
-erases its conversation everywhere; files in its folder stay.
+erases its conversation everywhere; files in its folder stay, and a new bot can't take that
+folder over while its SOUL.md, AGENTS.md, USER.md or MEMORY.md are still there.
 
 Attach files with the paperclip, by pasting, or by dropping them on the conversation. They upload as
 soon as they're added. Images are shrunk to 2000 px on their long side first, and a paste over 32 KB
@@ -137,7 +138,7 @@ pnpm server --tailscale --tailscale-allow tag:laptops    # only you, this comput
 ### Identity and memory
 
 Each bot has four Markdown files in its folder (`~/.top/bots/<name>/`), and they are what it is:
-`SOUL.md` (who it is: its first `# Heading` is its name in the app, the paragraph under it the line
+`SOUL.md` (who it is: a `# Heading` on its first line is its name in the app, the paragraph under it the line
 under its name), `AGENTS.md` (how it works), `USER.md` (what it knows about you) and `MEMORY.md`
 (what it has learned). The files are the only copy: Settings → **Identity and memory** edits them
 in place, and the bot edits them with its tools, unasked, when it learns something that will
@@ -165,12 +166,14 @@ bot, say), unless you choose to replace it.
   The messages themselves stay in the history.
 - **From older versions** (migration 6): each bot's name and description move into its SOUL.md
   (`# Name`, then the description) the first time the new daemon starts. A SOUL.md already there
-  is kept, with the description added at its end if it isn't in it. The text stays in the
-  database until the file is written, so a failure or crash midway loses nothing and the next start
+  is kept, with the description added at its end if it isn't in it (unless that would take it
+  over 8 KB: then it waits, logged, until there's room). The text stays in the database until the
+  file is written, so a failure or crash midway loses nothing and the next start
   finishes it. Conversations carry on where they were: the files arrive as an update with the next
   message, and the bot is told SOUL.md's name and purpose replace any given earlier.
 - **The folder keeps the name the bot was made with**, whatever SOUL.md calls it; without a
-  heading, that's its name in the app too.
+  heading, that's its name in the app too. A new bot can't take a name a bot already has, in the
+  app or as its folder.
 
 ### Files
 
