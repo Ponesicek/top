@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, test } from "vitest";
 import type { Tasks } from "../src/tasks/coordinator.ts";
-import { describe as describeT3, RpcSocket, writeT3Config } from "../src/tasks/t3api.ts";
+import { describe as describeT3, exchangePairingCode, RpcSocket, writeT3Config } from "../src/tasks/t3api.ts";
 import { T3CODE, t3codeAdapter } from "../src/tasks/t3code.ts";
 import { type Harness, harness, until } from "./harness.ts";
 
@@ -19,6 +19,8 @@ const connectHost = process.env.TOP_REAL_T3_CONNECT_HOST ?? bindHost;
 const model = process.env.TOP_REAL_T3_MODEL ?? "claude-haiku-5-5";
 
 let server: ChildProcess | undefined;
+const checkSessionScopes = async (origin: string, token: string) =>
+  ((await (await fetch(`${origin}/api/auth/session`, { headers: { authorization: `Bearer ${token}` } })).json()) as { permissions?: string[] }).permissions;
 afterAll(() => {
   server?.kill("SIGTERM");
 });
@@ -36,24 +38,21 @@ test.skipIf(!binary)(
     server = spawn(binary!, ["serve", "--host", bindHost, "--port", String(port), "--base-dir", base, "--no-browser"], { stdio: "ignore" });
     const origin = `http://${connectHost}:${port}`;
     const descriptor = await until("T3 Code to answer", () => describeT3(origin).catch(() => undefined), 60_000);
-    const token = execFileSync(
-      binary!,
-      [
-        "auth",
-        "session",
-        "issue",
-        "--base-dir",
-        base,
-        "--scope",
-        "orchestration:read",
-        "--scope",
-        "orchestration:operate",
-        "--label",
-        "Top test",
-        "--token-only",
-      ],
-      { encoding: "utf8" },
-    ).trim();
+    // The pairing code T3 Code makes; Top keeps only the session it trades it for.
+    const pairing = JSON.parse(
+      execFileSync(
+        binary!,
+        ["auth", "pairing", "create", "--base-dir", base, "--scope", "orchestration:read", "--scope", "orchestration:operate", "--label", "Top test", "--json"],
+        { encoding: "utf8" },
+      ),
+    ) as { credential: string };
+    const token = await exchangePairingCode(origin, pairing.credential, "Top test");
+    assert.deepEqual(
+      new Set((await checkSessionScopes(origin, token)) ?? []),
+      new Set(["orchestration:read", "orchestration:operate"]),
+      "Top's session holds exactly what it asked for",
+    );
+    await assert.rejects(exchangePairingCode(origin, pairing.credential, "again"), /didn't take that code/, "a code works once");
 
     const bogus = join(dir, "bogus.json");
     const config = {

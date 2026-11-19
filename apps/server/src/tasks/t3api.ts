@@ -1,6 +1,7 @@
 // T3 Code's own client API: HTTP for auth and reads, and its WebSocket RPC (Effect RPC, JSON) for
 // orchestration. Top never uses T3 Code's /mcp endpoint or T3 Connect.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { dirname } from "node:path";
 
 /** The orchestration protocol Top speaks; T3 Code refuses a socket for any other. */
@@ -44,14 +45,14 @@ export function t3Origin(input: string): string {
   return url.origin;
 }
 
-/** Plain HTTP is private only on this computer or inside a tailnet (WireGuard). */
+/** Plain HTTP stays private only on this computer; anywhere else, even a tailnet, it takes `--plain-http`. */
 export function plainHttpExposed(origin: string): boolean {
   const url = new URL(origin);
   if (url.protocol === "https:") return false;
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host === "::1" || /^127\./.test(host) || host.endsWith(".ts.net") || /^fd7a:115c:a1e0:/i.test(host)) return false;
-  const v4 = host.split(".").map(Number);
-  return !(v4.length === 4 && v4[0] === 100 && v4[1]! >= 64 && v4[1]! <= 127);
+  if (host === "localhost") return false;
+  if (isIP(host) === 4) return !host.startsWith("127.");
+  return !(isIP(host) === 6 && host === "::1");
 }
 
 export async function readT3Config(file: string): Promise<T3Config | undefined> {
@@ -87,13 +88,18 @@ export async function writeT3Config(file: string, config: T3Config): Promise<voi
 export const removeT3Config = (file: string) => rm(file, { force: true });
 
 async function http(origin: string, path: string, init: RequestInit = {}): Promise<Response> {
+  let response: Response;
   try {
-    return await fetch(`${origin}${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(TIMEOUT_MS) });
+    // Never follow a redirect: it could hand a pairing code or the credential to another address.
+    response = await fetch(`${origin}${path}`, { ...init, redirect: "manual", signal: init.signal ?? AbortSignal.timeout(TIMEOUT_MS) });
   } catch (error) {
     const cause = record(record(error).cause);
     const why = str(cause.code) ?? str(cause.message) ?? (error instanceof Error ? error.message : String(error));
     throw new T3Unreachable(`Couldn't reach T3 Code at ${origin} (${why}).`);
   }
+  if (response.status >= 300 && response.status < 400)
+    throw new T3Refused(`${origin}${path} redirects elsewhere (HTTP ${response.status}); give T3 Code's own address, not one that forwards to it.`);
+  return response;
 }
 
 async function json(response: Response): Promise<unknown> {
@@ -182,9 +188,7 @@ export async function listProjects(origin: string, token: string): Promise<reado
 
 /** A short-lived ticket for one socket, so the credential never goes into a socket URL. */
 async function rpcTicket(origin: string, token: string): Promise<string> {
-  let response = await http(origin, "/api/auth/websocket-ticket/rpc", { method: "POST", headers: bearer(token) });
-  // Servers from before ticket audiences have only the bare route; their tickets open any socket.
-  if (response.status === 404) response = await http(origin, "/api/auth/websocket-ticket", { method: "POST", headers: bearer(token) });
+  const response = await http(origin, "/api/auth/websocket-ticket/rpc", { method: "POST", headers: bearer(token) });
   if (response.status === 401)
     throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential. Pair again with \`top t3code connect ${origin}\`.`);
   const ticket = str(record(await json(response)).ticket);
@@ -217,6 +221,7 @@ export class RpcSocket {
   private next = 1;
   private ping: NodeJS.Timeout | undefined;
   private closedWith: Error | undefined;
+  private heard = Date.now();
 
   private readonly ws: WebSocket;
   private readonly onClose: (error: Error) => void;
@@ -229,7 +234,17 @@ export class RpcSocket {
       this.shut(new T3Unreachable(`The connection to T3 Code closed (${event.code}${event.reason ? ` ${event.reason}` : ""}).`)),
     );
     ws.addEventListener("error", () => this.shut(new T3Unreachable("The connection to T3 Code failed.")));
-    this.ping = setInterval(() => this.send({ _tag: "Ping" }), PING_MS);
+    this.ping = setInterval(() => {
+      // T3 Code answers each ping; a socket that has gone quiet that long is dead even if TCP hasn't noticed.
+      if (Date.now() - this.heard > PING_MS * 2 + 5_000) {
+        this.shut(new T3Unreachable("T3 Code stopped answering."));
+        try {
+          this.ws.close();
+        } catch {}
+        return;
+      }
+      this.send({ _tag: "Ping" });
+    }, PING_MS);
     this.ping.unref();
   }
 
@@ -295,6 +310,7 @@ export class RpcSocket {
   }
 
   private receive(data: string) {
+    this.heard = Date.now();
     let message: Record<string, unknown>;
     try {
       message = record(JSON.parse(data));

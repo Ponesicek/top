@@ -541,7 +541,13 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           return;
         }
         case "cancel_timeout":
-          return yield* finish(live, "cancelled");
+          return yield* finish(
+            live,
+            "cancelled",
+            live.adapter.capabilities.durable
+              ? { error: `${label(live.session.harness)} didn't confirm the stop within ${cancelGraceMs / 1000} s; it may still be running there.` }
+              : {},
+          );
       }
     });
 
@@ -580,13 +586,16 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       );
       if (!begun) return;
       const adapter = live.adapter;
+      // Followed again after a restart, a durable harness reconnects within its own window instead of failing on one look.
       const available = yield* Effect.raceFirst(
-        Effect.promise(() => adapter.check().catch((error: unknown) => ({ ok: false as const, error: String(error) }))),
+        live.resumed
+          ? Effect.succeed({ ok: true as const, version: "" })
+          : Effect.promise(() => adapter.check().catch((error: unknown) => ({ ok: false as const, error: String(error) }))),
         Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const),
       );
       if (available === "cancelled") return yield* finish(live, "cancelled");
       if (!available.ok) return yield* finish(live, "failed", { error: available.error });
-      yield* log(live, "status", `${adapter.label} ${available.version}`);
+      if (available.version) yield* log(live, "status", `${adapter.label} ${available.version}`);
       if (live.cancelling) return yield* finish(live, "cancelled");
       const spec = yield* specOf(live);
       const opening = adapter.open(spec, emitTo(live));
@@ -612,6 +621,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       live.harness = opened.success;
       if (live.cancelling) return yield* finish(live, "cancelled");
       if ((!live.resumed || live.row.state === "starting") && !(yield* setState(live, ["starting"], "running"))) return yield* finish(live, "cancelled");
+      // Its answer was saved but the restart came before the task went back to work: the harness asks again if it still waits.
+      if (live.resumed && live.row.state === "waiting_for_input" && live.inputs.size === 0) yield* setState(live, ["waiting_for_input"], "running");
       if (live.cancelling) return yield* finish(live, "cancelled");
       // A durable harness that Top follows again after a restart gets the turn it was on, with the same key, so it takes it once.
       const sent = live.resumed ? yield* q.lastSentQueued(live.id) : undefined;

@@ -129,9 +129,9 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
   const verify = async (cfg: T3Config) => {
     const descriptor = await describe(cfg.url);
     checkProtocol(cfg.url, descriptor);
-    if (cfg.environmentId && descriptor.environmentId !== cfg.environmentId)
+    if (descriptor.environmentId !== cfg.environmentId)
       throw new T3AuthError(
-        `${cfg.url} now answers as a different T3 Code environment (${descriptor.label}), so Top didn't send it the credential. If that's intended, pair again with \`top t3code connect ${cfg.url}\`.`,
+        `${cfg.url} answers as ${cfg.environmentId ? "a different T3 Code environment" : "a T3 Code environment Top didn't record"} (${descriptor.label}), so Top didn't send it the credential. If that's intended, pair again with \`top t3code connect ${cfg.url}\`.`,
       );
     return descriptor;
   };
@@ -165,6 +165,7 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
     },
     locate: async (cwd) => {
       const cfg = await load();
+      await verify(cfg);
       const projects = await listProjects(cfg.url, cfg.token);
       if (cwd === undefined) {
         if (projects.length === 1) return projects[0]!.workspaceRoot;
@@ -215,6 +216,7 @@ async function openThread(
   const items = new Map<string, Rec>();
   const sentMessages = new Set<string>();
   let current: Current | undefined;
+  let sending: Promise<unknown> | undefined;
 
   const exit = (error: string) => {
     if (exited || closed) return;
@@ -241,7 +243,7 @@ async function openThread(
         } catch (error) {
           if (!(error instanceof T3Unreachable)) throw error;
           if (Date.now() - since >= options.reconnectForMs)
-            throw new T3Unreachable(
+            throw new Error(
               `Lost T3 Code at ${origin} for ${Math.round(options.reconnectForMs / 60_000)} min (${error.message}). Its thread ${threadId} may still be running there.`,
             );
           await new Promise((resolve) => setTimeout(resolve, delay));
@@ -261,7 +263,7 @@ async function openThread(
     if (closed || exited) return;
     emit({ type: "log", kind: "status", text: `lost the connection to T3 Code (${error.message}); reconnecting` });
     if (!threadExists) return;
-    follow().then(
+    followed().then(
       () => emit({ type: "log", kind: "status", text: "reconnected to T3 Code" }),
       (failure: unknown) => exit(message(failure)),
     );
@@ -391,11 +393,12 @@ async function openThread(
 
   /** Follows the thread's durable stream: a snapshot first, then every change; after a drop, from where it left off. */
   const follow = (): Promise<void> => {
-    following ??= (async () => {
+    if (following) return following;
+    const attempt: Promise<void> = (async () => {
       const s = await connect();
       await new Promise<void>((resolve, reject) => {
         let first = true;
-        const stop = s.subscribe(
+        unsubscribe = s.subscribe(
           "orchestration.subscribeThread",
           { threadId, ...(lastSequence !== undefined ? { afterSequence: lastSequence } : {}) },
           (value) => {
@@ -408,20 +411,31 @@ async function openThread(
           (error) => {
             if (first) reject(error);
             // A dropped socket is picked up again by `lost`; this is a stream that ended on an open one.
-            if (!s.open || socket !== s || closed) return;
+            if (!s.open || socket !== s || closed || following !== attempt) return;
             following = undefined;
             if (error instanceof T3Refused) exit(`T3 Code stopped sending thread ${threadId}: ${error.message}`);
-            else follow().catch((failure: unknown) => exit(message(failure)));
+            else followed().catch((failure: unknown) => exit(message(failure)));
           },
         );
-        unsubscribe = stop;
         if (lastSequence !== undefined) resolve();
       });
-    })().catch((error: unknown) => {
-      following = undefined;
-      throw error;
+    })();
+    following = attempt;
+    attempt.catch(() => {
+      if (following === attempt) following = undefined;
     });
-    return following;
+    return attempt;
+  };
+
+  /** Follows the thread through drops while T3 Code stays reachable, whoever started the reconnect. */
+  const followed = async (): Promise<void> => {
+    for (;;) {
+      try {
+        return await follow();
+      } catch (error) {
+        if (!(error instanceof T3Unreachable) || closed || exited) throw error;
+      }
+    }
   };
 
   type Provider = { readonly instanceId: string; readonly status: string; readonly models: readonly Rec[] };
@@ -491,7 +505,7 @@ async function openThread(
 
   try {
     await connect();
-    if (threadExists) await follow();
+    if (threadExists) await followed();
   } catch (error: unknown) {
     closed = true;
     socket?.close();
@@ -507,7 +521,7 @@ async function openThread(
       current = { key: turn.key, messageId, runId: undefined, done: false, asked: new Set(), settled: new Set(), answered: new Set(), logged: new Set() };
       if (!threadExists) {
         const [selection, project] = await Promise.all([chooseModel(), projectFor()]);
-        await request("orchestration.launchThread", {
+        sending = request("orchestration.launchThread", {
           commandId: messageId,
           threadId,
           projectId: project.id,
@@ -518,13 +532,14 @@ async function openThread(
           workspaceStrategy: { type: "root" },
           initialMessage: { messageId, text: turn.text, attachments: [] },
         });
+        await sending;
         threadExists = true;
         emit({ type: "session", externalId: threadId, model: selection.model });
-        await follow();
+        await followed();
       } else {
         // A turn sent before a restart is already there; its key keeps a second send from adding it again.
-        if (!sentMessages.has(messageId) && ![...runs.values()].some((r) => r.userMessageId === messageId))
-          await command({
+        if (!sentMessages.has(messageId) && ![...runs.values()].some((r) => r.userMessageId === messageId)) {
+          sending = command({
             type: "message.dispatch",
             createdBy: "user",
             creationSource: "web",
@@ -535,7 +550,9 @@ async function openThread(
             attachments: [],
             dispatchMode: { type: "queue_after_active" },
           });
-        await follow();
+          await sending;
+        }
+        await followed();
       }
       evaluate();
     },
@@ -559,12 +576,26 @@ async function openThread(
     interrupt: async () => {
       const turn = current;
       if (!turn || turn.done) return;
+      // A stop that comes while the turn is still being sent waits for it, so it finds the run the send made.
+      await sending?.catch(() => {});
       const runId = await runOf(turn).catch(() => undefined);
-      if (!runId) return;
-      const queued = runs.get(runId)?.status === "queued";
-      await command({ type: queued ? "queued-run.cancel" : "run.interrupt", commandId: `top:stop:${runId}`, threadId, runId }).catch((error: unknown) =>
-        emit({ type: "log", kind: "error", text: `T3 Code didn't take the stop: ${message(error)}` }),
-      );
+      if (!runId) {
+        emit({ type: "log", kind: "error", text: "T3 Code has no run for this turn to stop." });
+        return;
+      }
+      const stop = (type: "run.interrupt" | "queued-run.cancel") =>
+        command({ type, commandId: `top:${type === "run.interrupt" ? "stop" : "unqueue"}:${runId}`, threadId, runId });
+      try {
+        if (runs.get(runId)?.status !== "queued") await stop("run.interrupt");
+        else
+          await stop("queued-run.cancel").catch(async (error: unknown) => {
+            // It started between the look and the cancel: stop it running instead.
+            if (!(error instanceof T3Refused)) throw error;
+            await stop("run.interrupt");
+          });
+      } catch (error) {
+        emit({ type: "log", kind: "error", text: `T3 Code didn't take the stop: ${message(error)}` });
+      }
     },
     answer: (requestId: string, answer: HarnessAnswer) => {
       if (answer.kind !== "question") return;

@@ -19,7 +19,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const sockets = new Set<WebSocket>();
   const subscribers = new Map<string, Set<(item: Rec) => void>>();
   let sequence = 0;
-  const faults = { dropReplyTo: undefined as string | undefined, duplicateEnds: false };
+  const faults = { dropReplyTo: undefined as string | undefined, dropAfterReplyTo: undefined as string | undefined, duplicateEnds: false };
+  const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
 
   const emit = (thread: Thread, event: Rec) => {
@@ -184,6 +185,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     const send = (message: unknown) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(message));
     ws.on("message", (data) => {
       const message = JSON.parse(String(data)) as Rec;
+      if (message._tag === "Ping") return send({ _tag: "Pong" });
       if (message._tag !== "Request") return;
       const id = message.id;
       const tag = String(message.tag);
@@ -215,6 +217,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         return;
       }
       send({ _tag: "Exit", requestId: id, exit });
+      if (faults.dropAfterReplyTo && tag === faults.dropAfterReplyTo) {
+        faults.dropAfterReplyTo = undefined;
+        ws.terminate();
+      }
     });
   };
 
@@ -226,6 +232,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const authorized = (req: IncomingMessage) => req.headers.authorization === `Bearer ${token}`;
   const http = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
+    hits.push({ path: url.pathname, authorized: req.headers.authorization !== undefined });
     if (url.pathname === "/.well-known/t3/environment")
       return json(res, 200, {
         environmentId,
@@ -267,6 +274,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     threads,
     requests,
     faults,
+    hits,
     /** Like the user stopping or finishing a run in T3 Code itself. */
     finish: (threadId: string, runId: string, text: string, status = "completed") => finish(threads.get(threadId)!, runId, text, status),
     runsOf: (threadId: string) => [...(threads.get(threadId)?.runs.values() ?? [])],

@@ -379,20 +379,20 @@ work, the files and the provider sign-ins are all on T3 Code's computer.
   take a pairing link from T3 Code's Settings → Sharing & access. Top trades the code for its own
   session, narrowed to those two scopes (reading threads and projects; starting, messaging,
   answering and stopping threads), and keeps it in `~/.top/server/t3code.json`, readable by you
-  only. The session lasts 30 days (`t3 auth session issue … --ttl` makes a token you can paste
-  instead). Top remembers the environment it paired with and won't send the credential to an address
+  only. The session lasts 30 days; pair again for a new one. Top remembers the environment it paired with and won't send the credential to an address
   that now answers as another one. Restart the daemon to offer T3 Code to the bots;
   `top t3code status` checks the connection and lists T3 Code's providers, models and projects;
   `top t3code disconnect` forgets it (revoke the session in T3 Code's Sharing & access too).
 - **Ways to reach it.** `http://127.0.0.1:3773` on the same computer. Over Tailscale, the address of
   T3 Code's Tailscale Serve route (`https://machine.tailnet.ts.net`, from `t3 serve --tailscale-serve`
   or `t3 pair --tailscale` there), or its tailnet address when T3 Code listens on the tailnet (`t3 serve
-  --lan` or the background service's local-network choice), plain HTTP inside WireGuard. Over SSH, a
-  forward (`ssh -L 3773:127.0.0.1:3773 host`) and `http://127.0.0.1:3773`. Tailscale is only the
-  transport: T3 Code's pairing still decides what Top may do. Top refuses plain HTTP that leaves this
-  computer outside a tailnet unless you pass `--plain-http`. HTTPS uses the system's certificate
-  authorities (`NODE_EXTRA_CA_CERTS` adds your own). Top changes nothing about Tailscale, T3 Code or
-  either computer's network settings.
+  --lan` or the background service's local-network choice), plain HTTP that WireGuard encrypts. Over
+  SSH, a forward (`ssh -L 3773:127.0.0.1:3773 host`) and `http://127.0.0.1:3773`. Tailscale is only
+  the transport: T3 Code's pairing still decides what Top may do. Plain HTTP to anything but this
+  computer takes `--plain-http`, since Top can't tell a tailnet from another network by the address;
+  redirects are never followed. HTTPS uses the system's certificate authorities
+  (`NODE_EXTRA_CA_CERTS` adds your own). Top changes nothing about Tailscale, T3 Code or either
+  computer's network settings.
 - **Tasks.** `cwd` is a folder on T3 Code's computer and must be one of its projects (Top doesn't look
   at its own disk for it; with one project it's the default). `model` is a T3 Code model (`haiku` and
   other aliases work), `options.provider` its provider instance (`claudeAgent`, `codex`, …); without
@@ -406,9 +406,11 @@ work, the files and the provider sign-ins are all on T3 Code's computer.
   When the connection drops, Top reconnects (for up to 10 minutes) and asks for the thread's events
   from where it left off. When Top restarts, a running task is followed again: what was already sent
   isn't sent twice, a finished run gives its answer, and an answer Top saved before the restart is
-  delivered. Cancel stops only the task's own run (`run.interrupt`), never the thread or other work in
-  it; a run someone stops in T3 Code fails the task, saying so. An expired or revoked session fails
-  the task with how to pair again.
+  delivered. Cancel stops only the task's own run (`run.interrupt`, or takes it out of the queue), never
+  another thread; like T3 Code's own Stop, that also stops background work still running in the
+  session's thread. A stop T3 Code doesn't confirm in time leaves the task cancelled with a note that it
+  may still be running there. A run someone stops in T3 Code fails the task, saying so. An expired or
+  revoked session fails the task with how to pair again.
 - **Compatibility.** Tested against T3 Code `0.1.8-nightly.20261109.4429`; its upstream `main`
   (0.1.11 nightlies) speaks the same protocol. T3 Code's client API is the protocol of its own apps,
   not a published SDK, so it can change: Top checks the protocol version first and refuses a server

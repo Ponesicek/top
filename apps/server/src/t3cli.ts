@@ -87,7 +87,7 @@ export async function t3Connect(file: string, address: string, plainHttp: boolea
   const origin = t3Origin(address);
   if (plainHttpExposed(origin) && !plainHttp)
     throw new Error(
-      `${origin} is plain HTTP outside this computer and outside a tailnet, so the pairing code and Top's credential would cross the network unencrypted. Use its HTTPS address (for example Tailscale Serve's https://….ts.net) or its tailnet address, or pass --plain-http to accept that.`,
+      `${origin} is plain HTTP to another computer, so the pairing code and Top's credential travel unencrypted unless the network itself encrypts them (a tailnet does). Use its HTTPS address (for example Tailscale Serve's https://….ts.net), or pass --plain-http to accept that.`,
     );
   const descriptor = await describe(origin);
   checkProtocol(origin, descriptor);
@@ -96,14 +96,8 @@ export async function t3Connect(file: string, address: string, plainHttp: boolea
   say("(or a pairing link from T3 Code's Settings → Sharing & access). Top keeps only its own session from it.");
   const pasted = credentialOf(await readSecret("Pairing code: "));
   if (!pasted) throw new Error("No code given; nothing changed.");
-  let token: string;
-  try {
-    // A session token from `t3 auth session issue` works as is; anything else is a pairing code to trade.
-    await checkSession(origin, pasted);
-    token = pasted;
-  } catch {
-    token = await exchangePairingCode(origin, pasted, "Top");
-  }
+  // Always traded for Top's own session, narrowed to what Top needs, whatever the code itself grants.
+  const token = await exchangePairingCode(origin, pasted, "Top");
   const session = await checkSession(origin, token);
   const config: T3Config = {
     url: origin,

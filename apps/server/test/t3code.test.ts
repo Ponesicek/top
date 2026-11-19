@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
@@ -103,6 +105,11 @@ test("a reply lost with the connection is asked for again with the same command 
 
 test("a dropped connection is followed from where it left off, and an end T3 Code repeats counts once", async () => {
   const s = await setup();
+  s.t3.faults.dropAfterReplyTo = "orchestration.launchThread";
+  const launched = await start(s, { prompt: "dropped right after the launch" });
+  assert.equal((await ended(s, launched.task.id)).result, "done: dropped right after the launch", "a drop before the first snapshot is followed through");
+  assert.equal(s.t3.runsOf(`top-${launched.session.id}`).length, 1);
+
   s.t3.faults.duplicateEnds = true;
   const running = await start(s, { prompt: "run forever" });
   const thread = `top-${running.session.id}`;
@@ -200,7 +207,25 @@ test("a revoked credential, a different environment at the address, a mismatched
   s.t3.rotate("good-token");
   s.t3.setEnvironment("env-2");
   const moved = await t3codeAdapter({ file: s.file }).check();
-  assert.match(moved.ok ? "" : moved.error, /now answers as a different T3 Code environment .* so Top didn't send it the credential/);
+  assert.match(moved.ok ? "" : moved.error, /answers as a different T3 Code environment .* so Top didn't send it the credential/);
+  const before = s.t3.hits.length;
+  assert.match(await refusal(s, { prompt: "x" }), /answers as a different T3 Code environment/);
+  assert.ok(
+    s.t3.hits.slice(before).every((hit) => !hit.authorized),
+    "starting a task there sent no credential, not even to list projects",
+  );
+
+  const redirecting = createServer((_req, res) => {
+    res.writeHead(307, { location: `${s.t3.origin}/.well-known/t3/environment` });
+    res.end();
+  });
+  await new Promise<void>((resolve) => redirecting.listen(0, "127.0.0.1", resolve));
+  const redirectFile = join(s.dir, "redirect.json");
+  const redirectOrigin = `http://127.0.0.1:${(redirecting.address() as AddressInfo).port}`;
+  await writeT3Config(redirectFile, { url: redirectOrigin, token: "good-token", environmentId: "env-2", label: "r", serverVersion: "", connectedAt: "" });
+  const redirected = await t3codeAdapter({ file: redirectFile }).check();
+  assert.match(redirected.ok ? "" : redirected.error, /redirects elsewhere \(HTTP 307\)/, "a redirect is never followed");
+  redirecting.close();
 
   const old = await fakeT3({ protocol: 1 });
   servers.push(old);
@@ -239,14 +264,32 @@ test("Top restarting while T3 Code works follows the task again, sends nothing t
   assert.equal((await ended(second, asking.task.id)).result, 'answer: {"color":"Blue"}');
 });
 
+test("an answer saved just before Top restarted is delivered after it, and the task goes back to work", async () => {
+  const first = await setup();
+  const asking = await start(first, { prompt: "a question" });
+  await inState(first, asking.task.id, "waiting_for_input");
+  const input = (await first.h.run(first.tasks.snapshot(first.h.bot, asking.task.id))).inputs[0]!;
+  await first.h.close();
+  // As if Top crashed right after saving the answer, before sending it.
+  const store = await harness({ dir: first.dir, context: true });
+  await store.run(store.store.tasks.answerInput(input.id, { answers: { color: ["Red"] } }, "user"));
+  await store.close();
+
+  const second = await setup({ dir: first.dir, t3: first.t3 });
+  const done = await ended(second, asking.task.id);
+  assert.equal(done.result, 'answer: {"color":"red"}');
+});
+
 test("addresses are explicit, and plain HTTP is accepted only where it stays private", () => {
   assert.equal(t3Origin(" https://box.tail1.ts.net/some/path "), "https://box.tail1.ts.net");
   assert.throws(() => t3Origin("box.tail1.ts.net"), /isn't an address/);
   assert.throws(() => t3Origin("ftp://box"), /https:\/\/ or http:\/\//);
   assert.throws(() => t3Origin("https://me:secret@box"), /Leave the sign-in out/);
   assert.equal(plainHttpExposed("http://127.0.0.1:3773"), false);
-  assert.equal(plainHttpExposed("http://100.78.69.34:3773"), false);
-  assert.equal(plainHttpExposed("http://box.tail1.ts.net:3773"), false);
+  assert.equal(plainHttpExposed("http://[::1]:3773"), false);
+  assert.equal(plainHttpExposed("http://127.evil.example:3773"), true, "a name that starts like loopback isn't loopback");
+  assert.equal(plainHttpExposed("http://100.78.69.34:3773"), true, "a tailnet address takes --plain-http too");
+  assert.equal(plainHttpExposed("http://box.tail1.ts.net:3773"), true);
   assert.equal(plainHttpExposed("http://192.168.1.4:3773"), true);
   assert.equal(plainHttpExposed("https://192.168.1.4"), false);
   assert.equal(credentialOf("https://box.ts.net/pair#token=abc123"), "abc123");
