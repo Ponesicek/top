@@ -1,7 +1,6 @@
 import { join, resolve } from "node:path";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,6 +29,7 @@ import * as Logger from "./logger.ts";
 import { signInHere, signOutHere } from "./login.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import * as Mcp from "./mcp.ts";
+import { topModels } from "./models.ts";
 import { RetryDelaysMs } from "./runner.ts";
 import { serve } from "./serve.ts";
 import { LOCAL_SKILLS } from "./skills.ts";
@@ -98,11 +98,11 @@ const skillsOf = (home: Home.Layout) => ({ library: home.skills, local: (bot: St
 const realBots = (args: Args, model: string, home: Home.Layout) =>
   Effect.gen(function* () {
     const slash = model.indexOf("/");
-    if (slash <= 0) return yield* new StartError({ message: `--model takes provider/model-id, e.g. openai/gpt-6.1-sol (got "${model}").` });
+    if (slash <= 0) return yield* new StartError({ message: `--model takes provider/model-id, e.g. openai/gpt-6.2-sol (got "${model}").` });
     const providerId = model.slice(0, slash);
     const fs = yield* FileSystem.FileSystem;
     const credentials = new AuthFile(home.auth, fs);
-    const models = builtinModels({ credentials });
+    const models = topModels({ credentials });
     if (!models.getProvider(providerId))
       return yield* new StartError({
         message: `Unknown provider "${providerId}". Known: ${models
