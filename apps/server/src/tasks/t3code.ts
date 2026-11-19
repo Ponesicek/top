@@ -193,6 +193,7 @@ type Current = {
   readonly settled: Set<string>;
   readonly answered: Set<string>;
   readonly logged: Set<string>;
+  stopped: boolean;
 };
 
 async function openThread(
@@ -238,7 +239,6 @@ async function openThread(
             if (socket === opened) lost(error);
           });
           socket = opened;
-          lostSince = undefined;
           return opened;
         } catch (error) {
           if (!(error instanceof T3Unreachable)) throw error;
@@ -274,7 +274,10 @@ async function openThread(
     for (let tries = 1; ; tries++) {
       const s = await connect();
       try {
-        return await s.request(tag, payload);
+        const reply = await s.request(tag, payload);
+        // Reachable again only once T3 Code answers, not when a socket merely opens.
+        lostSince = undefined;
+        return reply;
       } catch (error) {
         if (!(error instanceof T3Unreachable) || closed || tries >= MAX_TRIES) throw error;
       }
@@ -402,6 +405,7 @@ async function openThread(
           "orchestration.subscribeThread",
           { threadId, ...(lastSequence !== undefined ? { afterSequence: lastSequence } : {}) },
           (value) => {
+            lostSince = undefined;
             onItem(value);
             if (first) {
               first = false;
@@ -518,28 +522,40 @@ async function openThread(
       if (closed || exited) throw new Error("The connection to T3 Code is closed.");
       if (turn.images.length) throw new Error("Top doesn't send images to T3 Code.");
       const messageId = `top:${turn.key}`;
-      current = { key: turn.key, messageId, runId: undefined, done: false, asked: new Set(), settled: new Set(), answered: new Set(), logged: new Set() };
-      if (!threadExists) {
-        const [selection, project] = await Promise.all([chooseModel(), projectFor()]);
-        sending = request("orchestration.launchThread", {
-          commandId: messageId,
-          threadId,
-          projectId: project.id,
-          title: clip(turn.text.trim().split("\n")[0]?.trim() || "Task from Top", 80),
-          modelSelection: selection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          workspaceStrategy: { type: "root" },
-          initialMessage: { messageId, text: turn.text, attachments: [] },
-        });
-        await sending;
-        threadExists = true;
-        emit({ type: "session", externalId: threadId, model: selection.model });
-        await followed();
-      } else {
-        // A turn sent before a restart is already there; its key keeps a second send from adding it again.
-        if (!sentMessages.has(messageId) && ![...runs.values()].some((r) => r.userMessageId === messageId)) {
-          sending = command({
+      const mine: Current = {
+        key: turn.key,
+        messageId,
+        runId: undefined,
+        done: false,
+        asked: new Set(),
+        settled: new Set(),
+        answered: new Set(),
+        logged: new Set(),
+        stopped: false,
+      };
+      current = mine;
+      /** Sends the turn unless a stop came first; false when it didn't. */
+      const send = async () => {
+        if (!threadExists) {
+          const [selection, project] = await Promise.all([chooseModel(), projectFor()]);
+          if (mine.stopped) return false;
+          await request("orchestration.launchThread", {
+            commandId: messageId,
+            threadId,
+            projectId: project.id,
+            title: clip(turn.text.trim().split("\n")[0]?.trim() || "Task from Top", 80),
+            modelSelection: selection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            workspaceStrategy: { type: "root" },
+            initialMessage: { messageId, text: turn.text, attachments: [] },
+          });
+          threadExists = true;
+          emit({ type: "session", externalId: threadId, model: selection.model });
+          // A turn sent before a restart is already there; its key keeps a second send from adding it again.
+        } else if (!sentMessages.has(messageId) && ![...runs.values()].some((r) => r.userMessageId === messageId)) {
+          if (mine.stopped) return false;
+          await command({
             type: "message.dispatch",
             createdBy: "user",
             creationSource: "web",
@@ -550,10 +566,16 @@ async function openThread(
             attachments: [],
             dispatchMode: { type: "queue_after_active" },
           });
-          await sending;
         }
-        await followed();
+        return true;
+      };
+      sending = send();
+      if (!(await sending)) {
+        mine.done = true;
+        emit({ type: "turn_ended", status: "interrupted", error: "Stopped before it was sent to T3 Code." });
+        return;
       }
+      await followed();
       evaluate();
     },
     steer: async (text: string) => {
@@ -576,8 +598,10 @@ async function openThread(
     interrupt: async () => {
       const turn = current;
       if (!turn || turn.done) return;
+      turn.stopped = true;
       // A stop that comes while the turn is still being sent waits for it, so it finds the run the send made.
       await sending?.catch(() => {});
+      if (turn.done) return;
       const runId = await runOf(turn).catch(() => undefined);
       if (!runId) {
         emit({ type: "log", kind: "error", text: "T3 Code has no run for this turn to stop." });

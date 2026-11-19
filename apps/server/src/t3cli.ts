@@ -124,8 +124,10 @@ export async function t3Status(file: string): Promise<void> {
   say(`T3 Code at ${config.url} (${config.label}), paired ${config.connectedAt}.`);
   const descriptor = await describe(config.url);
   checkProtocol(config.url, descriptor);
-  if (config.environmentId && descriptor.environmentId !== config.environmentId)
-    throw new Error(`${config.url} now answers as a different T3 Code environment (${descriptor.label}); Top won't send it the credential.`);
+  if (descriptor.environmentId !== config.environmentId)
+    throw new Error(
+      `${config.url} answers as an environment Top didn't pair with (${descriptor.label}); Top won't send it the credential. Pair again if that's intended.`,
+    );
   const session = await checkSession(config.url, config.token);
   say(`Reachable: T3 Code ${descriptor.serverVersion}; Top's session is valid${session.expiresAt ? ` until ${session.expiresAt}` : ""}.`);
   await describeConnection(config);

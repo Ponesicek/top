@@ -19,7 +19,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const sockets = new Set<WebSocket>();
   const subscribers = new Map<string, Set<(item: Rec) => void>>();
   let sequence = 0;
-  const faults = { dropReplyTo: undefined as string | undefined, dropAfterReplyTo: undefined as string | undefined, duplicateEnds: false };
+  const faults = { dropReplyTo: undefined as string | undefined, dropAfterReplyTo: undefined as string | undefined, duplicateEnds: false, configDelayMs: 0 };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
 
@@ -203,6 +203,12 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         subscribers.set(thread.id, set);
         set.add(out);
         unsubscribes.push(() => set.delete(out));
+        return;
+      }
+      if (tag === "server.getConfig" && faults.configDelayMs) {
+        const delay = faults.configDelayMs;
+        faults.configDelayMs = 0;
+        setTimeout(() => send({ _tag: "Exit", requestId: id, exit: { _tag: "Success", value: handle(tag, payload) } }), delay);
         return;
       }
       let exit: Rec;

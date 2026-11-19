@@ -323,7 +323,9 @@ export const tasksGroup: CollarGroup = (daemon) => {
             state: task.state,
             cancelled,
             ...(cancelled
-              ? {}
+              ? task.error
+                ? { note: task.error }
+                : {}
               : {
                   note: taskEnded(task.state)
                     ? `It had already ${task.state === "completed" ? "completed" : `ended (${task.state})`}.`

@@ -181,6 +181,16 @@ test("steer goes into the task's run and queue runs after it; cancel stops only 
   assert.equal(s.t3.runsOf(cancelThread)[0]!.status, "interrupted");
   assert.equal(s.t3.runsOf(otherThread)[0]!.status, "running", "unrelated work kept running");
 
+  s.t3.faults.configDelayMs = 300;
+  const early = await start(s, { prompt: "cancelled while Top still picks the model" });
+  await inState(s, early.task.id, "running");
+  const launchesBefore = s.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length;
+  const stoppedEarly = await s.h.run(s.tasks.cancel(s.h.bot, early.task.id));
+  assert.equal(stoppedEarly.task.state, "cancelled");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(s.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length, launchesBefore, "nothing was launched after the stop");
+  assert.equal(stoppedEarly.task.error, null, "a stop that came first needs no warning");
+
   const remote = await start(s, { prompt: "forever, stopped over there" });
   const remoteThread = `top-${remote.session.id}`;
   const remoteRun = await runIn(s, remoteThread);
@@ -214,6 +224,24 @@ test("a revoked credential, a different environment at the address, a mismatched
     s.t3.hits.slice(before).every((hit) => !hit.authorized),
     "starting a task there sent no credential, not even to list projects",
   );
+
+  const proxy = createServer((_req, res) => {
+    res.writeHead(502);
+    res.end();
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const proxyFile = join(s.dir, "proxy.json");
+  await writeT3Config(proxyFile, {
+    url: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`,
+    token: "good-token",
+    environmentId: "env-2",
+    label: "p",
+    serverVersion: "",
+    connectedAt: "",
+  });
+  const behindProxy = await t3codeAdapter({ file: proxyFile }).check();
+  assert.match(behindProxy.ok ? "" : behindProxy.error, /isn't answering behind its proxy \(HTTP 502\)/);
+  proxy.close();
 
   const redirecting = createServer((_req, res) => {
     res.writeHead(307, { location: `${s.t3.origin}/.well-known/t3/environment` });

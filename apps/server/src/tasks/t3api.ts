@@ -97,6 +97,9 @@ async function http(origin: string, path: string, init: RequestInit = {}): Promi
     const why = str(cause.code) ?? str(cause.message) ?? (error instanceof Error ? error.message : String(error));
     throw new T3Unreachable(`Couldn't reach T3 Code at ${origin} (${why}).`);
   }
+  // A proxy in front of T3 Code (Tailscale Serve, nginx) answers these while T3 Code restarts.
+  if (response.status === 502 || response.status === 503 || response.status === 504)
+    throw new T3Unreachable(`T3 Code at ${origin} isn't answering behind its proxy (HTTP ${response.status}).`);
   if (response.status >= 300 && response.status < 400)
     throw new T3Refused(`${origin}${path} redirects elsewhere (HTTP ${response.status}); give T3 Code's own address, not one that forwards to it.`);
   return response;
