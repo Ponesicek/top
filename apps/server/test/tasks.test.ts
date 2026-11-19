@@ -605,24 +605,38 @@ test("however an acknowledgment and a cancel interleave, what the bot is told ma
   }
 });
 
-test("a saved secret a harness echoes is hidden from the task's log, result and the bot's message", async () => {
-  const s = await setup();
+test("a saved secret a harness echoes is hidden from the task's log, questions, result and the bot's messages", async () => {
+  const ctl = controlled();
+  const s = await setup({ fake: ctl.adapter });
   const value = "tok_echoed_by_harness_7Kq2";
   await s.h.run(s.h.secrets.save(s.h.bot, value));
-  const { snapshot } = await start(s, { prompt: `print ${value}`, title: "Print the token" });
+  const { snapshot } = await start(s, { prompt: "deploy with the saved token" });
+  await inState(s, snapshot.task.id, "running");
+  ctl.emit()({ type: "log", kind: "message", text: `using ${value}` });
+  ctl.emit()({
+    type: "request",
+    request: {
+      id: "q",
+      title: `Use ${value}?`,
+      questions: [{ id: "q1", question: `Is ${value} right?`, header: value, options: [{ label: value, description: value }, { label: "No" }] }],
+    },
+  });
+  await inState(s, snapshot.task.id, "waiting_for_input");
+  const [input] = await pending(s, snapshot.task.id);
+  assert.ok(input && !JSON.stringify(input).includes(value), "the stored question never holds the secret");
+  assert.equal(input.questions[0]?.options[0]?.label, HIDDEN);
+  ctl.emit()({ type: "turn_ended", status: "completed", result: `deployed with ${value}` });
   const done = await ended(s, snapshot.task.id);
-  assert.equal(done.state, "completed");
-  assert.equal(done.result, `Done: print ${HIDDEN}`);
+  assert.equal(done.result, `deployed with ${HIDDEN}`);
   const events = await until("the task's log", async () => {
     const rows = (await s.h.run(s.h.store.tasks.events(snapshot.task.id, 0, 200))).events;
-    return rows.some((e) => e.text.startsWith("Done:")) && rows;
+    return rows.some((e) => e.text.includes("using")) && rows;
   });
-  assert.ok(events.some((e) => e.text.includes(HIDDEN)));
   assert.ok(!events.some((e) => e.text.includes(value)), "the log never holds the secret");
-  const told = await until("the bot to hear", async () => {
+  const told = await until("the bot to hear both", async () => {
     const all = await notes(s);
-    return all.length > 0 && all;
+    return all.length >= 2 && all;
   });
-  assert.ok(!told.some((text) => text.includes(value)), "the bot's message never holds the secret");
+  assert.ok(!told.some((text) => text.includes(value)), "the bot's messages never hold the secret");
   await s.h.close();
 });

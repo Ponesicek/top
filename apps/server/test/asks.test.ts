@@ -457,6 +457,7 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
   await h.run(h.secrets.save(h.bot, value));
   const full = join(tmpdir(), `pi-bash-test${process.pid}.log`);
   const elsewhere = join(h.dir, "pi-bash-elsewhere.log");
+  const link = join(tmpdir(), `pi-bash-link${process.pid}.log`);
   writeFileSync(full, `line 1\n${value}\nline 3`);
   writeFileSync(elsewhere, value);
   try {
@@ -474,6 +475,11 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
     assert.equal(readFileSync(full, "utf8"), `line 1\n${HIDDEN}\nline 3`);
     await h.run(tool(elsewhere).run({}, { key: "k", bot: h.bot }));
     assert.equal(readFileSync(elsewhere, "utf8"), value, "only pi's own temp logs are rewritten");
+    const target = join(h.dir, "linked-target.txt");
+    writeFileSync(target, value);
+    symlinkSync(target, link);
+    await h.run(tool(link).run({}, { key: "k", bot: h.bot }));
+    assert.equal(readFileSync(target, "utf8"), value, "a link named like pi's log never rewrites its target");
 
     writeFileSync(full, `${value}\nstill running`);
     const timedOut = h.secrets.guard(
@@ -490,6 +496,7 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
     assert.equal(readFileSync(full, "utf8"), `${HIDDEN}\nstill running`, "a command that timed out or was stopped too");
   } finally {
     rmSync(full, { force: true });
+    rmSync(link, { force: true });
   }
 });
 

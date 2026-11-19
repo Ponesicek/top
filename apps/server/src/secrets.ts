@@ -138,8 +138,8 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
       const piLogs = (text: string) => [...new Set(text.match(PI_LOG) ?? [])];
       const scrubLog = (path: string) =>
         Effect.gen(function* () {
-          const info = yield* fs.stat(path);
-          if (info.type !== "File") return;
+          const info = yield* Effect.tryPromise(() => lstat(path));
+          if (!info.isFile()) return;
           if (Number(info.size) > MAX_SCRUBBED_BYTES) return yield* fs.remove(path);
           const text = yield* fs.readFileString(path);
           const clean = redact(text);

@@ -384,13 +384,18 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 live.harness?.answer(request.id, { kind: "cancelled" });
                 return;
               }
-              const { input } = yield* q.addInput({
-                task: live.id,
-                bot: live.bot,
-                external: request.id,
-                title: clip(scrub(request.title), 400),
-                questions: request.questions,
-              });
+              const title = clip(scrub(request.title), 400);
+              const questions = request.questions.map((question) => ({
+                ...question,
+                question: scrub(question.question),
+                ...(question.header === undefined ? {} : { header: scrub(question.header) }),
+                options: question.options.map((option) => ({
+                  ...option,
+                  label: scrub(option.label),
+                  ...(option.description === undefined ? {} : { description: scrub(option.description) }),
+                })),
+              }));
+              const { input } = yield* q.addInput({ task: live.id, bot: live.bot, external: request.id, title, questions });
               if (input.state !== "pending") return;
               live.inputs.set(input.id, input);
               live.external.set(request.id, input.id);
@@ -402,8 +407,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 live,
                 `input:${input.id}`,
                 [
-                  `[Task ${live.id} needs input] ${live.row.title} (${label(live.session.harness)}) asks: ${request.title}`,
-                  ...(request.questions ?? []).map(
+                  `[Task ${live.id} needs input] ${live.row.title} (${label(live.session.harness)}) asks: ${title}`,
+                  ...questions.map(
                     (q) => `- ${q.id}: ${q.question}${q.options.length ? ` Options: ${q.options.map((o) => JSON.stringify(o.label)).join(", ")}` : ""}`,
                   ),
                   "",
