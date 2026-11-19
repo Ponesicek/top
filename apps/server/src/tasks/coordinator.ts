@@ -107,7 +107,6 @@ export type Tasks = {
   readonly cancel: (bot: number | undefined, id: string) => Effect.Effect<{ readonly task: TaskRow; readonly cancelled: boolean }, TaskError>;
   readonly sessions: (bot: number) => Effect.Effect<readonly SessionRow[]>;
   readonly views: Effect.Effect<readonly TaskView[]>;
-  readonly active: (bot: number) => number;
   readonly stopAll: (bot: number) => Effect.Effect<void>;
   readonly recover: Effect.Effect<number>;
 };
@@ -144,6 +143,7 @@ type Live = {
   latest: string | undefined;
   readonly inputs: Map<number, TaskInputRow>;
   readonly external: Map<string, number>;
+  readonly steering: Set<Deferred.Deferred<string | undefined>>;
   result: string | undefined;
   usage: Usage | undefined;
   events: number;
@@ -289,6 +289,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         if (live.finished) return;
         live.finished = true;
         live.closing = true;
+        for (const reply of live.steering) Deferred.doneUnsafe(reply, Effect.succeed("The task ended before the harness took the message."));
+        live.steering.clear();
         for (const input of live.inputs.values()) if (input.external) live.harness?.answer(input.external, { kind: "cancelled" });
         live.inputs.clear();
         yield* q.withdrawInputs(live.id);
@@ -387,6 +389,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               live.inputs.set(input.id, input);
               live.external.set(request.id, input.id);
               yield* log(live, "input", `asks: ${request.title} (request ${input.id})`);
+              const suppressed = live.waitersAny > 0;
               if (live.row.state !== "waiting_for_input") yield* setState(live, ["running", "starting"], "waiting_for_input");
               else yield* changed(live);
               yield* notify(
@@ -400,7 +403,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                   "",
                   `Answer with collar__task_respond {"id": "${live.id}", "request": ${input.id}, "answers": {…}}, or leave it to the user, who sees it on a card.`,
                 ].join("\n"),
-                live.waitersAny > 0,
+                suppressed,
               );
               return;
             }
@@ -468,16 +471,23 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             return;
           }
           const harness = live.harness;
-          const sent = yield* Effect.result(Effect.tryPromise(() => harness.steer(signal.message.text)));
-          if (sent._tag === "Failure") {
-            yield* q.setMessageState(signal.message.id, "dropped");
-            const cause = sent.failure.cause;
-            yield* Deferred.succeed(signal.reply, cause instanceof Error ? cause.message : String(cause));
-            return;
-          }
-          yield* q.setMessageState(signal.message.id, "sent");
-          yield* log(live, "sent", `steered with message ${signal.message.id}: ${firstLine(signal.message.text)}`);
-          yield* Deferred.succeed(signal.reply, undefined);
+          const { message, reply } = signal;
+          live.steering.add(reply);
+          yield* Effect.forkIn(
+            Effect.gen(function* () {
+              const sent = yield* Effect.result(Effect.tryPromise(() => harness.steer(message.text)));
+              if (sent._tag === "Failure") {
+                yield* q.setMessageState(message.id, "dropped");
+                const cause = sent.failure.cause;
+                yield* Deferred.succeed(reply, cause instanceof Error ? cause.message : String(cause));
+                return;
+              }
+              yield* q.setMessageState(message.id, "sent");
+              yield* log(live, "sent", `steered with message ${message.id}: ${firstLine(message.text)}`);
+              yield* Deferred.succeed(reply, undefined);
+            }).pipe(Effect.ensuring(Effect.sync(() => live.steering.delete(reply)))),
+            scope,
+          );
           return;
         }
         case "queued":
@@ -624,6 +634,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         latest: undefined,
         inputs: new Map(),
         external: new Map(),
+        steering: new Set(),
         result: undefined,
         usage: undefined,
         events: 0,
@@ -712,7 +723,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               id: newId("ses"),
               bot: request.bot,
               harness: source.harness,
-              location: "local",
               cwd: source.cwd,
               model: request.model ?? source.model,
               options,
@@ -753,7 +763,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             id: newId("ses"),
             bot: request.bot,
             harness: adapter.id,
-            location: "local",
             cwd,
             model: request.model?.trim() || null,
             options,
@@ -991,11 +1000,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     cancel,
     sessions: (bot) => q.sessionsOf(bot, 20),
     views,
-    active: (bot) => {
-      let n = 0;
-      for (const live of lives.values()) if (live.bot === bot) n++;
-      return n;
-    },
     stopAll,
     recover,
   };

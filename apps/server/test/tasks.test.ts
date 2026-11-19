@@ -326,7 +326,7 @@ test("a restart cuts off a started task without running it again, and starts one
       id: "ses_q",
       bot: first.h.bot,
       harness: "fake",
-      location: "local",
+
       cwd: first.folder(),
       model: null,
       options: {},
@@ -391,7 +391,7 @@ test("the bot drives it with its tools, and the transcript links the call to its
 
 type Controlled = { adapter: FakeHarness; emit: () => (event: HarnessEvent) => void; interrupts: () => number };
 
-function controlled(options: { interrupt?: "hang" | "end" } = {}): Controlled {
+function controlled(options: { interrupt?: "hang" | "end"; steer?: "hang" } = {}): Controlled {
   const base = fakeHarness({ stepMs: 10 });
   let emit: (event: HarnessEvent) => void = () => {};
   let interrupts = 0;
@@ -402,7 +402,7 @@ function controlled(options: { interrupt?: "hang" | "end" } = {}): Controlled {
       e({ type: "session", externalId: "ctl-1" });
       return {
         run: async () => {},
-        steer: async () => {},
+        steer: () => (options.steer === "hang" ? new Promise<void>(() => {}) : Promise.resolve()),
         interrupt: () => {
           interrupts++;
           if (options.interrupt === "end") emit({ type: "turn_ended", status: "interrupted" });
@@ -498,4 +498,48 @@ test("a message queued as the turn completes either runs or is refused, never le
     assert.equal((await ended(s, snapshot.task.id)).result, "first");
   }
   assert.deepEqual(await s.h.run(s.h.store.tasks.pendingMessages(snapshot.task.id)), []);
+});
+
+test("a steer the harness never confirms doesn't hold up a cancel", async () => {
+  const ctl = controlled({ interrupt: "end", steer: "hang" });
+  const s = await setup({ fake: ctl.adapter });
+  const { snapshot } = await start(s, { prompt: "anything" });
+  await inState(s, snapshot.task.id, "running");
+  const steering = s.h.run(Effect.result(s.tasks.send(s.h.bot, snapshot.task.id, "stuck", "steer", "change course")));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const began = Date.now();
+  const cancelled = await s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+  assert.equal(cancelled.task.state, "cancelled");
+  assert.ok(Date.now() - began < 2_000, "cancel didn't wait for the steer");
+  const steered = await steering;
+  assert.equal(
+    steered._tag === "Failure" && steered.failure.message,
+    "The task ended before the harness took the message.",
+    "the waiting send is answered, not left to time out",
+  );
+});
+
+test("a waiter that gets a question isn't sent the question as a message too", async () => {
+  const s = await setup({ harness: { stepMs: 60 } });
+  const { snapshot } = await start(s, { prompt: "a question" });
+  const waited = await s.h.run(s.tasks.wait(s.h.bot, snapshot.task.id, 5_000, "input_or_end"));
+  assert.equal(waited.snapshot.task.state, "waiting_for_input");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(
+    (await notes(s)).filter((n) => n.includes("needs input")),
+    [],
+  );
+});
+
+test("a task_wait cut off by a restart is recovered with one look, never by waiting again", async () => {
+  const s = await setup();
+  const { snapshot } = await start(s, { prompt: "run forever" });
+  await inState(s, snapshot.task.id, "running");
+  const tool = s.h.daemon.toolsOf(s.h.bot).find((t) => t.name === "collar__task_wait")!;
+  assert.equal(tool.replay, undefined, "not replayed: a replay would wait at startup");
+  const began = Date.now();
+  const recovered = await s.h.run(tool.recover!({ id: snapshot.task.id, until: "end" }, { key: "k", bot: s.h.bot }));
+  assert.ok(Date.now() - began < 1_000);
+  assert.match(JSON.stringify(recovered), /\\"timedOut\\":true/);
+  await s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
 });

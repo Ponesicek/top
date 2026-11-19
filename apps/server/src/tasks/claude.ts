@@ -255,6 +255,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
         systemPrompt: { type: "preset", preset: "claude_code" },
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        sandbox: { enabled: false },
         ...(spec.model ? { model: spec.model } : {}),
         ...(spec.resume ? { resume: spec.resume } : { sessionId }),
         ...(spec.resume && spec.fork ? { forkSession: true, sessionId } : {}),

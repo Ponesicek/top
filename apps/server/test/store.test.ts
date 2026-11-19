@@ -71,7 +71,6 @@ test("a database from before harness tasks gains their tables, keeps everything 
         id: "ses_1",
         bot: 1,
         harness: "codex",
-        location: "local",
         cwd: "/w",
         model: null,
         options: {},

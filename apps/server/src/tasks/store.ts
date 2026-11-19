@@ -18,7 +18,6 @@ CREATE TABLE harness_sessions (
   id TEXT PRIMARY KEY,
   bot INTEGER NOT NULL REFERENCES bots(id),
   harness TEXT NOT NULL,
-  location TEXT NOT NULL DEFAULT 'local',
   cwd TEXT NOT NULL,
   model TEXT,
   options TEXT NOT NULL,
@@ -88,7 +87,6 @@ export const SessionRow = Schema.Struct({
   id: Text,
   bot: Int,
   harness: Text,
-  location: Schema.Literal("local"),
   cwd: Text,
   model: NullableText,
   options: JsonObject,
@@ -209,8 +207,8 @@ export function makeTaskQueries(
       Effect.gen(function* () {
         const at = yield* now;
         yield* q(sql`
-          INSERT INTO harness_sessions (id, bot, harness, location, cwd, model, options, parent, created_at, used_at)
-          VALUES (${row.id}, ${row.bot}, ${row.harness}, ${row.location}, ${row.cwd}, ${row.model}, ${JSON.stringify(row.options)}, ${row.parent},
+          INSERT INTO harness_sessions (id, bot, harness, cwd, model, options, parent, created_at, used_at)
+          VALUES (${row.id}, ${row.bot}, ${row.harness}, ${row.cwd}, ${row.model}, ${JSON.stringify(row.options)}, ${row.parent},
                   ${at}, ${at})`);
         return (yield* session(row.id))!;
       }),

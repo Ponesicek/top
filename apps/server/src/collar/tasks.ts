@@ -286,7 +286,13 @@ export const tasksGroup: CollarGroup = (daemon) => {
         },
         { additionalProperties: false },
       ),
-      replay: "safe",
+      recover: (args, ctx) =>
+        Effect.orElseSucceed(
+          Effect.map(tasks.snapshot(ctx.bot, args.id), (snapshot) =>
+            json({ timedOut: !taskEnded(snapshot.task.state), task: taskJson(snapshot, RESULT_IN_READ), note: "The daemon restarted while you waited." }),
+          ),
+          () => false as const,
+        ),
       run: (args, ctx) =>
         run(
           tasks.wait(

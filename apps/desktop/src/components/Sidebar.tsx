@@ -189,17 +189,9 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
               <Badge
                 variant="warning"
                 className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible"
-                title={`${bot.approvals} request${bot.approvals === 1 ? "" : "s"} waiting for your answer`}
+                title={`${bot.approvals} permission request${bot.approvals === 1 ? "" : "s"} waiting for your answer`}
               >
                 Needs approval
-              </Badge>
-            )}
-            {!!bot.tasks && !bot.approvals && !bot.background && (
-              <Badge
-                className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible"
-                title={`${bot.tasks} coding task${bot.tasks === 1 ? "" : "s"} running or waiting`}
-              >
-                {bot.tasks} task{bot.tasks === 1 ? "" : "s"}
               </Badge>
             )}
             {!!bot.background && (

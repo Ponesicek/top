@@ -206,7 +206,7 @@ test("Claude Code: runs with permission checks off, declines an unexpected appro
   const options = fake.runs[0]!.options;
   assert.equal(options.permissionMode, "bypassPermissions");
   assert.equal(options.allowDangerouslySkipPermissions, true);
-  assert.equal(options.sandbox, undefined);
+  assert.deepEqual(options.sandbox, { enabled: false }, "a sandbox from Claude Code's settings doesn't apply either");
   assert.equal(options.settingSources, undefined, "Claude Code's own settings and CLAUDE.md load as they do for the user");
   assert.equal(options.pathToClaudeCodeExecutable, "/bin/true", "it drives the user's own Claude Code");
   assert.deepEqual(options.systemPrompt, { type: "preset", preset: "claude_code" });

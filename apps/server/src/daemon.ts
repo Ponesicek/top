@@ -213,16 +213,14 @@ const make = Effect.gen(function* () {
   const seeded = (yield* store.bots)[0];
   if (kit.seed && seeded) yield* seedHistory(seeded.id, kit.seed);
 
-  const waiting = (bot: number): Effect.Effect<{ background?: number; approvals?: number; tasks?: number; wakeAt?: number }> =>
+  const waiting = (bot: number): Effect.Effect<{ background?: number; approvals?: number; wakeAt?: number }> =>
     Effect.gen(function* () {
       const background = jobs.count(bot);
       const approvals = (yield* store.waitingOf(bot)).length;
-      const running = tasks?.active(bot) ?? 0;
       const wakeAt = (yield* store.wakes(bot))[0]?.dueAt;
       return {
         ...(background ? { background } : {}),
         ...(approvals ? { approvals } : {}),
-        ...(running ? { tasks: running } : {}),
         ...(wakeAt !== undefined ? { wakeAt } : {}),
       };
     });

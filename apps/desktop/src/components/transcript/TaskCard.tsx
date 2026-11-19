@@ -138,6 +138,7 @@ export const TaskCard = memo(function TaskCard({ row, className }: { row: TaskRo
         <div className="flex w-fit max-w-[min(100%,34rem)] items-center gap-2 rounded-xl bg-muted px-3.5 py-2.5 text-meta text-muted-foreground inset-ring inset-ring-border">
           <SquareTerminal size={14} aria-hidden />
           <span className="truncate">{row.title ?? "Coding task"}</span>
+          <span className="flex-none">· Ended</span>
         </div>
       </div>
     );

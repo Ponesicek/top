@@ -35,7 +35,6 @@ export const BotSummary = Struct({
   queued: Schema.Int,
   background: Optional(Schema.Int),
   approvals: Optional(Schema.Int),
-  tasks: Optional(Schema.Int),
   wakeAt: Optional(Schema.Number),
   lastSeq: Seq,
   webSearch: Optional(Schema.Boolean),
