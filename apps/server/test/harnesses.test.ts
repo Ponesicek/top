@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, test } from "vitest";
-import { claudeAdapter, policyOptions, projectInstructions, type QueryFn, sessionGrants } from "../src/tasks/claude.ts";
+import { claudeAdapter, policyOptions, projectInstructions, type QueryFn, sessionGrants, userSettingsEnv } from "../src/tasks/claude.ts";
 import { codexAdapter } from "../src/tasks/codex.ts";
 import { type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "../src/tasks/harness.ts";
 import { until } from "./harness.ts";
@@ -191,6 +191,7 @@ test("Claude Code: the policy maps to its permission mode and sandbox, never to 
   assert.equal(readOnly.permissionMode, "default");
   assert.deepEqual(readOnly.disallowedTools, ["Edit", "Write", "NotebookEdit"]);
   assert.equal(readOnly.sandbox?.allowUnsandboxedCommands, false);
+  assert.equal(readOnly.sandbox?.autoAllowBashIfSandboxed, false, "read only: every shell command asks");
   assert.deepEqual(policyOptions("read_only", "/w", false).disallowedTools, ["Edit", "Write", "NotebookEdit"]);
   assert.deepEqual(policyOptions("full_access", "/w", true), { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true });
 });
@@ -255,7 +256,7 @@ test("Claude Code: approvals stay in the session, questions answer by their text
   assert.deepEqual(options.systemPrompt, { type: "preset", preset: "claude_code" });
   assert.match(String(options.sessionId), /^[0-9a-f-]{36}$/, "a new session has its id before anything runs");
   assert.deepEqual(c.of("session"), [], "no session is claimed before Claude Code confirms it");
-  assert.equal(options.settingSources?.join(), "user", "the folder's own settings files (allow rules, hooks) aren't loaded");
+  assert.deepEqual(options.settingSources, [], "no settings files: their allow rules and hooks would skip the card");
 
   await session.run({ text: "hello", images: [] });
   await until("the session", () => c.of("session")[0]);
@@ -324,6 +325,8 @@ test("harnesses get neither the daemon's provider keys nor the identity of a Cla
     HOME: "/h",
     GITHUB_TOKEN: "kept for tools",
     STRIPE_TEST_API_KEY: "a project's own key",
+    AWS_ACCESS_KEY_ID: "bedrock",
+    AWS_SECRET_ACCESS_KEY: "bedrock",
     HF_TOKEN: "h",
     ANTHROPIC_API_KEY: "a",
     OPENAI_API_KEY: "o",
@@ -464,4 +467,34 @@ test("Claude Code: long instructions keep the nearest folder's files whole and c
   const text = (await projectInstructions(join(repo, "app")))!;
   assert.ok(text.length < 33 * 1024);
   assert.match(text, /<file path="[^"]*\/CLAUDE\.md">\nroot root[^<]*\n…\n<\/file>\n\n<file path="[^"]*\/app\/CLAUDE\.md">\nNearest rules\.\n<\/file>$/);
+});
+
+test("Codex: a question for a secret is declined (Codex keeps answers in its history), and a permission card shows everything it grants", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "top-codex-")), "log.jsonl");
+  process.env.FAKE_CODEX_LOG = log;
+  const codex = codexAdapter({ command: FAKE_CODEX });
+  assert.equal(codex.capabilities.questions, false, "Codex's default mode doesn't ask questions");
+  const c = collect();
+  const session = await codex.open(spec(), c.emit);
+  await session.run({ text: "a secret please", images: [] });
+  assert.equal((await until("the turn", () => c.of("turn_ended")[0])).result, "secret answer: {}");
+  assert.deepEqual(c.of("request"), []);
+
+  await session.run({ text: "permissions please", images: [] });
+  const request = await until("the card", () => c.of("request")[0]?.request);
+  assert.match(request.detail!, /"entries"[\s\S]*\/home\/\*\*/, "the card lists every grant, entries included");
+  session.answer(request.id, { kind: "approval", decision: "deny" });
+  assert.equal((await until("the turn", () => c.of("turn_ended")[1])).result, 'granted: {"permissions":{},"scope":"turn"}');
+
+  await session.run({ text: "huge permissions please", images: [] });
+  assert.equal((await until("the turn", () => c.of("turn_ended")[2])).result, 'granted: {"permissions":{},"scope":"turn"}');
+  assert.equal(c.of("request").length, 1, "a request too big to show isn't put on a card");
+  await session.close();
+});
+
+test("Claude Code: the user's Claude settings only lend their environment (a gateway's address, say)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "top-claude-config-"));
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway", N: 1 }, permissions: { allow: ["Bash(*)"] } }));
+  assert.deepEqual(await userSettingsEnv({ CLAUDE_CONFIG_DIR: dir }), { ANTHROPIC_BASE_URL: "https://gateway" });
+  assert.deepEqual(await userSettingsEnv({ CLAUDE_CONFIG_DIR: join(dir, "none") }), {});
 });

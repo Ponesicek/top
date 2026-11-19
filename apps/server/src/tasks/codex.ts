@@ -53,6 +53,7 @@ const QUIET = [
   "turn/diff/updated",
 ];
 
+const MAX_GRANT_TEXT = 1_500;
 const APPROVAL_DECISIONS: readonly TaskDecision[] = ["allow", "allow_for_session", "deny"];
 
 type Item = { readonly type: string; readonly id: string } & Record<string, unknown>;
@@ -166,7 +167,7 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
       steer: true,
       queue: true,
       approvals: true,
-      questions: true,
+      questions: false,
       images: true,
       fileChanges: true,
       usage: true,
@@ -176,7 +177,7 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
     options: codexOptions,
     check: () =>
       new Promise((resolve) => {
-        execFile(command, ["--version"], { timeout: 10_000 }, (error, stdout) => {
+        execFile(command, ["--version"], { timeout: 10_000, env: harnessEnv(process.env) }, (error, stdout) => {
           if (error)
             resolve({ ok: false, error: (error as NodeJS.ErrnoException).code === "ENOENT" ? missing : `\`${command} --version\` failed: ${error.message}` });
           else resolve({ ok: true, version: stdout.trim() });
@@ -204,6 +205,12 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
           pending.set(key, { method, params, resolve });
           if (method === "item/tool/requestUserInput") {
             const questions = questionsOf(params);
+            if (questions.some((q) => q.secret)) {
+              pending.delete(key);
+              emit({ type: "log", kind: "status", text: "declined a question asking for a secret: Codex keeps answers in its session history" });
+              resolve({ answers: {} });
+              return;
+            }
             emit({ type: "request", request: { id: key, kind: "question", title: questions[0]?.question || "Codex has a question", questions } });
             return;
           }
@@ -220,6 +227,13 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
             detail = [clip(files.join("\n"), 1_000), str(params.reason)].filter(Boolean).join("\n") || undefined;
           } else {
             const permissions = record(params.permissions);
+            const requested = JSON.stringify(permissions, null, 1);
+            if (requested.length > MAX_GRANT_TEXT) {
+              pending.delete(key);
+              emit({ type: "log", kind: "status", text: "declined a permission request too large to show in full on a card" });
+              resolve({ permissions: {}, scope: "turn" });
+              return;
+            }
             const fsys = record(permissions.fileSystem);
             const parts = [
               record(permissions.network).enabled === true ? "network access" : undefined,
@@ -227,7 +241,7 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
               Array.isArray(fsys.read) && fsys.read.length ? `read access to ${fsys.read.join(", ")}` : undefined,
             ].filter(Boolean);
             title = `Grant ${parts.join(" and ") || "more permissions"}`;
-            detail = str(params.reason);
+            detail = [str(params.reason), `Everything it asks for:\n${requested}`].filter(Boolean).join("\n");
           }
           emit({
             type: "request",

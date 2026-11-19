@@ -1,6 +1,6 @@
-import type { ConversationSnapshot, Entry, TranscriptItem } from "@top/client";
+import type { ConversationSnapshot, Entry, TaskView, TranscriptItem } from "@top/client";
 import { describe, expect, it } from "vitest";
-import { committedRows, displayRows, tailRows } from "../src/rows.ts";
+import { committedRows, displayRows, tailRows, waitingTaskRows } from "../src/rows.ts";
 
 const BOT = 3;
 const ASK = "collar__ask_permission";
@@ -143,5 +143,33 @@ describe("task rows", () => {
     const told = entry({ kind: "user", text: "[Task task_a completed] Fix", source: "task", requestId: "task:task_a:completed" });
     const rows = displayRows(committedRows([said(), started("task_b", "x", true), told]), true);
     expect(rows.map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
+  });
+});
+
+describe("tasks waiting for an answer", () => {
+  const view = (id: string, inputs: number, bot = BOT) =>
+    ({
+      id,
+      bot,
+      harness: "Codex",
+      title: `Task ${id}`,
+      state: "waiting_for_input",
+      session: "s",
+      cwd: "/w",
+      policy: "workspace_write",
+      createdAt: 1,
+      inputs: Array.from({ length: inputs }, (_, i) => ({ id: i, kind: "approval", title: "Run x" })),
+    }) as unknown as TaskView;
+
+  it("get a card at the end when the card where the task started isn't loaded, or never existed", () => {
+    const committed = committedRows([said()]);
+    const rows = waitingTaskRows(committed, [view("t1", 1), view("t2", 0), view("t3", 1, BOT + 1)], BOT);
+    expect(rows).toMatchObject([{ kind: "task", task: "t1", title: "Task t1" }]);
+    expect(waitingTaskRows(committed, [view("t1", 1)], BOT)[0]).toBe(rows[0]);
+  });
+
+  it("don't get a second card when the start's card is loaded", () => {
+    const started = entry({ kind: "tool", toolCallId: "c", name: "collar__task_start", text: "{}", task: "t1" });
+    expect(waitingTaskRows(committedRows([said(), started]), [view("t1", 1)], BOT)).toEqual([]);
   });
 });

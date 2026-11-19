@@ -2,7 +2,7 @@ import { TaskDecision, type TaskError, TaskPolicy, taskEnded } from "@top/protoc
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { DEFAULT_READ, MAX_READ, type ReadResult, type Snapshot, type Tasks } from "../tasks/coordinator.ts";
-import { CAPABILITY_NOTES, type Capabilities, clip } from "../tasks/harness.ts";
+import { CAPABILITY_NOTES, type Capabilities } from "../tasks/harness.ts";
 import type { TaskInputRow } from "../tasks/store.ts";
 import { defineTool, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
@@ -40,7 +40,7 @@ function inputJson(input: TaskInputRow) {
   };
 }
 
-export function taskJson(snapshot: Snapshot, resultChars?: number) {
+export function taskJson(snapshot: Snapshot, resultChars?: number, resultFrom = 0) {
   const { task, session } = snapshot;
   return {
     id: task.id,
@@ -55,7 +55,10 @@ export function taskJson(snapshot: Snapshot, resultChars?: number) {
     ...(task.startedAt ? { started_at: iso(task.startedAt) } : {}),
     ...(task.endedAt ? { ended_at: iso(task.endedAt) } : {}),
     ...(task.result !== null && resultChars !== undefined
-      ? { result: clip(task.result, resultChars), ...(task.result.length > resultChars ? { result_truncated: true } : {}) }
+      ? {
+          result: task.result.slice(resultFrom, resultFrom + resultChars),
+          ...(task.result.length > resultFrom + resultChars ? { result_more_from: resultFrom + resultChars } : {}),
+        }
       : {}),
     ...(task.error ? { error: task.error } : {}),
     ...(task.usage ? { usage: task.usage } : {}),
@@ -125,7 +128,6 @@ export const tasksGroup: CollarGroup = (daemon) => {
           policy: Type.Optional(Type.Enum(TaskPolicy.literals as unknown as string[], { description: "What it may do without asking. See above." })),
           options: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Harness-specific options, listed above." })),
           images: Type.Optional(Type.Array(Type.String(), { description: "Image files (PNG, JPEG, GIF, WebP) to give it with the prompt." })),
-          notify: Type.Optional(Type.Boolean({ description: "Send you a message when it ends or asks you something. Default true." })),
         },
         { additionalProperties: false },
       ),
@@ -153,7 +155,6 @@ export const tasksGroup: CollarGroup = (daemon) => {
               policy: args.policy as Snapshot["session"]["policy"] | undefined,
               options: args.options,
               images: args.images,
-              notify: args.notify,
             }),
           );
           if (started._tag === "Failure") return refused(started.failure);
@@ -185,6 +186,12 @@ export const tasksGroup: CollarGroup = (daemon) => {
           limit: Type.Optional(
             Type.Integer({ minimum: 1, maximum: MAX_READ, description: `How many events at most (default ${DEFAULT_READ}, up to ${MAX_READ}).` }),
           ),
+          result_from: Type.Optional(
+            Type.Integer({
+              minimum: 0,
+              description: "Read the result from this character on (a long result says where its next part starts: `result_more_from`).",
+            }),
+          ),
         },
         { additionalProperties: false },
       ),
@@ -209,7 +216,7 @@ export const tasksGroup: CollarGroup = (daemon) => {
           });
         return run(tasks.read(ctx.bot, args.id, args.after ?? 0, args.limit ?? DEFAULT_READ), (read: ReadResult) =>
           json({
-            task: taskJson(read, RESULT_IN_READ),
+            task: taskJson(read, RESULT_IN_READ, args.result_from ?? 0),
             events: read.events.map((e) => ({ cursor: e.seq, at: iso(e.at), kind: e.kind, text: e.text })),
             cursor: read.cursor,
             more: read.more,

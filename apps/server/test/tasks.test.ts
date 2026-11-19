@@ -545,3 +545,39 @@ test("a cancel while the harness is still being checked never opens it", async (
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(base.sessions.length, 0);
 });
+
+test("a branch of a session in another folder asks the user again, even though its parent was allowed", async () => {
+  const s = await setup();
+  const elsewhere = mkdtempSync(join(tmpdir(), "top-elsewhere-"));
+  const parent = await start(s, { prompt: "first", cwd: elsewhere });
+  await inState(s, parent.snapshot.task.id, "waiting_for_input");
+  const [ask] = await pending(s, parent.snapshot.task.id);
+  await s.h.run(s.tasks.respond("user", undefined, parent.snapshot.task.id, ask!.id, { decision: "allow" }));
+  await ended(s, parent.snapshot.task.id);
+  const branch = await start(s, { prompt: "branch", session: parent.snapshot.session.id, fork: true, harness: undefined });
+  assert.equal(branch.snapshot.session.approved, false);
+  await inState(s, branch.snapshot.task.id, "waiting_for_input");
+  assert.equal((await pending(s, branch.snapshot.task.id))[0]!.kind, "workspace");
+  const own = await start(s, { prompt: "own" });
+  await ended(s, own.snapshot.task.id);
+  const ownBranch = await start(s, { prompt: "branch", session: own.snapshot.session.id, fork: true, harness: undefined });
+  assert.equal(ownBranch.snapshot.session.approved, true, "the bot's own folder needs no approval, branched or not");
+});
+
+test("a message queued as the turn completes either runs or is refused, never left behind", async () => {
+  const ctl = controlled();
+  const s = await setup({ fake: ctl.adapter });
+  const { snapshot } = await start(s, { prompt: "anything" });
+  await inState(s, snapshot.task.id, "running");
+  ctl.emit()({ type: "turn_ended", status: "completed", result: "first" });
+  const sent = await s.h.run(Effect.result(s.tasks.send(s.h.bot, snapshot.task.id, "late", "queue", "one more")));
+  if (sent._tag === "Success") {
+    await until("the queued turn", async () => (await s.h.run(s.h.store.tasks.messageByKey("late")))?.state === "sent");
+    ctl.emit()({ type: "turn_ended", status: "completed", result: "second" });
+    assert.equal((await ended(s, snapshot.task.id)).result, "second");
+  } else {
+    assert.match(sent.failure.message, /is ending|has ended/);
+    assert.equal((await ended(s, snapshot.task.id)).result, "first");
+  }
+  assert.deepEqual(await s.h.run(s.h.store.tasks.pendingMessages(snapshot.task.id)), []);
+});

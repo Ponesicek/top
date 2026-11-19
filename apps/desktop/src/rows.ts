@@ -11,6 +11,7 @@ import type {
   PermissionAsk,
   QueuedMessage,
   SkillUse,
+  TaskView,
   ToolCallView,
   TranscriptItem,
   WebSearchStep,
@@ -156,6 +157,24 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
   }
   itemRowsCache.set(items, rows);
   return rows;
+}
+
+const waitingCache = new Map<string, TaskRow>();
+
+export function waitingTaskRows(committed: readonly Row[], tasks: readonly TaskView[], bot: number): Row[] {
+  const waiting = tasks.filter((t) => t.bot === bot && t.inputs.length > 0);
+  if (!waiting.length) return [];
+  const shown = new Set(committed.flatMap((r) => (r.kind === "task" ? [r.task] : [])));
+  return waiting
+    .filter((t) => !shown.has(t.id))
+    .map((t) => {
+      let row = waitingCache.get(t.id);
+      if (!row || row.title !== t.title) {
+        row = { kind: "task", key: `waiting-${t.id}`, bot, task: t.id, title: t.title };
+        waitingCache.set(t.id, row);
+      }
+      return row;
+    });
 }
 
 const tailCache = new WeakMap<object, Row>();

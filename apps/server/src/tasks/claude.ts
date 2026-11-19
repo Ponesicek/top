@@ -56,7 +56,7 @@ export function policyOptions(
               sandbox: {
                 enabled: true,
                 failIfUnavailable: true,
-                autoAllowBashIfSandboxed: true,
+                autoAllowBashIfSandboxed: false,
                 allowUnsandboxedCommands: false,
                 filesystem: { denyWrite: [cwd] },
               },
@@ -164,6 +164,18 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
       });
       this.#wake = undefined;
     }
+  }
+}
+
+export async function userSettingsEnv(env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
+  const dir = env.CLAUDE_CONFIG_DIR ?? join(env.HOME ?? "/", ".claude");
+  const raw = await readFile(join(dir, "settings.json"), "utf8").catch(() => undefined);
+  if (!raw) return {};
+  try {
+    const vars = record(record(JSON.parse(raw)).env);
+    return Object.fromEntries(Object.entries(vars).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    return {};
   }
 }
 
@@ -275,7 +287,9 @@ const versionAtLeast = (version: string, min: readonly number[]) => {
 
 const run = (command: string, args: string[]) =>
   new Promise<{ ok: true; stdout: string } | { ok: false; error: ExecFileException; stdout: string }>((resolve) =>
-    execFile(command, args, { timeout: 15_000 }, (error, stdout) => resolve(error ? { ok: false, error, stdout } : { ok: true, stdout })),
+    execFile(command, args, { timeout: 15_000, env: harnessEnv(process.env) }, (error, stdout) =>
+      resolve(error ? { ok: false, error, stdout } : { ok: true, stdout }),
+    ),
   );
 
 export type ClaudeConfig = {
@@ -418,11 +432,11 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       const options: Options = {
         cwd: spec.cwd,
         pathToClaudeCodeExecutable: path,
-        env: { ...harnessEnv(process.env), CLAUDE_AGENT_SDK_CLIENT_APP: `top/${config.clientVersion ?? "0"}` },
+        env: { ...harnessEnv(process.env), ...(await userSettingsEnv()), CLAUDE_AGENT_SDK_CLIENT_APP: `top/${config.clientVersion ?? "0"}` },
         abortController: abort,
         canUseTool,
         systemPrompt: { type: "preset", preset: "claude_code", ...(instructions ? { append: instructions } : {}) },
-        settingSources: ["user"],
+        settingSources: [],
         ...policyOptions(spec.policy, spec.cwd, sandboxed),
         ...(spec.model ? { model: spec.model } : {}),
         ...(spec.resume ? { resume: spec.resume } : { sessionId }),

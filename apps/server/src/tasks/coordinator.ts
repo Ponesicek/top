@@ -149,6 +149,7 @@ type Live = {
   turnActive: boolean;
   cancelling: boolean;
   stopping: boolean;
+  closing: boolean;
   finished: boolean;
   waitersAny: number;
   waitersEnd: number;
@@ -321,6 +322,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       Effect.gen(function* () {
         if (live.finished) return;
         live.finished = true;
+        live.closing = true;
         for (const input of live.inputs.values()) if (input.external) live.harness?.answer(input.external, { kind: "cancelled" });
         live.inputs.clear();
         yield* q.withdrawInputs(live.id);
@@ -461,13 +463,15 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               if (live.inputs.size) yield* cancelInputs(live);
               if (event.status === "completed") {
                 live.result = event.result ?? live.result;
-                let next: TaskMessageRow | undefined;
-                if (!live.cancelling)
-                  for (const candidate of (yield* q.pendingMessages(live.id)).filter((m) => m.mode === "queue"))
-                    if (yield* q.setMessageState(candidate.id, "sent")) {
-                      next = candidate;
-                      break;
-                    }
+                const next = yield* live.lock.withPermits(1)(
+                  Effect.gen(function* () {
+                    if (!live.cancelling)
+                      for (const candidate of (yield* q.pendingMessages(live.id)).filter((m) => m.mode === "queue"))
+                        if (yield* q.setMessageState(candidate.id, "sent")) return candidate;
+                    live.closing = true;
+                    return undefined;
+                  }),
+                );
                 if (!next) return yield* finish(live, "completed", { result: live.result ?? "" });
                 yield* log(live, "sent", `queued message ${next.id} started a new turn`);
                 if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "running");
@@ -702,6 +706,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         turnActive: false,
         cancelling: false,
         stopping: false,
+        closing: false,
         finished: false,
         waitersAny: 0,
         waitersEnd: 0,
@@ -806,7 +811,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               model: request.model ?? source.model,
               options,
               parent: source.id,
-              approved: source.approved,
+              approved: source.approved && source.policy !== "full_access" && (yield* resolveCwd(source.cwd, request.bot)).own,
             });
           } else {
             if (!adapter.capabilities.resume) return yield* fail(`${adapter.label} can't continue a session.`);
@@ -900,10 +905,19 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         return yield* fail(`Task ${row.id} has ended (${row.state}). To carry on, call collar__task_start with "session": "${session.id}".`);
       if (!adapter?.capabilities[mode === "steer" ? "steer" : "queue"])
         return yield* fail(`${label(session.harness)} can't take ${mode === "steer" ? "steering" : "queued"} messages.`);
-      if (live.cancelling) return yield* fail(`Task ${row.id} is being cancelled.`);
+      if (live.cancelling || live.closing)
+        return yield* fail(`Task ${row.id} is ending; it takes no more messages. To carry on, call collar__task_start with "session": "${session.id}".`);
       if (mode === "steer" && (live.phase !== "started" || !live.turnActive))
         return yield* fail(`No turn is running to steer (task ${row.id} is ${live.row.state}). Send it with mode "queue" to run after.`);
-      const { message } = yield* q.addMessage({ task: row.id, bot, key, mode, text: body });
+      const ending = `Task ${row.id} is ending; it takes no more messages. To carry on, call collar__task_start with "session": "${session.id}".`;
+      const admitted = yield* live.lock.withPermits(1)(
+        Effect.gen(function* () {
+          if (live.cancelling || live.closing) return undefined;
+          return (yield* q.addMessage({ task: row.id, bot, key, mode, text: body })).message;
+        }),
+      );
+      if (!admitted) return yield* fail(ending);
+      const message = admitted;
       if (mode === "queue") {
         Queue.offerUnsafe(live.signals, { type: "queued", message });
         return { message, duplicate: false };

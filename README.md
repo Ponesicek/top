@@ -289,7 +289,7 @@ separate things: a task names a harness, may name a model in that harness's term
 | Tool | What it does |
 |---|---|
 | `task_start` | Starts a task: `harness`, `prompt`, optional `cwd`, `policy`, `model`, `options` (checked against the harness), `images`, `title`. Returns at once with a task id. `session` continues an earlier session in a new task; `fork: true` branches it. |
-| `task_read` | State, result, waiting requests and the event log after a cursor (`after`, `limit` ≤ 200, at most ~24 KB per read). Without `id`: the bot's recent tasks and sessions. |
+| `task_read` | State, result (12,000 characters at a time, `result_from` for the next part), waiting requests and the event log after a cursor (`after`, `limit` ≤ 200, at most ~24 KB per read). Without `id`: the bot's recent tasks and sessions. |
 | `task_send` | More work for a running task, `mode` required: `steer` goes into the running turn (fails if none runs), `queue` runs as the next turn. An ended task takes none: continue its session instead. |
 | `task_respond` | Answers one waiting request by number. First answer wins; a second is refused. |
 | `task_wait` | Waits until the task ends or needs input (`until: "end"` waits through input), up to 30 min; says `"timedOut":true` otherwise. Rarely needed: see below. |
@@ -311,26 +311,30 @@ written in batches every 250 ms), and the result is kept up to 30,000 characters
 
 **Who may allow what.** Each session has a policy:
 
-- `read_only`: the harness looks but changes nothing.
+- `read_only`: the harness looks but changes nothing (Claude Code: every shell command asks first).
 - `workspace_write` (the default): it edits files in its folder and runs commands sandboxed to it (Codex:
   the folder and a private temp folder, no network; Claude Code: its sandbox, which on Linux needs
   bubblewrap and socat; without them every command asks first, and the task's log says so).
 - `full_access`: no sandbox and no approvals.
 
 A folder other than the bot's own, and `full_access` anywhere, wait for the user's OK on a card in the
-conversation, once per session. When the harness wants to go beyond its policy it asks; that approval
+conversation, once per session; a branch of such a session asks again. When the harness wants to go beyond its policy it asks; that approval
 is the user's alone, on the card, and the bot may only deny it. A harness's question goes to both, and
 whoever answers first wins, except a question for a secret, which only the user can answer: the value
-goes to the harness and is never stored or logged. Approvals are never turned off silently: Codex is
-told the user reviews them (not a model reviewer from its config), and Claude Code loads only the
-user's own settings, never the folder's `.claude/settings*.json` (its allow rules and hooks would
-skip the card). Its instruction files are passed in instead: from the repository root down to the
+goes to Top's side of the harness and is never stored or logged by Top; Codex would keep such an
+answer in its session history, so its secret questions are declined. Approvals are never turned off
+silently: Codex is told the user reviews them (not a model reviewer from its config), and its
+permission cards list everything a grant covers (one too big to show is declined). Claude Code loads
+no settings files at all, the user's or the folder's, whose allow rules, hooks and sandbox exceptions
+would skip the card; only the `env` of the user's Claude settings is passed on, so a gateway or
+sign-in configured there still works. Its instruction files are passed in instead: from the repository root down to the
 folder (outside a repository, the folder alone), each folder's CLAUDE.md, `.claude/CLAUDE.md` and
 CLAUDE.local.md (or else its AGENTS.md), with their `@` imports from inside the repository (symlinks
 out of it aren't followed), up to 32 KB, nearest folder kept first. "Allow for
 this session" grants only the rules and folders the card lists, never a mode, and never writes a
 settings file. Harnesses use their own sign-in: the model-provider keys the daemon's bots use (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY` and the rest of pi's list) aren't passed to them; other variables, a project's own
+`ANTHROPIC_API_KEY`, the AWS keys for Bedrock and the rest of pi's list) aren't passed to them, nor to
+the checks that run them first; other variables, a project's own
 keys among them, are. Text that looks like a key is redacted from the event log and results.
 
 **Restarts.** Nothing is started twice. A task that hadn't started yet (queued, or waiting for the
@@ -346,7 +350,7 @@ An end whose message to the bot was lost in a crash is sent at the next start.
 |---|---|---|
 | Continue a session / branch it | ✓ / ✓ | ✓ / ✓ |
 | Steer the running turn / queue the next | ✓ (`priority: next`) / ✓ | ✓ (`turn/steer`) / ✓ (Top's queue) |
-| Approvals / questions | ✓ (`canUseTool`, AskUserQuestion) / ✓ | ✓ (command, file, permission requests) / ✓ (`requestUserInput`) |
+| Approvals / questions | ✓ (`canUseTool`, AskUserQuestion) / ✓ | ✓ (command, file, permission requests) / ✗ (off in Codex's default mode; never enabled by Top) |
 | Images with the prompt | ✓ | ✓ (`localImage`) |
 | Changed files / usage | ✓ / ✓ tokens and cost | ✓ / ✓ tokens |
 | Cancel / pick a session up in a new process | ✓ / ✓ | ✓ / ✓ |
