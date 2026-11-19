@@ -324,10 +324,13 @@ whoever answers first wins, except a question for a secret, which only the user 
 goes to the harness and is never stored or logged. Approvals are never turned off silently: Codex is
 told the user reviews them (not a model reviewer from its config), and Claude Code loads only the
 user's own settings, never the folder's `.claude/settings*.json` (its allow rules and hooks would
-skip the card; the folder's CLAUDE.md, or AGENTS.md, is passed in as instructions instead). "Allow for
+skip the card). Its instruction files are passed in instead: from the repository root down to the
+folder, each folder's CLAUDE.md, `.claude/CLAUDE.md` and CLAUDE.local.md (or else its AGENTS.md), with
+their `@` imports from inside the repository. "Allow for
 this session" grants only the rules and folders the card lists, never a mode, and never writes a
-settings file. Harnesses use their own sign-in: the daemon's provider keys (`*_API_KEY`) aren't
-passed to them. Text that looks like a key is redacted from the event log and results.
+settings file. Harnesses use their own sign-in: the model-provider keys the daemon's bots use (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY` and the rest of pi's list) aren't passed to them; other variables, a project's own
+keys among them, are. Text that looks like a key is redacted from the event log and results.
 
 **Restarts.** Nothing is started twice. A task that hadn't started yet (queued, or waiting for the
 user's OK on its folder) carries on after a restart. One that had started fails as cut off, saying it

@@ -522,3 +522,26 @@ test("events for a task that's gone (its bot was deleted) are dropped, not fatal
   assert.equal((await ended(s, snapshot.task.id)).state, "completed");
   assert.ok((await s.h.run(s.tasks.read(s.h.bot, snapshot.task.id, 0, 200))).events.length > 3, "logging carries on");
 });
+
+test("a cancel while the harness is still being checked never opens it", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const base = fakeHarness({ stepMs: 10 });
+  const slow: FakeHarness = {
+    ...base,
+    check: async () => {
+      await gate;
+      return { ok: true, version: "1" };
+    },
+  };
+  const s = await setup({ fake: slow });
+  const { snapshot } = await start(s, { prompt: "do work" });
+  await inState(s, snapshot.task.id, "starting");
+  const cancelled = await s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+  release();
+  assert.equal(cancelled.task.state, "cancelled");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(base.sessions.length, 0);
+});

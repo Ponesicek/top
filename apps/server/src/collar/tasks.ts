@@ -1,4 +1,4 @@
-import { TaskDecision, type TaskError, TaskPolicy } from "@top/protocol";
+import { TaskDecision, type TaskError, TaskPolicy, taskEnded } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { DEFAULT_READ, MAX_READ, type ReadResult, type Snapshot, type Tasks } from "../tasks/coordinator.ts";
@@ -335,7 +335,13 @@ export const tasksGroup: CollarGroup = (daemon) => {
             id: task.id,
             state: task.state,
             cancelled,
-            ...(cancelled ? {} : { note: `It had already ${task.state === "completed" ? "completed" : `ended (${task.state})`}.` }),
+            ...(cancelled
+              ? {}
+              : {
+                  note: taskEnded(task.state)
+                    ? `It had already ${task.state === "completed" ? "completed" : `ended (${task.state})`}.`
+                    : "It's still stopping; you'll get a message when it ends.",
+                }),
           }),
         ),
     }),

@@ -2,7 +2,7 @@ import { type ExecFileException, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { delimiter, extname, join } from "node:path";
+import { delimiter, dirname, extname, join, resolve } from "node:path";
 import type { CanUseTool, Options, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { TaskDecision, TaskPolicy, TaskQuestion } from "@top/protocol";
 import Type from "typebox";
@@ -23,6 +23,7 @@ export const CLAUDE_CODE = "claude_code";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 const MIN_CLI = [2, 1, 200] as const;
+const SETTLE_MS = 60_000;
 
 export const claudeOptions = Type.Object(
   {
@@ -166,16 +167,51 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-const INSTRUCTION_FILES = ["CLAUDE.md", "AGENTS.md"];
 const MAX_INSTRUCTIONS = 32 * 1024;
+const MAX_IMPORT_DEPTH = 4;
+
+async function exists(path: string): Promise<boolean> {
+  return access(path).then(
+    () => true,
+    () => false,
+  );
+}
+
+async function withImports(text: string, from: string, root: string, depth: number): Promise<string> {
+  if (depth >= MAX_IMPORT_DEPTH) return text;
+  const lines: string[] = [];
+  for (const line of text.split("\n")) {
+    const target = /^\s*@(\S+)\s*$/.exec(line)?.[1];
+    const path = target ? (target.startsWith("~/") ? join(process.env.HOME ?? "/", target.slice(2)) : resolve(from, target)) : undefined;
+    const inside = path !== undefined && (path === root || path.startsWith(`${root}/`));
+    const imported = inside ? await readFile(path, "utf8").catch(() => undefined) : undefined;
+    lines.push(imported === undefined ? line : await withImports(imported, dirname(path!), root, depth + 1));
+  }
+  return lines.join("\n");
+}
 
 export async function projectInstructions(cwd: string): Promise<string | undefined> {
-  for (const name of INSTRUCTION_FILES) {
-    const text = await readFile(join(cwd, name), "utf8").catch(() => undefined);
-    if (text?.trim())
-      return `The project's ${name} (from ${cwd}; its settings files aren't loaded, so only these instructions apply):\n\n${clip(text, MAX_INSTRUCTIONS)}`;
+  const dirs: string[] = [];
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    dirs.unshift(dir);
+    if ((await exists(join(dir, ".git"))) || dirname(dir) === dir) break;
   }
-  return undefined;
+  const root = dirs[0]!;
+  const parts: string[] = [];
+  for (const dir of dirs) {
+    const found: string[] = [];
+    for (const name of ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]) {
+      const text = await readFile(join(dir, name), "utf8").catch(() => undefined);
+      if (text?.trim()) found.push(`<file path="${join(dir, name)}">\n${await withImports(text, dir, root, 0)}\n</file>`);
+    }
+    if (!found.length) {
+      const agents = await readFile(join(dir, "AGENTS.md"), "utf8").catch(() => undefined);
+      if (agents?.trim()) found.push(`<file path="${join(dir, "AGENTS.md")}">\n${await withImports(agents, dir, root, 0)}\n</file>`);
+    }
+    parts.push(...found);
+  }
+  if (!parts.length) return undefined;
+  return `The project's instructions (its .claude settings files aren't loaded; these files are):\n\n${clip(parts.join("\n\n"), MAX_INSTRUCTIONS)}`;
 }
 
 async function onPath(name: string): Promise<string | undefined> {
@@ -367,7 +403,16 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       let announced = false;
       const outstanding = new Set<string>();
 
+      let parked: Extract<HarnessEvent, { type: "turn_ended" }> | undefined;
+      let settle: NodeJS.Timeout | undefined;
+      const park = (event: Extract<HarnessEvent, { type: "turn_ended" }>) => {
+        parked = event;
+        settle = setTimeout(() => parked && endTurn(parked), SETTLE_MS);
+      };
       const endTurn = (event: Extract<HarnessEvent, { type: "turn_ended" }>) => {
+        if (settle) clearTimeout(settle);
+        settle = undefined;
+        parked = undefined;
         if (!turnActive) return;
         turnActive = false;
         const status = interrupting && event.status !== "completed" ? "interrupted" : event.status;
@@ -384,6 +429,9 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       void (async () => {
         try {
           for await (const message of q) {
+            if (settle) clearTimeout(settle);
+            settle = undefined;
+            if (parked && message.type !== "result") settle = setTimeout(() => parked && endTurn(parked), SETTLE_MS);
             switch (message.type) {
               case "system":
                 if (message.subtype === "init" && message.session_id && (!announced || message.session_id !== sessionId)) {
@@ -402,7 +450,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
                 break;
               }
               case "result": {
-                const answered = message.user_message_uuids;
+                const answered = message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : undefined);
                 if (answered?.length) for (const uuid of answered) outstanding.delete(uuid);
                 else outstanding.clear();
                 const usage = record(message.usage);
@@ -415,8 +463,8 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
                     ...(typeof message.total_cost_usd === "number" ? { costUsd: message.total_cost_usd } : {}),
                   },
                 });
-                if (outstanding.size > 0 && !interrupting) break;
-                if (message.subtype === "success" && !message.is_error) endTurn({ type: "turn_ended", status: "completed", result: message.result });
+                let ending: Extract<HarnessEvent, { type: "turn_ended" }>;
+                if (message.subtype === "success" && !message.is_error) ending = { type: "turn_ended", status: "completed", result: message.result };
                 else {
                   const text =
                     message.subtype === "success"
@@ -424,13 +472,15 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
                       : [message.subtype === "error_max_turns" ? "It reached the turn limit (max_turns)." : "", ...(message.errors ?? [])]
                           .filter(Boolean)
                           .join("\n");
-                  endTurn({
+                  ending = {
                     type: "turn_ended",
                     status: "failed",
                     error: authFailed ? `${authFailedText} (${clip(redact(text), 300)})` : redact(text || message.subtype),
-                  });
+                  };
                   authFailed = false;
                 }
+                if (outstanding.size > 0 && !interrupting) park(ending);
+                else endTurn(ending);
                 break;
               }
               default:
@@ -486,6 +536,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
           if (!turnActive) return;
           interrupting = true;
           outstanding.clear();
+          if (parked) endTurn({ type: "turn_ended", status: "interrupted" });
           await Promise.race([q.interrupt().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 15_000))]);
         },
         answer: (id, answer) => {
@@ -494,6 +545,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
         },
         close: async () => {
           ended = true;
+          if (settle) clearTimeout(settle);
           for (const request of pending.values()) request.resolve(result(request, { kind: "cancelled" }));
           pending.clear();
           inbox.end();

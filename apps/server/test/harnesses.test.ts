@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -323,6 +323,8 @@ test("harnesses get neither the daemon's provider keys nor the identity of a Cla
     PATH: "/bin",
     HOME: "/h",
     GITHUB_TOKEN: "kept for tools",
+    STRIPE_TEST_API_KEY: "a project's own key",
+    HF_TOKEN: "h",
     ANTHROPIC_API_KEY: "a",
     OPENAI_API_KEY: "o",
     ANTHROPIC_AUTH_TOKEN: "t",
@@ -330,7 +332,7 @@ test("harnesses get neither the daemon's provider keys nor the identity of a Cla
     CLAUDE_CODE_MESSAGING_TOKEN: "parent-secret",
     CLAUDE_CODE_SESSION_ID: "p",
   });
-  assert.deepEqual(env, { PATH: "/bin", HOME: "/h", GITHUB_TOKEN: "kept for tools" });
+  assert.deepEqual(env, { PATH: "/bin", HOME: "/h", GITHUB_TOKEN: "kept for tools", STRIPE_TEST_API_KEY: "a project's own key" });
 });
 
 test("Claude Code: 'allow for this session' grants only rules and folders, for the session, and never changes its mode", () => {
@@ -348,11 +350,22 @@ test("Claude Code: 'allow for this session' grants only rules and folders, for t
   );
 });
 
-test("Claude Code: the project's CLAUDE.md is passed as instructions, since its settings files aren't loaded", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "top-claude-md-"));
-  assert.equal(await projectInstructions(dir), undefined);
-  writeFileSync(join(dir, "CLAUDE.md"), "Use tabs.");
-  assert.match((await projectInstructions(dir))!, /CLAUDE\.md.*\n\nUse tabs\.$/s);
+test("Claude Code: the project's instruction files, from the repository root down, are passed in with their imports, since its settings files aren't loaded", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "top-claude-md-"));
+  assert.equal(await projectInstructions(repo), undefined);
+  mkdirSync(join(repo, ".git"));
+  mkdirSync(join(repo, "app", "src"), { recursive: true });
+  writeFileSync(join(repo, "CLAUDE.md"), "@AGENTS.md\n@../../etc/passwd");
+  writeFileSync(join(repo, "AGENTS.md"), "Use tabs.");
+  writeFileSync(join(repo, "app", "AGENTS.md"), "App rules.");
+  const text = (await projectInstructions(join(repo, "app", "src")))!;
+  assert.match(
+    text,
+    /<file path="[^"]*\/CLAUDE\.md">\nUse tabs\.\n@\.\.\/\.\.\/etc\/passwd\n<\/file>/,
+    "imports inside the repository are expanded, others aren't read",
+  );
+  assert.match(text, /app\/AGENTS\.md">\nApp rules\./, "a folder without CLAUDE.md gives its AGENTS.md");
+  assert.ok(text.indexOf("Use tabs.") < text.indexOf("App rules."), "the root comes first");
 });
 
 test("Claude Code: a steer that lands as the turn ends is answered before the turn counts as over", async () => {
@@ -378,5 +391,22 @@ test("Claude Code: a steer that lands as the turn ends is answered before the tu
   assert.equal(c.of("turn_ended").length, 1);
   assert.equal(ended.result, "after the steer");
   assert.equal(fake.runs[0]!.messages[1]!.priority, "next");
+  await session.close();
+});
+
+test("Claude Code: cancelling between a turn's answer and its steered follow-up ends the turn as interrupted at once", async () => {
+  const fake = fakeClaude(async (message) =>
+    message.priority ? [] : [{ ...(result("first") as object), user_message_uuids: [message.uuid] } as unknown as SDKMessage],
+  );
+  const claude = claudeAdapter({ command: "/bin/true", query: fake.query, sandbox: async () => true });
+  const c = collect();
+  const session = await claude.open(spec(), c.emit);
+  await session.run({ text: "work", images: [] });
+  await session.steer("and this");
+  await until("both messages", () => fake.runs[0]!.messages.length === 2);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(c.of("turn_ended").length, 0, "the steered message is still to be answered");
+  await session.interrupt();
+  assert.equal(c.of("turn_ended")[0]!.status, "interrupted");
   await session.close();
 });

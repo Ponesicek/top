@@ -327,7 +327,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         const dropped = yield* q.dropMessages(live.id);
         const kept = end.result ?? live.result;
         const result = kept === undefined ? undefined : redact(kept);
-        const error = end.error && dropped ? `${end.error}\n(${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : end.error;
+        const said = end.error === undefined ? undefined : redact(end.error);
+        const error = said && dropped ? `${said}\n(${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : said;
         const row = yield* q.setState(live.id, ACTIVE_STATES, state, {
           ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
           ...(error !== undefined ? { error: clip(error, 4_000) } : {}),
@@ -352,7 +353,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     Effect.gen(function* () {
       const harness = live.harness!;
       live.turnActive = true;
-      const ran = yield* Effect.result(Effect.tryPromise(() => harness.run({ text, images })));
+      const ran = yield* Effect.raceFirst(
+        Effect.result(Effect.tryPromise(() => harness.run({ text, images }))),
+        Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const),
+      );
+      if (ran === "cancelled") return true;
       if (ran._tag === "Failure") {
         live.turnActive = false;
         const cause = ran.failure.cause;
@@ -410,8 +415,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 bot: live.bot,
                 kind: request.kind,
                 external: request.id,
-                title: clip(request.title, 400),
-                detail: request.detail ? clip(request.detail, 2_000) : null,
+                title: clip(redact(request.title), 400),
+                detail: request.detail ? clip(redact(request.detail), 2_000) : null,
                 spec: {
                   ...(request.decisions ? { decisions: request.decisions } : {}),
                   ...(request.questions ? { questions: request.questions } : {}),
@@ -456,8 +461,14 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               if (live.inputs.size) yield* cancelInputs(live);
               if (event.status === "completed") {
                 live.result = event.result ?? live.result;
-                const next = live.cancelling ? undefined : (yield* q.pendingMessages(live.id)).find((m) => m.mode === "queue");
-                if (!next || !(yield* q.setMessageState(next.id, "sent"))) return yield* finish(live, "completed", { result: live.result ?? "" });
+                let next: TaskMessageRow | undefined;
+                if (!live.cancelling)
+                  for (const candidate of (yield* q.pendingMessages(live.id)).filter((m) => m.mode === "queue"))
+                    if (yield* q.setMessageState(candidate.id, "sent")) {
+                      next = candidate;
+                      break;
+                    }
+                if (!next) return yield* finish(live, "completed", { result: live.result ?? "" });
                 yield* log(live, "sent", `queued message ${next.id} started a new turn`);
                 if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "running");
                 yield* runTurn(live, next.text, []);
@@ -616,7 +627,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       );
       if (!begun) return;
       const adapter = live.adapter;
-      const available = yield* Effect.promise(() => adapter.check().catch((error: unknown) => ({ ok: false as const, error: String(error) })));
+      const available = yield* Effect.raceFirst(
+        Effect.promise(() => adapter.check().catch((error: unknown) => ({ ok: false as const, error: String(error) }))),
+        Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const),
+      );
+      if (available === "cancelled") return yield* finish(live, "cancelled");
       if (!available.ok) return yield* finish(live, "failed", { error: available.error });
       yield* log(live, "status", `${adapter.label} ${available.version}`);
       if (live.cancelling) return yield* finish(live, "cancelled");
