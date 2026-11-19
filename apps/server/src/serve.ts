@@ -47,7 +47,7 @@ import { Daemon } from "./daemon.ts";
 import { type DaemonEvent, Events } from "./events.ts";
 import { fileViews, type Listing } from "./files.ts";
 import { Mcp } from "./mcp.ts";
-import { type FileServing, sendFile } from "./sendFile.ts";
+import { type FileServing, sendFile, sendFramedPage } from "./sendFile.ts";
 import { Store, type StoredEntry } from "./store.ts";
 import type { Tailnet } from "./tailscale.ts";
 import { Updates } from "./updates.ts";
@@ -535,11 +535,14 @@ const serveFile = (request: HttpServerRequest.HttpServerRequest) =>
       "Referrer-Policy": "no-referrer",
       "Access-Control-Allow-Origin": "*",
     });
-    return yield* sendFile(request, path, headers(path)).pipe(
+    const framed = url.searchParams.has("frame");
+    const send = (file: string) =>
+      framed && typeOf(file).startsWith("text/html") ? sendFramedPage(request, file, headers(file)) : sendFile(request, file, headers(file));
+    return yield* send(path).pipe(
       Effect.catchTag("NotFound", () =>
         Effect.gen(function* () {
           const index = join(path, "index.html");
-          const response = yield* Effect.option(sendFile(request, index, headers(index)));
+          const response = yield* Effect.option(send(index));
           if (Option.isNone(response)) return plainText(request, 404, "Not found", cors);
           if (!url.pathname.endsWith("/")) return HttpServerResponse.redirect(`${url.pathname}/${url.search}`, { status: 301, headers: cors });
           return response.value;
