@@ -501,7 +501,10 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
         label: "Bash",
         description: "",
         parameters: Type.Object({}),
-        run: () => Effect.fail(new ToolError({ message: `${value}\n\n[Full output: ${full}]\n\nCommand timed out after 1 seconds` })),
+        run: (_args, ctx) => {
+          ctx.onUpdate?.({ ...text("…"), details: { fullOutputPath: full } });
+          return Effect.fail(new ToolError({ message: `${value}\n\n[Full output: ${full}]\n\nCommand timed out after 1 seconds` }));
+        },
       }),
     );
     const failed = await h.run(Effect.flip(timedOut.run({}, { key: "k", bot: h.bot })));
@@ -510,7 +513,7 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
 
     writeFileSync(mentioned, value);
     writeFileSync(full, value);
-    const echoedThenFailed = (progress: string | undefined) =>
+    const echoedThenFailed = (progress: string | undefined, status: string) =>
       h.secrets.guard(
         defineTool({
           name: "bash",
@@ -519,13 +522,15 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
           parameters: Type.Object({}),
           run: (_args, ctx) => {
             if (progress) ctx.onUpdate?.({ ...text("…"), details: { fullOutputPath: progress } });
-            return Effect.fail(new ToolError({ message: `[Full output: ${mentioned}]\nmore\n\nCommand timed out after 1 seconds` }));
+            return Effect.fail(new ToolError({ message: `cat old.txt\n\n[Full output: ${mentioned}]\n\n${status}` }));
           },
         }),
       );
-    await h.run(Effect.flip(echoedThenFailed(undefined).run({}, { key: "k", bot: h.bot })));
-    assert.equal(readFileSync(mentioned, "utf8"), value, "an old footer a failing command printed isn't its own log");
-    await h.run(Effect.flip(echoedThenFailed(full).run({}, { key: "k", bot: h.bot })));
+    for (const status of ["Command timed out after 1 seconds", "Command aborted", "Command terminated without an exit code"]) {
+      await h.run(Effect.flip(echoedThenFailed(undefined, status).run({}, { key: "k", bot: h.bot })));
+      assert.equal(readFileSync(mentioned, "utf8"), value, `an old footer that ends a short output isn't the command's own log (${status})`);
+    }
+    await h.run(Effect.flip(echoedThenFailed(full, "Command timed out after 1 seconds").run({}, { key: "k", bot: h.bot })));
     assert.equal(readFileSync(full, "utf8"), HIDDEN, "the log the command reported while running is its own");
     assert.equal(readFileSync(mentioned, "utf8"), value);
   } finally {
