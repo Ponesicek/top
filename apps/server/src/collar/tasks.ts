@@ -1,4 +1,4 @@
-import { TaskDecision, type TaskError, TaskPolicy, taskEnded } from "@top/protocol";
+import { type TaskError, taskEnded } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { DEFAULT_READ, MAX_READ, type ReadResult, type Snapshot, type Tasks } from "../tasks/coordinator.ts";
@@ -20,23 +20,14 @@ const refused = (error: unknown): ToolResult => ({ ...text(error instanceof Erro
 function inputJson(input: TaskInputRow) {
   return {
     request: input.id,
-    kind: input.kind,
     title: input.title,
-    ...(input.detail ? { detail: input.detail } : {}),
-    ...(input.spec.decisions ? { decisions: input.spec.decisions } : {}),
-    ...(input.spec.questions
-      ? {
-          questions: input.spec.questions.map((q) => ({
-            id: q.id,
-            question: q.question,
-            ...(q.header ? { header: q.header } : {}),
-            options: q.options.map((o) => o.label),
-            ...(q.multiple ? { multiple: true } : {}),
-            ...(q.secret ? { secret: true } : {}),
-          })),
-        }
-      : {}),
-    answered_by: input.spec.userOnly ? "the user (you may only deny it)" : "you or the user",
+    questions: input.questions.map((q) => ({
+      id: q.id,
+      question: q.question,
+      ...(q.header ? { header: q.header } : {}),
+      options: q.options.map((o) => o.label),
+      ...(q.multiple ? { multiple: true } : {}),
+    })),
   };
 }
 
@@ -49,7 +40,6 @@ export function taskJson(snapshot: Snapshot, resultChars?: number, resultFrom = 
     harness: session.harness,
     session: session.id,
     cwd: session.cwd,
-    policy: session.policy,
     ...(session.model ? { model: session.model } : {}),
     created_at: iso(task.createdAt),
     ...(task.startedAt ? { started_at: iso(task.startedAt) } : {}),
@@ -111,9 +101,9 @@ export const tasksGroup: CollarGroup = (daemon) => {
         "Harnesses here:",
         harnessLines(tasks),
         `Capabilities: ${capabilityHelp}.`,
-        'Policy (default "workspace_write"): "read_only" looks but changes nothing; "workspace_write" edits files in `cwd` and runs commands sandboxed to it, and asks before going further; "full_access" has no sandbox and no approvals, and always needs the user\'s OK first.',
-        "Approvals the harness asks for go to the user on a card; you may only deny them. Questions it asks come to you as a message (answer with collar__task_respond) and to the user.",
-        "`cwd` defaults to your own folder. Any other folder needs the user's OK, once per session: the task waits for it.",
+        "The harness runs with full access, as the user running Top: no sandbox and no approval prompts. Only start work you would do yourself, in the folder it belongs in.",
+        "Questions it asks come to you as a message (answer with collar__task_respond) and to the user on a card.",
+        "`cwd` defaults to your own folder.",
         "A task is one piece of work in a session. To continue a session later (it keeps the conversation), start a new task with `session`; `fork: true` branches it instead.",
       ].join("\n"),
       parameters: Type.Object(
@@ -125,7 +115,6 @@ export const tasksGroup: CollarGroup = (daemon) => {
           session: Type.Optional(Type.String({ description: "Continue this session (ses_…) from an earlier task, with its conversation." })),
           fork: Type.Optional(Type.Boolean({ description: "With `session`: branch it into a new session instead of continuing it." })),
           model: Type.Optional(Type.String({ description: "The model, by the harness's own name for it. Default: the harness's." })),
-          policy: Type.Optional(Type.Enum(TaskPolicy.literals as unknown as string[], { description: "What it may do without asking. See above." })),
           options: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Harness-specific options, listed above." })),
           images: Type.Optional(Type.Array(Type.String(), { description: "Image files (PNG, JPEG, GIF, WebP) to give it with the prompt." })),
         },
@@ -152,21 +141,17 @@ export const tasksGroup: CollarGroup = (daemon) => {
               session: args.session,
               fork: args.fork,
               model: args.model,
-              policy: args.policy as Snapshot["session"]["policy"] | undefined,
               options: args.options,
               images: args.images,
             }),
           );
           if (started._tag === "Failure") return refused(started.failure);
           const { snapshot } = started.success;
-          const waiting = snapshot.inputs.some((i) => i.kind === "workspace") || !snapshot.session.approved;
           return json(
             {
               started: taskJson(snapshot),
               capabilities: snapshot.capabilities ? capabilityList(snapshot.capabilities) : undefined,
-              next: waiting
-                ? `It waits for the user to let ${snapshot.session.harness} work in ${snapshot.session.cwd}; they see it on a card. You'll get a message when it ends.`
-                : "It runs in the background. You'll get a message when it ends or asks you something: carry on, or end your turn.",
+              next: "It runs in the background. You'll get a message when it ends or asks you something: carry on, or end your turn.",
             },
             { task: snapshot.task.id },
           );
@@ -208,7 +193,6 @@ export const tasksGroup: CollarGroup = (daemon) => {
                 id: s.id,
                 harness: s.harness,
                 cwd: s.cwd,
-                policy: s.policy,
                 ...(s.model ? { model: s.model } : {}),
                 used_at: iso(s.usedAt),
               })),
@@ -261,20 +245,16 @@ export const tasksGroup: CollarGroup = (daemon) => {
       label: "Answer a task",
       description: [
         "Answer a request a task is waiting on (its `waiting_for` list in collar__task_read or collar__task_wait).",
-        'A question: give `answers`, keyed by question id, each one of its options or your own words. An approval: you may only give `decision: "deny"` (with an optional `message` saying why); allowing is the user\'s call, on its card.',
+        "Give `answers`, keyed by question id, each one of its options or your own words.",
         "Each request takes one answer: whoever answers first, you or the user, wins.",
       ].join(" "),
       parameters: Type.Object(
         {
           ...ids,
           request: Type.Integer({ description: "The request's number." }),
-          answers: Type.Optional(
-            Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())]), {
-              description: "Question id → answer (a list for multiple choice).",
-            }),
-          ),
-          decision: Type.Optional(Type.Enum(TaskDecision.literals as unknown as string[], { description: 'For approvals: "deny".' })),
-          message: Type.Optional(Type.String({ description: "With a denial: what to do instead." })),
+          answers: Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())]), {
+            description: "Question id → answer (a list for multiple choice).",
+          }),
         },
         { additionalProperties: false },
       ),
@@ -285,17 +265,8 @@ export const tasksGroup: CollarGroup = (daemon) => {
             : false,
         ),
       run: (args, ctx) => {
-        const answers = args.answers
-          ? Object.fromEntries(Object.entries(args.answers).map(([id, value]) => [id, Array.isArray(value) ? value : [value]]))
-          : undefined;
-        return run(
-          tasks.respond("bot", ctx.bot, args.id, args.request, {
-            decision: args.decision as TaskDecision | undefined,
-            answers,
-            message: args.message,
-          }),
-          (input) => json({ request: input.id, answered: true }),
-        );
+        const answers = Object.fromEntries(Object.entries(args.answers).map(([id, value]) => [id, Array.isArray(value) ? value : [value]]));
+        return run(tasks.respond("bot", ctx.bot, args.id, args.request, { answers }), (input) => json({ request: input.id, answered: true }));
       },
     }),
     defineTool({

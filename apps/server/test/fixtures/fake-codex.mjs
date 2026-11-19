@@ -77,46 +77,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         });
         return;
       }
-      if (text.includes("secret")) {
-        const requestId = nextServerId++;
-        waiting.set(requestId, (result) => finish(threadId, turnId, "completed", `secret answer: ${JSON.stringify(result.answers)}`));
-        send({
-          id: requestId,
-          method: "item/tool/requestUserInput",
-          params: {
-            threadId,
-            turnId,
-            itemId: "q2",
-            questions: [{ id: "token", header: "Token", question: "Token?", isOther: true, isSecret: true, options: null }],
-          },
-        });
-        return;
-      }
-      if (text.includes("permissions")) {
-        const requestId = nextServerId++;
-        const huge = text.includes("huge");
-        waiting.set(requestId, (result) => finish(threadId, turnId, "completed", `granted: ${JSON.stringify(result)}`));
-        send({
-          id: requestId,
-          method: "item/permissions/requestApproval",
-          params: {
-            threadId,
-            turnId,
-            itemId: "p1",
-            cwd: "/w",
-            reason: text.includes("long reason") ? "because ".repeat(400) : "needs it",
-            permissions: {
-              network: null,
-              fileSystem: {
-                read: null,
-                write: ["/w/out"],
-                entries: huge ? Array.from({ length: 200 }, (_, i) => ({ path: `/glob/${i}/**` })) : [{ path: "/home/**" }],
-              },
-            },
-          },
-        });
-        return;
-      }
       if (text.includes("question")) {
         const requestId = nextServerId++;
         waiting.set(requestId, (result) => finish(threadId, turnId, "completed", `answer: ${JSON.stringify(result.answers)}`));

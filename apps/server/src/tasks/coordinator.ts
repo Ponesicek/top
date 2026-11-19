@@ -1,17 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, relative, resolve } from "node:path";
-import {
-  MAX_TASK_ANSWER,
-  type TaskAnswers,
-  type TaskDecision,
-  TaskError,
-  type TaskInputView,
-  type TaskPolicy,
-  type TaskState,
-  type TaskView,
-  taskEnded,
-} from "@top/protocol";
+import { extname, resolve } from "node:path";
+import { MAX_TASK_ANSWER, type TaskAnswers, TaskError, type TaskInputView, type TaskState, type TaskView, taskEnded } from "@top/protocol";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -78,12 +68,11 @@ export type StartRequest = {
   readonly session?: string | undefined;
   readonly fork?: boolean | undefined;
   readonly model?: string | undefined;
-  readonly policy?: TaskPolicy | undefined;
   readonly options?: Readonly<Record<string, unknown>> | undefined;
   readonly images?: readonly string[] | undefined;
 };
 
-export type TaskAnswer = { readonly decision?: TaskDecision | undefined; readonly answers?: TaskAnswers | undefined; readonly message?: string | undefined };
+export type TaskAnswer = { readonly answers: TaskAnswers };
 
 export type Snapshot = {
   readonly task: TaskRow;
@@ -119,7 +108,6 @@ export type Tasks = {
   readonly sessions: (bot: number) => Effect.Effect<readonly SessionRow[]>;
   readonly views: Effect.Effect<readonly TaskView[]>;
   readonly active: (bot: number) => number;
-  readonly waitingOnUser: (bot: number) => number;
   readonly stopAll: (bot: number) => Effect.Effect<void>;
   readonly recover: Effect.Effect<number>;
 };
@@ -164,17 +152,6 @@ type Live = {
 const fail = (message: string) => Effect.fail(new TaskError({ message }));
 const newId = (prefix: string) => `${prefix}_${randomBytes(8).toString("base64url").replace(/[-_]/g, "x").slice(0, 10)}`;
 const firstLine = (text: string) => clip(text.trim().split("\n")[0]?.trim() ?? "", 200);
-
-const inside = (root: string, path: string) => {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-};
-
-const POLICY_TEXT: Record<TaskPolicy, string> = {
-  read_only: "read only: it can look but not change anything",
-  workspace_write: "it can change files in this folder and run commands sandboxed to it; anything beyond that asks you first",
-  full_access: "full access: no sandbox and no approvals, as you",
-};
 
 export function notifyText(task: TaskRow, session: SessionRow, label: string): string {
   const head = `[Task ${task.id} ${task.state === "completed" ? "completed" : task.state === "cancelled" ? "was cancelled" : "failed"}] ${task.title} (${label})`;
@@ -236,15 +213,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       }
     });
 
-  const inputView = (row: TaskInputRow): TaskInputView => ({
-    id: row.id,
-    kind: row.kind,
-    title: row.title,
-    ...(row.detail ? { detail: row.detail } : {}),
-    ...(row.spec.decisions ? { decisions: [...row.spec.decisions] } : {}),
-    ...(row.spec.questions ? { questions: [...row.spec.questions] } : {}),
-    ...(row.spec.userOnly ? { userOnly: true as const } : {}),
-  });
+  const inputView = (row: TaskInputRow): TaskInputView => ({ id: row.id, title: row.title, questions: [...row.questions] });
 
   const views: Effect.Effect<readonly TaskView[]> = Effect.gen(function* () {
     const rows = yield* q.recentTasks(RECENT_VIEWS);
@@ -262,7 +231,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         state: row.state,
         session: session.id,
         cwd: session.cwd,
-        policy: session.policy,
         ...(session.model ? { model: session.model } : {}),
         createdAt: row.createdAt,
         ...(row.endedAt ? { endedAt: row.endedAt } : {}),
@@ -408,41 +376,32 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 live.harness?.answer(request.id, { kind: "cancelled" });
                 return;
               }
-              const secret = request.questions?.some((q) => q.secret) === true;
-              const userOnly = request.kind === "approval" || secret;
               const { input } = yield* q.addInput({
                 task: live.id,
                 bot: live.bot,
-                kind: request.kind,
                 external: request.id,
                 title: clip(redact(request.title), 400),
-                detail: request.detail ? clip(redact(request.detail), 2_000) : null,
-                spec: {
-                  ...(request.decisions ? { decisions: request.decisions } : {}),
-                  ...(request.questions ? { questions: request.questions } : {}),
-                  ...(userOnly ? { userOnly: true } : {}),
-                },
+                questions: request.questions,
               });
               if (input.state !== "pending") return;
               live.inputs.set(input.id, input);
               live.external.set(request.id, input.id);
-              yield* log(live, "input", `${request.kind === "approval" ? "asks to" : "asks"}: ${request.title} (request ${input.id})`);
+              yield* log(live, "input", `asks: ${request.title} (request ${input.id})`);
               if (live.row.state !== "waiting_for_input") yield* setState(live, ["running", "starting"], "waiting_for_input");
               else yield* changed(live);
-              if (!userOnly)
-                yield* notify(
-                  live,
-                  `input:${input.id}`,
-                  [
-                    `[Task ${live.id} needs input] ${live.row.title} (${label(live.session.harness)}) asks: ${request.title}`,
-                    ...(request.questions ?? []).map(
-                      (q) => `- ${q.id}: ${q.question}${q.options.length ? ` Options: ${q.options.map((o) => JSON.stringify(o.label)).join(", ")}` : ""}`,
-                    ),
-                    "",
-                    `Answer with collar__task_respond {"id": "${live.id}", "request": ${input.id}, "answers": {…}}, or leave it to the user, who sees it on a card.`,
-                  ].join("\n"),
-                  live.waitersAny > 0,
-                );
+              yield* notify(
+                live,
+                `input:${input.id}`,
+                [
+                  `[Task ${live.id} needs input] ${live.row.title} (${label(live.session.harness)}) asks: ${request.title}`,
+                  ...(request.questions ?? []).map(
+                    (q) => `- ${q.id}: ${q.question}${q.options.length ? ` Options: ${q.options.map((o) => JSON.stringify(o.label)).join(", ")}` : ""}`,
+                  ),
+                  "",
+                  `Answer with collar__task_respond {"id": "${live.id}", "request": ${input.id}, "answers": {…}}, or leave it to the user, who sees it on a card.`,
+                ].join("\n"),
+                live.waitersAny > 0,
+              );
               return;
             }
             case "resolved": {
@@ -498,13 +457,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             live.external.delete(input.external);
             live.harness?.answer(input.external, answer);
           }
-          const what =
-            answer.kind === "approval"
-              ? answer.decision.replaceAll("_", " ")
-              : input.spec.questions?.some((q) => q.secret)
-                ? "answered (secret, not kept)"
-                : "answered";
-          yield* log(live, "answer", `request ${input.id}: ${what} by the ${input.answeredBy ?? "user"}`);
+          yield* log(live, "answer", `request ${input.id}: answered by the ${input.answeredBy ?? "user"}`);
           if (yield* afterInput(live)) yield* changed(live);
           return;
         }
@@ -563,45 +516,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       return Effect.promise(() => harness.close().catch(() => {})).pipe(Effect.timeout(Duration.seconds(15)), Effect.ignore);
     });
 
-  const workspaceTitle = (live: Live) => `Let ${label(live.session.harness)} work in ${live.session.cwd}`;
-
-  const awaitWorkspace = (live: Live) =>
-    Effect.gen(function* () {
-      const { input } = yield* q.addInput({
-        task: live.id,
-        bot: live.bot,
-        kind: "workspace",
-        external: "workspace",
-        title: workspaceTitle(live),
-        detail: `${POLICY_TEXT[live.session.policy]}.\n\nTask: ${clip(live.row.prompt, 600)}`,
-        spec: { decisions: ["allow", "deny"], userOnly: true },
-      });
-      let decision: TaskDecision | undefined =
-        input.state === "answered"
-          ? ((input.answer as { decision?: TaskDecision } | null)?.decision ?? "deny")
-          : input.state === "withdrawn"
-            ? "deny"
-            : undefined;
-      if (decision === undefined) {
-        live.inputs.set(input.id, input);
-        if (live.row.state !== "waiting_for_input") yield* setState(live, ["queued"], "waiting_for_input");
-        while (decision === undefined) {
-          const signal = yield* Queue.take(live.signals);
-          if (signal.type === "answered" && signal.input.id === input.id) decision = signal.answer.kind === "approval" ? signal.answer.decision : "deny";
-          else if (signal.type === "steer")
-            yield* Deferred.succeed(signal.reply, `No turn is running to steer (the task is ${live.row.state}). Send it with mode "queue" instead.`);
-          else if (signal.type === "queued") yield* log(live, "sent", `queued message ${signal.message.id}: ${firstLine(signal.message.text)}`);
-        }
-        live.inputs.delete(input.id);
-      }
-      yield* log(live, "answer", `workspace: ${decision === "deny" ? "denied" : "allowed"} by the user`);
-      if (decision === "deny") return false;
-      yield* q.approveSession(live.session.id);
-      live.session = { ...live.session, approved: true };
-      if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "queued");
-      return true;
-    });
-
   const specOf = (live: Live) =>
     Effect.gen(function* () {
       const session = live.session;
@@ -614,7 +528,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           fork = true;
         }
       }
-      return { cwd: session.cwd, policy: session.policy, model: session.model ?? undefined, options: session.options, resume, fork };
+      return { cwd: session.cwd, model: session.model ?? undefined, options: session.options, resume, fork };
     });
 
   const runStarted = (live: Live) =>
@@ -668,8 +582,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const actor = (live: Live) =>
     Effect.gen(function* () {
-      if (!live.session.approved && !(yield* awaitWorkspace(live)))
-        return yield* finish(live, "failed", { error: `The user didn't let ${label(live.session.harness)} work in ${live.session.cwd}.` });
       yield* slots.withPermits(1)(runStarted(live));
       if (!live.finished) yield* finish(live, "failed", { error: "The task ended without an outcome." });
     }).pipe(
@@ -757,8 +669,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if (!real) return yield* fail(`There's no folder ${given}.`);
       const info = yield* Effect.promise(() => stat(real).catch(() => undefined));
       if (!info?.isDirectory()) return yield* fail(`${given} isn't a folder.`);
-      const own = folder ? yield* Effect.promise(() => realpath(folder).catch(() => undefined)) : undefined;
-      return { cwd: real, own: own !== undefined && inside(own, real) };
+      return { cwd: real };
     });
 
   const start: Tasks["start"] = (request) =>
@@ -788,8 +699,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           if (!adapter) return yield* fail(`Session ${source.id} is ${source.harness}'s, which this daemon doesn't run.`);
           if (request.harness !== undefined && request.harness !== source.harness)
             return yield* fail(`Session ${source.id} is ${adapter.label}'s; leave out \`harness\` or use "${source.harness}".`);
-          if (request.policy !== undefined && request.policy !== source.policy)
-            return yield* fail(`Session ${source.id} runs with policy "${source.policy}". Start a new session for another policy.`);
           if (request.cwd !== undefined) {
             const { cwd } = yield* resolveCwd(request.cwd, request.bot);
             if (cwd !== source.cwd) return yield* fail(`Session ${source.id} works in ${source.cwd}. Start a new session to work somewhere else.`);
@@ -805,11 +714,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               harness: source.harness,
               location: "local",
               cwd: source.cwd,
-              policy: source.policy,
               model: request.model ?? source.model,
               options,
               parent: source.id,
-              approved: source.approved && source.policy !== "full_access" && (yield* resolveCwd(source.cwd, request.bot)).own,
             });
           } else {
             if (!adapter.capabilities.resume) return yield* fail(`${adapter.label} can't continue a session.`);
@@ -840,8 +747,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           const folder = config.folder ? yield* config.folder(request.bot) : undefined;
           const raw = request.cwd ?? folder;
           if (raw === undefined) return yield* fail("Say which folder it works in with `cwd`.");
-          const { cwd, own } = yield* resolveCwd(raw, request.bot);
-          const policy = request.policy ?? "workspace_write";
+          const { cwd } = yield* resolveCwd(raw, request.bot);
           images = yield* imagesFor(adapter, cwd);
           session = yield* q.createSession({
             id: newId("ses"),
@@ -849,11 +755,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             harness: adapter.id,
             location: "local",
             cwd,
-            policy,
             model: request.model?.trim() || null,
             options,
             parent: null,
-            approved: own && policy !== "full_access",
           });
         }
         const title = clip((request.title?.trim() || firstLine(prompt)).replace(/\s+/g, " "), MAX_TITLE);
@@ -936,39 +840,19 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if (input.state === "withdrawn") return yield* fail(`Request ${inputId} isn't waiting anymore: it was withdrawn.`);
       const live = lives.get(row.id);
       if (!live || live.finished) return yield* fail(`Task ${row.id} isn't waiting for that anymore.`);
-      let mapped: HarnessAnswer;
-      let stored: unknown;
-      if (input.kind === "question") {
-        const questions = input.spec.questions ?? [];
-        const secret = questions.some((q) => q.secret);
-        if (secret && by !== "user") return yield* fail("That question asks for a secret; only the user can answer it, on its card.");
-        const given = answer.answers ?? {};
-        const answers: Record<string, string[]> = {};
-        for (const question of questions) {
-          const values = (given[question.id] ?? []).map((v) => v.trim()).filter(Boolean);
-          if (!values.length) return yield* fail(`Answer question ${JSON.stringify(question.id)} ("${clip(question.question, 120)}") in \`answers\`.`);
-          if (!question.multiple && values.length > 1) return yield* fail(`Question ${JSON.stringify(question.id)} takes one answer.`);
-          if (values.some((v) => v.length > MAX_TASK_ANSWER)) return yield* fail(`Keep each answer under ${MAX_TASK_ANSWER} characters.`);
-          answers[question.id] = values;
-        }
-        const unknown = Object.keys(given).filter((k) => !questions.some((q) => q.id === k));
-        if (unknown.length) return yield* fail(`Request ${inputId} has no question ${unknown.map((k) => JSON.stringify(k)).join(", ")}.`);
-        mapped = { kind: "question", answers };
-        stored = secret ? { secret: true } : { answers };
-      } else {
-        const decision = answer.decision;
-        const allowed = input.spec.decisions ?? ["allow", "deny"];
-        if (!decision || !allowed.includes(decision)) return yield* fail(`Decide with \`decision\`: ${allowed.map((d) => `"${d}"`).join(", ")}.`);
-        if (by !== "user" && decision !== "deny")
-          return yield* fail(
-            input.kind === "workspace"
-              ? "Only the user can let a harness work in a folder; they see the request on a card."
-              : `Only the user can allow this: it lets ${label(live.session.harness)} go beyond its policy. You may deny it ("decision": "deny"); otherwise the user answers on its card.`,
-          );
-        const message = answer.message?.trim() ? clip(answer.message.trim(), 1_000) : undefined;
-        mapped = { kind: "approval", decision, ...(message ? { message } : {}) };
-        stored = { decision, ...(message ? { message } : {}) };
+      const given = answer.answers;
+      const answers: Record<string, string[]> = {};
+      for (const question of input.questions) {
+        const values = (given[question.id] ?? []).map((v) => v.trim()).filter(Boolean);
+        if (!values.length) return yield* fail(`Answer question ${JSON.stringify(question.id)} ("${clip(question.question, 120)}") in \`answers\`.`);
+        if (!question.multiple && values.length > 1) return yield* fail(`Question ${JSON.stringify(question.id)} takes one answer.`);
+        if (values.some((v) => v.length > MAX_TASK_ANSWER)) return yield* fail(`Keep each answer under ${MAX_TASK_ANSWER} characters.`);
+        answers[question.id] = values;
       }
+      const unknown = Object.keys(given).filter((k) => !input.questions.some((q) => q.id === k));
+      if (unknown.length) return yield* fail(`Request ${inputId} has no question ${unknown.map((k) => JSON.stringify(k)).join(", ")}.`);
+      const mapped: HarnessAnswer = { kind: "question", answers };
+      const stored = { answers };
       const answered = yield* q.answerInput(inputId, stored, by);
       if (!answered) return yield* fail(`Request ${inputId} was already answered.`);
       Queue.offerUnsafe(live.signals, { type: "answered", input: answered, answer: mapped });
@@ -1110,12 +994,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     active: (bot) => {
       let n = 0;
       for (const live of lives.values()) if (live.bot === bot) n++;
-      return n;
-    },
-    waitingOnUser: (bot) => {
-      let n = 0;
-      for (const live of lives.values())
-        if (live.bot === bot) for (const input of live.inputs.values()) if (input.spec.userOnly || input.kind === "question") n++;
       return n;
     },
     stopAll,

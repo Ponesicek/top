@@ -1,10 +1,10 @@
 import { type ExecFileException, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, readFile, realpath, stat } from "node:fs/promises";
-import { delimiter, dirname, extname, join, resolve } from "node:path";
-import type { CanUseTool, Options, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { TaskDecision, TaskPolicy, TaskQuestion } from "@top/protocol";
+import { access, readFile } from "node:fs/promises";
+import { delimiter, extname, join } from "node:path";
+import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { TaskQuestion } from "@top/protocol";
 import Type from "typebox";
 import {
   clip,
@@ -35,56 +35,14 @@ export const claudeOptions = Type.Object(
 
 const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
-type PermissionRules = {
-  readonly state?: {
-    readonly rules?: readonly { readonly behavior: string; readonly source: string; readonly rule: string }[];
-    readonly workspaceDirectories?: readonly { readonly path: string; readonly source: string }[];
-  };
-};
 type Query_ = Pick<Query, "close"> &
   AsyncIterable<SDKMessage> & {
     readonly interrupt: (options?: { readonly cancelQueued?: boolean }) => Promise<unknown>;
-    readonly listPermissionRules?: () => Promise<PermissionRules>;
   };
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => Query_;
 
 const str = (value: unknown) => (typeof value === "string" ? value : undefined);
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
-
-export function policyOptions(
-  policy: TaskPolicy,
-  cwd: string,
-  sandboxed: boolean,
-): Pick<Options, "permissionMode" | "allowDangerouslySkipPermissions" | "sandbox" | "disallowedTools"> {
-  switch (policy) {
-    case "read_only":
-      return {
-        permissionMode: "default",
-        disallowedTools: sandboxed ? ["Edit", "Write", "NotebookEdit"] : ["Edit", "Write", "NotebookEdit", "Bash", "PowerShell"],
-        ...(sandboxed
-          ? {
-              sandbox: {
-                enabled: true,
-                failIfUnavailable: true,
-                autoAllowBashIfSandboxed: false,
-                allowUnsandboxedCommands: false,
-                filesystem: { denyWrite: [cwd] },
-              },
-            }
-          : {}),
-      };
-    case "workspace_write":
-      return { permissionMode: "acceptEdits", ...(sandboxed ? { sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true } } : {}) };
-    case "full_access":
-      return { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true };
-  }
-}
-
-export async function sandboxAvailable(): Promise<boolean> {
-  if (process.platform === "darwin") return true;
-  if (process.platform !== "linux") return false;
-  return (await onPath("bwrap")) !== undefined && (await onPath("socat")) !== undefined;
-}
 
 export function claudeToolLog(name: string, input: Record<string, unknown>): HarnessEvent {
   switch (name) {
@@ -102,48 +60,20 @@ export function claudeToolLog(name: string, input: Record<string, unknown>): Har
   }
 }
 
-function approvalTitle(name: string, input: Record<string, unknown>, title: string | undefined): string {
-  if (title) return title;
-  if (name === "Bash") return `Run \`${clip(str(input.command) ?? "a command", 300)}\``;
-  const path = str(input.file_path) ?? str(input.notebook_path) ?? str(input.path);
-  return path ? `${name} ${path}` : `Use ${name}`;
-}
-
-export function sessionGrants(suggestions: readonly PermissionUpdate[] | undefined): PermissionUpdate[] {
-  return (suggestions ?? []).flatMap((s): PermissionUpdate[] =>
-    (s.type === "addRules" && s.behavior === "allow") || s.type === "addDirectories" ? [{ ...s, destination: "session" }] : [],
-  );
-}
-
-function describeGrant(grant: PermissionUpdate): string {
-  if (grant.type === "addDirectories") return `working in ${grant.directories.join(", ")}`;
-  if (grant.type === "addRules") return grant.rules.map((r) => (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName)).join(", ");
-  return grant.type;
-}
-
 type Pending = {
   readonly resolve: (result: PermissionResult) => void;
   readonly input: Record<string, unknown>;
-  readonly kind: "approval" | "question";
-  readonly questions?: readonly { readonly id: string; readonly text: string }[];
-  readonly suggestions?: PermissionUpdate[] | undefined;
+  readonly questions: readonly { readonly id: string; readonly text: string }[];
 };
 
 function result(pending: Pending, answer: HarnessAnswer): PermissionResult {
-  if (answer.kind === "cancelled") return { behavior: "deny", message: "The request was withdrawn.", interrupt: false };
-  if (pending.kind === "question") {
-    if (answer.kind !== "question") return { behavior: "deny", message: "No answer was given." };
-    const answers: Record<string, string> = {};
-    for (const q of pending.questions ?? []) {
-      const given = answer.answers[q.id];
-      if (given?.length) answers[q.text] = given.join(", ");
-    }
-    return { behavior: "allow", updatedInput: { ...pending.input, answers } };
+  if (answer.kind === "cancelled") return { behavior: "deny", message: "The question was withdrawn.", interrupt: false };
+  const answers: Record<string, string> = {};
+  for (const q of pending.questions) {
+    const given = answer.answers[q.id];
+    if (given?.length) answers[q.text] = given.join(", ");
   }
-  const decision: TaskDecision = answer.kind === "approval" ? answer.decision : "deny";
-  if (decision === "deny") return { behavior: "deny", message: (answer.kind === "approval" && answer.message) || "The caller declined this." };
-  const session = decision === "allow_for_session" && pending.suggestions?.length;
-  return { behavior: "allow", updatedInput: pending.input, ...(session ? { updatedPermissions: [...pending.suggestions!] } : {}) };
+  return { behavior: "allow", updatedInput: { ...pending.input, answers } };
 }
 
 class Inbox implements AsyncIterable<SDKUserMessage> {
@@ -177,105 +107,6 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-export async function userSettingsEnv(env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
-  const dir = env.CLAUDE_CONFIG_DIR ?? join(env.HOME ?? "/", ".claude");
-  const raw = await readFile(join(dir, "settings.json"), "utf8").catch(() => undefined);
-  if (!raw) return {};
-  try {
-    const vars = record(record(JSON.parse(raw)).env);
-    return Object.fromEntries(Object.entries(vars).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-  } catch {
-    return {};
-  }
-}
-
-const MAX_INSTRUCTIONS = 32 * 1024;
-const MAX_IMPORT_DEPTH = 4;
-const MAX_IMPORTS = 50;
-
-async function exists(path: string): Promise<boolean> {
-  return access(path).then(
-    () => true,
-    () => false,
-  );
-}
-
-const within = (root: string, path: string) => path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
-
-type Reading = { readonly root: string; readonly seen: Set<string>; budget: number; imports: number };
-
-async function readInside(path: string, reading: Reading): Promise<string | undefined> {
-  const real = await realpath(path).catch(() => undefined);
-  if (!real || !within(reading.root, real) || reading.seen.has(real)) return undefined;
-  const info = await stat(real).catch(() => undefined);
-  if (!info?.isFile() || info.size > reading.budget) return undefined;
-  reading.seen.add(real);
-  reading.budget -= info.size;
-  return readFile(real, "utf8").catch(() => undefined);
-}
-
-async function withImports(text: string, from: string, reading: Reading, depth: number): Promise<string> {
-  if (depth >= MAX_IMPORT_DEPTH) return text;
-  const lines: string[] = [];
-  for (const line of text.split("\n")) {
-    const target = /^\s*@(\S+)\s*$/.exec(line)?.[1];
-    if (!target || reading.imports >= MAX_IMPORTS) {
-      lines.push(line);
-      continue;
-    }
-    reading.imports++;
-    const path = resolve(from, target);
-    const imported = await readInside(path, reading);
-    lines.push(imported === undefined ? line : await withImports(imported, dirname(path), reading, depth + 1));
-  }
-  return lines.join("\n");
-}
-
-export async function projectInstructions(cwd: string): Promise<string | undefined> {
-  const dirs: string[] = [];
-  let repository = false;
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    dirs.unshift(dir);
-    if (await exists(join(dir, ".git"))) {
-      repository = true;
-      break;
-    }
-    if (dirname(dir) === dir) break;
-  }
-  const folders = repository ? dirs : [cwd];
-  const root = (await realpath(folders[0]!).catch(() => folders[0]!)) as string;
-  const reading: Reading = { root, seen: new Set(), budget: 4 * MAX_INSTRUCTIONS, imports: 0 };
-  const parts: string[] = [];
-  for (const dir of [...folders].reverse()) {
-    const found: string[] = [];
-    for (const name of ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]) {
-      const text = await readInside(join(dir, name), reading);
-      if (text?.trim()) found.push(`<file path="${join(dir, name)}">\n${await withImports(text, dir, reading, 0)}\n</file>`);
-    }
-    if (!found.length) {
-      const agents = await readInside(join(dir, "AGENTS.md"), reading);
-      if (agents?.trim()) found.push(`<file path="${join(dir, "AGENTS.md")}">\n${await withImports(agents, dir, reading, 0)}\n</file>`);
-    }
-    parts.unshift(...found);
-  }
-  if (!parts.length) return undefined;
-  let left = MAX_INSTRUCTIONS;
-  const kept: string[] = [];
-  for (const part of [...parts].reverse()) {
-    const cost = part.length + 2;
-    if (cost <= left) {
-      kept.unshift(part);
-      left -= cost;
-      continue;
-    }
-    const head = part.slice(0, part.indexOf("\n") + 1);
-    const room = left - head.length - "\n…\n</file>".length - 2;
-    if (room >= 200) kept.unshift(`${head}${part.slice(head.length, head.length + room)}\n…\n</file>`);
-    break;
-  }
-  return `The project's instructions (its .claude settings files aren't loaded; these files are, nearest folder last):\n\n${kept.join("\n\n")}`;
-}
-
 async function onPath(name: string): Promise<string | undefined> {
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
@@ -306,7 +137,6 @@ export type ClaudeConfig = {
   readonly command?: string | undefined;
   readonly query?: QueryFn | undefined;
   readonly clientVersion?: string | undefined;
-  readonly sandbox?: (() => Promise<boolean>) | undefined;
 };
 
 export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
@@ -331,7 +161,6 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       fork: true,
       steer: true,
       queue: true,
-      approvals: true,
       questions: true,
       images: true,
       fileChanges: true,
@@ -350,6 +179,11 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       const version = await run(path, ["--version"]);
       if (!version.ok) return { ok: false, error: version.error.code === "ENOENT" ? missing : `\`${command} --version\` failed: ${version.error.message}` };
       const text = version.stdout.trim();
+      if (process.getuid?.() === 0)
+        return {
+          ok: false,
+          error: "Claude Code won't run with its permission checks off as root, and Top runs it that way. Run Top's daemon as a normal user.",
+        };
       if (!versionAtLeast(text, MIN_CLI))
         return { ok: false, error: `Claude Code ${text} is too old for Top; update it to ${MIN_CLI.join(".")} or newer (\`claude update\`).` };
       const status = await run(path, ["auth", "status", "--json"]);
@@ -403,54 +237,24 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
             pending.set(id, {
               resolve: settle,
               input,
-              kind: "question",
               questions: questions.map((q) => ({ id: q.id, text: q.question })),
             });
-            emit({ type: "request", request: { id, kind: "question", title: questions[0]?.question || "Claude has a question", questions } });
+            emit({ type: "request", request: { id, title: questions[0]?.question || "Claude has a question", questions } });
             return;
           }
-          const grants = sessionGrants(options.suggestions);
-          pending.set(id, { resolve: settle, input, kind: "approval", suggestions: grants });
-          const detail = [
-            options.description,
-            options.decisionReason,
-            options.blockedPath ? `path: ${options.blockedPath}` : undefined,
-            grants.length ? `"Allow for this session" also allows, until the session ends: ${grants.map(describeGrant).join("; ")}` : undefined,
-          ]
-            .filter(Boolean)
-            .join("\n");
-          emit({
-            type: "request",
-            request: {
-              id,
-              kind: "approval",
-              title: clip(approvalTitle(name, input, options.title), 400),
-              ...(detail ? { detail: clip(detail, 2_000) } : {}),
-              decisions: grants.length ? ["allow", "allow_for_session", "deny"] : ["allow", "deny"],
-            },
-          });
+          resolve({ behavior: "deny", message: "Top runs Claude Code with permission checks off and has no way to ask about this." });
+          emit({ type: "log", kind: "error", text: `Claude Code asked to allow ${name} although permission checks are off; Top declined it.` });
         });
 
-      const sandboxed = spec.policy !== "full_access" && (await (config.sandbox ?? sandboxAvailable)());
-      const instructions = await projectInstructions(spec.cwd);
-      if (!sandboxed && spec.policy !== "full_access")
-        emit({
-          type: "log",
-          kind: "status",
-          text:
-            spec.policy === "read_only"
-              ? "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so it gets no shell for this read-only task."
-              : "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so its commands ask for approval first, except ones it counts as read-only and file commands in this folder (such as mkdir, touch, rm).",
-        });
       const options: Options = {
         cwd: spec.cwd,
         pathToClaudeCodeExecutable: path,
-        env: { ...harnessEnv(process.env), ...(await userSettingsEnv()), CLAUDE_AGENT_SDK_CLIENT_APP: `top/${config.clientVersion ?? "0"}` },
+        env: { ...harnessEnv(process.env), CLAUDE_AGENT_SDK_CLIENT_APP: `top/${config.clientVersion ?? "0"}` },
         abortController: abort,
         canUseTool,
-        systemPrompt: { type: "preset", preset: "claude_code", ...(instructions ? { append: instructions } : {}) },
-        settingSources: [],
-        ...policyOptions(spec.policy, spec.cwd, sandboxed),
+        systemPrompt: { type: "preset", preset: "claude_code" },
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
         ...(spec.model ? { model: spec.model } : {}),
         ...(spec.resume ? { resume: spec.resume } : { sessionId }),
         ...(spec.resume && spec.fork ? { forkSession: true, sessionId } : {}),
@@ -466,38 +270,6 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
         q = query({ prompt: inbox, options });
       } catch (error) {
         throw new Error(`Claude Code didn't start: ${redact(error instanceof Error ? error.message : String(error))}`);
-      }
-      if (spec.policy !== "full_access") {
-        const listing = q.listPermissionRules
-          ? await Promise.race([
-              q.listPermissionRules().catch(() => undefined),
-              new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 15_000)),
-            ])
-          : undefined;
-        const allows = listing?.state?.rules?.filter((r) => r.behavior === "allow");
-        const folders = listing?.state?.workspaceDirectories?.filter((d) => !within(spec.cwd, resolve(spec.cwd, d.path)));
-        if (allows && folders?.length) {
-          inbox.end();
-          q.close();
-          throw new HarnessUnavailable(
-            `Claude Code on this computer has settings it can't ignore that let it work in ${folders
-              .slice(0, 5)
-              .map((d) => `${d.path} (${d.source})`)
-              .join(", ")} too, so Top can't keep the "${spec.policy}" policy and won't start the task.`,
-          );
-        }
-        if (!allows || allows.length) {
-          inbox.end();
-          q.close();
-          throw new HarnessUnavailable(
-            allows
-              ? `Claude Code on this computer has settings it can't ignore that allow ${allows
-                  .slice(0, 5)
-                  .map((r) => `${r.rule} (${r.source})`)
-                  .join(", ")} without asking, so Top can't keep the "${spec.policy}" policy and won't start the task.`
-              : `Top couldn't confirm which permission rules Claude Code applies on this computer, so it won't start a "${spec.policy}" task. Updating Claude Code may help.`,
-          );
-        }
       }
       let announced = false;
       const outstanding = new Set<string>();

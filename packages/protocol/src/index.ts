@@ -100,12 +100,6 @@ export type TaskState = typeof TaskState.Type;
 export const ENDED_TASK_STATES: readonly TaskState[] = ["completed", "failed", "cancelled"];
 export const taskEnded = (state: TaskState) => ENDED_TASK_STATES.includes(state);
 
-export const TaskPolicy = Schema.Literals(["read_only", "workspace_write", "full_access"]);
-export type TaskPolicy = typeof TaskPolicy.Type;
-
-export const TaskDecision = Schema.Literals(["allow", "allow_for_session", "deny"]);
-export type TaskDecision = typeof TaskDecision.Type;
-
 export const TaskQuestionOption = Struct({ label: Schema.String, description: Optional(Schema.String) });
 export type TaskQuestionOption = typeof TaskQuestionOption.Type;
 
@@ -115,21 +109,13 @@ export const TaskQuestion = Struct({
   header: Optional(Schema.String),
   options: List(TaskQuestionOption),
   multiple: Optional(Schema.Literal(true)),
-  secret: Optional(Schema.Literal(true)),
 });
 export type TaskQuestion = typeof TaskQuestion.Type;
 
-export const TaskInputKind = Schema.Literals(["workspace", "approval", "question"]);
-export type TaskInputKind = typeof TaskInputKind.Type;
-
 export const TaskInputView = Struct({
   id: Schema.Int,
-  kind: TaskInputKind,
   title: Schema.String,
-  detail: Optional(Schema.String),
-  decisions: Optional(List(TaskDecision)),
-  questions: Optional(List(TaskQuestion)),
-  userOnly: Optional(Schema.Literal(true)),
+  questions: List(TaskQuestion),
 });
 export type TaskInputView = typeof TaskInputView.Type;
 
@@ -141,7 +127,6 @@ export const TaskView = Struct({
   state: TaskState,
   session: Schema.String,
   cwd: Schema.String,
-  policy: TaskPolicy,
   model: Optional(Schema.String),
   createdAt: Schema.Number,
   endedAt: Optional(Schema.Number),
@@ -433,8 +418,7 @@ export const ClientFrame = Schema.Union([
     req,
     task: Schema.String,
     input: Schema.Int,
-    decision: Optional(TaskDecision),
-    answers: Optional(TaskAnswers),
+    answers: TaskAnswers,
   }),
   Struct({ t: Schema.Literal("cancelTask"), req, task: Schema.String }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),

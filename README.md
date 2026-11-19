@@ -280,7 +280,7 @@ coding tasks.
 A bot can hand coding work to a full coding agent on the daemon's computer: **Claude Code** (driven
 through the official Claude Agent SDK) or **Codex** (through `codex app-server`, its official JSON-RPC
 protocol). Each harness runs its own agent loop and tools; Top coordinates the work, keeps it durable
-and puts its questions in front of the right person. The harness, the model and where it runs are
+and puts its questions in front of the bot and the user. The harness, the model and where it runs are
 separate things: a task names a harness, may name a model in that harness's terms, and runs locally
 (the only place for now).
 
@@ -288,7 +288,7 @@ separate things: a task names a harness, may name a model in that harness's term
 
 | Tool | What it does |
 |---|---|
-| `task_start` | Starts a task: `harness`, `prompt`, optional `cwd`, `policy`, `model`, `options` (checked against the harness), `images`, `title`. Returns at once with a task id. `session` continues an earlier session in a new task; `fork: true` branches it. |
+| `task_start` | Starts a task: `harness`, `prompt`, optional `cwd`, `model`, `options` (checked against the harness), `images`, `title`. Returns at once with a task id. `session` continues an earlier session in a new task; `fork: true` branches it. |
 | `task_read` | State, result (12,000 characters at a time, `result_from` for the next part), waiting requests and the event log after a cursor (`after`, `limit` ≤ 200, at most ~24 KB per read). Without `id`: the bot's recent tasks and sessions. |
 | `task_send` | More work for a running task, `mode` required: `steer` goes into the running turn (fails if none runs), `queue` runs as the next turn. An ended task takes none: continue its session instead. |
 | `task_respond` | Answers one waiting request by number. First answer wins; a second is refused. |
@@ -297,7 +297,7 @@ separate things: a task names a harness, may name a model in that harness's term
 
 **Tasks and sessions.** A task is one piece of work: its prompt, any queued follow-ups, and an
 outcome. A session is the harness's own conversation (Claude Code's session id, Codex's thread id),
-kept with the folder, policy and model it was made with; later tasks can carry it on, one task at a
+kept with the folder and model it was made with; later tasks can carry it on, one task at a
 time. Tasks and sessions belong to the bot that made them.
 
 **States:** `queued` (waiting for one of `TOP_MAX_TASKS` slots, default 4) →
@@ -309,39 +309,29 @@ The app gets one coalesced frame per change, never the harness's token stream: h
 the daemon's children, their output goes to a bounded event log (2 KB an event, the newest 1,000 kept,
 written in batches every 250 ms), and the result is kept up to 30,000 characters.
 
-**Who may allow what.** Each session has a policy:
+**Full access.** A harness runs as the user running the daemon, with everything that user can do:
+Codex with `danger-full-access` and approvals off, Claude Code with its permission checks off
+(`bypassPermissions`). There is no sandbox and no approval prompt, and `cwd`, any folder the daemon
+can reach (default: the bot's own), is where it starts, not a limit. A bot can already run commands
+as that user, so a harness adds no new power, but it acts on its own for as long as the task runs:
+start tasks only for work you'd let the bot do. Limiting harnesses (sandboxes, approval cards) is
+left for later. If a harness asks for an approval anyway (Claude Code still asks about removals of
+critical paths such as `rm -rf ~`, rules set to "ask" and tools an organization set to ask), Top
+declines it at once and the task's log says so, so nothing waits on a card that doesn't exist. Claude Code loads its own settings and the
+folder's CLAUDE.md as it does when you run it; it won't run with its checks off as root, so the
+daemon must run as a normal user.
 
-- `read_only`: the harness looks but changes nothing (Claude Code: in its sandbox, shell commands ask
-  first, except the ones it counts as read-only, such as `ls`; without the sandbox, it has no shell).
-- `workspace_write` (the default): it edits files in its folder and runs commands sandboxed to it (Codex:
-  the folder and a private temp folder, no network; Claude Code: its sandbox, which on Linux needs
-  bubblewrap and socat; without them its commands ask first, except the ones it counts as read-only
-  and the file commands it allows in the folder itself, such as `mkdir` and `rm`, and the task's log
-  says so).
-- `full_access`: no sandbox and no approvals.
+**Questions.** When Claude Code asks a question (AskUserQuestion), it goes to both the bot (as a
+message) and the user (on a card in the conversation, or at its end when the card where the task
+started isn't loaded), and whoever answers first wins. Codex's default mode doesn't ask questions,
+and Top doesn't turn that on.
 
-A folder other than the bot's own, and `full_access` anywhere, wait for the user's OK on a card in the
-conversation, once per session; a branch of such a session asks again. When the harness wants to go beyond its policy it asks; that approval
-is the user's alone, on the card, and the bot may only deny it. A harness's question goes to both, and
-whoever answers first wins, except a question for a secret, which only the user can answer: the value
-goes to Top's side of the harness and is never stored or logged by Top; Codex would keep such an
-answer in its session history, so its secret questions are declined. Approvals are never turned off
-silently: Codex is told the user reviews them (not a model reviewer from its config), and its
-permission cards list everything a grant covers (one too big to show is declined). Claude Code loads
-no settings files at all, the user's or the folder's, whose allow rules, hooks and sandbox exceptions
-would skip the card; only the `env` of the user's Claude settings is passed on, so a gateway or
-sign-in configured there still works. Its instruction files are passed in instead: from the repository root down to the
-folder (outside a repository, the folder alone), each folder's CLAUDE.md, `.claude/CLAUDE.md` and
-CLAUDE.local.md (or else its AGENTS.md), with their `@` imports from inside the repository (symlinks
-out of it aren't followed), up to 32 KB, nearest folder kept first. "Allow for
-this session" grants only the rules and folders the card lists, never a mode, and never writes a
-settings file. Harnesses use their own sign-in: the model-provider keys the daemon's bots use (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, the AWS keys for Bedrock and the rest of pi's list) aren't passed to them, nor to
-the checks that run them first; other variables, a project's own
-keys among them, are. Text that looks like a key is redacted from the event log and results.
+**Credentials.** Harnesses use their own sign-in: the model-provider keys the daemon's bots use
+(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, the AWS keys for Bedrock and the rest of pi's list) aren't
+passed to them; other variables, a project's own keys among them, are. Text that looks like a key is
+redacted from the event log and results.
 
-**Restarts.** Nothing is started twice. A task that hadn't started yet (queued, or waiting for the
-user's OK on its folder) carries on after a restart. One that had started fails as cut off, saying it
+**Restarts.** Nothing is started twice. A task that hadn't started yet (queued) carries on after a restart. One that had started fails as cut off, saying it
 may have made some of its changes, with its session kept to carry on, and the bot is told. A harness
 process that dies mid-task fails that task the same way. A turn's start is never assumed to have
 happened without the harness saying so (a Claude Code session counts once it has said it started).
@@ -353,7 +343,8 @@ An end whose message to the bot was lost in a crash is sent at the next start.
 |---|---|---|
 | Continue a session / branch it | ✓ / ✓ | ✓ / ✓ |
 | Steer the running turn / queue the next | ✓ (`priority: next`) / ✓ | ✓ (`turn/steer`) / ✓ (Top's queue) |
-| Approvals / questions | ✓ (`canUseTool`, AskUserQuestion) / ✓ | ✓ (command, file, permission requests) / ✗ (off in Codex's default mode; never enabled by Top) |
+| Questions | ✓ (AskUserQuestion) | ✗ (off in Codex's default mode; never enabled by Top) |
+| Permissions | checks off (`bypassPermissions`) | `danger-full-access`, approvals `never` |
 | Images with the prompt | ✓ | ✓ (`localImage`) |
 | Changed files / usage | ✓ / ✓ tokens and cost | ✓ / ✓ tokens |
 | Cancel / pick a session up in a new process | ✓ / ✓ | ✓ / ✓ |
@@ -362,13 +353,10 @@ An end whose message to the bot was lost in a crash is sent at the next start.
 
 **Setting up.** Top uses the `claude` and `codex` already installed and signed in on the daemon's
 computer (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere), and never signs them in, out, or
-changes their settings. Settings an organization manages on the computer still apply over Top's
-policy, as they do over the user's: Codex's requirements, and Claude Code's managed settings. Claude
-Code is asked for the permission rules it applies before each task, and if any of them allows a tool
-without asking, or adds a folder beyond the task's, a `read_only` or `workspace_write` task doesn't
-start and says which. Missing or signed-out harnesses fail the task with what to do. Fake bots get
-a fake harness instead: message one `call collar__task_start {"harness": "fake", "prompt": "needs approval"}`;
-"question", "secret question", "fail", "crash" or "forever" in the prompt play the other cases.
+changes their settings. Settings an organization manages on the computer still apply, as they do
+for the user. Missing or signed-out harnesses fail the task with what to do. Fake bots get
+a fake harness instead: message one `call collar__task_start {"harness": "fake", "prompt": "a question"}`;
+"fail", "crash" or "forever" in the prompt play the other cases.
 `TOP_REAL_HARNESS=codex pnpm --filter @top/server test test/real-harness.test.ts` runs one real
 harness end to end in a temporary folder (it uses your plan).
 

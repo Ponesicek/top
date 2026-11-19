@@ -1,4 +1,4 @@
-import type { TaskDecision, TaskPolicy, TaskQuestion } from "@top/protocol";
+import type { TaskQuestion } from "@top/protocol";
 import type { TObject } from "typebox";
 
 export type Capabilities = {
@@ -6,7 +6,6 @@ export type Capabilities = {
   readonly fork: boolean;
   readonly steer: boolean;
   readonly queue: boolean;
-  readonly approvals: boolean;
   readonly questions: boolean;
   readonly images: boolean;
   readonly fileChanges: boolean;
@@ -20,7 +19,6 @@ export const CAPABILITY_NOTES: Record<keyof Capabilities, string> = {
   fork: "branch a new session from an earlier one (`fork: true`)",
   steer: 'add a message to the turn that is running (`task_send` mode "steer")',
   queue: 'queue a message to run after the current turn (`task_send` mode "queue")',
-  approvals: "ask for approval before acting outside its policy (answered with `task_respond` or by the user)",
   questions: "ask questions with options (answered with `task_respond` or by the user)",
   images: "take images with the prompt (`images`)",
   fileChanges: "report the files it changed",
@@ -33,17 +31,11 @@ export type Turn = { readonly text: string; readonly images: readonly string[] }
 
 export type HarnessRequest = {
   readonly id: string;
-  readonly kind: "approval" | "question";
   readonly title: string;
-  readonly detail?: string | undefined;
-  readonly decisions?: readonly TaskDecision[] | undefined;
-  readonly questions?: readonly TaskQuestion[] | undefined;
+  readonly questions: readonly TaskQuestion[];
 };
 
-export type HarnessAnswer =
-  | { readonly kind: "approval"; readonly decision: TaskDecision; readonly message?: string | undefined }
-  | { readonly kind: "question"; readonly answers: Readonly<Record<string, readonly string[]>> }
-  | { readonly kind: "cancelled" };
+export type HarnessAnswer = { readonly kind: "question"; readonly answers: Readonly<Record<string, readonly string[]>> } | { readonly kind: "cancelled" };
 
 export type LogKind = "message" | "reasoning" | "command" | "file_change" | "tool" | "status" | "error";
 
@@ -65,7 +57,6 @@ export type HarnessEvent =
 
 export type OpenSpec = {
   readonly cwd: string;
-  readonly policy: TaskPolicy;
   readonly model: string | undefined;
   readonly options: Readonly<Record<string, unknown>>;
   readonly resume: string | undefined;

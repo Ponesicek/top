@@ -16,7 +16,6 @@ import {
   type ServerFrame,
   type SkillsView,
   type TaskAnswers,
-  type TaskDecision,
   type TaskView,
   type UpdateView,
   type Viewer,
@@ -63,9 +62,7 @@ export type {
   SkillUse,
   SkillView,
   TaskAnswers,
-  TaskDecision,
   TaskInputView,
-  TaskPolicy,
   TaskQuestion,
   TaskState,
   TaskView,
@@ -323,8 +320,8 @@ export class TopClient {
     return this.#command({ t: "answerPermission", id: request.id, bot: request.bot, allow });
   }
 
-  answerTask(task: string, input: number, answer: { readonly decision?: TaskDecision; readonly answers?: TaskAnswers }): Promise<void> {
-    return this.#command({ t: "answerTask", task, input, ...answer });
+  answerTask(task: string, input: number, answers: TaskAnswers): Promise<void> {
+    return this.#command({ t: "answerTask", task, input, answers });
   }
 
   cancelTask(task: string): Promise<void> {

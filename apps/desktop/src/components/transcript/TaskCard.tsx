@@ -1,4 +1,4 @@
-import { MAX_TASK_ANSWER, type TaskDecision, type TaskInputView, type TaskQuestion, type TaskState, type TaskView, taskEnded } from "@top/client";
+import { MAX_TASK_ANSWER, type TaskInputView, type TaskQuestion, type TaskState, type TaskView, taskEnded } from "@top/client";
 import { Check, CircleSlash, LoaderCircle, SquareTerminal, X } from "lucide-react";
 import { memo, useId, useState } from "react";
 import { cn } from "../../lib/utils.ts";
@@ -20,14 +20,6 @@ const STATE: Record<TaskState, { label: string; variant: "primary" | "success" |
   failed: { label: "Failed", variant: "destructive" },
   cancelled: { label: "Cancelled", variant: "tool" },
 };
-
-const POLICY: Record<TaskView["policy"], string> = {
-  read_only: "Read only",
-  workspace_write: "Edits this folder",
-  full_access: "Full access",
-};
-
-const DECISION: Record<TaskDecision, string> = { allow: "Allow", allow_for_session: "Allow for this session", deny: "Deny" };
 
 function homeShort(path: string): string {
   return path.replace(/^\/home\/[^/]+(?=\/|$)/, "~").replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
@@ -51,43 +43,8 @@ function useSend() {
   return { busy, error, run };
 }
 
-function Decisions({ task, input, online }: { task: TaskView; input: TaskInputView; online: boolean }) {
-  const { busy, error, run } = useSend();
-  const titleId = useId();
-  const decisions = input.decisions ?? ["allow", "deny"];
-  return (
-    <div className="flex flex-col gap-1">
-      <span id={titleId} className="text-small leading-snug font-medium break-words whitespace-pre-wrap text-foreground">
-        {input.title}
-      </span>
-      {input.detail && <span className="text-meta break-words whitespace-pre-wrap text-secondary-foreground">{input.detail}</span>}
-      <div className="mt-1 flex flex-wrap items-center gap-2 text-meta">
-        {decisions.map((decision) => (
-          <Button
-            key={decision}
-            size="xs"
-            variant={decision === "allow" ? "default" : "outline"}
-            className="h-7.5 px-3 text-meta"
-            disabled={busy || !online}
-            aria-describedby={titleId}
-            onClick={() => run(() => top.answerTask(task.id, input.id, { decision }))}
-          >
-            {DECISION[decision]}
-          </Button>
-        ))}
-        {!online && <span className="text-muted-foreground">Reconnecting…</span>}
-      </div>
-      {error && (
-        <span role="alert" className="text-meta text-destructive-foreground">
-          {error}
-        </span>
-      )}
-    </div>
-  );
-}
-
 function Questions({ task, input, online }: { task: TaskView; input: TaskInputView; online: boolean }) {
-  const questions: readonly TaskQuestion[] = input.questions ?? [];
+  const questions: readonly TaskQuestion[] = input.questions;
   const [chosen, setChosen] = useState<Record<string, string[]>>({});
   const [typed, setTyped] = useState<Record<string, string>>({});
   const { busy, error, run } = useSend();
@@ -97,7 +54,7 @@ function Questions({ task, input, online }: { task: TaskView; input: TaskInputVi
     return text ? (q.multiple ? [...picked, text] : [text]) : picked;
   };
   const ready = questions.every((q) => answerOf(q).length > 0);
-  const submit = () => run(() => top.answerTask(task.id, input.id, { answers: Object.fromEntries(questions.map((q) => [q.id, answerOf(q)])) }));
+  const submit = () => run(() => top.answerTask(task.id, input.id, Object.fromEntries(questions.map((q) => [q.id, answerOf(q)]))));
   const pick = (q: TaskQuestion, label: string) =>
     setChosen((prev) => {
       const now = prev[q.id] ?? [];
@@ -142,10 +99,10 @@ function Questions({ task, input, online }: { task: TaskView; input: TaskInputVi
             </div>
           )}
           <Input
-            type={q.secret ? "password" : "text"}
+            type="text"
             autoComplete="off"
             maxLength={MAX_TASK_ANSWER}
-            placeholder={q.secret ? "Secret: sent only to the harness, never kept" : q.options.length ? "Or type an answer" : "Your answer"}
+            placeholder={q.options.length ? "Or type an answer" : "Your answer"}
             aria-label={q.question}
             className="h-8 py-1 text-small"
             value={typed[q.id] ?? ""}
@@ -156,7 +113,7 @@ function Questions({ task, input, online }: { task: TaskView; input: TaskInputVi
       ))}
       <div className="flex flex-wrap items-center gap-2 text-meta">
         <Button type="submit" size="xs" className="h-7.5 px-3 text-meta" disabled={!ready || busy || !online}>
-          {questions.some((q) => q.secret) ? "Send" : "Answer"}
+          Answer
         </Button>
         {!online && <span className="text-muted-foreground">Reconnecting…</span>}
       </div>
@@ -209,8 +166,8 @@ export const TaskCard = memo(function TaskCard({ row, className }: { row: TaskRo
             {state.label}
           </Badge>
         </div>
-        <span className="truncate text-meta text-muted-foreground" title={`${task.cwd} · ${POLICY[task.policy]}${task.model ? ` · ${task.model}` : ""}`}>
-          {homeShort(task.cwd)} · {POLICY[task.policy]}
+        <span className="truncate text-meta text-muted-foreground" title={`${task.cwd} · full access${task.model ? ` · ${task.model}` : ""}`}>
+          {homeShort(task.cwd)} · Full access
           {task.model ? ` · ${task.model}` : ""}
         </span>
         {task.error ? (
@@ -220,13 +177,9 @@ export const TaskCard = memo(function TaskCard({ row, className }: { row: TaskRo
         )}
         {task.inputs.length > 0 && (
           <div className="mt-1 flex flex-col gap-3 border-t border-border pt-2.5">
-            {task.inputs.map((input) =>
-              input.kind === "question" ? (
-                <Questions key={input.id} task={task} input={input} online={online} />
-              ) : (
-                <Decisions key={input.id} task={task} input={input} online={online} />
-              ),
-            )}
+            {task.inputs.map((input) => (
+              <Questions key={input.id} task={task} input={input} online={online} />
+            ))}
           </div>
         )}
         {!ended && (

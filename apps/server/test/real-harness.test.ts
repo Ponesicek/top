@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as Effect from "effect/Effect";
 import { test } from "vitest";
 import { claudeAdapter } from "../src/tasks/claude.ts";
 import { codexAdapter } from "../src/tasks/codex.ts";
@@ -12,7 +11,7 @@ import { harness, until } from "./harness.ts";
 const which = process.env.TOP_REAL_HARNESS;
 
 test.skipIf(which !== "codex" && which !== "claude_code")(
-  "a real harness (TOP_REAL_HARNESS=codex or claude_code): runs, carries on its session, asks before leaving its sandbox, steers, queues and cancels",
+  "a real harness (TOP_REAL_HARNESS=codex or claude_code): runs in a temporary folder, carries on its session, steers, queues and cancels",
   { timeout: 900_000 },
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "top-real-"));
@@ -32,21 +31,13 @@ test.skipIf(which !== "codex" && which !== "claude_code")(
     assert.equal(done.state, "completed", done.error ?? "");
     assert.match(readFileSync(join(folder, "notes.txt"), "utf8"), /^hello/);
 
-    const outside = `/var/tmp/top-real-${Date.now()}.txt`;
     const second = await start("r2", {
       session: first.session.id,
-      prompt: `Write the text x to ${outside} with a shell command. It is outside your sandbox: if it's blocked, request approval to run it outside the sandbox. If approval is declined, reply with only DECLINED.`,
+      prompt: "What is the name of the file you created earlier in this conversation? Reply with only the file name.",
     });
-    const asked = await h.run(tasks.wait(h.bot, second.task.id, 300_000, "input_or_end"));
-    const input = asked.snapshot.inputs[0];
-    if (input) {
-      assert.equal(input.spec.userOnly, true);
-      const byBot = await h.run(Effect.result(tasks.respond("bot", h.bot, second.task.id, input.id, { decision: "allow" })));
-      assert.equal(byBot._tag, "Failure", "the bot can't let a harness out of its sandbox");
-      await h.run(tasks.respond("user", undefined, second.task.id, input.id, { decision: "deny" }));
-    }
-    assert.equal((await end(second.task.id)).state, "completed");
-    assert.equal(existsSync(outside), false, "nothing was written outside the workspace");
+    const remembered = await end(second.task.id);
+    assert.equal(remembered.state, "completed", remembered.error ?? "");
+    assert.match(remembered.result ?? "", /notes\.txt/, "the session carried on with its conversation");
 
     const third = await start("r3", { prompt: "Run the shell command `sleep 15`, then reply with only FIRST." });
     await running(third.task.id);

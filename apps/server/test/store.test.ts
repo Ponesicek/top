@@ -73,17 +73,15 @@ test("a database from before harness tasks gains their tables, keeps everything 
         harness: "codex",
         location: "local",
         cwd: "/w",
-        policy: "workspace_write",
         model: null,
         options: {},
         parent: null,
-        approved: true,
       });
       const task = yield* store.tasks.createTask({ id: "task_1", bot: 1, key: "k", session: session.id, title: "t", prompt: "p", images: [] }, "queued");
       yield* store.tasks.appendEvents([{ task: task.id, bot: 1, at: 1, kind: "state", text: "queued" }]);
-      yield* store.tasks.addInput({ task: task.id, bot: 1, kind: "workspace", external: "workspace", title: "x", detail: null, spec: {} });
+      yield* store.tasks.addInput({ task: task.id, bot: 1, external: "q1", title: "x", questions: [] });
       yield* store.tasks.addMessage({ task: task.id, bot: 1, key: "m", mode: "queue", text: "more" });
-      const again = yield* store.tasks.addInput({ task: task.id, bot: 1, kind: "workspace", external: "workspace", title: "x", detail: null, spec: {} });
+      const again = yield* store.tasks.addInput({ task: task.id, bot: 1, external: "q1", title: "x", questions: [] });
       assert.equal(again.created, false, "one request per harness request id");
       assert.equal((yield* store.tasks.setState(task.id, ["queued"], "starting"))?.state, "starting");
       assert.equal(yield* store.tasks.setState(task.id, ["queued"], "running"), undefined, "a state change only applies from the state it expects");

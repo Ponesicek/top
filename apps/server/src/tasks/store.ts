@@ -1,4 +1,4 @@
-import { TaskDecision, TaskInputKind, TaskPolicy, TaskQuestion, TaskState } from "@top/protocol";
+import { TaskQuestion, TaskState } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -20,12 +20,10 @@ CREATE TABLE harness_sessions (
   harness TEXT NOT NULL,
   location TEXT NOT NULL DEFAULT 'local',
   cwd TEXT NOT NULL,
-  policy TEXT NOT NULL,
   model TEXT,
   options TEXT NOT NULL,
   external_id TEXT,
   parent TEXT,
-  approved INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   used_at INTEGER NOT NULL
 );
@@ -62,11 +60,9 @@ CREATE TABLE task_inputs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task TEXT NOT NULL REFERENCES tasks(id),
   bot INTEGER NOT NULL,
-  kind TEXT NOT NULL,
   external TEXT,
   title TEXT NOT NULL,
-  detail TEXT,
-  spec TEXT NOT NULL,
+  questions TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending',
   answer TEXT,
   answered_by TEXT,
@@ -94,12 +90,10 @@ export const SessionRow = Schema.Struct({
   harness: Text,
   location: Schema.Literal("local"),
   cwd: Text,
-  policy: TaskPolicy,
   model: NullableText,
   options: JsonObject,
   externalId: NullableText,
   parent: NullableText,
-  approved: Schema.BooleanFromBit,
   createdAt: Schema.Number,
   usedAt: Schema.Number,
 }).pipe(Schema.encodeKeys({ externalId: "external_id", createdAt: "created_at", usedAt: "used_at" }));
@@ -143,13 +137,6 @@ export type TaskEventKind = typeof TaskEventKind.Type;
 export const TaskEventRow = Schema.Struct({ seq: Int, task: Text, at: Schema.Number, kind: TaskEventKind, text: Text });
 export type TaskEventRow = typeof TaskEventRow.Type;
 
-export const InputSpec = Schema.Struct({
-  decisions: Schema.optionalKey(Schema.Array(TaskDecision)),
-  questions: Schema.optionalKey(Schema.Array(TaskQuestion)),
-  userOnly: Schema.optionalKey(Schema.Boolean),
-});
-export type InputSpec = typeof InputSpec.Type;
-
 export const InputState = Schema.Literals(["pending", "answered", "withdrawn"]);
 export type InputState = typeof InputState.Type;
 export const Answerer = Schema.Literals(["bot", "user"]);
@@ -159,11 +146,9 @@ export const TaskInputRow = Schema.Struct({
   id: Int,
   task: Text,
   bot: Int,
-  kind: TaskInputKind,
   external: NullableText,
   title: Text,
-  detail: NullableText,
-  spec: Schema.fromJsonString(InputSpec),
+  questions: Schema.fromJsonString(Schema.Array(TaskQuestion)),
   state: InputState,
   answer: Schema.NullOr(Json),
   answeredBy: Schema.NullOr(Answerer),
@@ -197,7 +182,7 @@ const messageOf = decode(TaskMessageRow);
 
 export const ACTIVE_STATES = ["queued", "starting", "running", "waiting_for_input"] as const satisfies readonly TaskState[];
 
-export type NewSession = Omit<SessionRow, "createdAt" | "usedAt" | "externalId" | "approved"> & { readonly approved: boolean };
+export type NewSession = Omit<SessionRow, "createdAt" | "usedAt" | "externalId">;
 export type NewTask = Pick<TaskRow, "id" | "bot" | "key" | "session" | "title" | "prompt" | "images">;
 export type NewEvent = { readonly task: string; readonly bot: number; readonly at: number; readonly kind: TaskEventKind; readonly text: string };
 export type TaskEnd = { readonly result?: string | undefined; readonly error?: string | undefined };
@@ -224,9 +209,9 @@ export function makeTaskQueries(
       Effect.gen(function* () {
         const at = yield* now;
         yield* q(sql`
-          INSERT INTO harness_sessions (id, bot, harness, location, cwd, policy, model, options, parent, approved, created_at, used_at)
-          VALUES (${row.id}, ${row.bot}, ${row.harness}, ${row.location}, ${row.cwd}, ${row.policy}, ${row.model}, ${JSON.stringify(row.options)},
-                  ${row.parent}, ${row.approved ? 1 : 0}, ${at}, ${at})`);
+          INSERT INTO harness_sessions (id, bot, harness, location, cwd, model, options, parent, created_at, used_at)
+          VALUES (${row.id}, ${row.bot}, ${row.harness}, ${row.location}, ${row.cwd}, ${row.model}, ${JSON.stringify(row.options)}, ${row.parent},
+                  ${at}, ${at})`);
         return (yield* session(row.id))!;
       }),
     session,
@@ -234,7 +219,6 @@ export function makeTaskQueries(
       Effect.map(rows(sql`SELECT * FROM harness_sessions WHERE bot = ${bot} ORDER BY used_at DESC LIMIT ${limit}`), (r) => r.map(sessionOf)),
     setExternalId: (id: string, externalId: string) =>
       Effect.asVoid(q(sql`UPDATE harness_sessions SET external_id = ${externalId} WHERE id = ${id} AND (external_id IS NULL OR external_id = ${externalId})`)),
-    approveSession: (id: string) => Effect.asVoid(q(sql`UPDATE harness_sessions SET approved = 1 WHERE id = ${id}`)),
     touchSession: (id: string) => Effect.flatMap(now, (at) => Effect.asVoid(q(sql`UPDATE harness_sessions SET used_at = ${at} WHERE id = ${id}`))),
 
     createTask: (row: NewTask, state: TaskState) =>
@@ -323,17 +307,15 @@ export function makeTaskQueries(
     addInput: (row: {
       readonly task: string;
       readonly bot: number;
-      readonly kind: TaskInputRow["kind"];
       readonly external: string | null;
       readonly title: string;
-      readonly detail: string | null;
-      readonly spec: InputSpec;
+      readonly questions: readonly TaskQuestion[];
     }) =>
       Effect.gen(function* () {
         const at = yield* now;
         const inserted = yield* first(sql`
-          INSERT INTO task_inputs (task, bot, kind, external, title, detail, spec, at)
-          VALUES (${row.task}, ${row.bot}, ${row.kind}, ${row.external}, ${row.title}, ${row.detail}, ${JSON.stringify(row.spec)}, ${at})
+          INSERT INTO task_inputs (task, bot, external, title, questions, at)
+          VALUES (${row.task}, ${row.bot}, ${row.external}, ${row.title}, ${JSON.stringify(row.questions)}, ${at})
           ON CONFLICT (task, external) DO NOTHING
           RETURNING id`);
         if (inserted) return { input: (yield* input(Number(inserted.id)))!, created: true };

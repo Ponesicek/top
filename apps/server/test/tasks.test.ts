@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
@@ -57,7 +57,6 @@ test("a task in the bot's own folder runs at once, ends with its answer, and the
   const s = await setup();
   const { snapshot, created } = await start(s, { prompt: "fix the login bug" });
   assert.equal(created, true);
-  assert.equal(snapshot.session.approved, true, "its own folder needs no approval");
   assert.equal(snapshot.session.cwd, s.folder());
   const done = await ended(s, snapshot.task.id);
   assert.equal(done.state, "completed");
@@ -66,7 +65,6 @@ test("a task in the bot's own folder runs at once, ends with its answer, and the
   assert.match(done.title, /fix the login bug/);
   assert.equal(s.fake.sessions.length, 1);
   assert.equal(s.fake.sessions[0]!.closed, true, "the harness process is closed when the task ends");
-  assert.equal(s.fake.sessions[0]!.spec.policy, "workspace_write", "the default policy keeps the sandbox");
 
   const told = await until("the bot to be told", async () => {
     const n = await notes(s);
@@ -101,74 +99,12 @@ test("a task in the bot's own folder runs at once, ends with its answer, and the
   assert.equal(s.fake.sessions.length, 1);
 });
 
-test("another folder, and full access anywhere, wait for the user; only the user can allow it", async () => {
-  const s = await setup();
-  const elsewhere = mkdtempSync(join(tmpdir(), "top-elsewhere-"));
-  const { snapshot } = await start(s, { prompt: "tidy up", cwd: elsewhere });
-  assert.equal(snapshot.session.approved, false);
-  await inState(s, snapshot.task.id, "waiting_for_input");
-  const [ask] = await pending(s, snapshot.task.id);
-  assert.equal(ask!.kind, "workspace");
-  assert.equal(ask!.spec.userOnly, true);
-  assert.match(ask!.title, /^Let Fake harness work in /);
-  assert.equal(s.fake.sessions.length, 0, "nothing started before the user's answer");
-
-  assert.match(
-    await failure(s, s.tasks.respond("bot", s.h.bot, snapshot.task.id, ask!.id, { decision: "allow" })),
-    /Only the user can let a harness work in a folder/,
-  );
-  await s.h.run(s.tasks.respond("user", undefined, snapshot.task.id, ask!.id, { decision: "allow" }));
-  assert.equal((await ended(s, snapshot.task.id)).state, "completed");
-  assert.equal(s.fake.sessions[0]!.spec.cwd, (await import("node:fs")).realpathSync(elsewhere));
-
-  const full = await start(s, { prompt: "deploy", policy: "full_access" });
-  assert.equal(full.snapshot.session.approved, false, "full access needs the user even in the bot's own folder");
-  await inState(s, full.snapshot.task.id, "waiting_for_input");
-  const [fullAsk] = await pending(s, full.snapshot.task.id);
-  assert.match(fullAsk!.detail ?? "", /full access: no sandbox and no approvals/);
-  await s.h.run(s.tasks.respond("user", undefined, full.snapshot.task.id, fullAsk!.id, { decision: "deny" }));
-  const denied = await ended(s, full.snapshot.task.id);
-  assert.equal(denied.state, "failed");
-  assert.match(denied.error!, /The user didn't let Fake harness work in/);
-  assert.equal(s.fake.sessions.length, 1, "a denied task never starts the harness");
-
-  assert.match(await failure(s, startE(s, { prompt: "x", cwd: join(elsewhere, "missing") })), /There's no folder/);
-});
-
-test("approvals go to the user; the bot may only deny, and the first answer wins", async () => {
-  const s = await setup();
-  const { snapshot } = await start(s, { prompt: "needs approval" });
-  await inState(s, snapshot.task.id, "waiting_for_input");
-  const [ask] = await pending(s, snapshot.task.id);
-  assert.equal(ask!.kind, "approval");
-  assert.equal(ask!.title, "Run `rm -rf build`");
-  assert.deepEqual(ask!.spec.decisions, ["allow", "allow_for_session", "deny"]);
-  assert.equal(s.h.daemon.bots()[0] && (await until("the sidebar count", () => s.h.daemon.bots()[0]!.approvals === 1)), true);
-  assert.deepEqual(await notes(s), [], "an approval the bot can't give doesn't wake it");
-
-  assert.match(await failure(s, s.tasks.respond("bot", s.h.bot, snapshot.task.id, ask!.id, { decision: "allow" })), /Only the user can allow this/);
-  assert.match(await failure(s, s.tasks.respond("user", undefined, snapshot.task.id, ask!.id, { decision: "maybe" as never })), /Decide with `decision`/);
-  await s.h.run(s.tasks.respond("bot", s.h.bot, snapshot.task.id, ask!.id, { decision: "deny", message: "not now" }));
-  assert.match(await failure(s, s.tasks.respond("user", undefined, snapshot.task.id, ask!.id, { decision: "allow" })), /already answered by the bot/);
-  const done = await ended(s, snapshot.task.id);
-  assert.equal(done.result, "Left build/ alone.");
-
-  const second = await start(s, { prompt: "needs approval again" });
-  await inState(s, second.snapshot.task.id, "waiting_for_input");
-  const [ask2] = await pending(s, second.snapshot.task.id);
-  await s.h.run(s.tasks.respond("user", undefined, second.snapshot.task.id, ask2!.id, { decision: "allow" }));
-  assert.equal((await ended(s, second.snapshot.task.id)).result, "Removed build/.");
-  const read = await s.h.run(s.tasks.read(s.h.bot, second.snapshot.task.id, 0, 200));
-  assert.ok(read.events.some((e) => e.kind === "answer" && /allow by the user/.test(e.text)));
-});
-
-test("questions wake the bot, which may answer; a secret goes only to the harness, never to storage", async () => {
+test("questions wake the bot, which may answer; the first answer wins", async () => {
   const s = await setup();
   const { snapshot } = await start(s, { prompt: "a question please" });
   await inState(s, snapshot.task.id, "waiting_for_input");
   const [ask] = await pending(s, snapshot.task.id);
-  assert.equal(ask!.kind, "question");
-  assert.equal(ask!.spec.userOnly, undefined);
+  assert.equal(ask!.title, "Which database?");
   const told = await until("the bot to hear about the question", async () => (await notes(s)).find((n) => n.includes("needs input")));
   assert.match(told, /Which database\?/);
   assert.match(told, /"request": \d+/);
@@ -177,26 +113,11 @@ test("questions wake the bot, which may answer; a secret goes only to the harnes
   assert.match(await failure(s, s.tasks.respond("bot", s.h.bot, snapshot.task.id, ask!.id, { answers: { db: ["a", "b"] } })), /takes one answer/);
   assert.match(await failure(s, s.tasks.respond("bot", s.h.bot, snapshot.task.id, ask!.id, { answers: { db: ["x"], zz: ["y"] } })), /has no question "zz"/);
   await s.h.run(s.tasks.respond("bot", s.h.bot, snapshot.task.id, ask!.id, { answers: { db: ["SQLite"] } }));
+  assert.match(
+    await failure(s, s.tasks.respond("user", undefined, snapshot.task.id, ask!.id, { answers: { db: ["Postgres"] } })),
+    /already answered by the bot/,
+  );
   assert.equal((await ended(s, snapshot.task.id)).result, "Using SQLite.");
-
-  const secret = await start(s, { prompt: "secret question" });
-  await inState(s, secret.snapshot.task.id, "waiting_for_input");
-  const [ask2] = await pending(s, secret.snapshot.task.id);
-  assert.equal(ask2!.spec.userOnly, true);
-  assert.match(await failure(s, s.tasks.respond("bot", s.h.bot, secret.snapshot.task.id, ask2!.id, { answers: { token: ["x"] } })), /asks for a secret/);
-  const value = "tok-SUPERSECRET-12345";
-  await s.h.run(s.tasks.respond("user", undefined, secret.snapshot.task.id, ask2!.id, { answers: { token: [value] } }));
-  assert.equal((await ended(s, secret.snapshot.task.id)).result, `Got a token of ${value.length} characters.`);
-  const stored = (await s.h.run(s.h.store.tasks.input(ask2!.id)))!;
-  assert.deepEqual(stored.answer, { secret: true });
-  await s.h.close();
-  for (const file of ["top.sqlite", "top.sqlite-wal"]) {
-    let bytes = "";
-    try {
-      bytes = readFileSync(join(s.h.dir, file)).toString("latin1");
-    } catch {}
-    assert.ok(!bytes.includes(value), `the secret isn't in ${file}`);
-  }
 });
 
 test("steer goes into the running turn, queue runs after it, and an ended task takes no messages", async () => {
@@ -330,7 +251,6 @@ test("a session carries on in a new task, can be branched, and only one task dri
   assert.equal(s.fake.sessions[1]!.spec.fork, false);
   assert.match(await failure(s, startE(s, { prompt: "too", session: session.id, harness: undefined })), /is busy with task/);
   assert.match(await failure(s, startE(s, { prompt: "x", session: session.id, harness: undefined, model: "other" })), /Branch it/);
-  assert.match(await failure(s, startE(s, { prompt: "x", session: session.id, harness: undefined, policy: "read_only" })), /runs with policy/);
 
   const branch = await start(s, { prompt: "try another way", session: session.id, fork: true, harness: undefined, model: "other" });
   assert.notEqual(branch.snapshot.session.id, session.id);
@@ -396,14 +316,29 @@ test("reads are bounded and old events are dropped past the limit", async () => 
   assert.equal(pruned.pruned, true, "a reader whose cursor fell off the start is told");
 });
 
-test("a restart cuts off a started task without running it again, and keeps one still waiting for the user", async () => {
+test("a restart cuts off a started task without running it again, and starts one that was only queued", async () => {
   const dir = mkdtempSync(join(tmpdir(), "top-tasks-restart-"));
   const first = await setup({ dir });
   const running = await start(first, { prompt: "run forever" });
   await inState(first, running.snapshot.task.id, "running");
-  const elsewhere = mkdtempSync(join(tmpdir(), "top-elsewhere-"));
-  const waiting = await start(first, { prompt: "over there", cwd: elsewhere });
-  await inState(first, waiting.snapshot.task.id, "waiting_for_input");
+  await first.h.run(
+    first.h.store.tasks.createSession({
+      id: "ses_q",
+      bot: first.h.bot,
+      harness: "fake",
+      location: "local",
+      cwd: first.folder(),
+      model: null,
+      options: {},
+      parent: null,
+    }),
+  );
+  await first.h.run(
+    first.h.store.tasks.createTask(
+      { id: "task_queued", bot: first.h.bot, key: "q-key", session: "ses_q", title: "queued", prompt: "only queued", images: [] },
+      "queued",
+    ),
+  );
   await first.h.run(first.h.store.tasks.addMessage({ task: running.snapshot.task.id, bot: first.h.bot, key: "m", mode: "queue", text: "then this" }));
   await first.h.close();
 
@@ -415,14 +350,15 @@ test("a restart cuts off a started task without running it again, and keeps one 
     /^Cut off: the daemon restarted while it ran, so Fake harness stopped with it\. It may have made some of its changes\. Its session ses_\w+ is kept/,
   );
   assert.match(cut.error!, /1 queued message was not sent/);
-  assert.equal(second.fake.sessions.length, 0, "nothing was started again");
+  assert.ok(
+    second.fake.sessions.every((session) => session.turns.every((t) => t.text !== "run forever")),
+    "the cut-off task wasn't run again",
+  );
   const told = await until("the bot to hear it was cut off", async () => (await notes(second)).find((n) => n.includes(running.snapshot.task.id)));
   assert.match(told, /failed\]/);
 
-  assert.equal((await task(second, waiting.snapshot.task.id)).state, "waiting_for_input", "the user can still answer");
-  const [ask] = await pending(second, waiting.snapshot.task.id);
-  await second.h.run(second.tasks.respond("user", undefined, waiting.snapshot.task.id, ask!.id, { decision: "allow" }));
-  assert.equal((await ended(second, waiting.snapshot.task.id)).state, "completed");
+  assert.equal((await ended(second, "task_queued")).state, "completed", "a task that never started runs after the restart");
+  assert.equal(second.fake.sessions.length, 1);
 });
 
 test("deleting a bot cancels its tasks and removes them with it; Stop cancels them too", async () => {
@@ -544,24 +480,6 @@ test("a cancel while the harness is still being checked never opens it", async (
   assert.equal(cancelled.task.state, "cancelled");
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(base.sessions.length, 0);
-});
-
-test("a branch of a session in another folder asks the user again, even though its parent was allowed", async () => {
-  const s = await setup();
-  const elsewhere = mkdtempSync(join(tmpdir(), "top-elsewhere-"));
-  const parent = await start(s, { prompt: "first", cwd: elsewhere });
-  await inState(s, parent.snapshot.task.id, "waiting_for_input");
-  const [ask] = await pending(s, parent.snapshot.task.id);
-  await s.h.run(s.tasks.respond("user", undefined, parent.snapshot.task.id, ask!.id, { decision: "allow" }));
-  await ended(s, parent.snapshot.task.id);
-  const branch = await start(s, { prompt: "branch", session: parent.snapshot.session.id, fork: true, harness: undefined });
-  assert.equal(branch.snapshot.session.approved, false);
-  await inState(s, branch.snapshot.task.id, "waiting_for_input");
-  assert.equal((await pending(s, branch.snapshot.task.id))[0]!.kind, "workspace");
-  const own = await start(s, { prompt: "own" });
-  await ended(s, own.snapshot.task.id);
-  const ownBranch = await start(s, { prompt: "branch", session: own.snapshot.session.id, fork: true, harness: undefined });
-  assert.equal(ownBranch.snapshot.session.approved, true, "the bot's own folder needs no approval, branched or not");
 });
 
 test("a message queued as the turn completes either runs or is refused, never left behind", async () => {

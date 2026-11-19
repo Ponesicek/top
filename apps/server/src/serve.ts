@@ -373,9 +373,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       case "answerTask":
         return answer(
           frame,
-          Effect.flatMap(tasksOf(), (t) =>
-            Effect.asVoid(t.respond("user", undefined, frame.task, frame.input, { decision: frame.decision, answers: frame.answers })),
-          ),
+          Effect.flatMap(tasksOf(), (t) => Effect.asVoid(t.respond("user", undefined, frame.task, frame.input, { answers: frame.answers }))),
         );
       case "cancelTask":
         return answer(

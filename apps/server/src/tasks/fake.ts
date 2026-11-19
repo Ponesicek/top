@@ -23,7 +23,6 @@ const ALL: Capabilities = {
   fork: true,
   steer: true,
   queue: true,
-  approvals: true,
   questions: true,
   images: true,
   fileChanges: true,
@@ -82,51 +81,19 @@ export function fakeHarness(config: FakeHarnessConfig = {}): FakeHarness {
         if (lower.includes("crash")) return later(stepMs, () => emit({ type: "exited", error: "Fake harness stopped: it crashed" }));
         if (lower.includes("forever")) return;
         if (lower.includes("fail")) return later(stepMs, () => end({ status: "failed", error: "The fake turn failed." }));
-        if (lower.includes("approval")) {
-          return later(stepMs, () =>
-            ask(
-              {
-                id: `r${n}-approve`,
-                kind: "approval",
-                title: "Run `rm -rf build`",
-                detail: "in the workspace",
-                decisions: ["allow", "allow_for_session", "deny"],
-              },
-              (answer) => {
-                const allowed = answer.kind === "approval" && answer.decision !== "deny";
-                emit({ type: "log", kind: "command", text: allowed ? "$ rm -rf build (exit 0)" : "skipped rm -rf build" });
-                later(stepMs, () => end({ status: "completed", result: allowed ? "Removed build/." : "Left build/ alone." }));
-              },
-            ),
-          );
-        }
         if (lower.includes("question")) {
-          const secret = lower.includes("secret");
           return later(stepMs, () =>
             ask(
               {
                 id: `r${n}-question`,
-                kind: "question",
-                title: secret ? "What's the deploy token?" : "Which database?",
+                title: "Which database?",
                 questions: [
-                  secret
-                    ? { id: "token", question: "What's the deploy token?", options: [], secret: true }
-                    : {
-                        id: "db",
-                        question: "Which database?",
-                        header: "Database",
-                        options: [{ label: "Postgres" }, { label: "SQLite", description: "simpler" }],
-                      },
+                  { id: "db", question: "Which database?", header: "Database", options: [{ label: "Postgres" }, { label: "SQLite", description: "simpler" }] },
                 ],
               },
               (answer) => {
                 const given = answer.kind === "question" ? Object.values(answer.answers).flat() : [];
-                later(stepMs, () =>
-                  end({
-                    status: "completed",
-                    result: secret ? `Got a token of ${given[0]?.length ?? 0} characters.` : `Using ${given.join(", ") || "nothing"}.`,
-                  }),
-                );
+                later(stepMs, () => end({ status: "completed", result: `Using ${given.join(", ") || "nothing"}.` }));
               },
             ),
           );
