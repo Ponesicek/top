@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -409,4 +409,29 @@ test("Claude Code: cancelling between a turn's answer and its steered follow-up 
   await session.interrupt();
   assert.equal(c.of("turn_ended")[0]!.status, "interrupted");
   await session.close();
+});
+
+test("Claude Code: imports never leave the repository, through a symlink either, and a file importing itself is read once", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "top-outside-"));
+  writeFileSync(join(outside, "secret.md"), "SECRET");
+  const repo = mkdtempSync(join(tmpdir(), "top-claude-md-"));
+  mkdirSync(join(repo, ".git"));
+  symlinkSync(join(outside, "secret.md"), join(repo, "linked.md"));
+  writeFileSync(join(repo, "CLAUDE.md"), "Top.\n@linked.md\n@CLAUDE.md\n@notes.md");
+  writeFileSync(join(repo, "notes.md"), "Notes.\n@notes.md");
+  const text = (await projectInstructions(repo))!;
+  assert.ok(!text.includes("SECRET"), "a symlink out of the repository isn't followed");
+  assert.equal(text.match(/Notes\./g)?.length, 1, "each file is read once");
+  assert.match(text, /@linked\.md/);
+});
+
+test("Claude Code: outside a repository only the task folder's own instructions are used", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "top-no-git-"));
+  writeFileSync(join(parent, "CLAUDE.md"), "Parent rules.");
+  mkdirSync(join(parent, "work"));
+  writeFileSync(join(parent, "work", "AGENTS.md"), "Work rules.\n@extra.md");
+  writeFileSync(join(parent, "work", "extra.md"), "Extra.");
+  const text = (await projectInstructions(join(parent, "work")))!;
+  assert.ok(!text.includes("Parent rules."));
+  assert.match(text, /Work rules\.\nExtra\./);
 });

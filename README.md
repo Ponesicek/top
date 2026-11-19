@@ -325,8 +325,9 @@ goes to the harness and is never stored or logged. Approvals are never turned of
 told the user reviews them (not a model reviewer from its config), and Claude Code loads only the
 user's own settings, never the folder's `.claude/settings*.json` (its allow rules and hooks would
 skip the card). Its instruction files are passed in instead: from the repository root down to the
-folder, each folder's CLAUDE.md, `.claude/CLAUDE.md` and CLAUDE.local.md (or else its AGENTS.md), with
-their `@` imports from inside the repository. "Allow for
+folder (outside a repository, the folder alone), each folder's CLAUDE.md, `.claude/CLAUDE.md` and
+CLAUDE.local.md (or else its AGENTS.md), with their `@` imports from inside the repository (symlinks
+out of it aren't followed), up to 32 KB, nearest folder kept first. "Allow for
 this session" grants only the rules and folders the card lists, never a mode, and never writes a
 settings file. Harnesses use their own sign-in: the model-provider keys the daemon's bots use (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY` and the rest of pi's list) aren't passed to them; other variables, a project's own

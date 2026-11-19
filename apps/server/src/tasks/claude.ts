@@ -1,7 +1,7 @@
 import { type ExecFileException, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, realpath, stat } from "node:fs/promises";
 import { delimiter, dirname, extname, join, resolve } from "node:path";
 import type { CanUseTool, Options, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { TaskDecision, TaskPolicy, TaskQuestion } from "@top/protocol";
@@ -169,6 +169,7 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
 
 const MAX_INSTRUCTIONS = 32 * 1024;
 const MAX_IMPORT_DEPTH = 4;
+const MAX_IMPORTS = 50;
 
 async function exists(path: string): Promise<boolean> {
   return access(path).then(
@@ -177,41 +178,73 @@ async function exists(path: string): Promise<boolean> {
   );
 }
 
-async function withImports(text: string, from: string, root: string, depth: number): Promise<string> {
+const within = (root: string, path: string) => path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
+
+type Reading = { readonly root: string; readonly seen: Set<string>; budget: number; imports: number };
+
+async function readInside(path: string, reading: Reading): Promise<string | undefined> {
+  const real = await realpath(path).catch(() => undefined);
+  if (!real || !within(reading.root, real) || reading.seen.has(real)) return undefined;
+  const info = await stat(real).catch(() => undefined);
+  if (!info?.isFile() || info.size > reading.budget) return undefined;
+  reading.seen.add(real);
+  reading.budget -= info.size;
+  return readFile(real, "utf8").catch(() => undefined);
+}
+
+async function withImports(text: string, from: string, reading: Reading, depth: number): Promise<string> {
   if (depth >= MAX_IMPORT_DEPTH) return text;
   const lines: string[] = [];
   for (const line of text.split("\n")) {
     const target = /^\s*@(\S+)\s*$/.exec(line)?.[1];
-    const path = target ? (target.startsWith("~/") ? join(process.env.HOME ?? "/", target.slice(2)) : resolve(from, target)) : undefined;
-    const inside = path !== undefined && (path === root || path.startsWith(`${root}/`));
-    const imported = inside ? await readFile(path, "utf8").catch(() => undefined) : undefined;
-    lines.push(imported === undefined ? line : await withImports(imported, dirname(path!), root, depth + 1));
+    if (!target || reading.imports >= MAX_IMPORTS) {
+      lines.push(line);
+      continue;
+    }
+    reading.imports++;
+    const path = resolve(from, target);
+    const imported = await readInside(path, reading);
+    lines.push(imported === undefined ? line : await withImports(imported, dirname(path), reading, depth + 1));
   }
   return lines.join("\n");
 }
 
 export async function projectInstructions(cwd: string): Promise<string | undefined> {
   const dirs: string[] = [];
+  let repository = false;
   for (let dir = cwd; ; dir = dirname(dir)) {
     dirs.unshift(dir);
-    if ((await exists(join(dir, ".git"))) || dirname(dir) === dir) break;
+    if (await exists(join(dir, ".git"))) {
+      repository = true;
+      break;
+    }
+    if (dirname(dir) === dir) break;
   }
-  const root = dirs[0]!;
+  const folders = repository ? dirs : [cwd];
+  const root = (await realpath(folders[0]!).catch(() => folders[0]!)) as string;
+  const reading: Reading = { root, seen: new Set(), budget: 4 * MAX_INSTRUCTIONS, imports: 0 };
   const parts: string[] = [];
-  for (const dir of dirs) {
+  for (const dir of folders) {
     const found: string[] = [];
     for (const name of ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]) {
-      const text = await readFile(join(dir, name), "utf8").catch(() => undefined);
-      if (text?.trim()) found.push(`<file path="${join(dir, name)}">\n${await withImports(text, dir, root, 0)}\n</file>`);
+      const text = await readInside(join(dir, name), reading);
+      if (text?.trim()) found.push(`<file path="${join(dir, name)}">\n${await withImports(text, dir, reading, 0)}\n</file>`);
     }
     if (!found.length) {
-      const agents = await readFile(join(dir, "AGENTS.md"), "utf8").catch(() => undefined);
-      if (agents?.trim()) found.push(`<file path="${join(dir, "AGENTS.md")}">\n${await withImports(agents, dir, root, 0)}\n</file>`);
+      const agents = await readInside(join(dir, "AGENTS.md"), reading);
+      if (agents?.trim()) found.push(`<file path="${join(dir, "AGENTS.md")}">\n${await withImports(agents, dir, reading, 0)}\n</file>`);
     }
     parts.push(...found);
   }
   if (!parts.length) return undefined;
-  return `The project's instructions (its .claude settings files aren't loaded; these files are):\n\n${clip(parts.join("\n\n"), MAX_INSTRUCTIONS)}`;
+  let left = MAX_INSTRUCTIONS;
+  const kept: string[] = [];
+  for (const part of [...parts].reverse()) {
+    if (left <= 0) break;
+    kept.unshift(part.length <= left ? part : `${clip(part, left)}\n</file>`);
+    left -= part.length;
+  }
+  return `The project's instructions (its .claude settings files aren't loaded; these files are, nearest folder last):\n\n${kept.join("\n\n")}`;
 }
 
 async function onPath(name: string): Promise<string | undefined> {
@@ -407,7 +440,11 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       let settle: NodeJS.Timeout | undefined;
       const park = (event: Extract<HarnessEvent, { type: "turn_ended" }>) => {
         parked = event;
-        settle = setTimeout(() => parked && endTurn(parked), SETTLE_MS);
+        settle = setTimeout(() => {
+          if (!parked || pending.size) return;
+          outstanding.clear();
+          endTurn(parked);
+        }, SETTLE_MS);
       };
       const endTurn = (event: Extract<HarnessEvent, { type: "turn_ended" }>) => {
         if (settle) clearTimeout(settle);
@@ -429,9 +466,11 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       void (async () => {
         try {
           for await (const message of q) {
-            if (settle) clearTimeout(settle);
-            settle = undefined;
-            if (parked && message.type !== "result") settle = setTimeout(() => parked && endTurn(parked), SETTLE_MS);
+            if (parked && message.type !== "result") {
+              if (settle) clearTimeout(settle);
+              settle = undefined;
+              parked = undefined;
+            }
             switch (message.type) {
               case "system":
                 if (message.subtype === "init" && message.session_id && (!announced || message.session_id !== sessionId)) {
