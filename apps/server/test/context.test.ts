@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, wr
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Credential, type CredentialInfo, type CredentialStore, getCurrentSystemMessage, type SystemMessage } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MAX_CONTEXT_FILE_BYTES } from "@top/protocol";
 import * as Effect from "effect/Effect";
@@ -14,9 +15,7 @@ import { afterEach, test, vi } from "vitest";
 import { SUMMARY_HEAD } from "../src/compaction.ts";
 import { contextGuide, fileSection, readContextFile, saveContextFile, seedSoul, soulIdentity, versionOf } from "../src/contextFiles.ts";
 import type { Context } from "../src/fake-bots.ts";
-import { DEFAULT_MODEL } from "../src/installation.ts";
 import { type TranscriptMessage, textOf } from "../src/messages.ts";
-import { topModels } from "../src/models.ts";
 import { fromPromise, type TopTool, text } from "../src/tools.ts";
 import { BEFORE_CONTEXT_FILES, type Harness, harness, idle, until } from "./harness.ts";
 
@@ -591,7 +590,7 @@ const anthropicReply = (n: number) =>
 
 afterEach(() => vi.unstubAllGlobals());
 
-async function payloads(provider: "openai" | "anthropic", id = provider === "openai" ? "openai/gpt-6.1-sol" : "anthropic/claude-opus-5-5") {
+async function payloads(provider: "openai" | "anthropic") {
   const bodies: Record<string, unknown>[] = [];
   const url = provider === "openai" ? "https://api.openai.com/v1/responses" : "https://api.anthropic.com/v1/messages";
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
@@ -604,7 +603,8 @@ async function payloads(provider: "openai" | "anthropic", id = provider === "ope
     provider === "openai"
       ? { openai: { type: "oauth", access: "test-access", refresh: "test-refresh", expires: Date.now() + 3_600_000 } }
       : { anthropic: { type: "api_key", key: "test-key" } };
-  const h = await harness({ context: true, model: { models: topModels({ credentials: new SignedIn(credentials) }), id } });
+  const id = provider === "openai" ? "openai/gpt-6.1-sol" : "anthropic/claude-opus-5-5";
+  const h = await harness({ context: true, model: { models: builtinModels({ credentials: new SignedIn(credentials) }), id } });
   await h.run(h.daemon.start);
   put(h, "SOUL.md", "# Atlas\n\nWatches the build.\n");
   await ask(h, "hello");
@@ -618,17 +618,6 @@ const withoutCacheMark = (messages: unknown): Record<string, unknown>[] =>
   (JSON.parse(JSON.stringify(messages), (key, v) => (key === "cache_control" ? undefined : v)) as Record<string, unknown>[]).map((m) =>
     typeof m.content === "string" ? { ...m, content: [{ type: "text", text: m.content }] } : m,
   );
-
-test("the default model is GPT-6.2 Sol: OpenAI gets gpt-6.2-sol, asked the way GPT-6.1 Sol is", async () => {
-  assert.equal(DEFAULT_MODEL, "openai/gpt-6.2-sol");
-  const [before] = await payloads("openai");
-  const [after] = await payloads("openai", DEFAULT_MODEL);
-  assert.equal(before!.model, "gpt-6.1-sol");
-  assert.equal(after!.model, "gpt-6.2-sol");
-  assert.deepEqual(Object.keys(after!).sort(), Object.keys(before!).sort());
-  assert.deepEqual(after!.reasoning, before!.reasoning);
-  assert.deepEqual(after!.include, before!.include);
-});
 
 test("OpenAI Responses: the update goes in place as a developer message, after an input prefix and tools that don't change", async () => {
   const [one, two, three] = await payloads("openai");

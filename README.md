@@ -31,7 +31,7 @@ acknowledgement, which would cost about a fifth more data while following bots (
 
 ```bash
 pnpm install
-pnpm server          # the daemon, with one bot (Atlas) on a real model (openai/gpt-6.2-sol)
+pnpm server          # the daemon, with one bot (Atlas) on a real model (openai/gpt-6.1-sol)
 pnpm desktop         # Electron app (or `pnpm web` for the same UI in a browser at :5199)
 ```
 
@@ -299,7 +299,7 @@ out: bump `package.json` on `main` before each Stable release. `pnpm build:daemo
 **Installing the daemon.** Unpack the archive and run `bin/top install`. It copies itself to
 `~/.top/daemon/`, follows the channel it came from, and runs under systemd (`systemctl --user …top`,
 logs in `journalctl --user -u top -f`; `loginctl enable-linger` keeps it running while you're logged
-out). Its flags are in `~/.top/daemon/args`, one per line (default `--model openai/gpt-6.2-sol`;
+out). Its flags are in `~/.top/daemon/args`, one per line (default `--model openai/gpt-6.1-sol`;
 `top install --tailscale` adds `--tailscale`). `pnpm server` from a checkout never updates itself.
 
 **Updating.** The daemon and the app each follow a channel of their own, since one server serves
