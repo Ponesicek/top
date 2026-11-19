@@ -315,8 +315,9 @@ written in batches every 250 ms), and the result is kept up to 30,000 characters
   first, except the ones it counts as read-only, such as `ls`; without the sandbox, it has no shell).
 - `workspace_write` (the default): it edits files in its folder and runs commands sandboxed to it (Codex:
   the folder and a private temp folder, no network; Claude Code: its sandbox, which on Linux needs
-  bubblewrap and socat; without them its commands ask first, except the file commands Claude Code
-  allows in the folder itself, such as `mkdir` and `rm`, and the task's log says so).
+  bubblewrap and socat; without them its commands ask first, except the ones it counts as read-only
+  and the file commands it allows in the folder itself, such as `mkdir` and `rm`, and the task's log
+  says so).
 - `full_access`: no sandbox and no approvals.
 
 A folder other than the bot's own, and `full_access` anywhere, wait for the user's OK on a card in the

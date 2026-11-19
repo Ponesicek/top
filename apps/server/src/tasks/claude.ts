@@ -440,7 +440,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
           text:
             spec.policy === "read_only"
               ? "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so it gets no shell for this read-only task."
-              : "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so its commands ask for approval first, except file commands in this folder (mkdir, touch, mv, cp, rm, sed).",
+              : "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so its commands ask for approval first, except ones it counts as read-only and file commands in this folder (such as mkdir, touch, rm).",
         });
       const options: Options = {
         cwd: spec.cwd,
