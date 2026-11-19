@@ -5,6 +5,7 @@ import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import { test } from "vitest";
 import { textOf as textOfContent } from "../src/messages.ts";
+import { HIDDEN } from "../src/secrets.ts";
 import type { StoredEntry } from "../src/store.ts";
 import type { StartRequest, Tasks } from "../src/tasks/coordinator.ts";
 import { type FakeHarness, type FakeHarnessConfig, fakeHarness } from "../src/tasks/fake.ts";
@@ -602,4 +603,26 @@ test("however an acknowledgment and a cancel interleave, what the bot is told ma
     else assert.deepEqual([message?.state, logged], ["dropped", false], `delay ${delay}`);
     await s.h.close();
   }
+});
+
+test("a saved secret a harness echoes is hidden from the task's log, result and the bot's message", async () => {
+  const s = await setup();
+  const value = "tok_echoed_by_harness_7Kq2";
+  await s.h.run(s.h.secrets.save(s.h.bot, value));
+  const { snapshot } = await start(s, { prompt: `print ${value}`, title: "Print the token" });
+  const done = await ended(s, snapshot.task.id);
+  assert.equal(done.state, "completed");
+  assert.equal(done.result, `Done: print ${HIDDEN}`);
+  const events = await until("the task's log", async () => {
+    const rows = (await s.h.run(s.h.store.tasks.events(snapshot.task.id, 0, 200))).events;
+    return rows.some((e) => e.text.startsWith("Done:")) && rows;
+  });
+  assert.ok(events.some((e) => e.text.includes(HIDDEN)));
+  assert.ok(!events.some((e) => e.text.includes(value)), "the log never holds the secret");
+  const told = await until("the bot to hear", async () => {
+    const all = await notes(s);
+    return all.length > 0 && all;
+  });
+  assert.ok(!told.some((text) => text.includes(value)), "the bot's message never holds the secret");
+  await s.h.close();
 });

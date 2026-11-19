@@ -51,6 +51,7 @@ export type TasksConfig = {
   readonly maxRunning?: number | undefined;
   readonly folder?: ((bot: number) => Effect.Effect<string | undefined>) | undefined;
   readonly cancelGraceMs?: number | undefined;
+  readonly hide?: ((text: string) => string) | undefined;
 };
 
 export type TasksEvents = {
@@ -167,6 +168,7 @@ export function notifyText(task: TaskRow, session: SessionRow, label: string): s
 }
 
 export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: TasksConfig, events: TasksEvents) {
+  const scrub = (text: string) => redact(config.hide ? config.hide(text) : text);
   const scope = yield* Effect.scope;
   const adapters = new Map(config.adapters.map((a) => [a.id, a]));
   const slots = yield* Semaphore.make(config.maxRunning ?? 4);
@@ -204,7 +206,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const log = (live: Live, kind: TaskEventKind, text: string) =>
     Effect.map(now, (at) => {
-      const clipped = clip(redact(text.trim()), EVENT_CHARS);
+      const clipped = clip(scrub(text.trim()), EVENT_CHARS);
       if (!clipped) return;
       buffer.push({ task: live.id, bot: live.bot, at, kind, text: clipped });
       if (kind !== "state" && kind !== "usage") {
@@ -300,8 +302,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           }),
         );
         const kept = end.result ?? live.result;
-        const result = kept === undefined ? undefined : redact(kept);
-        const said = end.error === undefined ? undefined : redact(end.error);
+        const result = kept === undefined ? undefined : scrub(kept);
+        const said = end.error === undefined ? undefined : scrub(end.error);
         const error = said && dropped ? `${said}\n(${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : said;
         const row = yield* q.setState(live.id, ACTIVE_STATES, state, {
           ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
@@ -386,7 +388,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 task: live.id,
                 bot: live.bot,
                 external: request.id,
-                title: clip(redact(request.title), 400),
+                title: clip(scrub(request.title), 400),
                 questions: request.questions,
               });
               if (input.state !== "pending") return;

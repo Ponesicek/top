@@ -292,6 +292,7 @@ const make = Effect.gen(function* () {
           adapters: kit.harnesses,
           maxRunning: kit.maxTasks,
           cancelGraceMs: kit.taskCancelGraceMs,
+          hide: secrets.redact,
           folder: (bot) => Effect.map(store.bot(bot), (row) => (row && kit.folder ? kit.folder(row) : undefined)),
         },
         { deliver: queued, publish: (views) => events.publish({ _tag: "Tasks", views }) },
