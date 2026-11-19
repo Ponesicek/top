@@ -52,8 +52,8 @@ function Status({ loaded }: { loaded: Exclude<Loaded, { state: "ok" }> }) {
   return <Notice>{loaded.state === "loading" ? "Loading…" : loaded.error}</Notice>;
 }
 
-async function readBytes(url: string): Promise<Uint8Array | undefined> {
-  const response = await fetch(url, { cache: "no-cache" });
+async function readBytes(url: string, signal: AbortSignal): Promise<Uint8Array | undefined> {
+  const response = await fetch(url, { cache: "no-cache", signal });
   if (!response.ok) {
     void response.body?.cancel();
     return undefined;
@@ -69,7 +69,7 @@ function LiveFrame({
   className,
   ...rest
 }: { url: string; version: number; title: string; className: string } & Omit<React.ComponentProps<"iframe">, "onLoad">) {
-  const [live] = useState(() => new LiveFrames(version, () => readBytes(url)));
+  const [live] = useState(() => new LiveFrames(version, (signal) => readBytes(url, signal)));
   useEffect(() => () => live.dispose(), [live]);
   useEffect(() => live.show(version), [live, version]);
   const frames = useSyncExternalStore(live.subscribe, live.frames);

@@ -1,6 +1,6 @@
 export type Frame = { readonly key: number; readonly shown: boolean };
 
-export type ReadVersion = () => Promise<Uint8Array | undefined>;
+export type ReadVersion = (signal: AbortSignal) => Promise<Uint8Array | undefined>;
 
 export const SWAP_AFTER_MS = 3_000;
 export const READ_TIMEOUT_MS = 10_000;
@@ -64,8 +64,11 @@ export class LiveFrames {
   }
 
   #safeRead(): Promise<Uint8Array | undefined> {
-    const timeout = new Promise<undefined>((resolve) => setTimeout(resolve, this.#readTimeoutMs));
-    return Promise.race([this.#read().catch(() => undefined), timeout]);
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), this.#readTimeoutMs);
+    return this.#read(abort.signal)
+      .catch(() => undefined)
+      .finally(() => clearTimeout(deadline));
   }
 
   #set(frames: readonly Frame[]) {

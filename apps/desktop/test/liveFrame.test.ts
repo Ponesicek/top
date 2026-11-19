@@ -36,11 +36,22 @@ afterEach(() => {
 });
 
 describe("LiveFrames", () => {
-  it("loads a save behind the page shown even when an earlier read never answers", async () => {
+  it("gives up on a read that doesn't answer, stops it, and loads the save behind the page shown", async () => {
     let calls = 0;
-    const live = new LiveFrames(1, () => (++calls === 1 ? new Promise<Uint8Array>(() => {}) : Promise.resolve(bytes("<h1>new</h1>"))), 60_000, 20);
+    let first: AbortSignal | undefined;
+    const live = new LiveFrames(
+      1,
+      (signal) => {
+        if (++calls > 1) return Promise.resolve(bytes("<h1>new</h1>"));
+        first = signal;
+        return new Promise<Uint8Array>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted"))));
+      },
+      60_000,
+      20,
+    );
     live.show(2);
     await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(first?.aborted).toBe(true);
     expect(shown(live)).toEqual(["shown", "loading"]);
   });
 
