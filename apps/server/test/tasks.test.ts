@@ -580,3 +580,26 @@ test("an acknowledgment that arrives after the task was cancelled isn't logged a
   assert.ok(!read.events.some((e) => e.text.startsWith("steered")), "no steer is claimed for a dropped message");
   assert.equal((await s.h.run(s.h.store.tasks.messageByKey("slow-steer")))?.state, "dropped");
 });
+
+test("however an acknowledgment and a cancel interleave, what the bot is told matches the message and the log", async () => {
+  for (const delay of [0, 1, 2, 5, 10, 20]) {
+    const ctl = controlled({ interrupt: "end", steer: "manual" });
+    const s = await setup({ fake: ctl.adapter });
+    const { snapshot } = await start(s, { prompt: "anything" });
+    await inState(s, snapshot.task.id, "running");
+    const key = `steer-${delay}`;
+    const steering = s.h.run(Effect.result(s.tasks.send(s.h.bot, snapshot.task.id, key, "steer", "change course")));
+    await until("the steer to reach the harness", async () => (await s.h.run(s.h.store.tasks.messageByKey(key))) !== undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cancelling = s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+    setTimeout(() => ctl.ackSteer(), delay);
+    await cancelling;
+    const sent = await steering;
+    const message = await s.h.run(s.h.store.tasks.messageByKey(key));
+    const read = await s.h.run(s.tasks.read(s.h.bot, snapshot.task.id, 0, 200));
+    const logged = read.events.some((e) => e.text.startsWith("steered"));
+    if (sent._tag === "Success") assert.deepEqual([message?.state, logged], ["sent", true], `delay ${delay}`);
+    else assert.deepEqual([message?.state, logged], ["dropped", false], `delay ${delay}`);
+    await s.h.close();
+  }
+});

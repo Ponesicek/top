@@ -43,6 +43,7 @@ const RECENT_VIEWS = 40;
 const FLUSH_MS = 250;
 const PUBLISH_MS = 100;
 const STEER_TIMEOUT_MS = 30_000;
+const STEER_TOO_LATE = "The task ended before the harness took the message.";
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
 export type TasksConfig = {
@@ -287,12 +288,17 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         if (live.finished) return;
         live.finished = true;
         live.closing = true;
-        for (const reply of live.steering) Deferred.doneUnsafe(reply, Effect.succeed("The task ended before the harness took the message."));
-        live.steering.clear();
         for (const input of live.inputs.values()) if (input.external) live.harness?.answer(input.external, { kind: "cancelled" });
         live.inputs.clear();
         yield* q.withdrawInputs(live.id);
-        const dropped = yield* q.dropMessages(live.id);
+        const dropped = yield* live.lock.withPermits(1)(
+          Effect.gen(function* () {
+            const count = yield* q.dropMessages(live.id);
+            for (const reply of live.steering) Deferred.doneUnsafe(reply, Effect.succeed(STEER_TOO_LATE));
+            live.steering.clear();
+            return count;
+          }),
+        );
         const kept = end.result ?? live.result;
         const result = kept === undefined ? undefined : redact(kept);
         const said = end.error === undefined ? undefined : redact(end.error);
@@ -480,10 +486,14 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 yield* Deferred.succeed(reply, cause instanceof Error ? cause.message : String(cause));
                 return;
               }
-              if (yield* q.setMessageState(message.id, "sent")) {
-                yield* log(live, "sent", `steered with message ${message.id}: ${firstLine(message.text)}`);
-                yield* Deferred.succeed(reply, undefined);
-              } else yield* Deferred.succeed(reply, "The task ended before the harness took the message.");
+              yield* live.lock.withPermits(1)(
+                Effect.gen(function* () {
+                  if (yield* q.setMessageState(message.id, "sent")) {
+                    yield* log(live, "sent", `steered with message ${message.id}: ${firstLine(message.text)}`);
+                    yield* Deferred.succeed(reply, undefined);
+                  } else yield* Deferred.succeed(reply, STEER_TOO_LATE);
+                }),
+              );
             }).pipe(Effect.ensuring(Effect.sync(() => live.steering.delete(reply)))),
             scope,
           );
@@ -831,7 +841,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       }
       const reply = yield* Deferred.make<string | undefined>();
       live.steering.add(reply);
-      if (live.finished) Deferred.doneUnsafe(reply, Effect.succeed("The task ended before the harness took the message."));
+      if (live.finished) Deferred.doneUnsafe(reply, Effect.succeed(STEER_TOO_LATE));
       Queue.offerUnsafe(live.signals, { type: "steer", message, reply });
       const answer = yield* Deferred.await(reply).pipe(Effect.timeoutOption(Duration.millis(STEER_TIMEOUT_MS)));
       if (answer._tag === "None")
