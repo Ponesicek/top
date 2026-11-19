@@ -224,7 +224,7 @@ export async function projectInstructions(cwd: string): Promise<string | undefin
   const root = (await realpath(folders[0]!).catch(() => folders[0]!)) as string;
   const reading: Reading = { root, seen: new Set(), budget: 4 * MAX_INSTRUCTIONS, imports: 0 };
   const parts: string[] = [];
-  for (const dir of folders) {
+  for (const dir of [...folders].reverse()) {
     const found: string[] = [];
     for (const name of ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]) {
       const text = await readInside(join(dir, name), reading);
@@ -234,15 +234,22 @@ export async function projectInstructions(cwd: string): Promise<string | undefin
       const agents = await readInside(join(dir, "AGENTS.md"), reading);
       if (agents?.trim()) found.push(`<file path="${join(dir, "AGENTS.md")}">\n${await withImports(agents, dir, reading, 0)}\n</file>`);
     }
-    parts.push(...found);
+    parts.unshift(...found);
   }
   if (!parts.length) return undefined;
   let left = MAX_INSTRUCTIONS;
   const kept: string[] = [];
   for (const part of [...parts].reverse()) {
-    if (left <= 0) break;
-    kept.unshift(part.length <= left ? part : `${clip(part, left)}\n</file>`);
-    left -= part.length;
+    const cost = part.length + 2;
+    if (cost <= left) {
+      kept.unshift(part);
+      left -= cost;
+      continue;
+    }
+    const head = part.slice(0, part.indexOf("\n") + 1);
+    const room = left - head.length - "\n…\n</file>".length - 2;
+    if (room >= 200) kept.unshift(`${head}${part.slice(head.length, head.length + room)}\n…\n</file>`);
+    break;
   }
   return `The project's instructions (its .claude settings files aren't loaded; these files are, nearest folder last):\n\n${kept.join("\n\n")}`;
 }
@@ -438,18 +445,27 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
 
       let parked: Extract<HarnessEvent, { type: "turn_ended" }> | undefined;
       let settle: NodeJS.Timeout | undefined;
+      let lastEnding: Extract<HarnessEvent, { type: "turn_ended" }> | undefined;
+      const giveUp = () => {
+        settle = undefined;
+        if (!parked) return;
+        if (pending.size) {
+          settle = setTimeout(giveUp, SETTLE_MS);
+          return;
+        }
+        outstanding.clear();
+        endTurn(parked);
+      };
       const park = (event: Extract<HarnessEvent, { type: "turn_ended" }>) => {
+        if (settle) clearTimeout(settle);
         parked = event;
-        settle = setTimeout(() => {
-          if (!parked || pending.size) return;
-          outstanding.clear();
-          endTurn(parked);
-        }, SETTLE_MS);
+        settle = setTimeout(giveUp, SETTLE_MS);
       };
       const endTurn = (event: Extract<HarnessEvent, { type: "turn_ended" }>) => {
         if (settle) clearTimeout(settle);
         settle = undefined;
         parked = undefined;
+        lastEnding = undefined;
         if (!turnActive) return;
         turnActive = false;
         const status = interrupting && event.status !== "completed" ? "interrupted" : event.status;
@@ -466,10 +482,21 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       void (async () => {
         try {
           for await (const message of q) {
-            if (parked && message.type !== "result") {
+            if (parked && message.type === "assistant" && !message.parent_tool_use_id) {
               if (settle) clearTimeout(settle);
               settle = undefined;
               parked = undefined;
+            }
+            if (
+              message.type === "system" &&
+              message.subtype === "session_state_changed" &&
+              message.state === "idle" &&
+              turnActive &&
+              lastEnding &&
+              pending.size === 0
+            ) {
+              outstanding.clear();
+              endTurn(lastEnding);
             }
             switch (message.type) {
               case "system":
@@ -518,6 +545,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
                   };
                   authFailed = false;
                 }
+                lastEnding = ending;
                 if (outstanding.size > 0 && !interrupting) park(ending);
                 else endTurn(ending);
                 break;

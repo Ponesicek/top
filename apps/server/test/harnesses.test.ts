@@ -435,3 +435,33 @@ test("Claude Code: outside a repository only the task folder's own instructions 
   assert.ok(!text.includes("Parent rules."));
   assert.match(text, /Work rules\.\nExtra\./);
 });
+
+test("Claude Code: a turn whose result can't account for every message still ends when Claude Code says it's idle", async () => {
+  const fake = fakeClaude(async (message) =>
+    message.priority
+      ? [
+          { ...(result("both done") as object), user_message_uuid: message.uuid } as unknown as SDKMessage,
+          { type: "system", subtype: "session_state_changed", state: "idle" } as unknown as SDKMessage,
+        ]
+      : [],
+  );
+  const claude = claudeAdapter({ command: "/bin/true", query: fake.query, sandbox: async () => true });
+  const c = collect();
+  const session = await claude.open(spec(), c.emit);
+  await session.run({ text: "work", images: [] });
+  await session.steer("and this");
+  const ended = await until("the turn", () => c.of("turn_ended")[0]);
+  assert.equal(ended.result, "both done");
+  await session.close();
+});
+
+test("Claude Code: long instructions keep the nearest folder's files whole and clip the root's, with their headers", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "top-claude-md-"));
+  mkdirSync(join(repo, ".git"));
+  mkdirSync(join(repo, "app"));
+  writeFileSync(join(repo, "CLAUDE.md"), "root ".repeat(10_000));
+  writeFileSync(join(repo, "app", "CLAUDE.md"), "Nearest rules.");
+  const text = (await projectInstructions(join(repo, "app")))!;
+  assert.ok(text.length < 33 * 1024);
+  assert.match(text, /<file path="[^"]*\/CLAUDE\.md">\nroot root[^<]*\n…\n<\/file>\n\n<file path="[^"]*\/app\/CLAUDE\.md">\nNearest rules\.\n<\/file>$/);
+});
