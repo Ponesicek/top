@@ -52,11 +52,9 @@ function Status({ loaded }: { loaded: Exclude<Loaded, { state: "ok" }> }) {
   return <Notice>{loaded.state === "loading" ? "Loading…" : loaded.error}</Notice>;
 }
 
-const MAX_COMPARE = 16 * 1024 * 1024;
-
 async function readBytes(url: string): Promise<Uint8Array | undefined> {
   const response = await fetch(url, { cache: "no-cache" });
-  if (!response.ok || Number(response.headers.get("content-length") ?? 0) > MAX_COMPARE) {
+  if (!response.ok) {
     void response.body?.cancel();
     return undefined;
   }

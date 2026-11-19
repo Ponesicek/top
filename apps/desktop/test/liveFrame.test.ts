@@ -36,6 +36,14 @@ afterEach(() => {
 });
 
 describe("LiveFrames", () => {
+  it("loads a save behind the page shown even when an earlier read never answers", async () => {
+    let calls = 0;
+    const live = new LiveFrames(1, () => (++calls === 1 ? new Promise<Uint8Array>(() => {}) : Promise.resolve(bytes("<h1>new</h1>"))), 60_000, 20);
+    live.show(2);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(shown(live)).toEqual(["shown", "loading"]);
+  });
+
   it("keeps the page it shows when the file is saved again with the same content", async () => {
     const { live, renders } = harness("<h1>Report</h1>");
     const before = live.frames();

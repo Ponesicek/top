@@ -3,6 +3,7 @@ export type Frame = { readonly key: number; readonly shown: boolean };
 export type ReadVersion = () => Promise<Uint8Array | undefined>;
 
 export const SWAP_AFTER_MS = 3_000;
+export const READ_TIMEOUT_MS = 10_000;
 
 const sameBytes = (a: Uint8Array | undefined, b: Uint8Array | undefined) => {
   if (!a || !b || a.length !== b.length) return false;
@@ -13,6 +14,7 @@ const sameBytes = (a: Uint8Array | undefined, b: Uint8Array | undefined) => {
 export class LiveFrames {
   readonly #read: ReadVersion;
   readonly #swapAfterMs: number;
+  readonly #readTimeoutMs: number;
   readonly #listeners = new Set<() => void>();
   #frames: readonly Frame[] = [{ key: 0, shown: true }];
   #keys = 0;
@@ -20,9 +22,10 @@ export class LiveFrames {
   #current: Promise<Uint8Array | undefined>;
   #swap: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(version: number, read: ReadVersion, swapAfterMs = SWAP_AFTER_MS) {
+  constructor(version: number, read: ReadVersion, swapAfterMs = SWAP_AFTER_MS, readTimeoutMs = READ_TIMEOUT_MS) {
     this.#read = read;
     this.#swapAfterMs = swapAfterMs;
+    this.#readTimeoutMs = readTimeoutMs;
     this.#latest = version;
     this.#current = this.#safeRead();
   }
@@ -61,7 +64,8 @@ export class LiveFrames {
   }
 
   #safeRead(): Promise<Uint8Array | undefined> {
-    return this.#read().catch(() => undefined);
+    const timeout = new Promise<undefined>((resolve) => setTimeout(resolve, this.#readTimeoutMs));
+    return Promise.race([this.#read().catch(() => undefined), timeout]);
   }
 
   #set(frames: readonly Frame[]) {
