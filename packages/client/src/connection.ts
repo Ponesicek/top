@@ -12,6 +12,7 @@ import {
   type ResultOf,
   type ServerFrame,
   SkillError,
+  TaskError,
 } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -55,7 +56,8 @@ export type RequestFailure =
   | AttachmentError
   | McpServerError
   | PermissionError
-  | SkillError;
+  | SkillError
+  | TaskError;
 
 const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   BotError: (message) => new BotError({ message }),
@@ -64,6 +66,7 @@ const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   McpServerError: (message) => new McpServerError({ message }),
   PermissionError: (message) => new PermissionError({ message }),
   SkillError: (message) => new SkillError({ message }),
+  TaskError: (message) => new TaskError({ message }),
 };
 
 const numbered = (frame: RequestFrame, req: number): ClientFrame => ({ ...frame, req });

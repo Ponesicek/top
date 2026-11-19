@@ -18,6 +18,7 @@ import { type ServeOptions, serve } from "../src/serve.ts";
 import { LOCAL_SKILLS } from "../src/skills.ts";
 import * as Sqlite from "../src/sqlite.ts";
 import * as Store from "../src/store.ts";
+import type { HarnessAdapter } from "../src/tasks/harness.ts";
 import type { TopTool } from "../src/tools.ts";
 import { botFolder } from "../src/workspace.ts";
 
@@ -28,7 +29,17 @@ afterAll(async () => {
 
 export const MODEL = `${FAKE_PROVIDER}/${FAKE_MODEL}`;
 
+export const BEFORE_TASKS = [
+  "DROP TABLE task_events",
+  "DROP TABLE task_messages",
+  "DROP TABLE task_inputs",
+  "DROP TABLE tasks",
+  "DROP TABLE harness_sessions",
+  "DELETE FROM effect_sql_migrations WHERE migration_id >= 7",
+].join(";");
+
 export const BEFORE_CONTEXT_FILES = [
+  BEFORE_TASKS,
   "ALTER TABLE bots ADD COLUMN description TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE bots ADD COLUMN instructions TEXT NOT NULL DEFAULT ''",
   "DROP TABLE legacy_souls",
@@ -53,6 +64,9 @@ export type HarnessOptions = {
   readonly model?: { readonly models: Models; readonly id: string };
   readonly webSearch?: boolean;
   readonly context?: boolean;
+  readonly harnesses?: readonly HarnessAdapter[];
+  readonly maxTasks?: number | undefined;
+  readonly taskCancelGraceMs?: number;
 };
 
 export const skillsConfig = (dir: string) => ({
@@ -93,6 +107,9 @@ export async function harness(options: HarnessOptions = {}) {
         compactAtTokens: options.compactAtTokens,
         retryDelaysMs: [100, 100, 100],
         webSearch: options.webSearch,
+        harnesses: options.harnesses,
+        maxTasks: options.maxTasks,
+        taskCancelGraceMs: options.taskCancelGraceMs,
       });
     }),
   );

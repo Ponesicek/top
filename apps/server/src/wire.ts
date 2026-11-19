@@ -20,6 +20,7 @@ export function summarize(args: unknown): string {
 }
 
 const permissionOf = Schema.decodeUnknownOption(Schema.Struct({ permission: PermissionAsk }));
+const taskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
 
 export function toWire(stored: StoredEntry, full = false): Entry | undefined {
   const base = { seq: stored.seq, bot: stored.bot, at: stored.at };
@@ -73,6 +74,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       const text = textOf(message.content);
       const cut = !full && text.length > TOOL_PREVIEW_CHARS;
       const permission = Option.getOrUndefined(permissionOf(message.details))?.permission;
+      const task = Option.getOrUndefined(taskOf(message.details))?.task;
       return {
         ...base,
         kind: "tool",
@@ -83,6 +85,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         ...(message.isError ? { isError: true as const } : {}),
         ...(stored.outcome ? { outcome: stored.outcome } : {}),
         ...(permission ? { permission } : {}),
+        ...(task ? { task } : {}),
       };
     }
   }

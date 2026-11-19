@@ -26,6 +26,7 @@ import {
   transcriptMessage,
   UserView,
 } from "./messages.ts";
+import { makeTaskQueries, TASK_PURGE_ORDER, TASK_TABLES, type TaskQueries } from "./tasks/store.ts";
 
 const Int = Schema.Int;
 const Text = Schema.String;
@@ -308,6 +309,10 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     yield* sql`ALTER TABLE bots DROP COLUMN description`;
     yield* sql`ALTER TABLE bots DROP COLUMN instructions`;
   }),
+  "7_tasks": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (const statement of TASK_TABLES.split(";\n")) yield* sql.unsafe(statement);
+  }),
 };
 
 const refuseNewerData = Effect.gen(function* () {
@@ -455,6 +460,8 @@ export class Store extends Context.Service<
       outcome?: ToolOutcome,
     ) => Effect.Effect<StoredEntry>;
     readonly toolCall: (assistantSeq: number, toolCallId: string) => Effect.Effect<ToolCallRow | undefined>;
+
+    readonly tasks: TaskQueries;
   }
 >()("top/Store") {}
 
@@ -536,7 +543,20 @@ const make = Effect.gen(function* () {
   const purgeBot = (bot: number) =>
     transaction(
       Effect.gen(function* () {
-        for (const table of ["entries", "inbox", "tool_calls", "bot_mcp", "bot_skills", "files", "wakes", "jobs", "permissions", "attachments", "legacy_souls"])
+        for (const table of [
+          ...TASK_PURGE_ORDER,
+          "entries",
+          "inbox",
+          "tool_calls",
+          "bot_mcp",
+          "bot_skills",
+          "files",
+          "wakes",
+          "jobs",
+          "permissions",
+          "attachments",
+          "legacy_souls",
+        ])
           yield* q(sql.unsafe(`DELETE FROM ${table} WHERE bot = ?`, [bot]));
         yield* q(sql`DELETE FROM bots WHERE id = ${bot}`);
       }),
@@ -843,6 +863,8 @@ const make = Effect.gen(function* () {
           first(sql`SELECT * FROM tool_calls WHERE assistant_seq = ${assistantSeq} AND tool_call_id = ${toolCallId}`),
           (row) => row && toolCallOf(row),
         ),
+
+      tasks: makeTaskQueries(sql, transaction, (bot, requestId, text) => queueEvent(bot, requestId, text, "task")),
     }),
   );
 });

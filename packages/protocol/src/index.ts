@@ -6,7 +6,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 export const DEFAULT_PORT = 7357;
 
 const Struct = Schema.Struct;
@@ -35,6 +35,7 @@ export const BotSummary = Struct({
   queued: Schema.Int,
   background: Optional(Schema.Int),
   approvals: Optional(Schema.Int),
+  tasks: Optional(Schema.Int),
   wakeAt: Optional(Schema.Number),
   lastSeq: Seq,
   webSearch: Optional(Schema.Boolean),
@@ -92,6 +93,68 @@ export type PermissionAnswer = typeof PermissionAnswer.Type;
 
 export const MAX_PERMISSION_ACTION = 500;
 export const MAX_PERMISSION_REASON = 1_000;
+
+export const TASK_STATES = ["queued", "starting", "running", "waiting_for_input", "completed", "failed", "cancelled"] as const;
+export const TaskState = Schema.Literals(TASK_STATES);
+export type TaskState = typeof TaskState.Type;
+export const ENDED_TASK_STATES: readonly TaskState[] = ["completed", "failed", "cancelled"];
+export const taskEnded = (state: TaskState) => ENDED_TASK_STATES.includes(state);
+
+export const TaskPolicy = Schema.Literals(["read_only", "workspace_write", "full_access"]);
+export type TaskPolicy = typeof TaskPolicy.Type;
+
+export const TaskDecision = Schema.Literals(["allow", "allow_for_session", "deny"]);
+export type TaskDecision = typeof TaskDecision.Type;
+
+export const TaskQuestionOption = Struct({ label: Schema.String, description: Optional(Schema.String) });
+export type TaskQuestionOption = typeof TaskQuestionOption.Type;
+
+export const TaskQuestion = Struct({
+  id: Schema.String,
+  question: Schema.String,
+  header: Optional(Schema.String),
+  options: List(TaskQuestionOption),
+  multiple: Optional(Schema.Literal(true)),
+  secret: Optional(Schema.Literal(true)),
+});
+export type TaskQuestion = typeof TaskQuestion.Type;
+
+export const TaskInputKind = Schema.Literals(["workspace", "approval", "question"]);
+export type TaskInputKind = typeof TaskInputKind.Type;
+
+export const TaskInputView = Struct({
+  id: Schema.Int,
+  kind: TaskInputKind,
+  title: Schema.String,
+  detail: Optional(Schema.String),
+  decisions: Optional(List(TaskDecision)),
+  questions: Optional(List(TaskQuestion)),
+  userOnly: Optional(Schema.Literal(true)),
+});
+export type TaskInputView = typeof TaskInputView.Type;
+
+export const TaskView = Struct({
+  id: Schema.String,
+  bot: BotId,
+  harness: Schema.String,
+  title: Schema.String,
+  state: TaskState,
+  session: Schema.String,
+  cwd: Schema.String,
+  policy: TaskPolicy,
+  model: Optional(Schema.String),
+  createdAt: Schema.Number,
+  endedAt: Optional(Schema.Number),
+  latest: Optional(Schema.String),
+  error: Optional(Schema.String),
+  inputs: List(TaskInputView),
+});
+export type TaskView = typeof TaskView.Type;
+
+export const TaskAnswers = Schema.Record(Schema.String, List(Schema.String));
+export type TaskAnswers = typeof TaskAnswers.Type;
+
+export const MAX_TASK_ANSWER = 4_000;
 
 export const SkillSource = Schema.Literals(["shared", "local"]);
 export type SkillSource = typeof SkillSource.Type;
@@ -168,7 +231,7 @@ const entryBase = { seq: Seq, bot: BotId, at: Schema.Number };
 export const FileChange = Struct({ path: Schema.String, change: Schema.Literals(["added", "changed", "removed"]) });
 export type FileChange = typeof FileChange.Type;
 
-export const MessageSource = Schema.Literals(["wake", "job", "permission"]);
+export const MessageSource = Schema.Literals(["wake", "job", "permission", "task"]);
 export type MessageSource = typeof MessageSource.Type;
 
 export const Entry = Schema.Union([
@@ -203,6 +266,7 @@ export const Entry = Schema.Union([
     isError: Optional(Schema.Literal(true)),
     outcome: Optional(ToolOutcome),
     permission: Optional(PermissionAsk),
+    task: Optional(Schema.String),
   }),
   Struct({ ...entryBase, kind: Schema.Literal("permission"), request: Schema.Int, answer: PermissionAnswer }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),
@@ -364,6 +428,15 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("installUpdate"), req, version: Schema.String }),
   Struct({ t: Schema.Literal("setUpdateChannel"), req, channel: Channel }),
   Struct({ t: Schema.Literal("answerPermission"), req, id: Schema.Int, bot: BotId, allow: Schema.Boolean }),
+  Struct({
+    t: Schema.Literal("answerTask"),
+    req,
+    task: Schema.String,
+    input: Schema.Int,
+    decision: Optional(TaskDecision),
+    answers: Optional(TaskAnswers),
+  }),
+  Struct({ t: Schema.Literal("cancelTask"), req, task: Schema.String }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
@@ -400,6 +473,8 @@ export const RequestResult = {
   installUpdate: Schema.Null,
   setUpdateChannel: Schema.Null,
   answerPermission: Schema.Null,
+  answerTask: Schema.Null,
+  cancelTask: Schema.Null,
 } as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
 export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
 
@@ -445,6 +520,7 @@ export const ServerFrame = Schema.Union([
   Struct({ t: Schema.Literal("files"), bot: BotId, folder: Schema.String, files: List(FileView), more: Optional(Schema.Literal(true)) }),
   Struct({ t: Schema.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
   Struct({ t: Schema.Literal("permissions"), requests: List(PermissionRequest) }),
+  Struct({ t: Schema.Literal("tasks"), tasks: List(TaskView) }),
   Struct({ t: Schema.Literal("update"), update: UpdateView }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(true), value: Schema.Unknown }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(false), error: Schema.String }),

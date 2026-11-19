@@ -121,3 +121,27 @@ describe("web search rows", () => {
     expect(row).toMatchObject({ searches: [], citations: [] });
   });
 });
+
+describe("task rows", () => {
+  const START = "collar__task_start";
+  const started = (task: string, title: string, isError = false) =>
+    entry({
+      kind: "tool",
+      toolCallId: `call_${task}`,
+      name: START,
+      text: isError ? "There's no folder /nope." : `{"started":{"id":"${task}","title":${JSON.stringify(title)},"state":"queued","harness":"codex"…`,
+      ...(isError ? { isError: true } : { task }),
+    });
+
+  it("shows a card where the bot started the task, with its title for when the task is no longer listed", () => {
+    const rows = displayRows(committedRows([said(), started("task_a", 'Fix "login"')]), false);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "task"]);
+    expect(rows[1]).toMatchObject({ bot: BOT, task: "task_a", title: 'Fix "login"' });
+  });
+
+  it("a refused start stays a tool step, and the task's messages to the bot show nothing", () => {
+    const told = entry({ kind: "user", text: "[Task task_a completed] Fix", source: "task", requestId: "task:task_a:completed" });
+    const rows = displayRows(committedRows([said(), started("task_b", "x", true), told]), true);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
+  });
+});

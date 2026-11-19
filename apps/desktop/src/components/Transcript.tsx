@@ -17,6 +17,7 @@ import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
 import { PermissionCard } from "./transcript/PermissionCard.tsx";
 import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider, type RowRenderer } from "./transcript/parts.tsx";
+import { TaskCard } from "./transcript/TaskCard.tsx";
 import { renderTeamRow } from "./transcript/TeamRows.tsx";
 
 const BOTTOM_SLACK = 48;
@@ -29,6 +30,7 @@ function estimate(row: DisplayRow | undefined): number {
   if (row.kind === "assistant") return 80 + Math.ceil(row.text.length / 110) * 24;
   if (row.kind === "toolgroup" || row.kind === "files") return 34;
   if (row.kind === "permission") return 120;
+  if (row.kind === "task") return 130;
   return 48;
 }
 
@@ -227,6 +229,8 @@ export const Transcript = memo(function Transcript({
                   <FilesLine row={row} bot={sync.id} className={look.files} />
                 ) : row.kind === "permission" ? (
                   <PermissionCard row={row} className={look.files} />
+                ) : row.kind === "task" ? (
+                  <TaskCard row={row} className={look.files} />
                 ) : (
                   look.render(rows, item.index)
                 )}
