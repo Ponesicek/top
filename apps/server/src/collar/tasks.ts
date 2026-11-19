@@ -104,6 +104,9 @@ export const tasksGroup: CollarGroup = (daemon) => {
         "The harness runs with full access, as the user running Top: no sandbox and no approval prompts. Only start work you would do yourself, in the folder it belongs in.",
         "Questions it asks come to you as a message (answer with collar__task_respond) and to the user on a card.",
         "`cwd` defaults to your own folder.",
+        ...tasks.adapters
+          .filter((a) => a.locate)
+          .map((a) => `"${a.id}" runs on another computer: its \`cwd\` is a folder there, one of its projects, and is checked there.`),
         "A task is one piece of work in a session. To continue a session later (it keeps the conversation), start a new task with `session`; `fork: true` branches it instead.",
       ].join("\n"),
       parameters: Type.Object(

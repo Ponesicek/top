@@ -281,8 +281,8 @@ A bot can hand coding work to a full coding agent on the daemon's computer: **Cl
 through the official Claude Agent SDK) or **Codex** (through `codex app-server`, its official JSON-RPC
 protocol). Each harness runs its own agent loop and tools; Top coordinates the work, keeps it durable
 and puts its questions in front of the bot and the user. The harness, the model and where it runs are
-separate things: a task names a harness, may name a model in that harness's terms, and runs locally
-(the only place for now).
+separate things: a task names a harness, may name a model in that harness's terms, and runs locally,
+or on another computer through **T3 Code** (below).
 
 **The tools** (Collar, so `collar__task_start` and so on):
 
@@ -336,21 +336,24 @@ redacted from the event log and results.
 may have made some of its changes, with its session kept to carry on, and the bot is told. A harness
 process that dies mid-task fails that task the same way. A turn's start is never assumed to have
 happened without the harness saying so (a Claude Code session counts once it has said it started).
-An end whose message to the bot was lost in a crash is sent at the next start.
+An end whose message to the bot was lost in a crash is sent at the next start. T3 Code is the
+exception that proves it: its work runs in T3 Code's server, not under the daemon, so a task there keeps
+going through a restart and Top follows it again (see below).
 
 **What each harness supports.** Unsupported features are refused with an error, never imitated.
 
-| | Claude Code | Codex |
-|---|---|---|
-| Continue a session / branch it | ✓ / ✓ | ✓ / ✓ |
-| Steer the running turn / queue the next | ✓ (`priority: next`) / ✓ | ✓ (`turn/steer`) / ✓ (Top's queue) |
-| Questions | ✓ (AskUserQuestion) | ✗ (off in Codex's default mode; never enabled by Top) |
-| Permissions | checks off (`bypassPermissions`) | `danger-full-access`, approvals `never` |
-| Images with the prompt | ✓ | ✓ (`localImage`) |
-| Changed files / usage | ✓ / ✓ tokens and cost | ✓ / ✓ tokens |
-| Cancel / pick a session up in a new process | ✓ / ✓ | ✓ / ✓ |
-| MCP servers' requests for input | not relayed | declined, and logged |
-| Options | `effort`, `max_turns` | `reasoning_effort` |
+| | Claude Code | Codex | T3 Code |
+|---|---|---|---|
+| Continue a session / branch it | ✓ / ✓ | ✓ / ✓ | ✓ (same thread) / ✗ |
+| Steer the running turn / queue the next | ✓ (`priority: next`) / ✓ | ✓ (`turn/steer`) / ✓ (Top's queue) | ✓ (`steer_active`) / ✓ (Top's queue) |
+| Questions | ✓ (AskUserQuestion) | ✗ (off in Codex's default mode; never enabled by Top) | ✓ (its providers' questions) |
+| Permissions | checks off (`bypassPermissions`) | `danger-full-access`, approvals `never` | threads start in `full-access`; approvals declined |
+| Images with the prompt | ✓ | ✓ (`localImage`) | ✗ |
+| Changed files / usage | ✓ / ✓ tokens and cost | ✓ / ✓ tokens | ✓ / ✗ |
+| Cancel / pick a session up in a new process | ✓ / ✓ | ✓ / ✓ | ✓ / ✓ |
+| Keeps working through a Top restart | ✗ (cut off) | ✗ (cut off) | ✓ (followed again) |
+| MCP servers' requests for input | not relayed | declined, and logged | answered in T3 Code only |
+| Options | `effort`, `max_turns` | `reasoning_effort` | `provider` (a T3 Code provider instance) |
 
 **Setting up.** Top uses the `claude` and `codex` already installed and signed in on the daemon's
 computer (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere), and never signs them in, out, or
@@ -360,6 +363,60 @@ a fake harness instead: message one `call collar__task_start {"harness": "fake",
 "fail", "crash" or "forever" in the prompt play the other cases.
 `TOP_REAL_HARNESS=codex pnpm --filter @top/server test test/real-harness.test.ts` runs one real
 harness end to end in a temporary folder (it uses your plan).
+
+#### T3 Code
+
+The `t3code` harness hands a task to a [T3 Code](https://github.com/pingdotgg/t3code) server, on this
+computer or another one, through T3 Code's own client API: its HTTP auth routes and the WebSocket RPC
+its apps use (orchestration protocol 2). Top doesn't use T3 Code's `/mcp` endpoint, T3 Connect or any
+cloud relay. A task becomes a thread in a T3 Code project, run by one of T3 Code's providers; the
+work, the files and the provider sign-ins are all on T3 Code's computer.
+
+- **Connecting.** `top t3code connect <address>` on the daemon's computer. The address is explicit
+  (Top never guesses one) and is checked to answer as T3 Code before anything secret is sent. It then
+  asks for a pairing code, read without echo (or from stdin): make one on T3 Code's computer with
+  `t3 auth pairing create --scope orchestration:read --scope orchestration:operate --label Top`, or
+  take a pairing link from T3 Code's Settings → Sharing & access. Top trades the code for its own
+  session, narrowed to those two scopes (reading threads and projects; starting, messaging,
+  answering and stopping threads), and keeps it in `~/.top/server/t3code.json`, readable by you
+  only. The session lasts 30 days (`t3 auth session issue … --ttl` makes a token you can paste
+  instead). Top remembers the environment it paired with and won't send the credential to an address
+  that now answers as another one. Restart the daemon to offer T3 Code to the bots;
+  `top t3code status` checks the connection and lists T3 Code's providers, models and projects;
+  `top t3code disconnect` forgets it (revoke the session in T3 Code's Sharing & access too).
+- **Ways to reach it.** `http://127.0.0.1:3773` on the same computer. Over Tailscale, the address of
+  T3 Code's Tailscale Serve route (`https://machine.tailnet.ts.net`, from `t3 serve --tailscale-serve`
+  or `t3 pair --tailscale` there), or its tailnet address when T3 Code listens on the tailnet (`t3 serve
+  --lan` or the background service's local-network choice), plain HTTP inside WireGuard. Over SSH, a
+  forward (`ssh -L 3773:127.0.0.1:3773 host`) and `http://127.0.0.1:3773`. Tailscale is only the
+  transport: T3 Code's pairing still decides what Top may do. Top refuses plain HTTP that leaves this
+  computer outside a tailnet unless you pass `--plain-http`. HTTPS uses the system's certificate
+  authorities (`NODE_EXTRA_CA_CERTS` adds your own). Top changes nothing about Tailscale, T3 Code or
+  either computer's network settings.
+- **Tasks.** `cwd` is a folder on T3 Code's computer and must be one of its projects (Top doesn't look
+  at its own disk for it; with one project it's the default). `model` is a T3 Code model (`haiku` and
+  other aliases work), `options.provider` its provider instance (`claudeAgent`, `codex`, …); without
+  them, T3 Code's first ready provider and its default model. Threads start in T3 Code's
+  `full-access` mode, as Top's other harnesses run; an approval it asks for anyway is declined and
+  logged, and T3 Code may still refuse what its own policy doesn't allow. Questions come to the bot and
+  the user as with Claude Code, and can be answered in T3 Code too. Secret and link requests can only
+  be answered in T3 Code.
+- **Durable and once only.** Each turn carries an id made from Top's task (T3 Code's command and
+  message ids), so a request whose reply was lost is simply sent again, and T3 Code takes it once.
+  When the connection drops, Top reconnects (for up to 10 minutes) and asks for the thread's events
+  from where it left off. When Top restarts, a running task is followed again: what was already sent
+  isn't sent twice, a finished run gives its answer, and an answer Top saved before the restart is
+  delivered. Cancel stops only the task's own run (`run.interrupt`), never the thread or other work in
+  it; a run someone stops in T3 Code fails the task, saying so. An expired or revoked session fails
+  the task with how to pair again.
+- **Compatibility.** Tested against T3 Code `0.1.8-nightly.20261109.4429`; its upstream `main`
+  (0.1.11 nightlies) speaks the same protocol. T3 Code's client API is the protocol of its own apps,
+  not a published SDK, so it can change: Top checks the protocol version first and refuses a server
+  that speaks another one, saying which side to update.
+
+`TOP_REAL_T3=/path/to/t3 pnpm --filter @top/server test test/real-t3code.test.ts` boots an isolated T3
+Code server (its own data folder, port and project) and drives it end to end with Claude Haiku (it uses
+the Claude Code sign-in on this computer).
 
 ## Releases and updates
 

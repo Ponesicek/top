@@ -12,6 +12,7 @@ export type Capabilities = {
   readonly usage: boolean;
   readonly cancel: boolean;
   readonly reconnect: boolean;
+  readonly durable: boolean;
 };
 
 export const CAPABILITY_NOTES: Record<keyof Capabilities, string> = {
@@ -25,9 +26,11 @@ export const CAPABILITY_NOTES: Record<keyof Capabilities, string> = {
   usage: "report token usage",
   cancel: "stop a running turn (`task_cancel`)",
   reconnect: "pick a session back up after its process ended, in a new task",
+  durable: "keeps working through a restart of Top, which follows it again when it's back",
 };
 
-export type Turn = { readonly text: string; readonly images: readonly string[] };
+/** `key` is unique to this turn in Top and the same when a restart sends it again, so a durable harness can take it once. */
+export type Turn = { readonly key: string; readonly text: string; readonly images: readonly string[] };
 
 export type HarnessRequest = {
   readonly id: string;
@@ -56,6 +59,7 @@ export type HarnessEvent =
   | { readonly type: "exited"; readonly error: string };
 
 export type OpenSpec = {
+  readonly session: string;
   readonly cwd: string;
   readonly model: string | undefined;
   readonly options: Readonly<Record<string, unknown>>;
@@ -79,6 +83,8 @@ export interface HarnessAdapter {
   readonly capabilities: Capabilities;
   readonly options: TObject;
   readonly check: () => Promise<Availability>;
+  /** For a harness on another computer: checks `cwd` there (Top doesn't look at its own disk) and returns the folder to use. */
+  readonly locate?: (cwd: string | undefined) => Promise<string>;
   readonly open: (spec: OpenSpec, emit: (event: HarnessEvent) => void) => Promise<HarnessSession>;
 }
 

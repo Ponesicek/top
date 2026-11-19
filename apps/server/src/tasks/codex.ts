@@ -108,6 +108,7 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
       usage: true,
       cancel: true,
       reconnect: true,
+      durable: false,
     },
     options: codexOptions,
     check: () =>

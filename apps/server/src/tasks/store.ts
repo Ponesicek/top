@@ -348,6 +348,11 @@ export function makeTaskQueries(
     messageByKey: (key: string) => Effect.map(first(sql`SELECT * FROM task_messages WHERE key = ${key}`), (row) => row && messageOf(row)),
     pendingMessages: (id: string) =>
       Effect.map(rows(sql`SELECT * FROM task_messages WHERE task = ${id} AND state = 'pending' ORDER BY id`), (r) => r.map(messageOf)),
+    lastSentQueued: (id: string) =>
+      Effect.map(
+        first(sql`SELECT * FROM task_messages WHERE task = ${id} AND mode = 'queue' AND state = 'sent' ORDER BY id DESC LIMIT 1`),
+        (row) => row && messageOf(row),
+      ),
     setMessageState: (id: number, state: "sent" | "dropped") =>
       Effect.map(first(sql`UPDATE task_messages SET state = ${state} WHERE id = ${id} AND state = 'pending' RETURNING id`), (row) => row !== undefined),
     dropMessages: (id: string) =>

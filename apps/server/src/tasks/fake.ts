@@ -29,6 +29,7 @@ const ALL: Capabilities = {
   usage: true,
   cancel: true,
   reconnect: true,
+  durable: false,
 };
 
 export function fakeHarness(config: FakeHarnessConfig = {}): FakeHarness {
