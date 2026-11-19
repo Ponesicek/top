@@ -12,6 +12,7 @@ import {
   type ResultOf,
   type ServerFrame,
   SkillError,
+  TaskError,
 } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -46,7 +47,17 @@ export class TimeoutError extends Schema.TaggedError<TimeoutError>()("TimeoutErr
 
 export class RequestError extends Schema.TaggedError<RequestError>()("RequestError", { message: Schema.String }) {}
 
-export type RequestFailure = OfflineError | TimeoutError | RequestError | BotError | BusyError | AttachmentError | McpServerError | AskError | SkillError;
+export type RequestFailure =
+  | OfflineError
+  | TimeoutError
+  | RequestError
+  | BotError
+  | BusyError
+  | AttachmentError
+  | McpServerError
+  | AskError
+  | SkillError
+  | TaskError;
 
 const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   BotError: (message) => new BotError({ message }),
@@ -55,6 +66,7 @@ const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   McpServerError: (message) => new McpServerError({ message }),
   AskError: (message) => new AskError({ message }),
   SkillError: (message) => new SkillError({ message }),
+  TaskError: (message) => new TaskError({ message }),
 };
 
 const numbered = (frame: RequestFrame, req: number): ClientFrame => ({ ...frame, req });

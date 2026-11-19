@@ -7,7 +7,7 @@ import { copyCode } from "../lib/copyCode.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { findPassage, onJump } from "../quotes.ts";
-import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows } from "../rows.ts";
+import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows, waitingTaskRows } from "../rows.ts";
 import { useClient, useConversation } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
@@ -17,6 +17,7 @@ import { AskCard } from "./transcript/AskCard.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
 import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider, type RowRenderer } from "./transcript/parts.tsx";
+import { TaskCard } from "./transcript/TaskCard.tsx";
 import { renderTeamRow } from "./transcript/TeamRows.tsx";
 
 const BOTTOM_SLACK = 48;
@@ -29,6 +30,7 @@ function estimate(row: DisplayRow | undefined): number {
   if (row.kind === "assistant") return 80 + Math.ceil(row.text.length / 110) * 24;
   if (row.kind === "toolgroup" || row.kind === "files") return 34;
   if (row.kind === "ask") return row.ask.kind === "question" && !row.answer ? 120 + row.ask.options.length * 44 : 140;
+  if (row.kind === "task") return 130;
   return 48;
 }
 
@@ -38,9 +40,12 @@ const STYLES: Record<ChatStyle, { render: RowRenderer; scroll?: string; inner: s
   chat: { render: renderChatRow, inner: "max-w-240", row: "px-[5%] narrow:px-2", files: "pl-2" },
 };
 
-function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: boolean): DisplayRow[] {
+function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: boolean, bot: number): DisplayRow[] {
   const committed = committedRows(snapshot.items);
-  const tail = tailRows(snapshot, working);
+  const tasks = useClient((s) => s.tasks);
+  const waiting = waitingTaskRows(committed, tasks, bot);
+  const queued = tailRows(snapshot, working);
+  const tail = waiting.length ? [...queued, ...waiting] : queued;
   const last = useRef<{ committed: Row[]; tail: Row[]; showTools: boolean; rows: DisplayRow[] } | null>(null);
   const prev = last.current;
   if (prev && prev.committed === committed && prev.showTools === showTools && prev.tail.length === tail.length && prev.tail.every((r, i) => r === tail[i])) {
@@ -66,7 +71,7 @@ export const Transcript = memo(function Transcript({
   const avatar = useClient((s) => s.bots.find((b) => b.id === sync.id)?.avatar);
   const working = useClient((s) => isWorking(s.bots.find((b) => b.id === sync.id)?.status));
   const identity = useMemo<BotIdentity>(() => ({ sync, name, avatar }), [sync, name, avatar]);
-  const rows = useRows(snapshot, working, showTools);
+  const rows = useRows(snapshot, working, showTools, sync.id);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -227,6 +232,8 @@ export const Transcript = memo(function Transcript({
                   <FilesLine row={row} bot={sync.id} className={look.files} />
                 ) : row.kind === "ask" ? (
                   <AskCard row={row} className={look.files} />
+                ) : row.kind === "task" ? (
+                  <TaskCard row={row} className={look.files} />
                 ) : (
                   look.render(rows, item.index)
                 )}

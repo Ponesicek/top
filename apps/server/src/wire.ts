@@ -20,6 +20,7 @@ export function summarize(args: unknown): string {
 }
 
 const askOf = Schema.decodeUnknownOption(Schema.Struct({ ask: Ask }));
+const taskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
 
 export function toWire(stored: StoredEntry, full = false): Entry | undefined {
   const base = { seq: stored.seq, bot: stored.bot, at: stored.at };
@@ -79,6 +80,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       const text = textOf(message.content);
       const cut = !full && text.length > TOOL_PREVIEW_CHARS;
       const ask = Option.getOrUndefined(askOf(message.details))?.ask;
+      const task = Option.getOrUndefined(taskOf(message.details))?.task;
       return {
         ...base,
         kind: "tool",
@@ -89,6 +91,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         ...(message.isError ? { isError: true as const } : {}),
         ...(stored.outcome ? { outcome: stored.outcome } : {}),
         ...(ask ? { ask } : {}),
+        ...(task ? { task } : {}),
       };
     }
   }

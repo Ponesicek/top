@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer";
 import { afterAll, test } from "vitest";
 import * as Sqlite from "../src/sqlite.ts";
 import * as Store from "../src/store.ts";
-import { BEFORE_ASKS, BEFORE_CONTEXT_FILES } from "./harness.ts";
+import { BEFORE_ASKS, BEFORE_CONTEXT_FILES, BEFORE_TASKS } from "./harness.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "top-store-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -88,6 +88,49 @@ test("permission requests from before questions and secrets carry over: waiting 
       assert.equal((yield* store.inbox(1))[0]?.source, "answer");
       const next = yield* store.ask(1, "1:9:call_1", { kind: "question", question: "Which?", options: [] });
       assert.equal(next.ask.id, 3, "ids keep counting from the old requests");
+    }),
+  );
+});
+
+test("a database from before harness tasks gains their tables, keeps everything else, and purges them with their bot", async () => {
+  const filename = join(dir, "before-tasks.sqlite");
+  await withStore(filename, (store) =>
+    Effect.gen(function* () {
+      const bot = yield* store.createBot("Atlas", "fake/model");
+      yield* store.append(bot, "notice", { text: "kept" });
+    }),
+  );
+  const db = new DatabaseSync(filename);
+  db.exec(BEFORE_TASKS);
+  db.close();
+  await withStore(filename, (store) =>
+    Effect.gen(function* () {
+      assert.equal((yield* store.bots).length, 1);
+      assert.deepEqual(
+        (yield* store.after(1, 0, 10)).map((e) => e.kind),
+        ["notice"],
+      );
+      const session = yield* store.tasks.createSession({
+        id: "ses_1",
+        bot: 1,
+        harness: "codex",
+        cwd: "/w",
+        model: null,
+        options: {},
+        parent: null,
+      });
+      const task = yield* store.tasks.createTask({ id: "task_1", bot: 1, key: "k", session: session.id, title: "t", prompt: "p", images: [] }, "queued");
+      yield* store.tasks.appendEvents([{ task: task.id, bot: 1, at: 1, kind: "state", text: "queued" }]);
+      yield* store.tasks.addInput({ task: task.id, bot: 1, external: "q1", title: "x", questions: [] });
+      yield* store.tasks.addMessage({ task: task.id, bot: 1, key: "m", mode: "queue", text: "more" });
+      const again = yield* store.tasks.addInput({ task: task.id, bot: 1, external: "q1", title: "x", questions: [] });
+      assert.equal(again.created, false, "one request per harness request id");
+      assert.equal((yield* store.tasks.setState(task.id, ["queued"], "starting"))?.state, "starting");
+      assert.equal(yield* store.tasks.setState(task.id, ["queued"], "running"), undefined, "a state change only applies from the state it expects");
+      yield* store.markDeleted(1);
+      yield* store.purgeBot(1);
+      assert.equal(yield* store.tasks.task(task.id), undefined);
+      assert.equal(yield* store.tasks.session(session.id), undefined);
     }),
   );
 });

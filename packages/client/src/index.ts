@@ -17,6 +17,8 @@ import {
   type SkillFolder,
   type SkillFolderAdded,
   type SkillsView,
+  type TaskAnswers,
+  type TaskView,
   type UpdateView,
   type Viewer,
   type WaitingAsk,
@@ -70,6 +72,11 @@ export type {
   SkillsView,
   SkillUse,
   SkillView,
+  TaskAnswers,
+  TaskInputView,
+  TaskQuestion,
+  TaskState,
+  TaskView,
   ToolCallView,
   ToolOutcome,
   UpdateRelease,
@@ -100,8 +107,10 @@ export {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_EDGE,
   MAX_MCP_NAME,
+  MAX_TASK_ANSWER,
   MODEL_IMAGE_TYPES,
   skillInvocation,
+  taskEnded,
 } from "@top/protocol";
 export { type Connection, type ConnectionStatus, makeConnection, OfflineError, RequestError, type RequestFailure, TimeoutError } from "./connection.ts";
 export * from "./conversation.ts";
@@ -142,6 +151,7 @@ export type TopSnapshot = {
   readonly server: { readonly version: string | undefined; readonly channel: Channel | undefined } | undefined;
   readonly update: UpdateView | undefined;
   readonly asks: readonly WaitingAsk[];
+  readonly tasks: readonly TaskView[];
   readonly outdated: "client" | "server" | undefined;
 };
 
@@ -184,6 +194,7 @@ export class TopClient {
       server: undefined,
       update: undefined,
       asks: [],
+      tasks: [],
       outdated: undefined,
     };
     this.#connection = Effect.runSync(
@@ -345,6 +356,14 @@ export class TopClient {
     return this.#command({ t: "saveSecret", id: request.id, bot: request.bot, value });
   }
 
+  answerTask(task: string, input: number, answers: TaskAnswers): Promise<void> {
+    return this.#command({ t: "answerTask", task, input, answers });
+  }
+
+  cancelTask(task: string): Promise<void> {
+    return this.#command({ t: "cancelTask", task });
+  }
+
   #request<F extends RequestFrame>(frame: F): Promise<ResultOf<F["t"]>> {
     return this.#run.promise(this.#connection.request(frame));
   }
@@ -479,6 +498,9 @@ export class TopClient {
         return;
       case "asks":
         this.#publish({ asks: frame.asks });
+        return;
+      case "tasks":
+        this.#publish({ tasks: frame.tasks });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);

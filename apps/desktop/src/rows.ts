@@ -12,6 +12,7 @@ import type {
   QuestionReply,
   QueuedMessage,
   SkillUse,
+  TaskView,
   ToolCallView,
   TranscriptItem,
   WebSearchStep,
@@ -57,13 +58,14 @@ export type Row =
       readonly answer?: AskOutcome;
       readonly reply?: QuestionReply;
     }
+  | { readonly kind: "task"; readonly key: string; readonly bot: number; readonly task: string; readonly title?: string }
   | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
 
 const entryRows = new WeakMap<Entry, Row>();
 const NONE: readonly never[] = [];
 
-const hidden = (source: string | undefined) => source === "job" || source === "answer";
+const hidden = (source: string | undefined) => source === "job" || source === "answer" || source === "task";
 
 function rowForEntry(entry: Exclude<Entry, AnswerEntry>): Row {
   let row = entryRows.get(entry);
@@ -130,6 +132,28 @@ function askRow(entry: ToolEntry, ask: Ask, settled: AnswerEntry | undefined): A
   return row;
 }
 
+type TaskRow = Extract<Row, { kind: "task" }>;
+const taskRows = new WeakMap<ToolEntry, TaskRow>();
+
+function taskTitle(text: string): string | undefined {
+  const match = /"title":"((?:[^"\\]|\\.)*)"/.exec(text);
+  if (!match) return undefined;
+  try {
+    return JSON.parse(`"${match[1]}"`) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+function taskRow(entry: ToolEntry, task: string): TaskRow {
+  const prev = taskRows.get(entry);
+  if (prev) return prev;
+  const title = taskTitle(entry.text);
+  const row: TaskRow = { kind: "task", key: `e${entry.seq}`, bot: entry.bot, task, ...(title ? { title } : {}) };
+  taskRows.set(entry, row);
+  return row;
+}
+
 export function committedRows(items: readonly TranscriptItem[]): Row[] {
   let rows = itemRowsCache.get(items);
   if (rows) return rows;
@@ -142,10 +166,30 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
     else if (item.entry.kind === "user" && hidden(item.entry.source)) continue;
     else if (item.entry.kind === "answer") continue;
     else if (item.entry.kind === "tool" && item.entry.ask) rows.push(askRow(item.entry, item.entry.ask, settled.get(item.entry.ask.id)));
+    else if (item.entry.kind === "tool" && item.entry.task && !item.entry.isError) rows.push(taskRow(item.entry, item.entry.task));
     else rows.push(rowForEntry(item.entry));
   }
   itemRowsCache.set(items, rows);
   return rows;
+}
+
+const waitingCache = new Map<string, TaskRow>();
+
+export function waitingTaskRows(committed: readonly Row[], tasks: readonly TaskView[], bot: number): Row[] {
+  const waiting = tasks.filter((t) => t.bot === bot && t.inputs.length > 0);
+  for (const id of waitingCache.keys()) if (!waiting.some((t) => t.id === id)) waitingCache.delete(id);
+  if (!waiting.length) return [];
+  const shown = new Set(committed.flatMap((r) => (r.kind === "task" ? [r.task] : [])));
+  return waiting
+    .filter((t) => !shown.has(t.id))
+    .map((t) => {
+      let row = waitingCache.get(t.id);
+      if (!row || row.title !== t.title) {
+        row = { kind: "task", key: `waiting-${t.id}`, bot, task: t.id, title: t.title };
+        waitingCache.set(t.id, row);
+      }
+      return row;
+    });
 }
 
 const tailCache = new WeakMap<object, Row>();
@@ -201,7 +245,7 @@ export type FilesRow = Extract<Row, { kind: "files" }>;
 
 export function author(row: DisplayRow): "user" | "bot" | undefined {
   if (row.kind === "user") return "user";
-  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working" || row.kind === "ask") return "bot";
+  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working" || row.kind === "ask" || row.kind === "task") return "bot";
   return undefined;
 }
 

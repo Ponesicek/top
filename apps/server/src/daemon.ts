@@ -39,6 +39,8 @@ import { Secrets } from "./secrets.ts";
 import { seedHistory } from "./seed.ts";
 import { makeSkills, type Skills, type SkillsConfig } from "./skills.ts";
 import { type BotRow, type InboxRow, PLANNED_RESTART, Store, type StoredEntry } from "./store.ts";
+import { makeTasks, type Tasks } from "./tasks/coordinator.ts";
+import type { HarnessAdapter } from "./tasks/harness.ts";
 import type { TopTool } from "./tools.ts";
 import { makeWakeClock, type WakeClock } from "./wakes.ts";
 import { WEB_SEARCH_SECTION } from "./websearch.ts";
@@ -93,6 +95,9 @@ export class BotKit extends Context.Service<
     readonly repeatGapMs?: number | undefined;
     readonly compactAtTokens?: number | undefined;
     readonly webSearch?: boolean | undefined;
+    readonly harnesses?: readonly HarnessAdapter[] | undefined;
+    readonly maxTasks?: number | undefined;
+    readonly taskCancelGraceMs?: number | undefined;
   }
 >()("top/BotKit") {}
 
@@ -186,6 +191,7 @@ export class Daemon extends Context.Service<
     readonly wakes: WakeClock;
     readonly asks: Asks;
     readonly skills: Skills | undefined;
+    readonly tasks: Tasks | undefined;
   }
 >()("top/Daemon") {}
 
@@ -279,7 +285,19 @@ const make = Effect.gen(function* () {
     deliver: queued,
     changed: (bot) => Effect.andThen(events.publish({ _tag: "Asks" }), changed(bot)),
   });
-  const collar = collarTools({ store, jobs, wakes, asks, changed, toolsOf });
+  const tasks: Tasks | undefined = kit.harnesses?.length
+    ? yield* makeTasks(
+        store.tasks,
+        {
+          adapters: kit.harnesses,
+          maxRunning: kit.maxTasks,
+          cancelGraceMs: kit.taskCancelGraceMs,
+          folder: (bot) => Effect.map(store.bot(bot), (row) => (row && kit.folder ? kit.folder(row) : undefined)),
+        },
+        { deliver: queued, publish: (views) => events.publish({ _tag: "Tasks", views }) },
+      )
+    : undefined;
+  const collar = collarTools({ store, jobs, wakes, asks, tasks, changed, toolsOf });
   const skills = kit.skills
     ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
     : undefined;
@@ -448,6 +466,7 @@ const make = Effect.gen(function* () {
       yield* jobs.stopAll(id);
       yield* Effect.forkIn(
         Effect.gen(function* () {
+          if (tasks) yield* tasks.stopAll(id);
           yield* runner.waitForIdle;
           yield* Scope.close(live.scope, Exit.void);
           if (attachments) yield* attachments.removeBot(id);
@@ -473,10 +492,13 @@ const make = Effect.gen(function* () {
       yield* runner.abort;
       yield* jobs.stopAll(bot);
       yield* asks.withdraw(bot);
+      if (tasks) yield* Effect.forkIn(tasks.stopAll(bot), scope);
     }),
     start: Effect.gen(function* () {
       const lost = yield* jobs.recover((bot, name) => toolsOf(bot).find((tool) => tool.name === name));
       if (lost) yield* Effect.log(`${lost} background job${lost === 1 ? " was" : "s were"} cut off by the restart`);
+      const cut = tasks ? yield* tasks.recover : 0;
+      if (cut) yield* Effect.log(`${cut} harness task${cut === 1 ? " was" : "s were"} cut off by the restart`);
       const planned = yield* store.flag(PLANNED_RESTART);
       if (planned) yield* store.clearFlag(PLANNED_RESTART);
       for (const live of bots.values()) {
@@ -494,6 +516,7 @@ const make = Effect.gen(function* () {
     wakes,
     asks,
     skills,
+    tasks,
   });
 });
 
