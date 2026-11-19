@@ -458,6 +458,7 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
   const full = join(tmpdir(), `pi-bash-test${process.pid}.log`);
   const elsewhere = join(h.dir, "pi-bash-elsewhere.log");
   const link = join(tmpdir(), `pi-bash-link${process.pid}.log`);
+  const mentioned = join(tmpdir(), `pi-bash-other${process.pid}.log`);
   writeFileSync(full, `line 1\n${value}\nline 3`);
   writeFileSync(elsewhere, value);
   try {
@@ -480,6 +481,18 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
     symlinkSync(target, link);
     await h.run(tool(link).run({}, { key: "k", bot: h.bot }));
     assert.equal(readFileSync(target, "utf8"), value, "a link named like pi's log never rewrites its target");
+    writeFileSync(mentioned, value);
+    const mentions = h.secrets.guard(
+      defineTool({
+        name: "bash",
+        label: "Bash",
+        description: "",
+        parameters: Type.Object({}),
+        run: () => Effect.succeed(text(`ls shows ${mentioned}`)),
+      }),
+    );
+    await h.run(mentions.run({}, { key: "k", bot: h.bot }));
+    assert.equal(readFileSync(mentioned, "utf8"), value, "a log the output only mentions isn't the tool's own, so it's left alone");
 
     writeFileSync(full, `${value}\nstill running`);
     const timedOut = h.secrets.guard(
@@ -497,6 +510,7 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
   } finally {
     rmSync(full, { force: true });
     rmSync(link, { force: true });
+    rmSync(mentioned, { force: true });
   }
 });
 
@@ -557,4 +571,22 @@ test("a saveSecret frame that doesn't parse is refused without repeating what wa
     assert.equal(parsed.req, 4);
   }
   assert.ok(!parseClientFrame(JSON.stringify({ t: "saveSecret", req: 4, id: "1", bot: 1, value })).ok);
+});
+
+test("hiding a secret leaves the ids that cards and tasks are found by", async () => {
+  const h = await harness();
+  await h.run(h.secrets.save(h.bot, "secret"));
+  await h.run(h.secrets.save(h.bot, "task"));
+  const tool = h.secrets.guard(
+    defineTool({
+      name: "x",
+      label: "X",
+      description: "",
+      parameters: Type.Object({}),
+      run: () => Effect.succeed({ ...text("my secret task"), details: { ask: { kind: "secret", label: "the secret" }, task: "task_0123456789" } }),
+    }),
+  );
+  const result = await h.run(tool.run({}, { key: "k", bot: h.bot }));
+  assert.deepEqual(result.details, { ask: { kind: "secret", label: `the ${HIDDEN}` }, task: "task_0123456789" });
+  assert.equal(textOfContent(result.content), `my ${HIDDEN} ${HIDDEN}`);
 });

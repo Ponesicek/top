@@ -21,7 +21,8 @@ const MAX_KEPT = 200;
 const NAME = /^b(\d+)-[0-9a-f]{32}$/;
 const MAX_SCRUBBED_BYTES = 64 * 1024 * 1024;
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const PI_LOG = new RegExp(`${escaped(join(tmpdir(), "pi-"))}[\\w-]+\\.log`, "g");
+const PI_LOG = new RegExp(`(?:"fullOutputPath":"|Full output: )(${escaped(join(tmpdir(), "pi-"))}[\\w-]+\\.log)`, "g");
+const IDENTIFIERS = new Set(["kind", "task"]);
 
 type Live = { readonly bot: number; readonly value: string; readonly expiresAt: number };
 
@@ -123,7 +124,10 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
       const deep = (value: JsonValue): JsonValue => {
         if (typeof value === "string") return redact(value);
         if (Array.isArray(value)) return value.map(deep);
-        if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, deep(inner)]));
+        if (value && typeof value === "object")
+          return Object.fromEntries(
+            Object.entries(value).map(([key, inner]) => [key, IDENTIFIERS.has(key) && typeof inner === "string" ? inner : deep(inner)]),
+          );
         return value;
       };
       const clean = (result: ToolResult): ToolResult => {
@@ -135,7 +139,7 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
           ...(result.structuredContent === undefined ? {} : { structuredContent: deep(result.structuredContent) }),
         };
       };
-      const piLogs = (text: string) => [...new Set(text.match(PI_LOG) ?? [])];
+      const piLogs = (text: string) => [...new Set(Array.from(text.matchAll(PI_LOG), (match) => match[1]!))];
       const scrubLog = (path: string) =>
         Effect.gen(function* () {
           const info = yield* Effect.tryPromise(() => lstat(path));
