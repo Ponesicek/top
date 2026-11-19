@@ -81,7 +81,6 @@ export type StartRequest = {
   readonly policy?: TaskPolicy | undefined;
   readonly options?: Readonly<Record<string, unknown>> | undefined;
   readonly images?: readonly string[] | undefined;
-  readonly notify?: boolean | undefined;
 };
 
 export type TaskAnswer = { readonly decision?: TaskDecision | undefined; readonly answers?: TaskAnswers | undefined; readonly message?: string | undefined };
@@ -860,7 +859,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         }
         const title = clip((request.title?.trim() || firstLine(prompt)).replace(/\s+/g, " "), MAX_TITLE);
         const row = yield* q.createTask(
-          { id: newId("task"), bot: request.bot, key: request.key, session: session.id, title, prompt, images, notify: request.notify ?? true },
+          { id: newId("task"), bot: request.bot, key: request.key, session: session.id, title, prompt, images, notify: true },
           "queued",
         );
         yield* q.touchSession(session.id);

@@ -54,6 +54,7 @@ const QUIET = [
 ];
 
 const MAX_GRANT_TEXT = 1_500;
+const MAX_DETAIL = 2_000;
 const APPROVAL_DECISIONS: readonly TaskDecision[] = ["allow", "allow_for_session", "deny"];
 
 type Item = { readonly type: string; readonly id: string } & Record<string, unknown>;
@@ -228,7 +229,7 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
           } else {
             const permissions = record(params.permissions);
             const requested = JSON.stringify(permissions, null, 1);
-            if (requested.length > MAX_GRANT_TEXT) {
+            if (requested.length > MAX_GRANT_TEXT || redact(requested) !== requested) {
               pending.delete(key);
               emit({ type: "log", kind: "status", text: "declined a permission request too large to show in full on a card" });
               resolve({ permissions: {}, scope: "turn" });
@@ -241,7 +242,8 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
               Array.isArray(fsys.read) && fsys.read.length ? `read access to ${fsys.read.join(", ")}` : undefined,
             ].filter(Boolean);
             title = `Grant ${parts.join(" and ") || "more permissions"}`;
-            detail = [str(params.reason), `Everything it asks for:\n${requested}`].filter(Boolean).join("\n");
+            const reason = str(params.reason);
+            detail = `Everything it asks for:\n${requested}${reason ? `\nWhy: ${clip(reason, MAX_DETAIL - requested.length - 40)}` : ""}`;
           }
           emit({
             type: "request",

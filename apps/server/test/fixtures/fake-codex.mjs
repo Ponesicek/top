@@ -104,7 +104,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             turnId,
             itemId: "p1",
             cwd: "/w",
-            reason: "needs it",
+            reason: text.includes("long reason") ? "because ".repeat(400) : "needs it",
             permissions: {
               network: null,
               fileSystem: {

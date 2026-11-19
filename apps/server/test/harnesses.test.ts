@@ -486,9 +486,16 @@ test("Codex: a question for a secret is declined (Codex keeps answers in its his
   session.answer(request.id, { kind: "approval", decision: "deny" });
   assert.equal((await until("the turn", () => c.of("turn_ended")[1])).result, 'granted: {"permissions":{},"scope":"turn"}');
 
+  await session.run({ text: "permissions please, with a long reason", images: [] });
+  const long = await until("the second card", () => c.of("request")[1]?.request);
+  assert.ok(long.detail!.length <= 2_000);
+  assert.ok(long.detail!.startsWith("Everything it asks for:\n") && long.detail!.includes('"/home/**"'), "a long reason never pushes the grant off the card");
+  session.answer(long.id, { kind: "approval", decision: "deny" });
+  await until("the turn", () => c.of("turn_ended")[2]);
+
   await session.run({ text: "huge permissions please", images: [] });
-  assert.equal((await until("the turn", () => c.of("turn_ended")[2])).result, 'granted: {"permissions":{},"scope":"turn"}');
-  assert.equal(c.of("request").length, 1, "a request too big to show isn't put on a card");
+  assert.equal((await until("the turn", () => c.of("turn_ended")[3])).result, 'granted: {"permissions":{},"scope":"turn"}');
+  assert.equal(c.of("request").length, 2, "a request too big to show isn't put on a card");
   await session.close();
 });
 

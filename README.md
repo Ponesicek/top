@@ -311,7 +311,8 @@ written in batches every 250 ms), and the result is kept up to 30,000 characters
 
 **Who may allow what.** Each session has a policy:
 
-- `read_only`: the harness looks but changes nothing (Claude Code: every shell command asks first).
+- `read_only`: the harness looks but changes nothing (Claude Code: shell commands ask first, except the
+  ones Claude Code itself counts as read-only, such as `ls`; all stay in its sandbox).
 - `workspace_write` (the default): it edits files in its folder and runs commands sandboxed to it (Codex:
   the folder and a private temp folder, no network; Claude Code: its sandbox, which on Linux needs
   bubblewrap and socat; without them every command asks first, and the task's log says so).
@@ -359,7 +360,8 @@ An end whose message to the bot was lost in a crash is sent at the next start.
 
 **Setting up.** Top uses the `claude` and `codex` already installed and signed in on the daemon's
 computer (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere), and never signs them in, out, or
-changes their settings. Missing or signed-out harnesses fail the task with what to do. Fake bots get
+changes their settings. Settings an organization manages on the computer (Claude Code's managed
+settings, Codex's requirements) still apply over Top's policy, as they do over the user's. Missing or signed-out harnesses fail the task with what to do. Fake bots get
 a fake harness instead: message one `call collar__task_start {"harness": "fake", "prompt": "needs approval"}`;
 "question", "secret question", "fail", "crash" or "forever" in the prompt play the other cases.
 `TOP_REAL_HARNESS=codex pnpm --filter @top/server test test/real-harness.test.ts` runs one real

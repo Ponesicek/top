@@ -163,6 +163,7 @@ const waitingCache = new Map<string, TaskRow>();
 
 export function waitingTaskRows(committed: readonly Row[], tasks: readonly TaskView[], bot: number): Row[] {
   const waiting = tasks.filter((t) => t.bot === bot && t.inputs.length > 0);
+  for (const id of waitingCache.keys()) if (!waiting.some((t) => t.id === id)) waitingCache.delete(id);
   if (!waiting.length) return [];
   const shown = new Set(committed.flatMap((r) => (r.kind === "task" ? [r.task] : [])));
   return waiting
