@@ -11,6 +11,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import { COLLAR } from "./collar/names.ts";
 import { ToolError, type ToolResult, type TopTool } from "./tools.ts";
 
 export const SECRET_TTL_MS = 60 * 60_000;
@@ -21,8 +22,13 @@ const MAX_KEPT = 200;
 const NAME = /^b(\d+)-[0-9a-f]{32}$/;
 const MAX_SCRUBBED_BYTES = 64 * 1024 * 1024;
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const PI_LOG = new RegExp(`(?:"fullOutputPath":"|Full output: )(${escaped(join(tmpdir(), "pi-"))}[\\w-]+\\.log)`, "g");
-const IDENTIFIERS = new Set(["kind", "task"]);
+const PI_LOG = `${escaped(join(tmpdir(), "pi-"))}[\\w-]+\\.log`;
+const PI_LOG_PATH = new RegExp(`^${PI_LOG}$`);
+const PI_LOG_FOOTER = new RegExp(`Full output: (${PI_LOG})`, "g");
+const ASK_TOOLS = new Set([`${COLLAR}__ask_permission`, `${COLLAR}__ask_question`, `${COLLAR}__request_secret`]);
+const TASK_START = `${COLLAR}__task_start`;
+type JsonObject = { readonly [key: string]: JsonValue };
+const isObject = (value: JsonValue | undefined): value is JsonObject => !!value && typeof value === "object" && !Array.isArray(value);
 
 type Live = { readonly bot: number; readonly value: string; readonly expiresAt: number };
 
@@ -124,22 +130,29 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
       const deep = (value: JsonValue): JsonValue => {
         if (typeof value === "string") return redact(value);
         if (Array.isArray(value)) return value.map(deep);
-        if (value && typeof value === "object")
-          return Object.fromEntries(
-            Object.entries(value).map(([key, inner]) => [key, IDENTIFIERS.has(key) && typeof inner === "string" ? inner : deep(inner)]),
-          );
+        if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, deep(inner)]));
         return value;
       };
-      const clean = (result: ToolResult): ToolResult => {
+      const keepIds = (tool: string, details: JsonValue): JsonValue => {
+        const cleaned = deep(details);
+        if (!isObject(details) || !isObject(cleaned)) return cleaned;
+        if (tool === TASK_START && typeof details.task === "string") return { ...cleaned, task: details.task };
+        if (ASK_TOOLS.has(tool) && isObject(details.ask) && isObject(cleaned.ask) && typeof details.ask.kind === "string")
+          return { ...cleaned, ask: { ...cleaned.ask, kind: details.ask.kind } };
+        return cleaned;
+      };
+      const clean = (result: ToolResult, tool: string): ToolResult => {
         if (!hidden.length) return result;
         return {
           ...result,
           content: result.content.map((part) => (part.type === "text" ? { ...part, text: redact(part.text) } : part)),
-          details: result.details === undefined ? undefined : deep(result.details),
+          details: result.details === undefined ? undefined : keepIds(tool, result.details),
           ...(result.structuredContent === undefined ? {} : { structuredContent: deep(result.structuredContent) }),
         };
       };
-      const piLogs = (text: string) => [...new Set(Array.from(text.matchAll(PI_LOG), (match) => match[1]!))];
+      const ownLog = (details: JsonValue | undefined) =>
+        isObject(details) && typeof details.fullOutputPath === "string" && PI_LOG_PATH.test(details.fullOutputPath) ? [details.fullOutputPath] : [];
+      const footers = (text: string) => [...new Set(Array.from(text.matchAll(PI_LOG_FOOTER), (match) => match[1]!))];
       const scrubLog = (path: string) =>
         Effect.gen(function* () {
           const info = yield* Effect.tryPromise(() => lstat(path));
@@ -156,11 +169,11 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
             ),
           ),
         );
-      const scrubLogsIn = (text: string) => (hidden.length ? Effect.forEach(piLogs(text), scrubLog, { discard: true }) : Effect.void);
-      const finish = (result: ToolResult) => Effect.as(scrubLogsIn(JSON.stringify([result.content, result.details ?? null])), clean(result));
+      const scrubLogs = (paths: readonly string[]) => (hidden.length ? Effect.forEach(paths, scrubLog, { discard: true }) : Effect.void);
+      const finish = (tool: string) => (result: ToolResult) => Effect.as(scrubLogs(ownLog(result.details)), clean(result, tool));
       const cleanError = (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        return Effect.as(scrubLogsIn(message), new ToolError({ message: redact(message) }));
+        return Effect.as(scrubLogs(footers(message)), new ToolError({ message: redact(message) }));
       };
 
       return Secrets.of({
@@ -195,8 +208,8 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
         guard: (tool) => ({
           ...tool,
           run: (args, ctx) =>
-            tool.run(args, ctx.onUpdate ? { ...ctx, onUpdate: (partial) => ctx.onUpdate?.(clean(partial)) } : ctx).pipe(
-              Effect.flatMap(finish),
+            tool.run(args, ctx.onUpdate ? { ...ctx, onUpdate: (partial) => ctx.onUpdate?.(clean(partial, tool.name)) } : ctx).pipe(
+              Effect.flatMap(finish(tool.name)),
               Effect.catch((error) => Effect.flatMap(cleanError(error), Effect.fail)),
               Effect.catchDefect((defect) => Effect.flatMap(cleanError(defect), Effect.fail)),
             ),
@@ -204,7 +217,7 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
             ? {
                 recover: (args, ctx) =>
                   tool.recover!(args, ctx).pipe(
-                    Effect.flatMap((result): Effect.Effect<ToolResult | false | undefined> => (result ? finish(result) : Effect.succeed(result))),
+                    Effect.flatMap((result): Effect.Effect<ToolResult | false | undefined> => (result ? finish(tool.name)(result) : Effect.succeed(result))),
                   ),
               }
             : {}),

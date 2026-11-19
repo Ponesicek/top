@@ -389,11 +389,12 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 ...question,
                 question: scrub(question.question),
                 ...(question.header === undefined ? {} : { header: scrub(question.header) }),
-                options: question.options.map((option) => ({
-                  ...option,
-                  label: scrub(option.label),
-                  ...(option.description === undefined ? {} : { description: scrub(option.description) }),
-                })),
+                options: question.options
+                  .filter((option) => scrub(option.label) === option.label)
+                  .map((option) => ({
+                    ...option,
+                    ...(option.description === undefined ? {} : { description: scrub(option.description) }),
+                  })),
               }));
               const { input } = yield* q.addInput({ task: live.id, bot: live.bot, external: request.id, title, questions });
               if (input.state !== "pending") return;

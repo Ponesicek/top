@@ -624,7 +624,11 @@ test("a saved secret a harness echoes is hidden from the task's log, questions, 
   await inState(s, snapshot.task.id, "waiting_for_input");
   const [input] = await pending(s, snapshot.task.id);
   assert.ok(input && !JSON.stringify(input).includes(value), "the stored question never holds the secret");
-  assert.equal(input.questions[0]?.options[0]?.label, HIDDEN);
+  assert.deepEqual(
+    input.questions[0]?.options.map((o) => o.label),
+    ["No"],
+    "an option that would show the secret is left out; the answer can still be typed",
+  );
   ctl.emit()({ type: "turn_ended", status: "completed", result: `deployed with ${value}` });
   const done = await ended(s, snapshot.task.id);
   assert.equal(done.result, `deployed with ${HIDDEN}`);

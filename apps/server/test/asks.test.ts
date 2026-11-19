@@ -488,11 +488,11 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
         label: "Bash",
         description: "",
         parameters: Type.Object({}),
-        run: () => Effect.succeed(text(`ls shows ${mentioned}`)),
+        run: () => Effect.succeed(text(`cat old.txt\n[Output truncated. Full output: ${mentioned}]`)),
       }),
     );
     await h.run(mentions.run({}, { key: "k", bot: h.bot }));
-    assert.equal(readFileSync(mentioned, "utf8"), value, "a log the output only mentions isn't the tool's own, so it's left alone");
+    assert.equal(readFileSync(mentioned, "utf8"), value, "a footer the output only echoes isn't this run's own log, so it's left alone");
 
     writeFileSync(full, `${value}\nstill running`);
     const timedOut = h.secrets.guard(
@@ -573,20 +573,22 @@ test("a saveSecret frame that doesn't parse is refused without repeating what wa
   assert.ok(!parseClientFrame(JSON.stringify({ t: "saveSecret", req: 4, id: "1", bot: 1, value })).ok);
 });
 
-test("hiding a secret leaves the ids that cards and tasks are found by", async () => {
+test("hiding a secret leaves the ids that Top's own cards and tasks are found by, and nothing else", async () => {
   const h = await harness();
   await h.run(h.secrets.save(h.bot, "secret"));
   await h.run(h.secrets.save(h.bot, "task"));
-  const tool = h.secrets.guard(
-    defineTool({
-      name: "x",
-      label: "X",
-      description: "",
-      parameters: Type.Object({}),
-      run: () => Effect.succeed({ ...text("my secret task"), details: { ask: { kind: "secret", label: "the secret" }, task: "task_0123456789" } }),
-    }),
-  );
-  const result = await h.run(tool.run({}, { key: "k", bot: h.bot }));
-  assert.deepEqual(result.details, { ask: { kind: "secret", label: `the ${HIDDEN}` }, task: "task_0123456789" });
-  assert.equal(textOfContent(result.content), `my ${HIDDEN} ${HIDDEN}`);
+  const tool = (name: string, details: ToolResult["details"]) =>
+    h.secrets.guard(
+      defineTool({ name, label: "X", description: "", parameters: Type.Object({}), run: () => Effect.succeed({ ...text("my secret task"), details }) }),
+    );
+  const run = (name: string, details: ToolResult["details"]) => h.run(tool(name, details).run({}, { key: "k", bot: h.bot })).then((r) => r.details);
+  assert.deepEqual(await run("collar__request_secret", { ask: { kind: "secret", label: "the secret" } }), {
+    ask: { kind: "secret", label: `the ${HIDDEN}` },
+  });
+  assert.deepEqual(await run("collar__task_start", { task: "task_0123456789", note: "a task" }), { task: "task_0123456789", note: `a ${HIDDEN}` });
+  assert.deepEqual(await run("other__tool", { ask: { kind: "secret" }, task: "task", record: { kind: "secret" } }), {
+    ask: { kind: HIDDEN },
+    task: HIDDEN,
+    record: { kind: HIDDEN },
+  });
 });
