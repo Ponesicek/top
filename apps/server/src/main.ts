@@ -163,7 +163,7 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
           webSearch: canSearchTheWeb(found),
-          harnesses: [claudeAdapter({ clientVersion: BUILD.version }), codexAdapter({ clientVersion: BUILD.version })],
+          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version })],
           maxTasks: maxTasks(),
         });
       }),

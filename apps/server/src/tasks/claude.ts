@@ -136,7 +136,6 @@ const run = (command: string, args: string[]) =>
 export type ClaudeConfig = {
   readonly command?: string | undefined;
   readonly query?: QueryFn | undefined;
-  readonly clientVersion?: string | undefined;
 };
 
 export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
@@ -249,7 +248,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       const options: Options = {
         cwd: spec.cwd,
         pathToClaudeCodeExecutable: path,
-        env: { ...harnessEnv(process.env), CLAUDE_AGENT_SDK_CLIENT_APP: `top/${config.clientVersion ?? "0"}` },
+        env: harnessEnv(process.env),
         abortController: abort,
         canUseTool,
         systemPrompt: { type: "preset", preset: "claude_code" },

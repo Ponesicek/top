@@ -17,7 +17,7 @@ test.skipIf(which !== "codex" && which !== "claude_code")(
     const dir = mkdtempSync(join(tmpdir(), "top-real-"));
     const folder = botFolder(join(dir, "bots"), "Atlas");
     mkdirSync(folder, { recursive: true });
-    const adapter = which === "codex" ? codexAdapter({ clientVersion: "test" }) : claudeAdapter({ clientVersion: "test" });
+    const adapter = which === "codex" ? codexAdapter({ clientVersion: "test" }) : claudeAdapter();
     const h = await harness({ dir, harnesses: [adapter], context: true, gatherMs: 10_000_000 });
     await h.run(h.daemon.start);
     const tasks = h.daemon.tasks!;
@@ -38,6 +38,21 @@ test.skipIf(which !== "codex" && which !== "claude_code")(
     const remembered = await end(second.task.id);
     assert.equal(remembered.state, "completed", remembered.error ?? "");
     assert.match(remembered.result ?? "", /notes\.txt/, "the session carried on with its conversation");
+
+    if (which === "claude_code") {
+      const asking = await start("rq", {
+        prompt: "Use your AskUserQuestion tool to ask me to choose between the colours red and blue. After I answer, reply with only the colour I chose.",
+      });
+      const asked = await h.run(tasks.wait(h.bot, asking.task.id, 300_000, "input_or_end"));
+      const question = asked.snapshot.inputs[0];
+      assert.ok(question, `Claude Code asked: ${asked.snapshot.task.state} ${asked.snapshot.task.error ?? ""}`);
+      const options = question.questions[0]!.options.map((o) => o.label);
+      const blue = options.find((label) => /blue/i.test(label)) ?? "blue";
+      await h.run(tasks.respond("user", undefined, asking.task.id, question.id, { answers: { [question.questions[0]!.id]: [blue] } }));
+      const answered = await end(asking.task.id);
+      assert.equal(answered.state, "completed", answered.error ?? "");
+      assert.match(answered.result ?? "", /blue/i, "Claude Code got the answer");
+    }
 
     const third = await start("r3", { prompt: "Run the shell command `sleep 15`, then reply with only FIRST." });
     await running(third.task.id);
