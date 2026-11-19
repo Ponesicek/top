@@ -1,8 +1,9 @@
 import type { BotId } from "@top/client";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { extOf, type FileKind, formatSize, openFile } from "../../files.ts";
 import { copyCode } from "../../lib/copyCode.ts";
 import { cn } from "../../lib/utils.ts";
+import { LiveFrames } from "../../liveFrame.ts";
 import { highlight, renderMarkdown } from "../../markdown.ts";
 import { top } from "../../top.ts";
 import { Markdown } from "../transcript/parts.tsx";
@@ -51,13 +52,54 @@ function Status({ loaded }: { loaded: Exclude<Loaded, { state: "ok" }> }) {
   return <Notice>{loaded.state === "loading" ? "Loading…" : loaded.error}</Notice>;
 }
 
+async function readBytes(url: string, signal: AbortSignal): Promise<Uint8Array | undefined> {
+  const response = await fetch(url, { cache: "no-cache", signal });
+  if (!response.ok) {
+    void response.body?.cancel();
+    return undefined;
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function LiveFrame({
+  url,
+  src = url,
+  version,
+  title,
+  className,
+  ...rest
+}: { url: string; version: number; title: string; className: string } & Omit<React.ComponentProps<"iframe">, "onLoad">) {
+  const [live] = useState(() => new LiveFrames(version, (signal) => readBytes(url, signal)));
+  useEffect(() => () => live.dispose(), [live]);
+  useEffect(() => live.show(version), [live, version]);
+  const frames = useSyncExternalStore(live.subscribe, live.frames);
+  return (
+    <div className="relative size-full">
+      {frames.map((frame) => (
+        <iframe
+          key={frame.key}
+          title={title}
+          src={src}
+          className={cn("absolute inset-0 size-full border-0", className, !frame.shown && "invisible")}
+          aria-hidden={!frame.shown || undefined}
+          tabIndex={frame.shown ? undefined : -1}
+          onLoad={() => live.loaded(frame.key)}
+          {...rest}
+        />
+      ))}
+    </div>
+  );
+}
+
 const HtmlView = memo(function HtmlView({ url, version, path }: ViewerProps) {
   return (
-    <iframe
-      key={version}
+    <LiveFrame
+      key={url}
+      url={url}
+      src={`${url}?frame`}
+      version={version}
       title={path}
-      src={url}
-      className="size-full border-0 bg-white"
+      className="bg-white"
       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
       allow="fullscreen; clipboard-write"
     />
@@ -65,7 +107,7 @@ const HtmlView = memo(function HtmlView({ url, version, path }: ViewerProps) {
 });
 
 const PdfView = memo(function PdfView({ url, version, path }: ViewerProps) {
-  return <iframe key={version} title={path} src={url} className="size-full border-0" />;
+  return <LiveFrame key={url} url={url} version={version} title={path} className="" />;
 });
 
 const ImageView = memo(function ImageView({ url, version, path }: ViewerProps) {

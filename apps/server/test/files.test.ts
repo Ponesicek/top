@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import type { Entry } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -9,6 +10,7 @@ import * as Scope from "effect/Scope";
 import { afterAll as after, test } from "vitest";
 import { WebSocket } from "ws";
 import { diff, makeFilesFolder, scan } from "../src/files.ts";
+import { KEEP_SCROLL_SCRIPT, keepScroll } from "../src/sendFile.ts";
 import { toWire } from "../src/wire.ts";
 import { type Harness, harness, until } from "./harness.ts";
 
@@ -131,6 +133,14 @@ test("files are served on the daemon's port, only with the secret and only insid
   assert.equal(page.headers.get("access-control-allow-origin"), "*");
   assert.equal(await page.text(), "<h1>Report</h1>");
 
+  const framed = await fetch(`${base}/report.html?frame`);
+  assert.equal(framed.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.equal(framed.headers.get("referrer-policy"), "no-referrer");
+  assert.match(await framed.text(), /^<script>.*top-scroll:.*<\/script><h1>Report<\/h1>$/);
+  assert.equal(await (await fetch(`${base}/notes.md?frame`)).text(), "# Notes");
+  assert.match(await (await fetch(`${base}/site/?frame`)).text(), /^<script>.*<\/script><p>site<\/p>$/);
+  assert.equal((await fetch(`${base}/missing.html?frame`)).status, 404);
+
   const etag = page.headers.get("etag")!;
   assert.equal((await fetch(`${base}/report.html`, { headers: { "If-None-Match": etag } })).status, 304);
   assert.equal(await (await fetch(`${base}/notes.md`, { headers: { Range: "bytes=2-" } })).text(), "Notes");
@@ -155,4 +165,72 @@ test("files are served on the daemon's port, only with the secret and only insid
   assert.equal(await opens(`http://127.0.0.1:${port}`), false);
   assert.equal(await opens("null"), false);
   assert.equal(await opens("file://"), true);
+});
+
+test("a page shown in the app gets its scroll-keeping script inside its head, after any doctype", () => {
+  const framed = (html: string) =>
+    new TextDecoder("utf-8", { ignoreBOM: true }).decode(keepScroll(new TextEncoder().encode(html))).replace(/<script>.*?<\/script>/, "<S>");
+  assert.equal(framed("<!doctype html><html><head><title>A</title></head>"), "<!doctype html><html><head><S><title>A</title></head>");
+  assert.equal(framed('<html lang="en"><HEAD data-x="1"><header>'), '<html lang="en"><HEAD data-x="1"><S><header>');
+  assert.equal(framed("<!DOCTYPE html>\n<header>Hi</header>"), "<!DOCTYPE html><S>\n<header>Hi</header>");
+  assert.equal(framed("\uFEFF<!doctype html><p>é</p>"), "\uFEFF<!doctype html><S><p>é</p>");
+  assert.equal(framed("\uFEFF<p>no doctype</p>"), "\uFEFF<S><p>no doctype</p>");
+  assert.equal(framed("<p>bare</p>"), "<S><p>bare</p>");
+  assert.equal(framed("<!-- made by a bot --><!doctype html><p>x</p>"), "<!-- made by a bot --><!doctype html><S><p>x</p>");
+  assert.equal(framed('<?xml version="1.0"?><!DOCTYPE html><p>x</p>'), '<?xml version="1.0"?><!DOCTYPE html><S><p>x</p>');
+  assert.equal(framed("<!-- Add metadata in <head>. --><html><head><title>A</title>"), "<!-- Add metadata in <head>. --><html><head><S><title>A</title>");
+  assert.equal(framed('<script>w("<head>")</script><p>x</p>'), '<S><script>w("<head>")</script><p>x</p>');
+  assert.equal(framed('<p>x</p><script>w("<!doctype html>")</script>'), '<S><p>x</p><script>w("<!doctype html>")</script>');
+  const utf16 = new Uint8Array([0xff, 0xfe, 0x3c, 0x00, 0x70, 0x00, 0x3e, 0x00]);
+  assert.deepEqual(keepScroll(utf16), utf16);
+});
+
+test("the scroll-keeping script saves where the page was scrolled and restores it when the page loads again", () => {
+  const storage = new Map<string, string>();
+  const load = (options: { framed?: boolean; scrolled?: number } = {}) => {
+    const listeners = new Map<string, () => void>();
+    const page = {
+      scrollX: 0,
+      scrollY: options.scrolled ?? 0,
+      location: { pathname: "/files/s/1/report.html" },
+      sessionStorage: { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => storage.set(k, v) },
+      addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
+      scrollTo: ({ left, top, behavior }: { left: number; top: number; behavior: string }) => {
+        assert.equal(behavior, "instant");
+        page.scrollX = left;
+        page.scrollY = top;
+      },
+    } as Record<string, unknown> & { scrollX: number; scrollY: number };
+    page.window = page;
+    page.parent = options.framed === false ? page : {};
+    runInNewContext(KEEP_SCROLL_SCRIPT, page);
+    return {
+      page,
+      fire: (type: string) => listeners.get(type)?.(),
+      scrollTo: (y: number) => {
+        page.scrollY = y;
+        listeners.get("scroll")?.();
+      },
+    };
+  };
+
+  const first = load();
+  first.scrollTo(900);
+  assert.equal(storage.size, 0, "nothing is saved before the page has loaded");
+  first.fire("load");
+  assert.equal(first.page.scrollY, 900, "a page with nothing saved stays where it is");
+  first.scrollTo(1200);
+  assert.equal(storage.get("top-scroll:/files/s/1/report.html"), "0 1200");
+
+  const reloaded = load();
+  reloaded.fire("load");
+  assert.equal(reloaded.page.scrollY, 1200);
+
+  const jumped = load({ scrolled: 40 });
+  jumped.fire("load");
+  assert.equal(jumped.page.scrollY, 40, "a page already scrolled (to an #anchor, say) keeps its place");
+
+  const topLevel = load({ framed: false });
+  topLevel.fire("load");
+  assert.equal(topLevel.page.scrollY, 0, "opened in a browser tab, the page isn't touched");
 });
