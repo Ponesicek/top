@@ -1,4 +1,4 @@
-import type { AccountView, BotSummary, McpServerView, SkillsView, UpdateView } from "@top/protocol";
+import type { AccountView, BotSummary, McpServerView, SkillsView, TaskView, UpdateView } from "@top/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,6 +18,7 @@ export type DaemonEvent =
   | { readonly _tag: "Skills"; readonly view: SkillsView }
   | { readonly _tag: "Account"; readonly view: AccountView }
   | { readonly _tag: "Permissions" }
+  | { readonly _tag: "Tasks"; readonly views: readonly TaskView[] }
   | { readonly _tag: "Update"; readonly view: UpdateView };
 
 export class Events extends Context.Service<

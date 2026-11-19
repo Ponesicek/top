@@ -36,6 +36,9 @@ import { LOCAL_SKILLS } from "./skills.ts";
 import * as Sqlite from "./sqlite.ts";
 import * as Store from "./store.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
+import { claudeAdapter } from "./tasks/claude.ts";
+import { codexAdapter } from "./tasks/codex.ts";
+import { fakeHarness } from "./tasks/fake.ts";
 import { makeFakeTools } from "./tools.ts";
 import * as Updates from "./updates.ts";
 import { canSearchTheWeb } from "./websearch.ts";
@@ -57,6 +60,7 @@ const WAITING_SECTION = [
   "Every turn you take reads this whole conversation again, and the user pays for each one. Take turns to act, not to check on things.",
   "- To wait for another agent or a long task, run its wait tool through collar__background with `repeat_while` set to what its result says while the work is still going (for example '\"timedOut\":true'), then end your turn. You get one message, when it's done.",
   "- Set wake-ups for things due at a time, such as a reminder or a deadline, not to see whether work is finished.",
+  "- Coding tasks you hand to a harness (collar__task_start) message you when they end or need your answer: don't wait on them or poll them.",
   "- Something that can't tell you when it's done: check it at most every 30 minutes.",
   "</waiting>",
 ].join("\n");
@@ -72,6 +76,11 @@ const lastOptional = <A>(flag: Flag.Flag<A>) =>
     Flag.map((values) => Option.fromNullishOr(values.at(-1))),
   );
 const toggle = (name: string, fallback: boolean) => last(Flag.Boolean(name), fallback);
+
+const maxTasks = () => {
+  const value = Number.parseInt(process.env.TOP_MAX_TASKS ?? "", 10);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+};
 
 const flags = {
   model: lastOptional(Flag.String("model").pipe(Flag.withDescription("Run real bots on this model: provider/model-id"))),
@@ -154,6 +163,8 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
           webSearch: canSearchTheWeb(found),
+          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version })],
+          maxTasks: maxTasks(),
         });
       }),
     );
@@ -184,6 +195,8 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         retryDelaysMs: yield* RetryDelaysMs,
         compactAtTokens: yield* CompactAtTokens,
         webSearch: true,
+        harnesses: [fakeHarness({ stepMs: 1_500 })],
+        maxTasks: maxTasks(),
       });
     }),
   );

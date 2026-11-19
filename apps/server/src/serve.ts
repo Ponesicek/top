@@ -13,6 +13,7 @@ import {
   type RequestType,
   type ResultOf,
   type ServerFrame,
+  TaskError,
   UnknownBotError,
   UnknownEntryError,
   type Viewer,
@@ -134,6 +135,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
   yield* send({ t: "permissions", requests: yield* daemon.permissions.waiting });
+  if (daemon.tasks) yield* send({ t: "tasks", tasks: [...(yield* daemon.tasks.views)] });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -165,6 +167,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "update", update: event.view });
       case "Permissions":
         return Effect.flatMap(daemon.permissions.waiting, (requests) => send({ t: "permissions", requests }));
+      case "Tasks":
+        return send({ t: "tasks", tasks: [...event.views] });
     }
   };
   yield* Effect.forkScoped(
@@ -190,6 +194,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const chatgptOf = () => (chatgpt ? Effect.succeed(chatgpt) : Effect.fail(new NoChatGPT()));
   const updatesOf = () => (updates ? Effect.succeed(updates) : Effect.fail(new NoUpdates()));
   const skillsOf = () => (daemon.skills ? Effect.succeed(daemon.skills) : Effect.fail(new NoSkills()));
+  const tasksOf = () => (daemon.tasks ? Effect.succeed(daemon.tasks) : Effect.fail(new TaskError({ message: "This daemon runs no harnesses." })));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
 
   const watch = (frame: Extract<ClientFrame, { t: "watch" }>) =>
@@ -365,6 +370,18 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         );
       case "answerPermission":
         return answer(frame, daemon.permissions.answer(frame.id, frame.bot, frame.allow));
+      case "answerTask":
+        return answer(
+          frame,
+          Effect.flatMap(tasksOf(), (t) => Effect.asVoid(t.respond("user", undefined, frame.task, frame.input, { answers: frame.answers }))),
+        );
+      case "cancelTask":
+        return answer(
+          frame,
+          Effect.flatMap(tasksOf(), (t) =>
+            Effect.flatMap(t.snapshot(undefined, frame.task), () => Effect.asVoid(Effect.forkIn(Effect.ignore(t.cancel(undefined, frame.task)), scope))),
+          ),
+        );
     }
   };
 
