@@ -19,7 +19,13 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const sockets = new Set<WebSocket>();
   const subscribers = new Map<string, Set<(item: Rec) => void>>();
   let sequence = 0;
-  const faults = { dropReplyTo: undefined as string | undefined, dropAfterReplyTo: undefined as string | undefined, duplicateEnds: false, configDelayMs: 0 };
+  const faults = {
+    dropReplyTo: undefined as string | undefined,
+    dropAfterReplyTo: undefined as string | undefined,
+    duplicateEnds: false,
+    configDelayMs: 0,
+    dropOnOpen: false,
+  };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
 
@@ -176,6 +182,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   });
 
   const onSocket = (ws: WebSocket) => {
+    if (faults.dropOnOpen) {
+      setTimeout(() => ws.terminate(), 10);
+      return;
+    }
     sockets.add(ws);
     ws.on("close", () => sockets.delete(ws));
     const unsubscribes: (() => void)[] = [];

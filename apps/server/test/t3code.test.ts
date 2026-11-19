@@ -127,6 +127,22 @@ test("a dropped connection is followed from where it left off, and an end T3 Cod
   assert.equal((await told(s, running.task.id)).length, 1, "the bot heard once");
 });
 
+test("a socket that keeps opening and dropping gives up when the reconnect window ends", async () => {
+  const s = await setup();
+  s.t3.faults.dropOnOpen = true;
+  const flapping = await start(s, { prompt: "never gets through" });
+  const done = await until(
+    "the task to give up",
+    async () => {
+      const t = await task(s, flapping.task.id);
+      return t.state === "failed" && t;
+    },
+    20_000,
+  );
+  assert.match(done.error ?? "", /Lost T3 Code at http:\/\/127\.0\.0\.1:\d+ for 3s .*may still be running there/);
+  assert.equal(s.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length, 0);
+});
+
 test("questions reach the bot and the user, and the answer goes back as the option's value", async () => {
   assert.deepEqual(
     t3Answers(

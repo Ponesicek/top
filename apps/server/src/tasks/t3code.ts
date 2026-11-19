@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { TaskQuestion } from "@top/protocol";
 import Type from "typebox";
+import { duration } from "../time.ts";
 import { clip, type HarnessAdapter, type HarnessAnswer, type HarnessEvent, HarnessUnavailable, type LogKind, type OpenSpec, type Turn } from "./harness.ts";
 import {
   checkProtocol,
@@ -18,6 +19,13 @@ import {
 
 export const T3CODE = "t3code";
 
+class StoppedBeforeSend extends Error {}
+const STOPPED = Symbol("stopped");
+const stoppedFirst = (error: unknown) => {
+  if (error instanceof StoppedBeforeSend) return STOPPED;
+  throw error;
+};
+
 export const t3codeOptions = Type.Object(
   {
     provider: Type.Optional(
@@ -32,7 +40,6 @@ export const t3codeOptions = Type.Object(
 const NOT_CONNECTED =
   "T3 Code isn't connected to Top. On the daemon's computer run `top t3code connect <T3 Code's address>` with a pairing code from that T3 Code, then try again.";
 const RECONNECT_FOR_MS = 10 * 60_000;
-const MAX_TRIES = 30;
 const TERMINAL_RUN = new Set(["completed", "failed", "cancelled", "interrupted", "rolled_back"]);
 const ACTIVE_RUN = new Set(["starting", "running", "waiting"]);
 const SETTLED_ITEM = new Set(["completed", "failed", "cancelled", "interrupted"]);
@@ -231,8 +238,12 @@ async function openThread(
       lostSince ??= Date.now();
       const since = lostSince;
       let delay = 500;
+      let why = "it kept dropping";
       for (;;) {
         if (closed) throw new T3Unreachable("Top closed its connection to T3 Code.");
+        // The window runs from the first drop until T3 Code answers, across sockets that open and drop again.
+        if (Date.now() - since >= options.reconnectForMs)
+          throw new Error(`Lost T3 Code at ${origin} for ${duration(options.reconnectForMs)} (${why}). Its thread ${threadId} may still be running there.`);
         try {
           await options.verify(cfg);
           const opened: RpcSocket = await RpcSocket.open(origin, cfg.token, (error) => {
@@ -242,10 +253,7 @@ async function openThread(
           return opened;
         } catch (error) {
           if (!(error instanceof T3Unreachable)) throw error;
-          if (Date.now() - since >= options.reconnectForMs)
-            throw new Error(
-              `Lost T3 Code at ${origin} for ${Math.round(options.reconnectForMs / 60_000)} min (${error.message}). Its thread ${threadId} may still be running there.`,
-            );
+          why = error.message;
           await new Promise((resolve) => setTimeout(resolve, delay));
           delay = Math.min(delay * 2, 15_000);
         }
@@ -269,21 +277,27 @@ async function openThread(
     );
   };
 
-  /** Sends a request until T3 Code answers it. Only for reads and commands whose id makes a repeat a no-op. */
-  const request = async (tag: string, payload: unknown): Promise<unknown> => {
+  /**
+   * Sends a request until T3 Code answers it. Only for reads and commands whose id makes a repeat a no-op.
+   * `stopped` is asked just before the first send, however long reconnecting took; once sent, it's seen through.
+   */
+  const request = async (tag: string, payload: unknown, stopped?: () => boolean): Promise<unknown> => {
     for (let tries = 1; ; tries++) {
       const s = await connect();
+      if (tries === 1 && stopped?.()) throw new StoppedBeforeSend();
       try {
         const reply = await s.request(tag, payload);
         // Reachable again only once T3 Code answers, not when a socket merely opens.
         lostSince = undefined;
         return reply;
       } catch (error) {
-        if (!(error instanceof T3Unreachable) || closed || tries >= MAX_TRIES) throw error;
+        if (!(error instanceof T3Unreachable) || closed) throw error;
+        // The reconnect window, not a count, ends this: it holds until T3 Code answers.
+        await new Promise((resolve) => setTimeout(resolve, Math.min(250 * tries, 5_000)));
       }
     }
   };
-  const command = (payload: Rec) => request("orchestration.dispatchCommand", payload);
+  const command = (payload: Rec, stopped?: () => boolean) => request("orchestration.dispatchCommand", payload, stopped);
 
   const apply = (event: Rec) => {
     const payload = record(event.payload);
@@ -539,33 +553,42 @@ async function openThread(
         if (!threadExists) {
           const [selection, project] = await Promise.all([chooseModel(), projectFor()]);
           if (mine.stopped) return false;
-          await request("orchestration.launchThread", {
-            commandId: messageId,
-            threadId,
-            projectId: project.id,
-            title: clip(turn.text.trim().split("\n")[0]?.trim() || "Task from Top", 80),
-            modelSelection: selection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            workspaceStrategy: { type: "root" },
-            initialMessage: { messageId, text: turn.text, attachments: [] },
-          });
+          const launched = request(
+            "orchestration.launchThread",
+            {
+              commandId: messageId,
+              threadId,
+              projectId: project.id,
+              title: clip(turn.text.trim().split("\n")[0]?.trim() || "Task from Top", 80),
+              modelSelection: selection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              workspaceStrategy: { type: "root" },
+              initialMessage: { messageId, text: turn.text, attachments: [] },
+            },
+            () => mine.stopped,
+          );
+          if ((await launched.catch(stoppedFirst)) === STOPPED) return false;
           threadExists = true;
           emit({ type: "session", externalId: threadId, model: selection.model });
           // A turn sent before a restart is already there; its key keeps a second send from adding it again.
         } else if (!sentMessages.has(messageId) && ![...runs.values()].some((r) => r.userMessageId === messageId)) {
           if (mine.stopped) return false;
-          await command({
-            type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: messageId,
-            threadId,
-            messageId,
-            text: turn.text,
-            attachments: [],
-            dispatchMode: { type: "queue_after_active" },
-          });
+          const sent = command(
+            {
+              type: "message.dispatch",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: messageId,
+              threadId,
+              messageId,
+              text: turn.text,
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+            },
+            () => mine.stopped,
+          );
+          if ((await sent.catch(stoppedFirst)) === STOPPED) return false;
         }
         return true;
       };
