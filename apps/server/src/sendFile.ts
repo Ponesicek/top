@@ -50,3 +50,41 @@ export const sendFile = (
       return HttpServerResponse.empty({ status, headers: { ...headers, ETag: etag, "Content-Length": String(length) } });
     return yield* HttpServerResponse.file(path, { status, headers, offset: start, bytesToRead: length }).pipe(Effect.mapError(() => new NotFound({ path })));
   });
+
+export const KEEP_SCROLL_SCRIPT =
+  `(()=>{try{if(parent===window)return;const k="top-scroll:"+location.pathname,s=sessionStorage;let ready=false;` +
+  `addEventListener("scroll",()=>{if(ready)s.setItem(k,scrollX+" "+scrollY)},{passive:true});` +
+  `addEventListener("load",()=>{const v=(s.getItem(k)||"").split(" ").map(Number);` +
+  `if(!scrollX&&!scrollY&&v.length===2&&v.every(Number.isFinite))scrollTo({left:v[0],top:v[1],behavior:"instant"});ready=true})}catch{}})()`;
+const KEEP_SCROLL = new TextEncoder().encode(`<script>${KEEP_SCROLL_SCRIPT}</script>`);
+const MAX_FRAMED = 16 * 1024 * 1024;
+
+export function keepScroll(page: Uint8Array): Uint8Array {
+  if ((page[0] === 0xff && page[1] === 0xfe) || (page[0] === 0xfe && page[1] === 0xff)) return page;
+  const start = new TextDecoder("latin1").decode(page.subarray(0, 4096));
+  const bom = start.startsWith("\u00EF\u00BB\u00BF") ? 3 : 0;
+  const scan = start.replace(/<!--[\s\S]*?-->/g, (comment) => " ".repeat(comment.length));
+  const head = /<head(?:\s[^>]*)?>/i.exec(scan);
+  const doctype = /^(?:\s|<!--[\s\S]*?-->|<\?[^>]*>)*<!doctype[^>]*>/i.exec(start.slice(bom));
+  const at = head && !/<(?:script|body)[\s>]/i.test(scan.slice(0, head.index)) ? head.index + head[0].length : bom + (doctype?.[0].length ?? 0);
+  const out = new Uint8Array(page.length + KEEP_SCROLL.length);
+  out.set(page.subarray(0, at));
+  out.set(KEEP_SCROLL, at);
+  out.set(page.subarray(at), at + KEEP_SCROLL.length);
+  return out;
+}
+
+export const sendFramedPage = (
+  request: HttpServerRequest.HttpServerRequest,
+  path: string,
+  extra: Record<string, string>,
+): Effect.Effect<HttpServerResponse.HttpServerResponse, NotFound, FileServing> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.stat(path).pipe(Effect.mapError(() => new NotFound({ path })));
+    if (info.type !== "File") return yield* new NotFound({ path });
+    if (request.method === "HEAD" || Number(info.size) > MAX_FRAMED) return yield* sendFile(request, path, extra);
+    const { "Content-Type": contentType, ...headers } = extra;
+    const page = keepScroll(yield* fs.readFile(path).pipe(Effect.mapError(() => new NotFound({ path }))));
+    return HttpServerResponse.uint8Array(page, { status: 200, headers, ...(contentType ? { contentType } : {}) });
+  });
