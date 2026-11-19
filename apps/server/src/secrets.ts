@@ -24,7 +24,7 @@ const MAX_SCRUBBED_BYTES = 64 * 1024 * 1024;
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const PI_LOG = `${escaped(join(tmpdir(), "pi-"))}[\\w-]+\\.log`;
 const PI_LOG_PATH = new RegExp(`^${PI_LOG}$`);
-const PI_LOG_FOOTER = new RegExp(`Full output: (${PI_LOG})`, "g");
+const PI_FAILED = new RegExp(`Full output: (${PI_LOG})\\]\\n\\nCommand (?:aborted|timed out after \\d+ seconds|terminated without an exit code)$`);
 const ASK_TOOLS = new Set([`${COLLAR}__ask_permission`, `${COLLAR}__ask_question`, `${COLLAR}__request_secret`]);
 const TASK_START = `${COLLAR}__task_start`;
 type JsonObject = { readonly [key: string]: JsonValue };
@@ -152,7 +152,10 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
       };
       const ownLog = (details: JsonValue | undefined) =>
         isObject(details) && typeof details.fullOutputPath === "string" && PI_LOG_PATH.test(details.fullOutputPath) ? [details.fullOutputPath] : [];
-      const footers = (text: string) => [...new Set(Array.from(text.matchAll(PI_LOG_FOOTER), (match) => match[1]!))];
+      const failedLog = (text: string) => {
+        const path = PI_FAILED.exec(text)?.[1];
+        return path ? [path] : [];
+      };
       const scrubLog = (path: string) =>
         Effect.gen(function* () {
           const info = yield* Effect.tryPromise(() => lstat(path));
@@ -171,9 +174,9 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
         );
       const scrubLogs = (paths: readonly string[]) => (hidden.length ? Effect.forEach(paths, scrubLog, { discard: true }) : Effect.void);
       const finish = (tool: string) => (result: ToolResult) => Effect.as(scrubLogs(ownLog(result.details)), clean(result, tool));
-      const cleanError = (error: unknown) => {
+      const cleanError = (error: unknown, own: string | undefined) => {
         const message = error instanceof Error ? error.message : String(error);
-        return Effect.as(scrubLogs(footers(message)), new ToolError({ message: redact(message) }));
+        return Effect.as(scrubLogs(own ? [own] : failedLog(message)), new ToolError({ message: redact(message) }));
       };
 
       return Secrets.of({
@@ -207,12 +210,18 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
         redact,
         guard: (tool) => ({
           ...tool,
-          run: (args, ctx) =>
-            tool.run(args, ctx.onUpdate ? { ...ctx, onUpdate: (partial) => ctx.onUpdate?.(clean(partial, tool.name)) } : ctx).pipe(
+          run: (args, ctx) => {
+            let own: string | undefined;
+            const onUpdate = (partial: ToolResult) => {
+              own = ownLog(partial.details)[0] ?? own;
+              ctx.onUpdate?.(clean(partial, tool.name));
+            };
+            return tool.run(args, { ...ctx, onUpdate }).pipe(
               Effect.flatMap(finish(tool.name)),
-              Effect.catch((error) => Effect.flatMap(cleanError(error), Effect.fail)),
-              Effect.catchDefect((defect) => Effect.flatMap(cleanError(defect), Effect.fail)),
-            ),
+              Effect.catch((error) => Effect.flatMap(cleanError(error, own), Effect.fail)),
+              Effect.catchDefect((defect) => Effect.flatMap(cleanError(defect, own), Effect.fail)),
+            );
+          },
           ...(tool.recover
             ? {
                 recover: (args, ctx) =>

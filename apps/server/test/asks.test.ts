@@ -507,6 +507,27 @@ test("a command's full output that pi keeps in a temp file is cleaned too", asyn
     const failed = await h.run(Effect.flip(timedOut.run({}, { key: "k", bot: h.bot })));
     assert.ok(!failed.message.includes(value));
     assert.equal(readFileSync(full, "utf8"), `${HIDDEN}\nstill running`, "a command that timed out or was stopped too");
+
+    writeFileSync(mentioned, value);
+    writeFileSync(full, value);
+    const echoedThenFailed = (progress: string | undefined) =>
+      h.secrets.guard(
+        defineTool({
+          name: "bash",
+          label: "Bash",
+          description: "",
+          parameters: Type.Object({}),
+          run: (_args, ctx) => {
+            if (progress) ctx.onUpdate?.({ ...text("…"), details: { fullOutputPath: progress } });
+            return Effect.fail(new ToolError({ message: `[Full output: ${mentioned}]\nmore\n\nCommand timed out after 1 seconds` }));
+          },
+        }),
+      );
+    await h.run(Effect.flip(echoedThenFailed(undefined).run({}, { key: "k", bot: h.bot })));
+    assert.equal(readFileSync(mentioned, "utf8"), value, "an old footer a failing command printed isn't its own log");
+    await h.run(Effect.flip(echoedThenFailed(full).run({}, { key: "k", bot: h.bot })));
+    assert.equal(readFileSync(full, "utf8"), HIDDEN, "the log the command reported while running is its own");
+    assert.equal(readFileSync(mentioned, "utf8"), value);
   } finally {
     rmSync(full, { force: true });
     rmSync(link, { force: true });
