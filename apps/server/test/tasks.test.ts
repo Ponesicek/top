@@ -389,9 +389,10 @@ test("the bot drives it with its tools, and the transcript links the call to its
   assert.equal(views.find((v) => v.id === wire.task)?.state, "completed");
 });
 
-type Controlled = { adapter: FakeHarness; emit: () => (event: HarnessEvent) => void; interrupts: () => number };
+type Controlled = { adapter: FakeHarness; emit: () => (event: HarnessEvent) => void; interrupts: () => number; ackSteer: () => void };
 
-function controlled(options: { interrupt?: "hang" | "end"; steer?: "hang" } = {}): Controlled {
+function controlled(options: { interrupt?: "hang" | "end"; steer?: "hang" | "manual" } = {}): Controlled {
+  let ack: () => void = () => {};
   const base = fakeHarness({ stepMs: 10 });
   let emit: (event: HarnessEvent) => void = () => {};
   let interrupts = 0;
@@ -402,7 +403,14 @@ function controlled(options: { interrupt?: "hang" | "end"; steer?: "hang" } = {}
       e({ type: "session", externalId: "ctl-1" });
       return {
         run: async () => {},
-        steer: () => (options.steer === "hang" ? new Promise<void>(() => {}) : Promise.resolve()),
+        steer: () =>
+          options.steer === "hang"
+            ? new Promise<void>(() => {})
+            : options.steer === "manual"
+              ? new Promise<void>((resolve) => {
+                  ack = resolve;
+                })
+              : Promise.resolve(),
         interrupt: () => {
           interrupts++;
           if (options.interrupt === "end") emit({ type: "turn_ended", status: "interrupted" });
@@ -413,7 +421,7 @@ function controlled(options: { interrupt?: "hang" | "end"; steer?: "hang" } = {}
       };
     },
   };
-  return { adapter, emit: () => emit, interrupts: () => interrupts };
+  return { adapter, emit: () => emit, interrupts: () => interrupts, ackSteer: () => ack() };
 }
 
 test("a cancel that arrives just as the turn completes keeps the answer: the task completed", async () => {
@@ -542,4 +550,33 @@ test("a task_wait cut off by a restart is recovered with one look, never by wait
   assert.ok(Date.now() - began < 1_000);
   assert.match(JSON.stringify(recovered), /\\"timedOut\\":true/);
   await s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+});
+
+test("a steer let in just as the task completes is answered at once, not left to time out", async () => {
+  const ctl = controlled();
+  const s = await setup({ fake: ctl.adapter });
+  const { snapshot } = await start(s, { prompt: "anything" });
+  await inState(s, snapshot.task.id, "running");
+  ctl.emit()({ type: "turn_ended", status: "completed", result: "done" });
+  const began = Date.now();
+  const sent = await s.h.run(Effect.result(s.tasks.send(s.h.bot, snapshot.task.id, "late-steer", "steer", "one more thing")));
+  assert.ok(Date.now() - began < 2_000);
+  if (sent._tag === "Failure") assert.match(sent.failure.message, /ended|No turn is running|is ending/);
+});
+
+test("an acknowledgment that arrives after the task was cancelled isn't logged as a steer", async () => {
+  const ctl = controlled({ interrupt: "end", steer: "manual" });
+  const s = await setup({ fake: ctl.adapter });
+  const { snapshot } = await start(s, { prompt: "anything" });
+  await inState(s, snapshot.task.id, "running");
+  const steering = s.h.run(Effect.result(s.tasks.send(s.h.bot, snapshot.task.id, "slow-steer", "steer", "change course")));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+  ctl.ackSteer();
+  const steered = await steering;
+  assert.equal(steered._tag, "Failure");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const read = await s.h.run(s.tasks.read(s.h.bot, snapshot.task.id, 0, 200));
+  assert.ok(!read.events.some((e) => e.text.startsWith("steered")), "no steer is claimed for a dropped message");
+  assert.equal((await s.h.run(s.h.store.tasks.messageByKey("slow-steer")))?.state, "dropped");
 });

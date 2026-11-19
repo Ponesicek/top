@@ -296,7 +296,7 @@ const make = Effect.gen(function* () {
           cancelGraceMs: kit.taskCancelGraceMs,
           folder: (bot) => Effect.map(store.bot(bot), (row) => (row && kit.folder ? kit.folder(row) : undefined)),
         },
-        { deliver: queued, changed, publish: (views) => events.publish({ _tag: "Tasks", views }) },
+        { deliver: queued, publish: (views) => events.publish({ _tag: "Tasks", views }) },
       )
     : undefined;
   const collar = collarTools({ store, jobs, wakes, permissions, tasks, changed, toolsOf });

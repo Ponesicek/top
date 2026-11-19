@@ -54,7 +54,6 @@ export type TasksConfig = {
 
 export type TasksEvents = {
   readonly deliver: (row: InboxRow) => Effect.Effect<void>;
-  readonly changed: (bot: number) => Effect.Effect<void>;
   readonly publish: (views: readonly TaskView[]) => Effect.Effect<void>;
 };
 
@@ -248,7 +247,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       live.tick = yield* Deferred.make<void>();
       Deferred.doneUnsafe(tick, Effect.void);
       yield* Queue.offer(dirty, undefined);
-      yield* events.changed(live.bot);
     });
 
   const setState = (live: Live, from: readonly TaskState[], to: TaskState) =>
@@ -467,12 +465,12 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         case "steer": {
           if (live.cancelling || !live.turnActive || !live.harness) {
             yield* q.setMessageState(signal.message.id, "dropped");
+            live.steering.delete(signal.reply);
             yield* Deferred.succeed(signal.reply, `No turn is running to steer (the task is ${live.row.state}). Send it with mode "queue" instead.`);
             return;
           }
           const harness = live.harness;
           const { message, reply } = signal;
-          live.steering.add(reply);
           yield* Effect.forkIn(
             Effect.gen(function* () {
               const sent = yield* Effect.result(Effect.tryPromise(() => harness.steer(message.text)));
@@ -482,9 +480,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 yield* Deferred.succeed(reply, cause instanceof Error ? cause.message : String(cause));
                 return;
               }
-              yield* q.setMessageState(message.id, "sent");
-              yield* log(live, "sent", `steered with message ${message.id}: ${firstLine(message.text)}`);
-              yield* Deferred.succeed(reply, undefined);
+              if (yield* q.setMessageState(message.id, "sent")) {
+                yield* log(live, "sent", `steered with message ${message.id}: ${firstLine(message.text)}`);
+                yield* Deferred.succeed(reply, undefined);
+              } else yield* Deferred.succeed(reply, "The task ended before the harness took the message.");
             }).pipe(Effect.ensuring(Effect.sync(() => live.steering.delete(reply)))),
             scope,
           );
@@ -831,6 +830,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         return { message, duplicate: false };
       }
       const reply = yield* Deferred.make<string | undefined>();
+      live.steering.add(reply);
+      if (live.finished) Deferred.doneUnsafe(reply, Effect.succeed("The task ended before the harness took the message."));
       Queue.offerUnsafe(live.signals, { type: "steer", message, reply });
       const answer = yield* Deferred.await(reply).pipe(Effect.timeoutOption(Duration.millis(STEER_TIMEOUT_MS)));
       if (answer._tag === "None")

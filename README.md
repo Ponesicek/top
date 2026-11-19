@@ -324,7 +324,8 @@ daemon must run as a normal user.
 **Questions.** When Claude Code asks a question (AskUserQuestion), it goes to both the bot (as a
 message) and the user (on a card in the conversation, or at its end when the card where the task
 started isn't loaded), and whoever answers first wins. Codex's default mode doesn't ask questions,
-and Top doesn't turn that on.
+and Top doesn't turn that on. The app follows every running task and the newest 40; an older task's
+card shows only its title (`task_read` has its outcome).
 
 **Credentials.** Harnesses use their own sign-in: the model-provider keys the daemon's bots use
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, the AWS keys for Bedrock and the rest of pi's list) aren't
