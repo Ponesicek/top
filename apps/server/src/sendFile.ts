@@ -63,8 +63,9 @@ export function keepScroll(page: Uint8Array): Uint8Array {
   if ((page[0] === 0xff && page[1] === 0xfe) || (page[0] === 0xfe && page[1] === 0xff)) return page;
   const start = new TextDecoder("latin1").decode(page.subarray(0, 4096));
   const bom = start.startsWith("\u00EF\u00BB\u00BF") ? 3 : 0;
-  const anchor = /<head(?:\s[^>]*)?>/i.exec(start) ?? /<!doctype[^>]*>/i.exec(start);
-  const at = anchor ? anchor.index + anchor[0].length : bom;
+  const head = /<head(?:\s[^>]*)?>/i.exec(start);
+  const doctype = /^(?:\s|<!--[\s\S]*?-->|<\?[^>]*>)*<!doctype[^>]*>/i.exec(start.slice(bom));
+  const at = head && !/<(?:script|body)[\s>]/i.test(start.slice(0, head.index)) ? head.index + head[0].length : bom + (doctype?.[0].length ?? 0);
   const out = new Uint8Array(page.length + KEEP_SCROLL.length);
   out.set(page.subarray(0, at));
   out.set(KEEP_SCROLL, at);

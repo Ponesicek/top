@@ -177,6 +177,9 @@ test("a page shown in the app gets its scroll-keeping script inside its head, af
   assert.equal(framed("\uFEFF<p>no doctype</p>"), "\uFEFF<S><p>no doctype</p>");
   assert.equal(framed("<p>bare</p>"), "<S><p>bare</p>");
   assert.equal(framed("<!-- made by a bot --><!doctype html><p>x</p>"), "<!-- made by a bot --><!doctype html><S><p>x</p>");
+  assert.equal(framed('<?xml version="1.0"?><!DOCTYPE html><p>x</p>'), '<?xml version="1.0"?><!DOCTYPE html><S><p>x</p>');
+  assert.equal(framed('<script>w("<head>")</script><p>x</p>'), '<S><script>w("<head>")</script><p>x</p>');
+  assert.equal(framed('<p>x</p><script>w("<!doctype html>")</script>'), '<S><p>x</p><script>w("<!doctype html>")</script>');
   const utf16 = new Uint8Array([0xff, 0xfe, 0x3c, 0x00, 0x70, 0x00, 0x3e, 0x00]);
   assert.deepEqual(keepScroll(utf16), utf16);
 });
