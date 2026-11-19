@@ -343,6 +343,7 @@ test("harnesses get neither the daemon's provider keys nor the identity of a Cla
     CLAUDECODE: "1",
     CLAUDE_CODE_MESSAGING_TOKEN: "parent-secret",
     CLAUDE_CODE_SESSION_ID: "p",
+    CLAUDE_AGENT_SDK_CLIENT_APP: "top/1.0.0",
   });
   assert.deepEqual(env, { PATH: "/bin", HOME: "/h", GITHUB_TOKEN: "kept for tools", STRIPE_TEST_API_KEY: "a project's own key" });
 });

@@ -117,6 +117,8 @@ const PARENT_SESSION_VARS = new Set([
   "CLAUDE_CODE_EXECPATH",
   "CLAUDE_PID",
   "CLAUDE_AGENT_SDK_VERSION",
+  // A parent SDK app's name; some gateways refuse Claude Code traffic that carries one.
+  "CLAUDE_AGENT_SDK_CLIENT_APP",
 ]);
 const PROVIDER_KEYS = new Set([
   "AI_GATEWAY_API_KEY",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomInt } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,23 +42,23 @@ test.skipIf(which !== "codex" && which !== "claude_code")(
 
     if (which === "claude_code") {
       const asking = await start("rq", {
-        prompt: "Use your AskUserQuestion tool to ask me to choose between the colours red and blue. After I answer, reply with only the colour I chose.",
+        prompt:
+          "Use your AskUserQuestion tool to ask me for a code word, offering the options alpha and beta. After I answer, reply with only the code word I gave.",
       });
       const asked = await h.run(tasks.wait(h.bot, asking.task.id, 300_000, "input_or_end"));
       const question = asked.snapshot.inputs[0];
       assert.ok(question, `Claude Code asked: ${asked.snapshot.task.state} ${asked.snapshot.task.error ?? ""}`);
-      const options = question.questions[0]!.options.map((o) => o.label);
-      const blue = options.find((label) => /blue/i.test(label)) ?? "blue";
-      await h.run(tasks.respond("user", undefined, asking.task.id, question.id, { answers: { [question.questions[0]!.id]: [blue] } }));
+      const word = `zephyr${randomInt(100_000, 999_999)}`;
+      await h.run(tasks.respond("user", undefined, asking.task.id, question.id, { answers: { [question.questions[0]!.id]: [word] } }));
       const answered = await end(asking.task.id);
       assert.equal(answered.state, "completed", answered.error ?? "");
-      assert.match(answered.result ?? "", /blue/i, "Claude Code got the answer");
+      assert.match(answered.result ?? "", new RegExp(`^\\W*${word}\\W*$`), "Claude Code got the typed answer");
     }
 
-    const third = await start("r3", { prompt: "Run the shell command `sleep 15`, then reply with only FIRST." });
+    const third = await start("r3", { prompt: 'Run the shell command `node -e "setTimeout(() => {}, 15000)"` in the foreground, then reply with only FIRST.' });
     await running(third.task.id);
     await new Promise((resolve) => setTimeout(resolve, 6_000));
-    await h.run(tasks.send(h.bot, third.task.id, "s1", "steer", "Change of plan: after the sleep, reply with only STEERED instead of FIRST."));
+    await h.run(tasks.send(h.bot, third.task.id, "s1", "steer", "Change of plan: after the command, reply with only STEERED instead of FIRST."));
     await h.run(tasks.send(h.bot, third.task.id, "s2", "queue", "Reply with only the word SECOND."));
     const steered = await end(third.task.id);
     assert.match(steered.result ?? "", /SECOND/, "the queued message ran last");
@@ -67,7 +68,7 @@ test.skipIf(which !== "codex" && which !== "claude_code")(
       "the steer changed the running turn",
     );
 
-    const fourth = await start("r4", { prompt: "Run the shell command `sleep 90`, then reply DONE." });
+    const fourth = await start("r4", { prompt: 'Run the shell command `node -e "setTimeout(() => {}, 90000)"` in the foreground, then reply DONE.' });
     await running(fourth.task.id);
     await new Promise((resolve) => setTimeout(resolve, 6_000));
     const cancelled = await h.run(tasks.cancel(h.bot, fourth.task.id));
