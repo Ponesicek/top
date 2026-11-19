@@ -35,7 +35,12 @@ export const claudeOptions = Type.Object(
 
 const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
-type PermissionRules = { readonly state?: { readonly rules?: readonly { readonly behavior: string; readonly source: string; readonly rule: string }[] } };
+type PermissionRules = {
+  readonly state?: {
+    readonly rules?: readonly { readonly behavior: string; readonly source: string; readonly rule: string }[];
+    readonly workspaceDirectories?: readonly { readonly path: string; readonly source: string }[];
+  };
+};
 type Query_ = Pick<Query, "close"> &
   AsyncIterable<SDKMessage> & {
     readonly interrupt: (options?: { readonly cancelQueued?: boolean }) => Promise<unknown>;
@@ -55,7 +60,7 @@ export function policyOptions(
     case "read_only":
       return {
         permissionMode: "default",
-        disallowedTools: sandboxed ? ["Edit", "Write", "NotebookEdit"] : ["Edit", "Write", "NotebookEdit", "Bash"],
+        disallowedTools: sandboxed ? ["Edit", "Write", "NotebookEdit"] : ["Edit", "Write", "NotebookEdit", "Bash", "PowerShell"],
         ...(sandboxed
           ? {
               sandbox: {
@@ -435,7 +440,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
           text:
             spec.policy === "read_only"
               ? "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so it gets no shell for this read-only task."
-              : "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so its commands ask for approval first.",
+              : "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so its commands ask for approval first, except file commands in this folder (mkdir, touch, mv, cp, rm, sed).",
         });
       const options: Options = {
         cwd: spec.cwd,
@@ -470,6 +475,17 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
             ])
           : undefined;
         const allows = listing?.state?.rules?.filter((r) => r.behavior === "allow");
+        const folders = listing?.state?.workspaceDirectories?.filter((d) => !within(spec.cwd, resolve(spec.cwd, d.path)));
+        if (allows && folders?.length) {
+          inbox.end();
+          q.close();
+          throw new HarnessUnavailable(
+            `Claude Code on this computer has settings it can't ignore that let it work in ${folders
+              .slice(0, 5)
+              .map((d) => `${d.path} (${d.source})`)
+              .join(", ")} too, so Top can't keep the "${spec.policy}" policy and won't start the task.`,
+          );
+        }
         if (!allows || allows.length) {
           inbox.end();
           q.close();

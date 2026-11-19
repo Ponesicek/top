@@ -315,7 +315,8 @@ written in batches every 250 ms), and the result is kept up to 30,000 characters
   first, except the ones it counts as read-only, such as `ls`; without the sandbox, it has no shell).
 - `workspace_write` (the default): it edits files in its folder and runs commands sandboxed to it (Codex:
   the folder and a private temp folder, no network; Claude Code: its sandbox, which on Linux needs
-  bubblewrap and socat; without them its commands ask first, and the task's log says so).
+  bubblewrap and socat; without them its commands ask first, except the file commands Claude Code
+  allows in the folder itself, such as `mkdir` and `rm`, and the task's log says so).
 - `full_access`: no sandbox and no approvals.
 
 A folder other than the bot's own, and `full_access` anywhere, wait for the user's OK on a card in the
@@ -363,7 +364,8 @@ computer (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere), and never sig
 changes their settings. Settings an organization manages on the computer still apply over Top's
 policy, as they do over the user's: Codex's requirements, and Claude Code's managed settings. Claude
 Code is asked for the permission rules it applies before each task, and if any of them allows a tool
-without asking, a `read_only` or `workspace_write` task doesn't start and says which rule. Missing or signed-out harnesses fail the task with what to do. Fake bots get
+without asking, or adds a folder beyond the task's, a `read_only` or `workspace_write` task doesn't
+start and says which. Missing or signed-out harnesses fail the task with what to do. Fake bots get
 a fake harness instead: message one `call collar__task_start {"harness": "fake", "prompt": "needs approval"}`;
 "question", "secret question", "fail", "crash" or "forever" in the prompt play the other cases.
 `TOP_REAL_HARNESS=codex pnpm --filter @top/server test test/real-harness.test.ts` runs one real

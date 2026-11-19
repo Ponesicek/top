@@ -144,6 +144,7 @@ type FakeQuery = { messages: SDKUserMessage[]; options: Options; interrupted: nu
 function fakeClaude(
   script: (message: SDKUserMessage, options: Options) => Promise<SDKMessage[]>,
   rules: (options: Options) => { behavior: string; source: string; rule: string }[] = () => [],
+  folders: (options: Options) => { path: string; source: string }[] = () => [],
 ) {
   const runs: FakeQuery[] = [];
   const query: QueryFn = ({ prompt, options }) => {
@@ -161,7 +162,7 @@ function fakeClaude(
       }
     })();
     return Object.assign(iterator, {
-      listPermissionRules: async () => ({ state: { rules: rules(options) } }),
+      listPermissionRules: async () => ({ state: { rules: rules(options), workspaceDirectories: folders(options) } }),
       interrupt: async () => {
         run.interrupted++;
         return undefined;
@@ -196,7 +197,11 @@ test("Claude Code: the policy maps to its permission mode and sandbox, never to 
   assert.deepEqual(readOnly.disallowedTools, ["Edit", "Write", "NotebookEdit"]);
   assert.equal(readOnly.sandbox?.allowUnsandboxedCommands, false);
   assert.equal(readOnly.sandbox?.autoAllowBashIfSandboxed, false, "read only: every shell command asks");
-  assert.deepEqual(policyOptions("read_only", "/w", false).disallowedTools, ["Edit", "Write", "NotebookEdit", "Bash"], "no sandbox: no shell at all");
+  assert.deepEqual(
+    policyOptions("read_only", "/w", false).disallowedTools,
+    ["Edit", "Write", "NotebookEdit", "Bash", "PowerShell"],
+    "no sandbox: no shell at all",
+  );
   assert.deepEqual(policyOptions("full_access", "/w", true), { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true });
 });
 
@@ -522,4 +527,20 @@ test("Claude Code: a task won't start under a restricted policy when Claude Code
   );
   const session = await claude.open(spec({ policy: "full_access" }), () => {});
   await session.close();
+});
+
+test("Claude Code: a task won't start when Claude Code's settings add folders outside the task's own", async () => {
+  const fake = fakeClaude(
+    async () => [],
+    () => [],
+    (options) => [
+      { path: `${options.cwd}/sub`, source: "cliArg" },
+      { path: "/etc", source: "policySettings" },
+    ],
+  );
+  const claude = claudeAdapter({ command: "/bin/true", query: fake.query, sandbox: async () => true });
+  await assert.rejects(
+    claude.open(spec(), () => {}),
+    (error: unknown) => error instanceof HarnessUnavailable && /let it work in \/etc \(policySettings\) too/.test(error.message),
+  );
 });
