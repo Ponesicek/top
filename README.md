@@ -311,11 +311,11 @@ written in batches every 250 ms), and the result is kept up to 30,000 characters
 
 **Who may allow what.** Each session has a policy:
 
-- `read_only`: the harness looks but changes nothing (Claude Code: shell commands ask first, except the
-  ones Claude Code itself counts as read-only, such as `ls`; all stay in its sandbox).
+- `read_only`: the harness looks but changes nothing (Claude Code: in its sandbox, shell commands ask
+  first, except the ones it counts as read-only, such as `ls`; without the sandbox, it has no shell).
 - `workspace_write` (the default): it edits files in its folder and runs commands sandboxed to it (Codex:
   the folder and a private temp folder, no network; Claude Code: its sandbox, which on Linux needs
-  bubblewrap and socat; without them every command asks first, and the task's log says so).
+  bubblewrap and socat; without them its commands ask first, and the task's log says so).
 - `full_access`: no sandbox and no approvals.
 
 A folder other than the bot's own, and `full_access` anywhere, wait for the user's OK on a card in the
@@ -360,8 +360,10 @@ An end whose message to the bot was lost in a crash is sent at the next start.
 
 **Setting up.** Top uses the `claude` and `codex` already installed and signed in on the daemon's
 computer (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere), and never signs them in, out, or
-changes their settings. Settings an organization manages on the computer (Claude Code's managed
-settings, Codex's requirements) still apply over Top's policy, as they do over the user's. Missing or signed-out harnesses fail the task with what to do. Fake bots get
+changes their settings. Settings an organization manages on the computer still apply over Top's
+policy, as they do over the user's: Codex's requirements, and Claude Code's managed settings. Claude
+Code is asked for the permission rules it applies before each task, and if any of them allows a tool
+without asking, a `read_only` or `workspace_write` task doesn't start and says which rule. Missing or signed-out harnesses fail the task with what to do. Fake bots get
 a fake harness instead: message one `call collar__task_start {"harness": "fake", "prompt": "needs approval"}`;
 "question", "secret question", "fail", "crash" or "forever" in the prompt play the other cases.
 `TOP_REAL_HARNESS=codex pnpm --filter @top/server test test/real-harness.test.ts` runs one real

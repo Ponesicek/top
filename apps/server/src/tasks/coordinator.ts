@@ -311,7 +311,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const notify = (live: Live, key: string, text: string, suppressed: boolean) =>
     Effect.gen(function* () {
-      if (!live.row.notify && !suppressed) return;
       const row = yield* q.notify(live.id, key, suppressed ? undefined : text);
       if (row) yield* events.deliver(row);
     });
@@ -858,10 +857,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           });
         }
         const title = clip((request.title?.trim() || firstLine(prompt)).replace(/\s+/g, " "), MAX_TITLE);
-        const row = yield* q.createTask(
-          { id: newId("task"), bot: request.bot, key: request.key, session: session.id, title, prompt, images, notify: true },
-          "queued",
-        );
+        const row = yield* q.createTask({ id: newId("task"), bot: request.bot, key: request.key, session: session.id, title, prompt, images }, "queued");
         yield* q.touchSession(session.id);
         const live = yield* spawnLive(row, session, adapter);
         yield* log(live, "state", "queued");
@@ -1061,7 +1057,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const ended = yield* q.setState(row.id, ACTIVE_STATES, "failed", {
         error: `Cut off: ${why}.${resume}${dropped ? ` (${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : ""}`,
       });
-      if (ended?.notify && session) {
+      if (ended && session) {
         const message = yield* q.notify(ended.id, ended.state, notifyText(ended, session, adapter?.label ?? session.harness));
         if (message) yield* events.deliver(message);
       }

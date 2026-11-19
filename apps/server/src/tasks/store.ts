@@ -39,7 +39,6 @@ CREATE TABLE tasks (
   prompt TEXT NOT NULL,
   images TEXT NOT NULL DEFAULT '[]',
   state TEXT NOT NULL,
-  notify INTEGER NOT NULL DEFAULT 1,
   result TEXT,
   error TEXT,
   usage TEXT,
@@ -115,7 +114,6 @@ export const TaskRow = Schema.Struct({
   prompt: Text,
   images: Schema.fromJsonString(Schema.Array(Schema.String)),
   state: TaskState,
-  notify: Schema.BooleanFromBit,
   result: NullableText,
   error: NullableText,
   usage: Schema.NullOr(JsonObject),
@@ -200,7 +198,7 @@ const messageOf = decode(TaskMessageRow);
 export const ACTIVE_STATES = ["queued", "starting", "running", "waiting_for_input"] as const satisfies readonly TaskState[];
 
 export type NewSession = Omit<SessionRow, "createdAt" | "usedAt" | "externalId" | "approved"> & { readonly approved: boolean };
-export type NewTask = Pick<TaskRow, "id" | "bot" | "key" | "session" | "title" | "prompt" | "images" | "notify">;
+export type NewTask = Pick<TaskRow, "id" | "bot" | "key" | "session" | "title" | "prompt" | "images">;
 export type NewEvent = { readonly task: string; readonly bot: number; readonly at: number; readonly kind: TaskEventKind; readonly text: string };
 export type TaskEnd = { readonly result?: string | undefined; readonly error?: string | undefined };
 
@@ -243,9 +241,8 @@ export function makeTaskQueries(
       Effect.gen(function* () {
         const at = yield* now;
         yield* q(sql`
-          INSERT INTO tasks (id, bot, key, session, title, prompt, images, state, notify, created_at)
-          VALUES (${row.id}, ${row.bot}, ${row.key}, ${row.session}, ${row.title}, ${row.prompt}, ${JSON.stringify(row.images)}, ${state},
-                  ${row.notify ? 1 : 0}, ${at})`);
+          INSERT INTO tasks (id, bot, key, session, title, prompt, images, state, created_at)
+          VALUES (${row.id}, ${row.bot}, ${row.key}, ${row.session}, ${row.title}, ${row.prompt}, ${JSON.stringify(row.images)}, ${state}, ${at})`);
         return (yield* task(row.id))!;
       }),
     task,
@@ -254,7 +251,7 @@ export function makeTaskQueries(
       Effect.map(rows(sql`SELECT * FROM tasks WHERE bot = ${bot} ORDER BY created_at DESC, id DESC LIMIT ${limit}`), (r) => r.map(taskOf)),
     unnotified: Effect.map(
       rows(sql`
-        SELECT * FROM tasks WHERE notify = 1 AND state IN ('completed', 'failed', 'cancelled') AND (notified IS NULL OR notified != state)
+        SELECT * FROM tasks WHERE state IN ('completed', 'failed', 'cancelled') AND (notified IS NULL OR notified != state)
         ORDER BY ended_at, id`),
       (r) => r.map(taskOf),
     ),

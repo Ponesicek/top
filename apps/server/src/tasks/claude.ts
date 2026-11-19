@@ -35,7 +35,12 @@ export const claudeOptions = Type.Object(
 
 const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
-type Query_ = Pick<Query, "interrupt" | "close"> & AsyncIterable<SDKMessage>;
+type PermissionRules = { readonly state?: { readonly rules?: readonly { readonly behavior: string; readonly source: string; readonly rule: string }[] } };
+type Query_ = Pick<Query, "close"> &
+  AsyncIterable<SDKMessage> & {
+    readonly interrupt: (options?: { readonly cancelQueued?: boolean }) => Promise<unknown>;
+    readonly listPermissionRules?: () => Promise<PermissionRules>;
+  };
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => Query_;
 
 const str = (value: unknown) => (typeof value === "string" ? value : undefined);
@@ -50,7 +55,7 @@ export function policyOptions(
     case "read_only":
       return {
         permissionMode: "default",
-        disallowedTools: ["Edit", "Write", "NotebookEdit"],
+        disallowedTools: sandboxed ? ["Edit", "Write", "NotebookEdit"] : ["Edit", "Write", "NotebookEdit", "Bash"],
         ...(sandboxed
           ? {
               sandbox: {
@@ -427,7 +432,10 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
         emit({
           type: "log",
           kind: "status",
-          text: "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so every command asks for approval first.",
+          text:
+            spec.policy === "read_only"
+              ? "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so it gets no shell for this read-only task."
+              : "Claude Code's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so its commands ask for approval first.",
         });
       const options: Options = {
         cwd: spec.cwd,
@@ -453,6 +461,27 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
         q = query({ prompt: inbox, options });
       } catch (error) {
         throw new Error(`Claude Code didn't start: ${redact(error instanceof Error ? error.message : String(error))}`);
+      }
+      if (spec.policy !== "full_access") {
+        const listing = q.listPermissionRules
+          ? await Promise.race([
+              q.listPermissionRules().catch(() => undefined),
+              new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 15_000)),
+            ])
+          : undefined;
+        const allows = listing?.state?.rules?.filter((r) => r.behavior === "allow");
+        if (!allows || allows.length) {
+          inbox.end();
+          q.close();
+          throw new HarnessUnavailable(
+            allows
+              ? `Claude Code on this computer has settings it can't ignore that allow ${allows
+                  .slice(0, 5)
+                  .map((r) => `${r.rule} (${r.source})`)
+                  .join(", ")} without asking, so Top can't keep the "${spec.policy}" policy and won't start the task.`
+              : `Top couldn't confirm which permission rules Claude Code applies on this computer, so it won't start a "${spec.policy}" task. Updating Claude Code may help.`,
+          );
+        }
       }
       let announced = false;
       const outstanding = new Set<string>();
@@ -618,7 +647,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
           interrupting = true;
           outstanding.clear();
           if (parked) endTurn({ type: "turn_ended", status: "interrupted" });
-          await Promise.race([q.interrupt().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 15_000))]);
+          await Promise.race([q.interrupt({ cancelQueued: true }).catch(() => {}), new Promise((resolve) => setTimeout(resolve, 15_000))]);
         },
         answer: (id, answer) => {
           const request = pending.get(id);

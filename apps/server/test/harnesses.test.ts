@@ -141,7 +141,10 @@ test("Codex: not signed in, or not installed, says what to do", async () => {
 
 type FakeQuery = { messages: SDKUserMessage[]; options: Options; interrupted: number };
 
-function fakeClaude(script: (message: SDKUserMessage, options: Options) => Promise<SDKMessage[]>) {
+function fakeClaude(
+  script: (message: SDKUserMessage, options: Options) => Promise<SDKMessage[]>,
+  rules: (options: Options) => { behavior: string; source: string; rule: string }[] = () => [],
+) {
   const runs: FakeQuery[] = [];
   const query: QueryFn = ({ prompt, options }) => {
     const run: FakeQuery = { messages: [], options, interrupted: 0 };
@@ -158,6 +161,7 @@ function fakeClaude(script: (message: SDKUserMessage, options: Options) => Promi
       }
     })();
     return Object.assign(iterator, {
+      listPermissionRules: async () => ({ state: { rules: rules(options) } }),
       interrupt: async () => {
         run.interrupted++;
         return undefined;
@@ -192,7 +196,7 @@ test("Claude Code: the policy maps to its permission mode and sandbox, never to 
   assert.deepEqual(readOnly.disallowedTools, ["Edit", "Write", "NotebookEdit"]);
   assert.equal(readOnly.sandbox?.allowUnsandboxedCommands, false);
   assert.equal(readOnly.sandbox?.autoAllowBashIfSandboxed, false, "read only: every shell command asks");
-  assert.deepEqual(policyOptions("read_only", "/w", false).disallowedTools, ["Edit", "Write", "NotebookEdit"]);
+  assert.deepEqual(policyOptions("read_only", "/w", false).disallowedTools, ["Edit", "Write", "NotebookEdit", "Bash"], "no sandbox: no shell at all");
   assert.deepEqual(policyOptions("full_access", "/w", true), { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true });
 });
 
@@ -299,7 +303,7 @@ test("Claude Code: a resumed session keeps its id and a branch gets a new one; a
   await until("the turn", () => c.of("turn_ended")[0]);
   await resumed.close();
   assert.equal(fake.runs[0]!.options.sandbox, undefined);
-  assert.match(c.of("log")[0]!.text, /sandbox isn't available.*every command asks for approval/);
+  assert.match(c.of("log")[0]!.text, /sandbox isn't available.*commands ask for approval first/);
   assert.equal(fake.runs[0]!.options.resume, "old-id");
   assert.equal(fake.runs[0]!.options.sessionId, undefined);
   assert.equal(c.of("session")[0]!.externalId, "old-id");
@@ -504,4 +508,18 @@ test("Claude Code: the user's Claude settings only lend their environment (a gat
   writeFileSync(join(dir, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway", N: 1 }, permissions: { allow: ["Bash(*)"] } }));
   assert.deepEqual(await userSettingsEnv({ CLAUDE_CONFIG_DIR: dir }), { ANTHROPIC_BASE_URL: "https://gateway" });
   assert.deepEqual(await userSettingsEnv({ CLAUDE_CONFIG_DIR: join(dir, "none") }), {});
+});
+
+test("Claude Code: a task won't start under a restricted policy when Claude Code applies allow rules Top can't turn off", async () => {
+  const fake = fakeClaude(
+    async () => [],
+    () => [{ behavior: "allow", source: "policySettings", rule: "Bash(*)" }],
+  );
+  const claude = claudeAdapter({ command: "/bin/true", query: fake.query, sandbox: async () => true });
+  await assert.rejects(
+    claude.open(spec(), () => {}),
+    (error: unknown) => error instanceof HarnessUnavailable && /allow Bash\(\*\) \(policySettings\) without asking/.test(error.message),
+  );
+  const session = await claude.open(spec({ policy: "full_access" }), () => {});
+  await session.close();
 });

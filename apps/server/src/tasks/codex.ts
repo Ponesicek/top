@@ -231,7 +231,7 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
             const requested = JSON.stringify(permissions, null, 1);
             if (requested.length > MAX_GRANT_TEXT || redact(requested) !== requested) {
               pending.delete(key);
-              emit({ type: "log", kind: "status", text: "declined a permission request too large to show in full on a card" });
+              emit({ type: "log", kind: "status", text: "declined a permission request Top can't show in full on a card" });
               resolve({ permissions: {}, scope: "turn" });
               return;
             }

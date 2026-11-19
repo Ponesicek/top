@@ -79,10 +79,7 @@ test("a database from before harness tasks gains their tables, keeps everything 
         parent: null,
         approved: true,
       });
-      const task = yield* store.tasks.createTask(
-        { id: "task_1", bot: 1, key: "k", session: session.id, title: "t", prompt: "p", images: [], notify: true },
-        "queued",
-      );
+      const task = yield* store.tasks.createTask({ id: "task_1", bot: 1, key: "k", session: session.id, title: "t", prompt: "p", images: [] }, "queued");
       yield* store.tasks.appendEvents([{ task: task.id, bot: 1, at: 1, kind: "state", text: "queued" }]);
       yield* store.tasks.addInput({ task: task.id, bot: 1, kind: "workspace", external: "workspace", title: "x", detail: null, spec: {} });
       yield* store.tasks.addMessage({ task: task.id, bot: 1, key: "m", mode: "queue", text: "more" });
