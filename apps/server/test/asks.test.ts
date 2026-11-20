@@ -650,7 +650,7 @@ test("a saveSecret frame that doesn't parse is refused without repeating what wa
   assert.ok(!parseClientFrame(JSON.stringify({ t: "saveSecret", req: 4, id: "1", bot: 1, value })).ok);
 });
 
-test("hiding a secret leaves the ids that Top's own cards and tasks are found by, and nothing else", async () => {
+test("hiding a secret leaves the ids that Top's own cards are found by, and nothing else", async () => {
   const h = await harness();
   await h.run(h.secrets.save(h.bot, "secret"));
   await h.run(h.secrets.save(h.bot, "task"));
@@ -662,7 +662,7 @@ test("hiding a secret leaves the ids that Top's own cards and tasks are found by
   assert.deepEqual(await run("collar__request_secret", { ask: { kind: "secret", label: "the secret" } }), {
     ask: { kind: "secret", label: `the ${HIDDEN}` },
   });
-  assert.deepEqual(await run("collar__task_start", { task: "task_0123456789", note: "a task" }), { task: "task_0123456789", note: `a ${HIDDEN}` });
+  assert.deepEqual(await run("collar__task_start", { agent: { harness: "Codex", cwd: "/task" } }), { agent: { harness: "Codex", cwd: `/${HIDDEN}` } });
   assert.deepEqual(await run("other__tool", { ask: { kind: "secret" }, task: "task", record: { kind: "secret" } }), {
     ask: { kind: HIDDEN },
     task: HIDDEN,

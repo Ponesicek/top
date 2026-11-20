@@ -1,4 +1,5 @@
 import type {
+  AgentSpawn,
   Ask,
   AskOutcome,
   Attachment,
@@ -12,11 +13,12 @@ import type {
   QuestionReply,
   QueuedMessage,
   SkillUse,
-  TaskView,
   ToolCallView,
   TranscriptItem,
+  WaitingTask,
   WebSearchStep,
 } from "@top/client";
+import { hasCitationMarker, pagesOpened, withoutCitationMarkers, withoutOpenAiTag } from "./citations.ts";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 type AnswerEntry = Extract<Entry, { kind: "answer" }>;
@@ -43,6 +45,7 @@ export type Row =
       readonly tools: readonly ToolCallView[];
       readonly searches: readonly WebSearchStep[];
       readonly citations: readonly Citation[];
+      readonly pagesRead?: readonly Citation[];
       readonly hasThinking: boolean;
       readonly at: number;
       readonly error?: string | undefined;
@@ -58,7 +61,8 @@ export type Row =
       readonly answer?: AskOutcome;
       readonly reply?: QuestionReply;
     }
-  | { readonly kind: "task"; readonly key: string; readonly bot: number; readonly task: string; readonly title?: string }
+  | { readonly kind: "agent"; readonly key: string; readonly agent: AgentSpawn }
+  | { readonly kind: "taskQuestion"; readonly key: string; readonly task: WaitingTask }
   | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
 
@@ -114,6 +118,35 @@ function rowForEntry(entry: Exclude<Entry, AnswerEntry>): Row {
 
 const itemRowsCache = new WeakMap<readonly TranscriptItem[], Row[]>();
 
+type AssistantRowData = Extract<Row, { kind: "assistant" }>;
+
+// The pages the bot opened since the person's last message, up to and including rows[at];
+// undefined when some of that turn isn't loaded.
+function openedSince(rows: readonly Row[], at: number): Citation[] | undefined {
+  const steps: WebSearchStep[] = [];
+  for (let i = at; i >= 0; i--) {
+    const row = rows[i]!;
+    if (row.kind === "user") break;
+    if (row.kind === "earlier" || row.kind === "gap") return undefined;
+    if (row.kind === "assistant") steps.unshift(...row.searches);
+  }
+  return pagesOpened(steps);
+}
+
+// OpenAI didn't say which page a raw citation marker means, so the marker goes, and the answer lists the pages
+// the bot read in that turn instead, apart from its Sources: they're what it read, not what a sentence cites.
+const markedRows = new WeakMap<AssistantRowData, { signature: string; row: AssistantRowData }>();
+function withoutMarkers(row: AssistantRowData, opened: Citation[] | undefined): AssistantRowData {
+  const cited = new Set(row.citations.map((c) => withoutOpenAiTag(c.url)));
+  const pagesRead = (opened ?? []).filter((page) => !cited.has(withoutOpenAiTag(page.url)));
+  const signature = pagesRead.map((p) => p.url).join("\n");
+  const known = markedRows.get(row);
+  if (known?.signature === signature) return known.row;
+  const next: AssistantRowData = { ...row, text: withoutCitationMarkers(row.text), ...(pagesRead.length ? { pagesRead } : {}) };
+  markedRows.set(row, { signature, row: next });
+  return next;
+}
+
 type AskRow = Extract<Row, { kind: "ask" }>;
 const askRows = new WeakMap<ToolEntry, AskRow>();
 
@@ -132,25 +165,15 @@ function askRow(entry: ToolEntry, ask: Ask, settled: AnswerEntry | undefined): A
   return row;
 }
 
-type TaskRow = Extract<Row, { kind: "task" }>;
-const taskRows = new WeakMap<ToolEntry, TaskRow>();
+type AgentRow = Extract<Row, { kind: "agent" }>;
+const agentRows = new WeakMap<ToolEntry, AgentRow>();
 
-function taskTitle(text: string): string | undefined {
-  const match = /"title":"((?:[^"\\]|\\.)*)"/.exec(text);
-  if (!match) return undefined;
-  try {
-    return JSON.parse(`"${match[1]}"`) as string;
-  } catch {
-    return undefined;
+function agentRow(entry: ToolEntry, agent: AgentSpawn): AgentRow {
+  let row = agentRows.get(entry);
+  if (!row) {
+    row = { kind: "agent", key: `e${entry.seq}`, agent };
+    agentRows.set(entry, row);
   }
-}
-
-function taskRow(entry: ToolEntry, task: string): TaskRow {
-  const prev = taskRows.get(entry);
-  if (prev) return prev;
-  const title = taskTitle(entry.text);
-  const row: TaskRow = { kind: "task", key: `e${entry.seq}`, bot: entry.bot, task, ...(title ? { title } : {}) };
-  taskRows.set(entry, row);
   return row;
 }
 
@@ -166,27 +189,28 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
     else if (item.entry.kind === "user" && hidden(item.entry.source)) continue;
     else if (item.entry.kind === "answer") continue;
     else if (item.entry.kind === "tool" && item.entry.ask) rows.push(askRow(item.entry, item.entry.ask, settled.get(item.entry.ask.id)));
-    else if (item.entry.kind === "tool" && item.entry.task && !item.entry.isError) rows.push(taskRow(item.entry, item.entry.task));
+    else if (item.entry.kind === "tool" && item.entry.agent && !item.entry.isError) rows.push(agentRow(item.entry, item.entry.agent));
     else rows.push(rowForEntry(item.entry));
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row.kind === "assistant" && hasCitationMarker(row.text)) rows[i] = withoutMarkers(row, openedSince(rows, i));
   }
   itemRowsCache.set(items, rows);
   return rows;
 }
 
-const waitingCache = new Map<string, TaskRow>();
+const questionRows = new WeakMap<WaitingTask, Row>();
 
-export function waitingTaskRows(committed: readonly Row[], tasks: readonly TaskView[], bot: number): Row[] {
-  const waiting = tasks.filter((t) => t.bot === bot && t.inputs.length > 0);
-  for (const id of waitingCache.keys()) if (!waiting.some((t) => t.id === id)) waitingCache.delete(id);
-  if (!waiting.length) return [];
-  const shown = new Set(committed.flatMap((r) => (r.kind === "task" ? [r.task] : [])));
-  return waiting
-    .filter((t) => !shown.has(t.id))
-    .map((t) => {
-      let row = waitingCache.get(t.id);
-      if (!row || row.title !== t.title) {
-        row = { kind: "task", key: `waiting-${t.id}`, bot, task: t.id, title: t.title };
-        waitingCache.set(t.id, row);
+/** A task's questions get their own card at the end, wherever the task started. */
+export function taskQuestionRows(tasks: readonly WaitingTask[], bot: number): Row[] {
+  return tasks
+    .filter((t) => t.bot === bot)
+    .map((task) => {
+      let row = questionRows.get(task);
+      if (!row) {
+        row = { kind: "taskQuestion", key: `question-${task.id}`, task };
+        questionRows.set(task, row);
       }
       return row;
     });
@@ -245,7 +269,15 @@ export type FilesRow = Extract<Row, { kind: "files" }>;
 
 export function author(row: DisplayRow): "user" | "bot" | undefined {
   if (row.kind === "user") return "user";
-  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working" || row.kind === "ask" || row.kind === "task") return "bot";
+  if (
+    row.kind === "assistant" ||
+    row.kind === "toolgroup" ||
+    row.kind === "working" ||
+    row.kind === "ask" ||
+    row.kind === "agent" ||
+    row.kind === "taskQuestion"
+  )
+    return "bot";
   return undefined;
 }
 
@@ -327,9 +359,9 @@ export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[
       run.push(row.entry);
       continue;
     }
-    if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length) continue;
+    if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length && !row.citations.length && !row.pagesRead) continue;
     flush();
-    if (row.kind === "working" || author(row) !== "bot") flushFiles();
+    if (row.kind === "working" || row.kind === "taskQuestion" || author(row) !== "bot") flushFiles();
     out.push(row);
   }
   flush();

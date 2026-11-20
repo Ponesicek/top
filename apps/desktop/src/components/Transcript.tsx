@@ -7,17 +7,17 @@ import { copyCode } from "../lib/copyCode.ts";
 import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { findPassage, onJump } from "../quotes.ts";
-import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows, waitingTaskRows } from "../rows.ts";
+import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows, taskQuestionRows } from "../rows.ts";
 import { useClient, useConversation } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
 import { FilesLine } from "./files/FilesLine.tsx";
 import { highlight, QuoteMenu } from "./Quotes.tsx";
+import { AgentReceipt, TaskQuestionCard } from "./transcript/AgentCards.tsx";
 import { AskCard } from "./transcript/AskCard.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
 import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider, type RowRenderer } from "./transcript/parts.tsx";
-import { TaskCard } from "./transcript/TaskCard.tsx";
 import { renderTeamRow } from "./transcript/TeamRows.tsx";
 
 const BOTTOM_SLACK = 48;
@@ -30,7 +30,8 @@ function estimate(row: DisplayRow | undefined): number {
   if (row.kind === "assistant") return 80 + Math.ceil(row.text.length / 110) * 24;
   if (row.kind === "toolgroup" || row.kind === "files") return 34;
   if (row.kind === "ask") return row.ask.kind === "question" && !row.answer ? 120 + row.ask.options.length * 44 : 140;
-  if (row.kind === "task") return 130;
+  if (row.kind === "agent") return 76;
+  if (row.kind === "taskQuestion") return 140;
   return 48;
 }
 
@@ -42,8 +43,8 @@ const STYLES: Record<ChatStyle, { render: RowRenderer; scroll?: string; inner: s
 
 function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: boolean, bot: number): DisplayRow[] {
   const committed = committedRows(snapshot.items);
-  const tasks = useClient((s) => s.tasks);
-  const waiting = waitingTaskRows(committed, tasks, bot);
+  const waitingTasks = useClient((s) => s.waitingTasks);
+  const waiting = taskQuestionRows(waitingTasks, bot);
   const queued = tailRows(snapshot, working);
   const tail = waiting.length ? [...queued, ...waiting] : queued;
   const last = useRef<{ committed: Row[]; tail: Row[]; showTools: boolean; rows: DisplayRow[] } | null>(null);
@@ -232,8 +233,10 @@ export const Transcript = memo(function Transcript({
                   <FilesLine row={row} bot={sync.id} className={look.files} />
                 ) : row.kind === "ask" ? (
                   <AskCard row={row} className={look.files} />
-                ) : row.kind === "task" ? (
-                  <TaskCard row={row} className={look.files} />
+                ) : row.kind === "agent" ? (
+                  <AgentReceipt row={row} className={look.files} />
+                ) : row.kind === "taskQuestion" ? (
+                  <TaskQuestionCard row={row} className={look.files} />
                 ) : (
                   look.render(rows, item.index)
                 )}

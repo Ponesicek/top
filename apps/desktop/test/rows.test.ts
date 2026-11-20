@@ -1,6 +1,6 @@
-import type { ConversationSnapshot, Entry, TaskView, TranscriptItem } from "@top/client";
+import type { ConversationSnapshot, Entry, TranscriptItem, WaitingTask } from "@top/client";
 import { describe, expect, it } from "vitest";
-import { committedRows, displayRows, tailRows, waitingTaskRows } from "../src/rows.ts";
+import { committedRows, displayRows, tailRows, taskQuestionRows } from "../src/rows.ts";
 
 const BOT = 3;
 const ASK = "collar__ask_permission";
@@ -161,54 +161,143 @@ describe("web search rows", () => {
   });
 });
 
-describe("task rows", () => {
+describe("agent receipts", () => {
   const START = "collar__task_start";
-  const started = (task: string, title: string, isError = false) =>
+  const agent = { harness: "Codex", cwd: "/home/me/app", model: "gpt-6" };
+  const started = (id: string, spawned = true, isError = false) =>
     entry({
       kind: "tool",
-      toolCallId: `call_${task}`,
+      toolCallId: `call_${id}`,
       name: START,
-      text: isError ? "There's no folder /nope." : `{"started":{"id":"${task}","title":${JSON.stringify(title)},"state":"queued","harness":"codex"…`,
-      ...(isError ? { isError: true } : { task }),
+      text: isError ? "There's no folder /nope." : `{"started":{"id":"${id}","state":"queued"…`,
+      ...(isError ? { isError: true } : spawned ? { agent } : {}),
     });
 
-  it("shows a card where the bot started the task, with its title for when the task is no longer listed", () => {
-    const rows = displayRows(committedRows([said(), started("task_a", 'Fix "login"')]), false);
-    expect(rows.map((r) => r.kind)).toEqual(["assistant", "task"]);
-    expect(rows[1]).toMatchObject({ bot: BOT, task: "task_a", title: 'Fix "login"' });
+  it("shows a fixed receipt where the bot started a new agent, and none where it carried a session on", () => {
+    const first = started("task_a");
+    const rows = displayRows(committedRows([said(), first, started("task_b", false)]), true);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "agent", "toolgroup"]);
+    expect(rows[1]).toMatchObject({ kind: "agent", agent });
+    expect(displayRows(committedRows([said(), first, started("task_b", false)]), true)[1]).toBe(rows[1]);
   });
 
   it("a refused start stays a tool step, and the task's messages to the bot show nothing", () => {
     const told = entry({ kind: "user", text: "[Task task_a completed] Fix", source: "task", requestId: "task:task_a:completed" });
-    const rows = displayRows(committedRows([said(), started("task_b", "x", true), told]), true);
+    const rows = displayRows(committedRows([said(), started("task_b", true, true), told]), true);
     expect(rows.map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
   });
 });
 
-describe("tasks waiting for an answer", () => {
-  const view = (id: string, inputs: number, bot = BOT) =>
-    ({
-      id,
-      bot,
-      harness: "Codex",
-      title: `Task ${id}`,
-      state: "waiting_for_input",
-      session: "s",
-      cwd: "/w",
-      policy: "workspace_write",
-      createdAt: 1,
-      inputs: Array.from({ length: inputs }, (_, i) => ({ id: i, kind: "approval", title: "Run x" })),
-    }) as unknown as TaskView;
-
-  it("get a card at the end when the card where the task started isn't loaded, or never existed", () => {
-    const committed = committedRows([said()]);
-    const rows = waitingTaskRows(committed, [view("t1", 1), view("t2", 0), view("t3", 1, BOT + 1)], BOT);
-    expect(rows).toMatchObject([{ kind: "task", task: "t1", title: "Task t1" }]);
-    expect(waitingTaskRows(committed, [view("t1", 1)], BOT)[0]).toBe(rows[0]);
+describe("agents' questions", () => {
+  const waiting = (id: string, inputs: number, bot = BOT): WaitingTask => ({
+    id,
+    bot,
+    title: `Task ${id}`,
+    inputs: Array.from({ length: inputs }, (_, i) => ({ id: i, title: "Which database?", questions: [] })),
   });
 
-  it("don't get a second card when the start's card is loaded", () => {
-    const started = entry({ kind: "tool", toolCallId: "c", name: "collar__task_start", text: "{}", task: "t1" });
-    expect(waitingTaskRows(committedRows([said(), started]), [view("t1", 1)], BOT)).toEqual([]);
+  it("get their own card at the end, for this bot only, the same row while nothing changes", () => {
+    const tasks = [waiting("t1", 1), waiting("t3", 1, BOT + 1)];
+    const rows = taskQuestionRows(tasks, BOT);
+    expect(rows).toMatchObject([{ kind: "taskQuestion", key: "question-t1", task: { id: "t1" } }]);
+    expect(taskQuestionRows(tasks, BOT)[0]).toBe(rows[0]);
+  });
+
+  it("come after the bot's file changes, not above them", () => {
+    const files = entry({ kind: "files", files: [{ path: "a.ts", change: "added" }] });
+    const committed = committedRows([said(), files]);
+    const rows = displayRows(committed.concat(taskQuestionRows([waiting("t1", 1)], BOT)), false);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "files", "taskQuestion"]);
+  });
+});
+
+describe("citation markers OpenAI left raw", () => {
+  const RELEASES = "https://github.com/earendil-works/pi/releases";
+  const MODELS = "https://raw.githubusercontent.com/earendil-works/pi/main/packages/ai/src/providers/openai-codex.models.ts";
+  const DATA = "https://raw.githubusercontent.com/earendil-works/pi/main/packages/ai/src/providers/data/openai-codex.json";
+  const asked = () => entry({ kind: "user", text: "Also check if pi added sol 6.2 support" });
+  const researched = (...steps: Record<string, unknown>[]) =>
+    entry({
+      kind: "assistant",
+      text: "",
+      tools: [{ id: "call_1", name: "edit", summary: "path: MEMORY.md" }],
+      searches: [{ action: "search", queries: ['github badlogic pi-mono "gpt-6.2"'], sourceCount: 16 }, ...steps],
+    });
+  const opened = (url: string, failed = false) => ({ action: "open_page", url, ...(failed ? { failed: true } : {}) });
+  // The answer as stored: the search ran in an earlier response, so OpenAI sent the marker without a url_citation.
+  const answer = (marker = "citeturn949148view0", more: Record<string, unknown> = {}) =>
+    entry({
+      kind: "assistant",
+      text: `**Yes—pi has added upstream \`gpt-6.2-sol\` support.** No shim needed once that release lands. ${marker}\n\nI haven’t changed Top’s dependency.`,
+      ...more,
+    });
+  type Assistant = Extract<ReturnType<typeof committedRows>[number], { kind: "assistant" }>;
+  const last = (items: TranscriptItem[]) => committedRows(items).at(-1) as Assistant;
+  const raw = /[-]/;
+
+  it("drops the marker and lists the pages the bot read that turn apart from its sources, naming none as the one cited", () => {
+    const row = last([
+      asked(),
+      researched(opened(RELEASES), opened(MODELS), opened(DATA)),
+      entry({ kind: "tool", toolCallId: "call_1", name: "edit", text: "ok" }),
+      answer(),
+    ]);
+    expect(row.text).not.toMatch(raw);
+    expect(row.text).toContain("once that release lands.\n\nI haven’t");
+    expect(row.text).not.toContain("](");
+    expect(row.citations).toEqual([]);
+    expect(row.pagesRead).toEqual([
+      { url: RELEASES, title: "releases" },
+      { url: MODELS, title: "openai-codex.models.ts" },
+      { url: DATA, title: "openai-codex.json" },
+    ]);
+  });
+
+  it("doesn't link a marker even when the bot read only one page, and leaves out pages that failed to open", () => {
+    const row = last([asked(), researched(opened(MODELS, true), opened(RELEASES)), answer()]);
+    expect(row.text).not.toContain(RELEASES);
+    expect(row.pagesRead).toEqual([{ url: RELEASES, title: "releases" }]);
+  });
+
+  it("lists nothing read before the person's last message, or while the turn isn't all loaded", () => {
+    expect(last([researched(opened(RELEASES)), asked(), answer()])).toMatchObject({ text: expect.not.stringMatching(raw) });
+    expect(last([researched(opened(RELEASES)), asked(), answer()])).not.toHaveProperty("pagesRead");
+    const items = [asked(), researched(opened(RELEASES)), answer()];
+    const partial = last([{ kind: "earlier" } as TranscriptItem, items[2]!]);
+    expect(partial.text).not.toMatch(raw);
+    expect(partial).not.toHaveProperty("pagesRead");
+    expect(last(items).pagesRead).toEqual([{ url: RELEASES, title: "releases" }]);
+  });
+
+  it("keeps the citations OpenAI sent as sources, without listing them again as pages read", () => {
+    const row = last([
+      asked(),
+      researched(opened(RELEASES), opened(MODELS)),
+      answer(undefined, { citations: [{ url: `${RELEASES}?utm_source=openai`, title: "Releases · earendil-works/pi" }] }),
+    ]);
+    expect(row.citations).toEqual([{ url: `${RELEASES}?utm_source=openai`, title: "Releases · earendil-works/pi" }]);
+    expect(row.pagesRead).toEqual([{ url: MODELS, title: "openai-codex.models.ts" }]);
+  });
+
+  it("knows a cited page that OpenAI tagged is the same page it opened, whatever else is in its query", () => {
+    const search = "https://example.com/search?q=release%20notes";
+    const row = last([
+      asked(),
+      researched(opened(search)),
+      answer(undefined, { citations: [{ url: "https://example.com/search?q=release%20notes&utm_source=openai", title: "Release notes" }] }),
+    ]);
+    expect(row).not.toHaveProperty("pagesRead");
+  });
+
+  it("still shows an answer that was only a marker, with the sources OpenAI sent for it", () => {
+    const sources = [{ url: `${RELEASES}?utm_source=openai`, title: "Releases · earendil-works/pi" }];
+    const marked = entry({ kind: "assistant", text: "\ue200cite\ue202turn1view0\ue201", citations: sources });
+    const rows = displayRows(committedRows([asked(), marked]), false);
+    expect(rows.at(-1)).toMatchObject({ kind: "assistant", text: "", citations: sources });
+  });
+
+  it("still shows an answer that was only a marker, with the pages read", () => {
+    const rows = displayRows(committedRows([asked(), researched(opened(RELEASES)), entry({ kind: "assistant", text: "citeturn1view0" })]), false);
+    expect(rows.at(-1)).toMatchObject({ kind: "assistant", text: "", pagesRead: [{ url: RELEASES, title: "releases" }] });
   });
 });

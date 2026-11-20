@@ -62,7 +62,7 @@ function cached<A>(key: string, schema: Schema.Decoder<A>): A | undefined {
   return raw ? Option.getOrUndefined(Schema.decodeOption(Schema.fromJsonString(schema))(raw)) : undefined;
 }
 
-const cachePrefix = `top.cache.v3:${serverUrl}:`;
+const cachePrefix = `top.cache.v4:${serverUrl}:`;
 const cacheKey = (suffix: string) => cachePrefix + suffix;
 function dropCache(prefix: string) {
   try {
@@ -70,6 +70,7 @@ function dropCache(prefix: string) {
   } catch {}
 }
 dropCache("top.cache.v2:");
+dropCache("top.cache.v3:");
 
 const cachedServer = safeGet(cacheKey("server")) ?? undefined;
 export const top = new TopClient({ url: serverUrl, ...(cachedServer ? { serverId: cachedServer } : {}) });

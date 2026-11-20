@@ -1,4 +1,4 @@
-import { Ask, type Entry, type ToolCallView } from "@top/protocol";
+import { AgentSpawn, Ask, type Entry, type ToolCallView } from "@top/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { textOf } from "./messages.ts";
@@ -20,7 +20,18 @@ export function summarize(args: unknown): string {
 }
 
 const askOf = Schema.decodeUnknownOption(Schema.Struct({ ask: Ask }));
-const taskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
+const agentOf = Schema.decodeUnknownOption(Schema.Struct({ agent: AgentSpawn }));
+const legacyTaskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
+const legacyStartOf = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ started: Schema.Struct({ harness: Schema.String, cwd: Schema.String, model: Schema.optional(Schema.String) }) })),
+);
+
+/** A start saved before receipts kept their own details still shows one, from its result. */
+function legacyAgent(details: unknown, text: string): AgentSpawn | undefined {
+  if (Option.isNone(legacyTaskOf(details))) return undefined;
+  const started = Option.getOrUndefined(legacyStartOf(text))?.started;
+  return started ? { harness: started.harness, cwd: started.cwd, ...(started.model ? { model: started.model } : {}) } : undefined;
+}
 
 export function toWire(stored: StoredEntry, full = false): Entry | undefined {
   const base = { seq: stored.seq, bot: stored.bot, at: stored.at };
@@ -80,7 +91,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       const text = textOf(message.content);
       const cut = !full && text.length > TOOL_PREVIEW_CHARS;
       const ask = Option.getOrUndefined(askOf(message.details))?.ask;
-      const task = Option.getOrUndefined(taskOf(message.details))?.task;
+      const agent = Option.getOrUndefined(agentOf(message.details))?.agent ?? legacyAgent(message.details, text);
       return {
         ...base,
         kind: "tool",
@@ -91,7 +102,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         ...(message.isError ? { isError: true as const } : {}),
         ...(stored.outcome ? { outcome: stored.outcome } : {}),
         ...(ask ? { ask } : {}),
-        ...(task ? { task } : {}),
+        ...(agent ? { agent } : {}),
       };
     }
   }

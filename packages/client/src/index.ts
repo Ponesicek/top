@@ -19,10 +19,10 @@ import {
   type SkillsView,
   type T3CodeView,
   type TaskAnswers,
-  type TaskView,
   type UpdateView,
   type Viewer,
   type WaitingAsk,
+  type WaitingTask,
 } from "@top/protocol";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -41,6 +41,7 @@ const parseAttachment = Schema.decodeOption(Schema.fromJsonString(Attachment));
 export type {
   AccountView,
   ActiveSkill,
+  AgentSpawn,
   Ask,
   AskKind,
   AskOutcome,
@@ -80,14 +81,13 @@ export type {
   TaskAnswers,
   TaskInputView,
   TaskQuestion,
-  TaskState,
-  TaskView,
   ToolCallView,
   ToolOutcome,
   UpdateRelease,
   UpdateView,
   Viewer,
   WaitingAsk,
+  WaitingTask,
   WebSearchStep,
   WhenBusy,
 } from "@top/protocol";
@@ -156,7 +156,7 @@ export type TopSnapshot = {
   readonly server: { readonly version: string | undefined; readonly channel: Channel | undefined } | undefined;
   readonly update: UpdateView | undefined;
   readonly asks: readonly WaitingAsk[];
-  readonly tasks: readonly TaskView[];
+  readonly waitingTasks: readonly WaitingTask[];
   readonly outdated: "client" | "server" | undefined;
 };
 
@@ -199,7 +199,7 @@ export class TopClient {
       server: undefined,
       update: undefined,
       asks: [],
-      tasks: [],
+      waitingTasks: [],
       outdated: undefined,
     };
     this.#connection = Effect.runSync(
@@ -365,10 +365,6 @@ export class TopClient {
     return this.#command({ t: "answerTask", task, input, answers });
   }
 
-  cancelTask(task: string): Promise<void> {
-    return this.#command({ t: "cancelTask", task });
-  }
-
   /** Checks Top's T3 Code connection now (T3 Code is asked; nothing is polled). */
   t3code(): Promise<T3CodeView> {
     return this.#request({ t: "t3code" });
@@ -521,8 +517,8 @@ export class TopClient {
       case "asks":
         this.#publish({ asks: frame.asks });
         return;
-      case "tasks":
-        this.#publish({ tasks: frame.tasks });
+      case "waitingTasks":
+        this.#publish({ waitingTasks: frame.tasks });
         return;
       case "sync":
         this.#conversations.get(frame.bot)?.receiveSync(frame);

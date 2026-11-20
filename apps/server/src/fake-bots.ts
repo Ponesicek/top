@@ -183,7 +183,7 @@ async function searchTheWeb(prompt: string, options: SimpleStreamOptions | undef
   const query =
     /search the web (?:for|about)\s+(.+)/is
       .exec(prompt)?.[1]
-      ?.replace(/\s+(refused|fails)\s*$/i, "")
+      ?.replace(/\s+(refused|fails|unlinked)\s*$/i, "")
       .trim() || "the question";
   if (/\brefused\b/i.test(prompt))
     return fauxAssistantMessage("", {
@@ -219,6 +219,8 @@ async function searchTheWeb(prompt: string, options: SimpleStreamOptions | undef
     },
   });
   const [first, second] = [FAKE_PAGES[0], FAKE_PAGES[1]];
+  // OpenAI leaves its citation marker raw, without a url_citation, when the cited page came from an earlier response.
+  const unlinked = /\bunlinked\s*$/i.test(prompt);
   await emit({
     type: "response.output_item.done",
     output_index: 2,
@@ -232,6 +234,15 @@ async function searchTheWeb(prompt: string, options: SimpleStreamOptions | undef
     const start = text.indexOf(cited(page));
     return { type: "url_citation", url: `${page.url}?utm_source=openai`, title: page.title, start_index: start, end_index: start + cited(page).length };
   };
+  if (unlinked) {
+    const raw = `${lead.trimEnd()}. \ue200cite\ue202turn949148view0\ue201\n\n${paragraph()}`;
+    await emit({
+      type: "response.output_item.done",
+      output_index: 3,
+      item: { type: "message", id: `msg_fake${n}`, content: [{ type: "output_text", text: raw, annotations: [] }] },
+    });
+    return fauxAssistantMessage(raw);
+  }
   await emit({
     type: "response.output_item.done",
     output_index: 3,

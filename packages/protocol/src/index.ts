@@ -6,7 +6,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 export const DEFAULT_PORT = 7357;
 
 const Struct = Schema.Struct;
@@ -161,22 +161,22 @@ export const TaskInputView = Struct({
 });
 export type TaskInputView = typeof TaskInputView.Type;
 
-export const TaskView = Struct({
+/** A task with questions waiting for an answer: all the app hears about running tasks. */
+export const WaitingTask = Struct({
   id: Schema.String,
   bot: BotId,
-  harness: Schema.String,
   title: Schema.String,
-  state: TaskState,
-  session: Schema.String,
-  cwd: Schema.String,
-  model: Optional(Schema.String),
-  createdAt: Schema.Number,
-  endedAt: Optional(Schema.Number),
-  latest: Optional(Schema.String),
-  error: Optional(Schema.String),
   inputs: List(TaskInputView),
 });
-export type TaskView = typeof TaskView.Type;
+export type WaitingTask = typeof WaitingTask.Type;
+
+/** What a bot's task_start leaves in its transcript when it starts a new session, fixed when it started. */
+export const AgentSpawn = Struct({
+  harness: Schema.String,
+  cwd: Schema.String,
+  model: Optional(Schema.String),
+});
+export type AgentSpawn = typeof AgentSpawn.Type;
 
 export const TaskAnswers = Schema.Record(Schema.String, List(Schema.String));
 export type TaskAnswers = typeof TaskAnswers.Type;
@@ -316,7 +316,7 @@ export const Entry = Schema.Union([
     isError: Optional(Schema.Literal(true)),
     outcome: Optional(ToolOutcome),
     ask: Optional(Ask),
-    task: Optional(Schema.String),
+    agent: Optional(AgentSpawn),
   }),
   Struct({ ...entryBase, kind: Schema.Literal("answer"), request: Schema.Int, answer: AskOutcome, reply: Optional(QuestionReply) }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),
@@ -507,7 +507,6 @@ export const ClientFrame = Schema.Union([
     input: Schema.Int,
     answers: TaskAnswers,
   }),
-  Struct({ t: Schema.Literal("cancelTask"), req, task: Schema.String }),
   Struct({ t: Schema.Literal("t3code"), req }),
   Struct({ t: Schema.Literal("t3codeConnect"), req, address: Schema.String, code: Schema.String, plainHttp: Optional(Schema.Boolean) }),
   Struct({ t: Schema.Literal("t3codeDisconnect"), req }),
@@ -551,7 +550,6 @@ export const RequestResult = {
   answer: Schema.Null,
   saveSecret: Schema.Null,
   answerTask: Schema.Null,
-  cancelTask: Schema.Null,
   t3code: T3CodeView,
   t3codeConnect: T3CodeView,
   t3codeDisconnect: Schema.Null,
@@ -600,7 +598,7 @@ export const ServerFrame = Schema.Union([
   Struct({ t: Schema.Literal("files"), bot: BotId, folder: Schema.String, files: List(FileView), more: Optional(Schema.Literal(true)) }),
   Struct({ t: Schema.Literal("inbox"), bot: BotId, items: List(QueuedMessage) }),
   Struct({ t: Schema.Literal("asks"), asks: List(WaitingAsk) }),
-  Struct({ t: Schema.Literal("tasks"), tasks: List(TaskView) }),
+  Struct({ t: Schema.Literal("waitingTasks"), tasks: List(WaitingTask) }),
   Struct({ t: Schema.Literal("update"), update: UpdateView }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(true), value: Schema.Unknown }),
   Struct({ t: Schema.Literal("result"), req, ok: Schema.Literal(false), error: Schema.String }),

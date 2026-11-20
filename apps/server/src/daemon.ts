@@ -62,6 +62,7 @@ export function lastLine(text: string): string {
   for (let i = prose.length - 1; i >= 0; i--) {
     const line = prose[i]!.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|>\s?)+/, "")
       .replace(/(\*\*|__|`)/g, "")
+      .replace(/\s*\ue200cite(?:\ue202[^\ue200\ue201\ue202]*)+\ue201/g, "")
       .trim();
     if (line) return line.slice(0, 120);
   }
@@ -295,7 +296,7 @@ const make = Effect.gen(function* () {
           hide: secrets.redact,
           folder: (bot) => Effect.map(store.bot(bot), (row) => (row && kit.folder ? kit.folder(row) : undefined)),
         },
-        { deliver: queued, publish: (views) => events.publish({ _tag: "Tasks", views }) },
+        { deliver: queued, publish: (waiting) => events.publish({ _tag: "WaitingTasks", tasks: waiting }) },
       )
     : undefined;
   // `task_start` lists the harnesses offered now (T3 Code while it's connected), so Collar's tools are made again when that changes.

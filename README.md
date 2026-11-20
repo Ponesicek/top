@@ -351,8 +351,8 @@ time. Tasks and sessions belong to the bot that made them.
 saved before it's announced. A task keeps its slot while it waits for input. A cancel that arrives
 as the turn completes leaves it completed, with its answer. The bot gets one message when a task ends, and one when the harness asks
 it a question, even while idle, so it never polls; a `task_wait` that's waiting gets the news instead.
-The app gets one coalesced frame per change, never the harness's token stream: harness processes are
-the daemon's children, their output goes to a bounded event log (2 KB an event, the newest 1,000 kept,
+The app hears nothing of a task's progress: only which tasks have questions waiting, when that
+changes. Harness processes are the daemon's children, their output goes to a bounded event log (2 KB an event, the newest 1,000 kept,
 written in batches every 250 ms), and the result is kept up to 30,000 characters.
 
 **Full access.** A harness runs as the user running the daemon, with everything that user can do:
@@ -367,13 +367,17 @@ declines it at once and the task's log says so, so nothing waits on a card that 
 folder's CLAUDE.md as it does when you run it; it won't run with its checks off as root, so the
 daemon must run as a normal user.
 
+**In the conversation.** Where a bot starts a new session (or branches one), the conversation keeps
+a card that says an agent was spawned, with the harness, folder and model it started with. It never
+changes after: no state, no progress, no controls; the bot tells the user what came of it. Carrying a
+session on adds no second card.
+
 **Questions.** When Claude Code asks a question (AskUserQuestion), it goes to both the bot (as a
-message) and the user (on a card in the conversation, or at its end when the card where the task
-started isn't loaded), and whoever answers first wins. Codex's default mode doesn't ask questions,
-and Top doesn't turn that on. The app follows every running task and the newest 40; an older task's
-card shows only its title (`task_read` has its outcome). A harness's question lives on the task (`task_respond`, the
-task's card), apart from the bot's own Permission, Question and Secret cards; a task's card never asks
-for a secret or an approval (T3 Code's own secret requests stay in T3 Code).
+message) and the user (on a card at the end of the conversation, until it's answered), and whoever
+answers first wins. Codex's default mode doesn't ask questions, and Top doesn't turn that on. A
+harness's question lives on the task (`task_respond`, its card), apart from the bot's own Permission,
+Question and Secret cards; it never asks for a secret or an approval (T3 Code's own secret requests
+stay in T3 Code).
 
 **Credentials.** Harnesses use their own sign-in: the model-provider keys the daemon's bots use
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, the AWS keys for Bedrock and the rest of pi's list) aren't
@@ -404,7 +408,8 @@ going through a restart and Top follows it again (see below).
 | Options | `effort`, `max_turns` | `reasoning_effort` | `provider` (a T3 Code provider instance) |
 
 **Setting up.** Top uses the `claude` and `codex` already installed and signed in on the daemon's
-computer (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere), and never signs them in, out, or
+computer: on its PATH, or in `~/.local/bin`, where their installers put them and a systemd service's
+PATH doesn't reach (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere). It never signs them in, out, or
 changes their settings. Settings an organization manages on the computer still apply, as they do
 for the user. Missing or signed-out harnesses fail the task with what to do. Fake bots get
 a fake harness instead: message one `call collar__task_start {"harness": "fake", "prompt": "a question"}`;
