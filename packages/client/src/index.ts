@@ -162,6 +162,13 @@ export type TopSnapshot = {
 
 export type AskTarget = { readonly id: number; readonly bot: BotId };
 
+/** The bots with those in `ids` in that order first, the rest after them as they were. */
+function inOrder(bots: readonly BotSummary[], ids: readonly BotId[]): BotSummary[] {
+  const rank = new Map(ids.map((id, i) => [id, i]));
+  const ranked = (b: BotSummary) => rank.get(b.id) ?? ids.length + bots.indexOf(b);
+  return [...bots].sort((a, b) => ranked(a) - ranked(b));
+}
+
 export class TopClient {
   readonly clientId: string;
   readonly #scope = Scope.makeUnsafe();
@@ -173,6 +180,8 @@ export class TopClient {
   };
   readonly #connection: Connection;
   readonly #conversations = new Map<BotId, ConversationSync>();
+  /** Counts lists from the daemon and reorders made here, so an undone reorder can tell whether it's still the latest. */
+  #rosterTurn = 0;
   readonly #listeners = new Set<() => void>();
   readonly #url: string;
   #filesPath: string | undefined;
@@ -263,13 +272,24 @@ export class TopClient {
     return this.#command({ t: "deleteBot", bot: id });
   }
 
-  /** Lists the bots in this order here at once, and on every client once the daemon has it; its list is the one that counts. */
+  /**
+   * Lists the bots in this order here at once, and on every client once the daemon has it. When the daemon doesn't take
+   * it, the order before comes back, unless a newer list or reorder has arrived since.
+   */
   setBotOrder(ids: readonly BotId[]): Promise<void> {
     const before = this.#snapshot.bots;
-    const rank = new Map(ids.map((id, i) => [id, i]));
-    const ranked = (b: BotSummary) => rank.get(b.id) ?? ids.length + before.indexOf(b);
-    this.#publish({ bots: [...before].sort((a, b) => ranked(a) - ranked(b)) });
-    return this.#command({ t: "setBotOrder", bots: ids });
+    const turn = ++this.#rosterTurn;
+    this.#publish({ bots: inOrder(before, ids) });
+    return this.#command({ t: "setBotOrder", bots: ids }).catch((error: unknown) => {
+      if (this.#rosterTurn === turn)
+        this.#publish({
+          bots: inOrder(
+            this.#snapshot.bots,
+            before.map((b) => b.id),
+          ),
+        });
+      throw error;
+    });
   }
 
   contextFiles(bot: BotId): Promise<readonly ContextFileView[]> {
@@ -478,6 +498,7 @@ export class TopClient {
         return;
       }
       case "bots": {
+        this.#rosterTurn++;
         const live = new Set(frame.bots.map((b) => b.id));
         for (const id of this.#conversations.keys()) if (!live.has(id)) this.#conversations.delete(id);
         this.#publish({ bots: frame.bots, ready: true });
