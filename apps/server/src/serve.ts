@@ -135,7 +135,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
   yield* send({ t: "asks", asks: yield* daemon.asks.waiting });
-  if (daemon.tasks) yield* send({ t: "tasks", tasks: [...(yield* daemon.tasks.views)] });
+  if (daemon.tasks) yield* send({ t: "waitingTasks", tasks: [...(yield* daemon.tasks.waiting)] });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -167,8 +167,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "update", update: event.view });
       case "Asks":
         return Effect.flatMap(daemon.asks.waiting, (asks) => send({ t: "asks", asks }));
-      case "Tasks":
-        return send({ t: "tasks", tasks: [...event.views] });
+      case "WaitingTasks":
+        return send({ t: "waitingTasks", tasks: [...event.tasks] });
     }
   };
   yield* Effect.forkScoped(
@@ -395,13 +395,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return answer(
           frame,
           Effect.flatMap(tasksOf(), (t) => Effect.asVoid(t.respond("user", undefined, frame.task, frame.input, { answers: frame.answers }))),
-        );
-      case "cancelTask":
-        return answer(
-          frame,
-          Effect.flatMap(tasksOf(), (t) =>
-            Effect.flatMap(t.snapshot(undefined, frame.task), () => Effect.asVoid(Effect.forkIn(Effect.ignore(t.cancel(undefined, frame.task)), scope))),
-          ),
         );
     }
   };

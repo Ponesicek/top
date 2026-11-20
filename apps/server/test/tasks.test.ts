@@ -377,17 +377,36 @@ test("deleting a bot cancels its tasks and removes them with it; Stop cancels th
   assert.equal((await ended(s, atlasTask.snapshot.task.id)).state, "cancelled");
 });
 
-test("the bot drives it with its tools, and the transcript links the call to its task", async () => {
+test("the bot drives it with its tools, and the transcript keeps a fixed receipt of the agent it started", async () => {
   const s = await setup();
   await s.h.run(s.h.daemon.submit(s.h.bot, "go", 'call collar__task_start {"harness": "fake", "prompt": "fix it"}', "followUp", null));
   const entry = await until("the tool result", async () => (await s.h.entries()).find((e) => e.kind === "tool" && e.message.toolName === "collar__task_start"));
-  const wire = toWire(entry) as { task?: string; text: string };
-  assert.match(wire.task!, /^task_\w{10}$/);
+  const wire = toWire(entry) as { agent?: unknown; text: string };
+  assert.deepEqual(wire.agent, { harness: "Fake harness", cwd: s.folder() });
   const result = JSON.parse(textOfContent((entry as Extract<StoredEntry, { kind: "tool" }>).message.content)) as { started: { id: string; state: string } };
-  assert.equal(result.started.id, wire.task);
-  assert.equal((await ended(s, wire.task!)).state, "completed");
-  const views = await s.h.run(s.tasks.views);
-  assert.equal(views.find((v) => v.id === wire.task)?.state, "completed");
+  assert.equal((await ended(s, result.started.id)).state, "completed");
+  assert.deepEqual(toWire(entry), wire, "the receipt doesn't follow the task");
+  assert.deepEqual(await s.h.run(s.tasks.waiting), []);
+});
+
+test("a start saved before receipts had their own details still shows one, from its result", () => {
+  const started = { started: { id: "task_0123456789", harness: "codex", session: "ses_1", cwd: "/w", model: "gpt" } };
+  const entry = {
+    kind: "tool",
+    seq: 1,
+    bot: 1,
+    at: 1,
+    message: {
+      role: "toolResult",
+      toolCallId: "c",
+      toolName: "collar__task_start",
+      content: [{ type: "text", text: JSON.stringify(started) }],
+      details: { task: "task_0123456789" },
+      isError: false,
+      timestamp: 1,
+    },
+  } as unknown as StoredEntry;
+  assert.deepEqual((toWire(entry) as { agent?: unknown }).agent, { harness: "codex", cwd: "/w", model: "gpt" });
 });
 
 type Controlled = { adapter: FakeHarness; emit: () => (event: HarnessEvent) => void; interrupts: () => number; ackSteer: () => void };

@@ -295,7 +295,7 @@ const make = Effect.gen(function* () {
           hide: secrets.redact,
           folder: (bot) => Effect.map(store.bot(bot), (row) => (row && kit.folder ? kit.folder(row) : undefined)),
         },
-        { deliver: queued, publish: (views) => events.publish({ _tag: "Tasks", views }) },
+        { deliver: queued, publish: (waiting) => events.publish({ _tag: "WaitingTasks", tasks: waiting }) },
       )
     : undefined;
   const collar = collarTools({ store, jobs, wakes, asks, tasks, changed, toolsOf });

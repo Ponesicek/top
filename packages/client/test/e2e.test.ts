@@ -791,3 +791,81 @@ test("a bot's files have links once the daemon says where they are", async () =>
   const other = top.getSnapshot().bots[1]!;
   assert.equal((await fetch(top.fileUrl(other.id, "shots dir/inline narrow.png")!)).status, 404);
 });
+
+test("a coding task leaves one fixed receipt where a new session starts; clients hear only its questions, never its progress", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const frames: { t: string; tasks?: unknown }[] = [];
+  class Recording extends WebSocket {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      this.addEventListener("message", (event) => frames.push(JSON.parse(String(event.data)) as { t: string }));
+    }
+  }
+  const top = new TopClient({ url: daemon.url, WebSocket: Recording });
+  cleanup.push(() => top.close());
+  await until(top.subscribe, top.getSnapshot, (s) => s.ready, "the roster");
+  const id = top.getSnapshot().bots[0]!.id;
+  const bot = top.conversation(id);
+  bot.retain();
+  await untilBot(bot, (s) => s.status === "live", "the first sync");
+
+  const starts = (s: ConversationSnapshot) => ofKind(s, "tool").filter((e) => e.name === "collar__task_start" && !e.isError);
+  const told = (s: ConversationSnapshot) => ofKind(s, "user").filter((e) => e.source === "task").length;
+  const waitingFrames = () => frames.filter((f) => f.t === "waitingTasks").map((f) => f.tasks);
+
+  bot.send('call collar__task_start {"harness": "fake", "prompt": "build it", "title": "Build"}');
+  let s = await untilBot(bot, (x) => told(x) === 1, "the first task to end");
+  const [first] = starts(s);
+  assert.match(first!.agent!.cwd, /bots/);
+  assert.deepEqual(first!.agent, { harness: "Fake harness", cwd: first!.agent!.cwd });
+  assert.deepEqual(waitingFrames(), [[]], "a task that only works and ends sends nothing to the app");
+  const session = /"session":"(ses_\w+)"/.exec(first!.text)![1]!;
+
+  bot.send(`call collar__task_start {"session": "${session}", "prompt": "a question"}`);
+  const asked = await until(
+    top.subscribe,
+    () => top.getSnapshot().waitingTasks,
+    (w) => w.length === 1,
+    "the resumed task's question",
+  );
+  const [waiting] = asked;
+  assert.equal(waiting!.bot, id);
+  assert.deepEqual(
+    waiting!.inputs[0]!.questions.map((q) => q.question),
+    ["Which database?"],
+  );
+  s = await untilBot(bot, (x) => starts(x).length === 2, "the resumed start's result");
+  assert.equal(starts(s)[1]!.agent, undefined, "carrying a session on adds no receipt");
+  await top.answerTask(waiting!.id, waiting!.inputs[0]!.id, { db: ["SQLite"] });
+  await until(
+    top.subscribe,
+    () => top.getSnapshot().waitingTasks,
+    (w) => w.length === 0,
+    "the question to go",
+  );
+  s = await untilBot(bot, (x) => told(x) >= 3, "the resumed task to end");
+
+  bot.send(`call collar__task_start {"session": "${session}", "fork": true, "prompt": "branch it"}`);
+  s = await untilBot(bot, (x) => told(x) >= 4, "the forked task to end");
+  assert.equal(starts(s).length, 3);
+  assert.ok(starts(s)[2]!.agent, "a branched session is a new agent, with its own receipt");
+  assert.deepEqual(starts(s)[0]!.agent, first!.agent, "the first receipt never changed");
+  assert.deepEqual(
+    waitingFrames().map((w) => (w as unknown[]).length),
+    [0, 1, 0],
+    "only the question's arrival and its answer reached the app",
+  );
+
+  const fresh = new TopClient({ url: daemon.url });
+  cleanup.push(() => fresh.close());
+  await until(fresh.subscribe, fresh.getSnapshot, (x) => x.ready, "the roster");
+  const reloaded = fresh.conversation(id);
+  reloaded.retain();
+  const again = await untilBot(reloaded, (x) => x.status === "live" && starts(x).length === 3, "the history after a reconnect");
+  assert.deepEqual(
+    starts(again).map((e) => e.agent),
+    starts(s).map((e) => e.agent),
+    "the receipts read back the same",
+  );
+});

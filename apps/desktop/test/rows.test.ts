@@ -1,6 +1,6 @@
-import type { ConversationSnapshot, Entry, TaskView, TranscriptItem } from "@top/client";
+import type { ConversationSnapshot, Entry, TranscriptItem, WaitingTask } from "@top/client";
 import { describe, expect, it } from "vitest";
-import { committedRows, displayRows, tailRows, waitingTaskRows } from "../src/rows.ts";
+import { committedRows, displayRows, tailRows, taskQuestionRows } from "../src/rows.ts";
 
 const BOT = 3;
 const ASK = "collar__ask_permission";
@@ -161,54 +161,45 @@ describe("web search rows", () => {
   });
 });
 
-describe("task rows", () => {
+describe("agent receipts", () => {
   const START = "collar__task_start";
-  const started = (task: string, title: string, isError = false) =>
+  const agent = { harness: "Codex", cwd: "/home/me/app", model: "gpt-6" };
+  const started = (id: string, spawned = true, isError = false) =>
     entry({
       kind: "tool",
-      toolCallId: `call_${task}`,
+      toolCallId: `call_${id}`,
       name: START,
-      text: isError ? "There's no folder /nope." : `{"started":{"id":"${task}","title":${JSON.stringify(title)},"state":"queued","harness":"codex"…`,
-      ...(isError ? { isError: true } : { task }),
+      text: isError ? "There's no folder /nope." : `{"started":{"id":"${id}","state":"queued"…`,
+      ...(isError ? { isError: true } : spawned ? { agent } : {}),
     });
 
-  it("shows a card where the bot started the task, with its title for when the task is no longer listed", () => {
-    const rows = displayRows(committedRows([said(), started("task_a", 'Fix "login"')]), false);
-    expect(rows.map((r) => r.kind)).toEqual(["assistant", "task"]);
-    expect(rows[1]).toMatchObject({ bot: BOT, task: "task_a", title: 'Fix "login"' });
+  it("shows a fixed receipt where the bot started a new agent, and none where it carried a session on", () => {
+    const first = started("task_a");
+    const rows = displayRows(committedRows([said(), first, started("task_b", false)]), true);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "agent", "toolgroup"]);
+    expect(rows[1]).toMatchObject({ kind: "agent", agent });
+    expect(displayRows(committedRows([said(), first, started("task_b", false)]), true)[1]).toBe(rows[1]);
   });
 
   it("a refused start stays a tool step, and the task's messages to the bot show nothing", () => {
     const told = entry({ kind: "user", text: "[Task task_a completed] Fix", source: "task", requestId: "task:task_a:completed" });
-    const rows = displayRows(committedRows([said(), started("task_b", "x", true), told]), true);
+    const rows = displayRows(committedRows([said(), started("task_b", true, true), told]), true);
     expect(rows.map((r) => r.kind)).toEqual(["assistant", "toolgroup"]);
   });
 });
 
-describe("tasks waiting for an answer", () => {
-  const view = (id: string, inputs: number, bot = BOT) =>
-    ({
-      id,
-      bot,
-      harness: "Codex",
-      title: `Task ${id}`,
-      state: "waiting_for_input",
-      session: "s",
-      cwd: "/w",
-      policy: "workspace_write",
-      createdAt: 1,
-      inputs: Array.from({ length: inputs }, (_, i) => ({ id: i, kind: "approval", title: "Run x" })),
-    }) as unknown as TaskView;
-
-  it("get a card at the end when the card where the task started isn't loaded, or never existed", () => {
-    const committed = committedRows([said()]);
-    const rows = waitingTaskRows(committed, [view("t1", 1), view("t2", 0), view("t3", 1, BOT + 1)], BOT);
-    expect(rows).toMatchObject([{ kind: "task", task: "t1", title: "Task t1" }]);
-    expect(waitingTaskRows(committed, [view("t1", 1)], BOT)[0]).toBe(rows[0]);
+describe("agents' questions", () => {
+  const waiting = (id: string, inputs: number, bot = BOT): WaitingTask => ({
+    id,
+    bot,
+    title: `Task ${id}`,
+    inputs: Array.from({ length: inputs }, (_, i) => ({ id: i, title: "Which database?", questions: [] })),
   });
 
-  it("don't get a second card when the start's card is loaded", () => {
-    const started = entry({ kind: "tool", toolCallId: "c", name: "collar__task_start", text: "{}", task: "t1" });
-    expect(waitingTaskRows(committedRows([said(), started]), [view("t1", 1)], BOT)).toEqual([]);
+  it("get their own card at the end, for this bot only, the same row while nothing changes", () => {
+    const tasks = [waiting("t1", 1), waiting("t2", 0), waiting("t3", 1, BOT + 1)];
+    const rows = taskQuestionRows(tasks, BOT);
+    expect(rows).toMatchObject([{ kind: "taskQuestion", key: "question-t1", task: { id: "t1" } }]);
+    expect(taskQuestionRows(tasks, BOT)[0]).toBe(rows[0]);
   });
 });

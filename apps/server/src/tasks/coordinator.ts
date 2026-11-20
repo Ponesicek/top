@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, realpath, stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
-import { MAX_TASK_ANSWER, type TaskAnswers, TaskError, type TaskInputView, type TaskState, type TaskView, taskEnded } from "@top/protocol";
+import { MAX_TASK_ANSWER, type TaskAnswers, TaskError, type TaskInputView, type TaskState, taskEnded, type WaitingTask } from "@top/protocol";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -49,7 +49,6 @@ export const DEFAULT_READ = 50;
 export const READ_CHARS = 24_000;
 export const MAX_ACTIVE_PER_BOT = 12;
 export const NOTIFY_RESULT_CHARS = 4_000;
-const RECENT_VIEWS = 40;
 const FLUSH_MS = 250;
 const PUBLISH_MS = 100;
 const STEER_TIMEOUT_MS = 30_000;
@@ -66,7 +65,8 @@ export type TasksConfig = {
 
 export type TasksEvents = {
   readonly deliver: (row: InboxRow) => Effect.Effect<void>;
-  readonly publish: (views: readonly TaskView[]) => Effect.Effect<void>;
+  /** The tasks waiting for an answer, whenever that set changes: the app hears nothing else of a task. */
+  readonly publish: (waiting: readonly WaitingTask[]) => Effect.Effect<void>;
 };
 
 export type StartRequest = {
@@ -117,7 +117,7 @@ export type Tasks = {
   ) => Effect.Effect<{ readonly snapshot: Snapshot; readonly timedOut: boolean }, TaskError>;
   readonly cancel: (bot: number | undefined, id: string) => Effect.Effect<{ readonly task: TaskRow; readonly cancelled: boolean }, TaskError>;
   readonly sessions: (bot: number) => Effect.Effect<readonly SessionRow[]>;
-  readonly views: Effect.Effect<readonly TaskView[]>;
+  readonly waiting: Effect.Effect<readonly WaitingTask[]>;
   readonly stopAll: (bot: number) => Effect.Effect<void>;
   readonly recover: Effect.Effect<number>;
 };
@@ -157,7 +157,6 @@ type Live = {
   waitersAny: number;
   waitersEnd: number;
   tick: Deferred.Deferred<void>;
-  latest: string | undefined;
   readonly inputs: Map<number, TaskInputRow>;
   readonly external: Map<string, number>;
   readonly steering: Set<Deferred.Deferred<string | undefined>>;
@@ -195,8 +194,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
   const cancelGraceMs = config.cancelGraceMs ?? 10_000;
   const lives = new Map<string, Live>();
   let buffer: NewEvent[] = [];
-  let progressed = false;
   const dirty = yield* Queue.sliding<void>(1);
+  let published = "[]";
   const now = Clock.currentTimeMillis;
 
   const label = (harness: string) => adapters.get(harness)?.label ?? harness;
@@ -227,37 +226,17 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const clipped = clip(scrub(text.trim()), EVENT_CHARS);
       if (!clipped) return;
       buffer.push({ task: live.id, bot: live.bot, at, kind, text: clipped });
-      if (kind !== "state" && kind !== "usage") {
-        live.latest = firstLine(clipped);
-        progressed = true;
-      }
     });
 
   const inputView = (row: TaskInputRow): TaskInputView => ({ id: row.id, title: row.title, questions: [...row.questions] });
 
-  const views: Effect.Effect<readonly TaskView[]> = Effect.gen(function* () {
-    const rows = yield* q.recentTasks(RECENT_VIEWS);
-    const pending = yield* q.pendingInputs;
-    const result: TaskView[] = [];
-    for (const row of rows) {
-      const session = yield* q.session(row.session);
-      if (!session) continue;
-      const latest = lives.get(row.id)?.latest ?? (row.result ? firstLine(row.result) : undefined);
-      result.push({
-        id: row.id,
-        bot: row.bot,
-        harness: label(session.harness),
-        title: row.title,
-        state: row.state,
-        session: session.id,
-        cwd: session.cwd,
-        ...(session.model ? { model: session.model } : {}),
-        createdAt: row.createdAt,
-        ...(row.endedAt ? { endedAt: row.endedAt } : {}),
-        ...(latest ? { latest } : {}),
-        ...(row.error ? { error: firstLine(row.error) } : {}),
-        inputs: pending.filter((i) => i.task === row.id).map(inputView),
-      });
+  const waiting: Effect.Effect<readonly WaitingTask[]> = Effect.gen(function* () {
+    const byTask = new Map<string, TaskInputView[]>();
+    for (const input of yield* q.pendingInputs) byTask.set(input.task, [...(byTask.get(input.task) ?? []), inputView(input)]);
+    const result: WaitingTask[] = [];
+    for (const [id, inputs] of byTask) {
+      const row = yield* q.task(id);
+      if (row) result.push({ id, bot: row.bot, title: row.title, inputs });
     }
     return result;
   });
@@ -780,7 +759,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         waitersAny: 0,
         waitersEnd: 0,
         tick: yield* Deferred.make<void>(),
-        latest: undefined,
         inputs: new Map(),
         external: new Map(),
         steering: new Set(),
@@ -1151,10 +1129,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(FLUSH_MS));
         yield* flush.pipe(Effect.ignoreCause({ log: true }));
-        if (progressed) {
-          progressed = false;
-          yield* Queue.offer(dirty, undefined);
-        }
       }),
     ),
     scope,
@@ -1164,7 +1138,12 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       Effect.gen(function* () {
         yield* Queue.take(dirty);
         yield* Effect.sleep(Duration.millis(PUBLISH_MS));
-        yield* events.publish(yield* views);
+        const current = yield* waiting;
+        const json = JSON.stringify(current);
+        if (json !== published) {
+          published = json;
+          yield* events.publish(current);
+        }
       }),
     ),
     scope,
@@ -1180,7 +1159,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     wait,
     cancel,
     sessions: (bot) => q.sessionsOf(bot, 20),
-    views,
+    waiting,
     stopAll,
     recover,
   };
