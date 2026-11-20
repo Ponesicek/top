@@ -616,11 +616,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           if (!live.turnActive || !live.harness) return yield* finish(live, "cancelled");
           const harness = live.harness;
           yield* log(live, "status", "cancelling: stopping the turn");
-          // The grace for confirming the stop starts once it was sent (a remote harness may first have to find the turn),
-          // within a bound, so a stop that hangs still ends the task.
+          // The grace for confirming the stop starts once it was sent. A durable harness may first have to find the turn, and
+          // bounds that itself; a local one gets a bound here, so a stop that hangs still ends the task.
+          const sendingStop = Effect.promise(() => harness.interrupt().catch(() => {}));
           yield* Effect.forkIn(
-            Effect.promise(() => harness.interrupt().catch(() => {})).pipe(
-              Effect.timeout(Duration.millis(cancelGraceMs * 2)),
+            (live.adapter.capabilities.durable ? sendingStop : sendingStop.pipe(Effect.timeout(Duration.millis(cancelGraceMs * 2)))).pipe(
               Effect.ignore,
               Effect.andThen(Effect.sleep(Duration.millis(cancelGraceMs))),
               Effect.andThen(Effect.sync(() => Queue.offerUnsafe(live.signals, { type: "cancel_timeout" }))),

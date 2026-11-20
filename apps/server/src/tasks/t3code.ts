@@ -268,6 +268,11 @@ async function openThread(
           const opened: RpcSocket = await RpcSocket.open(origin, cfg.token, (error) => {
             if (socket === opened) lost(error);
           });
+          if (closed) {
+            // The harness ended while this reconnect was on its way.
+            opened.close();
+            throw new T3Unreachable("Top closed its connection to T3 Code.");
+          }
           socket = opened;
           return opened;
         } catch (error) {
@@ -645,8 +650,9 @@ async function openThread(
             // Asked of T3 Code afresh, not the stream's cache, which a drop meanwhile could leave behind.
             const projection = record(await request("orchestration.getThreadProjection", { threadId }));
             const landed = (Array.isArray(projection.runs) ? projection.runs : []).map(record).find((r) => r.userMessageId === messageId);
-            if (landed) runs.set(String(landed.id), landed);
-            return landed !== undefined;
+            // The stream may have reported the run meanwhile; its state is the newer one.
+            if (landed && !runs.has(String(landed.id))) runs.set(String(landed.id), landed);
+            return landed !== undefined || sentMessages.has(messageId) || [...runs.values()].some((r) => r.userMessageId === messageId);
           }
           const sent = command(
             {
