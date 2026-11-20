@@ -17,6 +17,11 @@ export type Capabilities = {
   readonly cancel: boolean;
   readonly reconnect: boolean;
   readonly durable: boolean;
+  /**
+   * Set only by a cloud harness. false: Top hands the work off and can't see how it goes there, so the task ends `handed_off`.
+   * Left out, as the harnesses on a computer leave it, Top follows the work to its end, as it always has.
+   */
+  readonly follow?: boolean;
 };
 
 export const CAPABILITY_NOTES: Record<keyof Capabilities, string> = {
@@ -31,6 +36,8 @@ export const CAPABILITY_NOTES: Record<keyof Capabilities, string> = {
   cancel: "stop a running turn (`task_cancel`)",
   reconnect: "pick a session back up after its process ended, in a new task",
   durable: "keeps working through a restart of Top, which follows it again when it's back",
+  follow:
+    "Top follows the work to its end and reports its result. A cloud harness that can't only hands the work off: the task ends `handed_off`, which means Top doesn't know how it goes; its progress and result are at the session's link",
 };
 
 /**
@@ -52,14 +59,21 @@ export type LogKind = "message" | "reasoning" | "command" | "file_change" | "too
 export type Usage = { readonly inputTokens?: number; readonly outputTokens?: number; readonly cachedInputTokens?: number; readonly costUsd?: number };
 
 export type HarnessEvent =
-  | { readonly type: "session"; readonly externalId: string; readonly model?: string | undefined }
+  | {
+      readonly type: "session";
+      readonly externalId: string;
+      readonly model?: string | undefined;
+      /** Told once the id is saved (or that it couldn't be), so a harness can record that it is about to send work before it sends it. */
+      readonly saved?: ((error?: Error) => void) | undefined;
+    }
   | { readonly type: "log"; readonly kind: LogKind; readonly text: string }
   | { readonly type: "request"; readonly request: HarnessRequest }
   | { readonly type: "resolved"; readonly id: string }
   | { readonly type: "usage"; readonly usage: Usage }
   | {
       readonly type: "turn_ended";
-      readonly status: "completed" | "failed" | "interrupted";
+      /** `handed_off`: a cloud harness took the work and Top can't follow it; `result` says where it is. */
+      readonly status: "completed" | "failed" | "interrupted" | "handed_off";
       readonly result?: string | undefined;
       readonly error?: string | undefined;
     }
@@ -87,9 +101,18 @@ export interface HarnessSession {
 
 export type Availability = { readonly ok: true; readonly version: string } | { readonly ok: false; readonly error: string };
 
+export type Where = "local" | "remote" | "cloud";
+
 export interface HarnessAdapter {
   readonly id: string;
   readonly label: string;
+  /**
+   * Where the work runs. Left out: on the daemon's computer, or on another one when it has `locate`. "cloud": in its vendor's
+   * cloud, against a repository or environment named in its options, never a local folder.
+   */
+  readonly where?: Where;
+  /** What a bot has to know to use it, beyond its options, said under its line in `task_start`. */
+  readonly guidance?: string;
   readonly capabilities: Capabilities;
   readonly options: TObject;
   readonly check: () => Promise<Availability>;
@@ -99,11 +122,19 @@ export interface HarnessAdapter {
    * For a harness on another computer: checks `cwd` there (Top doesn't look at its own disk) and returns the folder to use,
    * with options the new session keeps (which computer it belongs to), set by the harness and not by the bot.
    */
-  readonly locate?: (cwd: string | undefined) => Promise<{ readonly cwd: string; readonly options?: Readonly<Record<string, unknown>> }>;
+  readonly locate?: (
+    cwd: string | undefined,
+    start: { readonly options: Readonly<Record<string, unknown>>; readonly model: string | undefined },
+  ) => Promise<{ readonly cwd: string; readonly options?: Readonly<Record<string, unknown>> }>;
   readonly open: (spec: OpenSpec, emit: (event: HarnessEvent) => void) => Promise<HarnessSession>;
 }
 
 export class HarnessUnavailable extends Error {}
+
+/** Runs in its vendor's cloud. */
+export const inCloud = (adapter: Pick<HarnessAdapter, "where">) => adapter.where === "cloud";
+/** Top follows its work to the end (every harness but a cloud one that says it can't). */
+export const follows = (capabilities: Capabilities) => capabilities.follow !== false;
 
 const executable = async (path: string) => {
   try {

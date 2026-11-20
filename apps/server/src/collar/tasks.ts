@@ -2,7 +2,7 @@ import { type AgentSpawn, type TaskError, taskEnded } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { DEFAULT_READ, MAX_READ, type ReadResult, type Snapshot, type Tasks } from "../tasks/coordinator.ts";
-import { CAPABILITY_NOTES, type Capabilities, type HarnessAdapter } from "../tasks/harness.ts";
+import { CAPABILITY_NOTES, type Capabilities, follows, type HarnessAdapter, inCloud } from "../tasks/harness.ts";
 import type { TaskInputRow } from "../tasks/store.ts";
 import { defineTool, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
@@ -63,14 +63,16 @@ const capabilityList = (capabilities: Capabilities) =>
     .map(([name]) => name)
     .join(", ");
 
-function harnessLines(adapters: readonly HarnessAdapter[]): string {
+export function harnessLines(adapters: readonly HarnessAdapter[]): string {
   return adapters
     .map((a) => {
       const options = Object.entries(a.options.properties)
         .map(([name, schema]) => `${name}${(schema as { description?: string }).description ? ` (${(schema as { description?: string }).description})` : ""}`)
         .join("; ");
       const missing = (Object.keys(a.capabilities) as (keyof Capabilities)[]).filter((k) => !a.capabilities[k]);
-      return `- "${a.id}" (${a.label}): can ${capabilityList(a.capabilities) || "nothing extra"}${missing.length ? `; can't ${missing.join(", ")}` : ""}. Options: ${options || "none"}.`;
+      const line = `- "${a.id}" (${a.label}): can ${capabilityList(a.capabilities) || "nothing extra"}${missing.length ? `; can't ${missing.join(", ")}` : ""}. Options: ${options || "none"}.`;
+      const where = inCloud(a) ? `\n  Runs in its vendor's cloud, not on this computer: name it in \`harness\` to use it, it's never a default.` : "";
+      return `${line}${where}${a.guidance ? `\n  ${a.guidance}` : ""}`;
     })
     .join("\n");
 }
@@ -91,8 +93,11 @@ const spawned = (tasks: Tasks, snapshot: Snapshot, args: { readonly session?: st
           harness: tasks.adapters.find((a) => a.id === snapshot.session.harness)?.label ?? snapshot.session.harness,
           cwd: snapshot.session.cwd,
           ...(snapshot.session.model ? { model: snapshot.session.model } : {}),
+          ...(where(tasks, snapshot) === "cloud" ? { where: "cloud" as const } : {}),
         },
       };
+
+const where = (tasks: Tasks, snapshot: Snapshot) => tasks.adapters.find((a) => a.id === snapshot.session.harness)?.where;
 
 const ids = { id: Type.String({ description: "The task's id, from collar__task_start (task_…)." }) };
 
@@ -118,8 +123,13 @@ export const tasksGroup: CollarGroup = (daemon) => {
         "The harness runs with full access, as the user running Top: no sandbox and no approval prompts. Only start work you would do yourself, in the folder it belongs in.",
         "Questions it asks come to you as a message (answer with collar__task_respond) and to the user on a card.",
         "`cwd` defaults to your own folder.",
+        ...(offered.some(inCloud)
+          ? [
+              "A cloud harness (marked above) takes no `cwd`, `model`, images or questions, and Top can't stop its work once it's there (collar__task_cancel is refused). It works on what its options name, never on a folder here.",
+            ]
+          : []),
         ...offered
-          .filter((a) => a.locate)
+          .filter((a) => a.locate && !inCloud(a))
           .map((a) => `"${a.id}" runs on another computer: its \`cwd\` is a folder there, one of its projects, and is checked there.`),
         "A task is one piece of work in a session. To continue a session later (it keeps the conversation), start a new task with `session`; `fork: true` branches it instead.",
       ].join("\n"),
@@ -169,11 +179,14 @@ export const tasksGroup: CollarGroup = (daemon) => {
           );
           if (started._tag === "Failure") return refused(started.failure);
           const { snapshot } = started.success;
+          const handOff = snapshot.capabilities && !follows(snapshot.capabilities);
           return json(
             {
               started: taskJson(snapshot),
               capabilities: snapshot.capabilities ? capabilityList(snapshot.capabilities) : undefined,
-              next: "It runs in the background. You'll get a message when it ends or asks you something: carry on, or end your turn.",
+              next: handOff
+                ? "Top hands it off in the background. You'll get a message once it's handed off (the task ends `handed_off`) or if that fails; Top can't see its progress or result after that, which are at the session's link."
+                : "It runs in the background. You'll get a message when it ends or asks you something: carry on, or end your turn.",
             },
             spawned(tasks, snapshot, args),
           );
@@ -346,9 +359,12 @@ export const tasksGroup: CollarGroup = (daemon) => {
                 ? { note: task.error }
                 : {}
               : {
-                  note: taskEnded(task.state)
-                    ? `It had already ${task.state === "completed" ? "completed" : `ended (${task.state})`}.`
-                    : "It's still stopping; you'll get a message when it ends.",
+                  note:
+                    task.state === "handed_off"
+                      ? "It was handed off to its vendor's cloud, where the work may still be going on: Top can't stop it there."
+                      : taskEnded(task.state)
+                        ? `It had already ${task.state === "completed" ? "completed" : `ended (${task.state})`}.`
+                        : "It's still stopping; you'll get a message when it ends.",
                 }),
           }),
         ),

@@ -41,7 +41,9 @@ import { t3Connect, t3Disconnect, t3Status } from "./t3cli.ts";
 import * as T3Link from "./t3link.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
 import { claudeAdapter } from "./tasks/claude.ts";
+import { claudeCloudAdapter } from "./tasks/claudecloud.ts";
 import { codexAdapter } from "./tasks/codex.ts";
+import { codexCloudAdapter } from "./tasks/codexcloud.ts";
 import { fakeHarness } from "./tasks/fake.ts";
 import { readT3Config } from "./tasks/t3api.ts";
 import { t3codeAdapter } from "./tasks/t3code.ts";
@@ -173,7 +175,13 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
           webSearch: canSearchTheWeb(found),
-          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version }), t3codeAdapter({ file: home.t3code })],
+          harnesses: [
+            claudeAdapter(),
+            codexAdapter({ clientVersion: BUILD.version }),
+            t3codeAdapter({ file: home.t3code }),
+            codexCloudAdapter(),
+            claudeCloudAdapter(),
+          ],
           maxTasks: maxTasks(),
         });
       }),
@@ -205,7 +213,7 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         retryDelaysMs: yield* RetryDelaysMs,
         compactAtTokens: yield* CompactAtTokens,
         webSearch: true,
-        harnesses: [fakeHarness({ stepMs: 1_500 }), t3codeAdapter({ file: home.t3code })],
+        harnesses: [fakeHarness({ stepMs: 1_500 }), t3codeAdapter({ file: home.t3code }), fakeHarness({ stepMs: 1_500, where: "cloud" })],
         maxTasks: maxTasks(),
       });
     }),
