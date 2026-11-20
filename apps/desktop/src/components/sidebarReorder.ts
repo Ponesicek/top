@@ -25,6 +25,8 @@ type Gesture = {
   readonly startX: number;
   readonly startY: number;
   active: boolean;
+  /** The order the drag shows, kept here as it changes so a release right after a move commits that move. */
+  order?: readonly BotId[];
   /** A finger held still long enough: moving now drags. */
   armed?: boolean;
   timer?: ReturnType<typeof setTimeout>;
@@ -53,8 +55,8 @@ export function useSidebarReorder({
   const [announcement, setAnnouncement] = useState("");
   const gesture = useRef<Gesture | undefined>(undefined);
   const places = useRef(new Map<string, Place>());
-  const latest = useRef({ groups, onCommit, nameOf, preview });
-  latest.current = { groups, onCommit, nameOf, preview };
+  const latest = useRef({ groups, onCommit, nameOf });
+  latest.current = { groups, onCommit, nameOf };
 
   const shown = (group: Group): readonly BotId[] => (preview?.group === group ? preview.ids : groups[group]);
 
@@ -90,7 +92,7 @@ export function useSidebarReorder({
       document.documentElement.classList.remove("reordering");
       navRef.current?.querySelector(`[data-bot="${g.id}"]`)?.removeAttribute("data-dragging");
       if (!g.active) return;
-      const shownIds = latest.current.preview?.group === g.group ? latest.current.preview.ids : undefined;
+      const shownIds = g.order;
       setPreview(undefined);
       const before = latest.current.groups[g.group];
       if (commit && shownIds && shownIds.join() !== before.join()) {
@@ -115,7 +117,8 @@ export function useSidebarReorder({
     getSelection()?.removeAllRanges();
     navRef.current?.querySelector(`[data-bot="${g.id}"]`)?.setAttribute("data-dragging", "");
     if (g.touch) navigator.vibrate?.(8);
-    setPreview({ group: g.group, ids: latest.current.groups[g.group] });
+    g.order = latest.current.groups[g.group];
+    setPreview({ group: g.group, ids: g.order });
   }, []);
 
   useEffect(() => {
@@ -136,7 +139,7 @@ export function useSidebarReorder({
       }
       e.preventDefault();
       const nav = navRef.current;
-      const current = latest.current.preview ?? { group: g.group, ids: latest.current.groups[g.group] };
+      const current = g.order;
       if (!nav || !current) return;
       // Slots by where the bots sit in the layout, not where a slide shows them right now.
       const box = nav.getBoundingClientRect();
@@ -148,9 +151,11 @@ export function useSidebarReorder({
       const target = nearest({ x: e.clientX, y: e.clientY }, centers);
       const over = target < 0 ? undefined : Number(items[target]!.dataset.bot);
       if (over === undefined || over === g.id) return;
-      const from = current.ids.indexOf(g.id);
-      const to = current.ids.indexOf(over);
-      if (from >= 0 && to >= 0) setPreview({ group: g.group, ids: move(current.ids, from, to) });
+      const from = current.indexOf(g.id);
+      const to = current.indexOf(over);
+      if (from < 0 || to < 0) return;
+      g.order = move(current, from, to);
+      setPreview({ group: g.group, ids: g.order });
     };
     const onUp = (e: PointerEvent) => {
       if (gesture.current?.pointerId === e.pointerId) end(e.type === "pointerup");
