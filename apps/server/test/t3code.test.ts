@@ -508,6 +508,152 @@ test("a cancel Top started before it restarted is carried out after it: the run 
   assert.equal(second.t3.runsOf(`top-${unsent.session.id}`).length, 0);
 });
 
+const held = (s: Setup, id: string) =>
+  until(`task ${id} to wait on delegated work`, async () => (await log(s, id)).some((t) => /still has delegated work/.test(t)));
+const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("a run that ends while its delegated task works keeps the task going until T3 Code wakes it, and the owner's answer arrives once", async () => {
+  const s = await setup();
+  const running = await start(s, { prompt: "delegate the review" });
+  const thread = `top-${running.session.id}`;
+  await held(s, running.task.id);
+  await settle();
+  const waiting = await task(s, running.task.id);
+  assert.equal(waiting.state, "running", "the run's end isn't the task's: its child still works");
+  assert.equal((await told(s, running.task.id)).length, 0, "the bot hears nothing yet");
+  const subscribed = s.t3.requests.filter((r) => r.tag === "orchestration.subscribeThread").length;
+
+  s.t3.childDone(thread, `task-run:${thread}:1`, "the review found two bugs");
+  const done = await ended(s, running.task.id);
+  assert.equal(done.state, "completed", done.error ?? "");
+  assert.equal(done.result, "done: the review found two bugs", "the woken owner's answer, not the first run's");
+  assert.equal(s.t3.runsOf(thread).length, 2);
+  assert.equal(s.t3.requests.filter((r) => r.tag === "orchestration.subscribeThread").length, subscribed, "followed on the same stream throughout");
+  await until("the bot to hear", async () => (await told(s, running.task.id)).length > 0);
+  await settle();
+  assert.equal((await told(s, running.task.id)).length, 1, "the bot heard once");
+});
+
+test("delegated work from an earlier run, and a child the woken owner delegates in turn, both hold the task", async () => {
+  const s = await setup();
+  const first = await start(s, { prompt: "plain first" });
+  assert.equal((await ended(s, first.task.id)).result, "done: plain first");
+  const thread = `top-${first.session.id}`;
+  // Delegated in T3 Code after Top's turn ended, from that earlier run.
+  s.t3.delegate(thread, `run:${thread}:1`, "older");
+
+  const second = await start(s, { prompt: "plain second", session: first.session.id });
+  await held(s, second.task.id);
+  // The woken owner delegates again, and ends before that child does.
+  s.t3.childDone(thread, "older", "delegate the follow-up");
+  await until("the nested child to start", () => s.t3.subagentsOf(thread).some((t) => t.id === `task-run:${thread}:3` && t.status === "running"));
+  await until("the woken run to end", () => s.t3.runsOf(thread)[2]?.status === "completed");
+  await settle();
+  assert.equal((await task(s, second.task.id)).state, "running", "the nested child still holds it");
+
+  s.t3.childDone(thread, `task-run:${thread}:3`, "all settled");
+  const done = await ended(s, second.task.id);
+  assert.equal(done.state, "completed", done.error ?? "");
+  assert.equal(done.result, "done: all settled");
+});
+
+test("background work holds the task, a monitor's progress update doesn't become its answer, and with nothing delegated a run's end is the task's", async () => {
+  const s = await setup();
+  const running = await start(s, { prompt: "run forever" });
+  const thread = `top-${running.session.id}`;
+  const run = await runIn(s, thread);
+  s.t3.background(thread, [{ taskId: "bg-1", kind: "background_task" }]);
+  s.t3.finish(thread, String(run.id), "started it in the background");
+  await held(s, running.task.id);
+  s.t3.wake(thread, "monitor-1", "a monitor's progress", { notification: { source: { kind: "monitor" }, outcome: "updated" } });
+  await until("the monitor's run to end", () => s.t3.runsOf(thread).find((r) => r.userMessageId === "monitor-1" && r.status === "completed"));
+  await settle();
+  assert.equal((await task(s, running.task.id)).state, "running", "the background work still holds it");
+  s.t3.background(thread, []);
+  const done = await ended(s, running.task.id);
+  assert.equal(done.state, "completed", done.error ?? "");
+  assert.equal(done.result, "started it in the background", "the monitor's acknowledgement isn't the task's answer");
+
+  // A command or monitor nobody awaits, like a dev server, holds nothing.
+  const served = await start(s, { prompt: "run forever", session: running.session.id });
+  const servedRun = await runIn(s, thread);
+  s.t3.background(thread, [{ taskId: "dev", kind: "command" }]);
+  s.t3.finish(thread, String(servedRun.id), "the server is up");
+  assert.equal((await ended(s, served.task.id)).result, "the server is up");
+
+  const failing = await start(s, { prompt: "run forever", session: running.session.id });
+  const failingRun = await runIn(s, thread);
+  s.t3.finish(thread, String(failingRun.id), "", "failed");
+  const failed = await ended(s, failing.task.id);
+  assert.equal(failed.state, "failed");
+  assert.match(failed.error ?? "", /T3 Code's run ended as failed/);
+});
+
+test("waiting on delegated work survives a dropped connection and Top restarting, and the answer still arrives once", async () => {
+  const s = await setup();
+  const dropped = await start(s, { prompt: "delegate across a drop" });
+  const thread = `top-${dropped.session.id}`;
+  await held(s, dropped.task.id);
+  s.t3.dropSockets();
+  s.t3.childDone(thread, `task-run:${thread}:1`, "done while Top was reconnecting");
+  const done = await ended(s, dropped.task.id);
+  assert.equal(done.result, "done: done while Top was reconnecting");
+
+  const restarted = await start(s, { prompt: "delegate across a restart" });
+  const other = `top-${restarted.session.id}`;
+  await held(s, restarted.task.id);
+  await s.h.close();
+  const sent = s.t3.requests.length;
+  s.t3.childDone(other, `task-run:${other}:1`, "done while Top was down");
+  await until("the owner to answer", () => s.t3.runsOf(other)[1]?.status === "completed");
+
+  const second = await setup({ dir: s.dir, t3: s.t3 });
+  const after = await ended(second, restarted.task.id);
+  assert.equal(after.state, "completed", after.error ?? "");
+  assert.equal(after.result, "done: done while Top was down");
+  assert.ok(
+    !second.t3.requests.slice(sent).some((r) => r.tag === "orchestration.launchThread" || r.payload.type === "message.dispatch"),
+    "nothing was sent again",
+  );
+  await until("the bot to hear", async () => (await told(second, restarted.task.id)).length > 0);
+  await settle();
+  assert.equal((await told(second, restarted.task.id)).length, 1, "the bot heard once");
+});
+
+test("while a task waits on delegated work, a cancel stops the thread's work and nothing completes it later; a steer is refused and a queued message runs after", async () => {
+  const s = await setup();
+  const cancelling = await start(s, { prompt: "delegate then cancel" });
+  const thread = `top-${cancelling.session.id}`;
+  await held(s, cancelling.task.id);
+  const cancelled = await s.h.run(s.tasks.cancel(s.h.bot, cancelling.task.id));
+  assert.equal(cancelled.task.state, "cancelled");
+  assert.ok(
+    s.t3.requests.some((r) => r.payload.type === "thread.stop" && r.payload.threadId === thread),
+    "the thread's delegated work was stopped too",
+  );
+  assert.equal(s.t3.subagentsOf(thread)[0]!.status, "cancelled");
+  // A wake T3 Code had already on its way changes nothing in Top.
+  s.t3.wake(thread, "late", "a late answer");
+  await until("the late run to end", () => s.t3.runsOf(thread)[1]?.status === "completed");
+  await settle();
+  const after = await task(s, cancelling.task.id);
+  assert.equal(after.state, "cancelled");
+  assert.equal(after.result, null);
+
+  const queued = await start(s, { prompt: "delegate then queue" });
+  const queuedThread = `top-${queued.session.id}`;
+  await held(s, queued.task.id);
+  const steer = await s.h.run(Effect.result(s.tasks.send(s.h.bot, queued.task.id, "steer-held", "steer", "use tabs")));
+  const said = steer._tag === "Failure" ? (steer.failure as { message: string }).message : String((steer as { success: unknown }).success);
+  assert.match(said, /delegated work/, "a steer with no run to take it says why");
+  await s.h.run(s.tasks.send(s.h.bot, queued.task.id, "queue-held", "queue", "then write tests"));
+  await settle();
+  assert.equal(s.t3.runsOf(queuedThread).length, 1, "the queued message waits for the delegated work");
+  s.t3.childDone(queuedThread, `task-run:${queuedThread}:1`, "child finished");
+  const done = await ended(s, queued.task.id);
+  assert.equal(done.result, "done: then write tests", "the queued message ran after the owner's answer, and the task ended after it");
+});
+
 test("T3 Code's command output and prompts reach Top whole, so its secret-hiding sees a secret before anything is clipped", () => {
   const secret = "s3cr3t-value-that-straddles-a-cut";
   const output = `${"x".repeat(590)}${secret}${"y".repeat(500)}`;

@@ -44,8 +44,9 @@ const RECONNECT_FOR_MS = 10 * 60_000;
 const REPLY_MS = 60_000;
 const SETTLE_MS = 10_000;
 const TERMINAL_RUN = new Set(["completed", "failed", "cancelled", "interrupted", "rolled_back"]);
-const ACTIVE_RUN = new Set(["starting", "running", "waiting"]);
+const ACTIVE_RUN = new Set(["preparing", "starting", "running", "waiting"]);
 const SETTLED_ITEM = new Set(["completed", "failed", "cancelled", "interrupted"]);
+const ACTIVE_WORK = new Set(["pending", "running", "waiting"]);
 
 type Rec = Record<string, unknown>;
 const record = (value: unknown): Rec => (typeof value === "object" && value !== null ? (value as Rec) : {});
@@ -214,6 +215,10 @@ type Current = {
   readonly messageId: string;
   runId: string | undefined;
   done: boolean;
+  /** Its run ended while the thread's delegated work went on: the turn ends when that settles. */
+  holding: boolean;
+  /** Stopped from Top while it held: it ends as stopped, not as its run's earlier answer. */
+  cut: boolean;
   readonly asked: Set<string>;
   readonly settled: Set<string>;
   readonly answered: Set<string>;
@@ -241,6 +246,17 @@ async function openThread(
   const runs = new Map<string, Rec>();
   const items = new Map<string, Rec>();
   const sentMessages = new Set<string>();
+  // What T3 Code settles a thread's delegated work by: its tasks, its provider threads' background work, and the runs
+  // that only acknowledge a monitor's progress (never a turn's answer).
+  const subagents = new Map<string, Rec>();
+  const providerThreads = new Map<string, Rec>();
+  const monitorRuns = new Set<string>();
+  const noteMessage = (m: Rec) => {
+    if (m.role !== "user") return;
+    sentMessages.add(String(m.id));
+    const notification = record(m.notification);
+    if (record(notification.source).kind === "monitor" && notification.outcome === "updated" && str(m.runId)) monitorRuns.add(str(m.runId)!);
+  };
   let current: Current | undefined;
   let sending: Promise<unknown> | undefined;
   const settle = () => new Promise((resolve) => setTimeout(resolve, options.settleMs));
@@ -366,7 +382,13 @@ async function openThread(
         items.set(String(payload.id), payload);
         return;
       case "message.updated":
-        if (payload.role === "user") sentMessages.add(String(payload.id));
+        noteMessage(payload);
+        return;
+      case "subagent.updated":
+        subagents.set(String(payload.id), payload);
+        return;
+      case "provider-thread.updated":
+        providerThreads.set(String(payload.id), payload);
         return;
       case "thread.deleted":
         if (current && !current.done) exit(`The T3 Code thread ${threadId} was deleted there.`);
@@ -376,12 +398,51 @@ async function openThread(
     }
   };
 
+  /** The turn's own run and every run after it in the thread, such as the ones T3 Code wakes it with when delegated work reports back. */
+  const turnRuns = (turn: Current): Rec[] => {
+    const own = turn.runId ? runs.get(turn.runId) : undefined;
+    if (!own) return [];
+    const from = Number(own.ordinal);
+    return [...runs.values()]
+      .filter((r) => r === own || (Number.isFinite(from) && Number(r.ordinal) > from))
+      .sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+  };
+  const ended = (run: Rec) => TERMINAL_RUN.has(String(run.status));
+  const ranAfter = (a: Rec, b: Rec) => {
+    const end = (r: Rec) => (str(r.completedAt) ? Date.parse(str(r.completedAt)!) : Number.POSITIVE_INFINITY);
+    return end(a) === end(b) ? Number(a.ordinal) > Number(b.ordinal) : end(a) > end(b);
+  };
+
+  /**
+   * What still keeps the thread's answer owed, as T3 Code settles a thread's delegated work: a run that isn't over, a
+   * delegated task still working or whose result hasn't woken its owner yet, or background work the agent waits on.
+   * Thread-wide, so a task an earlier run delegated counts too. A count, for the log; 0 when it has settled.
+   */
+  const delegatedWork = () => {
+    const working = [...runs.values()].filter(
+      (r) => !monitorRuns.has(String(r.id)) && r.status !== "rolled_back" && !ended(r) && !(r.status === "queued" && r.queueHeld === true),
+    ).length;
+    const tasks = [...subagents.values()].filter((t) => {
+      const delivery = str(record(t.completionDelivery).state);
+      return ACTIVE_WORK.has(String(t.status)) || (t.status !== "idle" && (delivery === "pending" || delivery === "claimed"));
+    }).length;
+    const background = [...providerThreads.values()]
+      .flatMap((t) => (Array.isArray(t.pendingBackgroundTasks) ? t.pendingBackgroundTasks.map(record) : []))
+      .filter((t) => t.awaited === true || t.kind === "subagent" || t.kind === "background_task").length;
+    return { working, delegated: tasks + background };
+  };
+
   const evaluate = () => {
     const turn = current;
     if (!turn || turn.done || exited) return;
     if (!turn.runId) for (const run of runs.values()) if (run.userMessageId === turn.messageId) turn.runId = String(run.id);
     if (!turn.runId) return;
-    const mine = [...items.values()].filter((i) => i.runId === turn.runId).sort((a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
+    const ours = turnRuns(turn);
+    const ourIds = new Set(ours.map((r) => String(r.id)));
+    const order = new Map(ours.map((r, i) => [String(r.id), i]));
+    const mine = [...items.values()]
+      .filter((i) => ourIds.has(String(i.runId)))
+      .sort((a, b) => order.get(String(a.runId))! - order.get(String(b.runId))! || Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
     for (const item of mine) {
       const id = String(item.id);
       const requestId = str(item.requestId);
@@ -423,13 +484,34 @@ async function openThread(
         if (log?.text.trim()) emit({ type: "log", ...log });
       }
     }
-    const run = runs.get(turn.runId);
-    const status = str(run?.status);
-    if (!status || !TERMINAL_RUN.has(status)) return;
+    const own = runs.get(turn.runId);
+    if (!own || !ended(own)) return;
+    let outcome = own;
+    if (turn.stopped) {
+      // Stopped from Top: over once nothing it stopped still runs, whatever the delegated work does.
+      if (ours.some((r) => !ended(r) && r.status !== "queued")) return;
+    } else if (own.status !== "rolled_back") {
+      const { working, delegated } = delegatedWork();
+      if (working || delegated) {
+        if (!turn.holding && delegated) {
+          turn.holding = true;
+          emit({
+            type: "log",
+            kind: "status",
+            text: `T3 Code's run ended, but its thread still has delegated work going (${delegated} ${delegated === 1 ? "task" : "tasks"}); Top follows it until that settles.`,
+          });
+        }
+        return;
+      }
+      // Settled: the answer is the run that ended last, often one T3 Code woke the owner with.
+      outcome = ours.filter((r) => ended(r) && r.status !== "rolled_back" && !monitorRuns.has(String(r.id))).reduce((a, b) => (ranAfter(b, a) ? b : a), own);
+    }
     turn.done = true;
-    const answers = mine.filter((i) => i.type === "assistant_message" && i.streaming !== true && str(i.text)?.trim());
+    const status = turn.cut ? "interrupted" : String(outcome.status);
+    const its = mine.filter((i) => i.runId === outcome.id);
+    const answers = its.filter((i) => i.type === "assistant_message" && i.streaming !== true && str(i.text)?.trim());
     const result = str(answers.at(-1)?.text);
-    const error = str(mine.filter((i) => i.type === "error").at(-1)?.message);
+    const error = str(its.filter((i) => i.type === "error").at(-1)?.message);
     emit({
       type: "turn_ended",
       status: status === "completed" ? "completed" : status === "failed" || status === "rolled_back" ? "failed" : "interrupted",
@@ -447,9 +529,15 @@ async function openThread(
       if (typeof item.snapshotSequence === "number") lastSequence = item.snapshotSequence;
       runs.clear();
       items.clear();
-      for (const run of Array.isArray(projection.runs) ? projection.runs : []) runs.set(String(record(run).id), record(run));
-      for (const turnItem of Array.isArray(projection.turnItems) ? projection.turnItems : []) items.set(String(record(turnItem).id), record(turnItem));
-      for (const m of Array.isArray(projection.messages) ? projection.messages : []) if (record(m).role === "user") sentMessages.add(String(record(m).id));
+      subagents.clear();
+      providerThreads.clear();
+      const list = (value: unknown) => (Array.isArray(value) ? value.map(record) : []);
+      for (const run of list(projection.runs)) runs.set(String(run.id), run);
+      for (const turnItem of list(projection.turnItems)) items.set(String(turnItem.id), turnItem);
+      for (const m of list(projection.messages)) noteMessage(m);
+      // A T3 Code from before delegated tasks sends neither: nothing holds a turn there.
+      for (const task of list(projection.subagents)) subagents.set(String(task.id), task);
+      for (const thread of list(projection.providerThreads)) providerThreads.set(String(thread.id), thread);
       const thread = record(projection.thread);
       if (thread.deletedAt) exit(`The T3 Code thread ${threadId} was deleted there.`);
       evaluate();
@@ -602,6 +690,8 @@ async function openThread(
         messageId,
         runId: undefined,
         done: false,
+        holding: false,
+        cut: false,
         asked: new Set(),
         settled: new Set(),
         answered: new Set(),
@@ -683,8 +773,15 @@ async function openThread(
     },
     steer: async (text: string) => {
       const turn = current;
-      const run = turn?.runId ? runs.get(turn.runId) : undefined;
-      if (!turn || turn.done || !run || !ACTIVE_RUN.has(String(run.status))) throw new Error("T3 Code has no turn of this task running to steer.");
+      // Its own run, or one T3 Code woke it with when delegated work reported back.
+      const run = turn && !turn.done ? turnRuns(turn).find((r) => ACTIVE_RUN.has(String(r.status))) : undefined;
+      if (!turn || turn.done || !run) {
+        if (turn?.holding)
+          throw new Error(
+            'T3 Code\'s run for this task ended, and its thread waits on delegated work: no run is there to steer. Send it with mode "queue" to run after.',
+          );
+        throw new Error("T3 Code has no turn of this task running to steer.");
+      }
       const id = `top:steer:${randomUUID()}`;
       await command({
         type: "message.dispatch",
@@ -695,7 +792,7 @@ async function openThread(
         messageId: id,
         text,
         attachments: [],
-        dispatchMode: { type: "steer_active", targetRunId: turn.runId },
+        dispatchMode: { type: "steer_active", targetRunId: run.id },
       });
     },
     interrupt: async () => {
@@ -713,7 +810,13 @@ async function openThread(
       const stop = (type: "run.interrupt" | "queued-run.cancel") =>
         command({ type, commandId: `top:${type === "run.interrupt" ? "stop" : "unqueue"}:${runId}`, threadId, runId });
       try {
-        if (runs.get(runId)?.status !== "queued") await stop("run.interrupt");
+        const own = runs.get(runId);
+        if (own && ended(own)) {
+          // Its run is over and the turn waits on delegated work: stop the thread, which stops that work and any run
+          // it woke, as Stop in T3 Code does.
+          turn.cut = true;
+          await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." }).finally(evaluate);
+        } else if (own?.status !== "queued") await stop("run.interrupt");
         else
           await stop("queued-run.cancel").catch(async (error: unknown) => {
             // It started between the look and the cancel: stop it running instead.

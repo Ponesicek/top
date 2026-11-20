@@ -5,7 +5,18 @@ import type { AddressInfo } from "node:net";
 import { type WebSocket, WebSocketServer } from "ws";
 
 type Rec = Record<string, unknown>;
-type Thread = { id: string; projectId: string; events: { sequence: number; event: Rec }[]; runs: Map<string, Rec>; items: Map<string, Rec>; messages: Rec[] };
+type Thread = {
+  id: string;
+  projectId: string;
+  events: { sequence: number; event: Rec }[];
+  runs: Map<string, Rec>;
+  items: Map<string, Rec>;
+  messages: Rec[];
+  /** Delegated tasks, as T3 Code's `subagents`, with their completion delivery. */
+  subagents: Map<string, Rec>;
+  /** Provider threads, for their pending background tasks. */
+  providerThreads: Map<string, Rec>;
+};
 
 export type FakeT3 = Awaited<ReturnType<typeof fakeT3>>;
 
@@ -49,17 +60,50 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     emit(thread, { type: "turn-item.updated", payload: value });
   };
   const setRun = (thread: Thread, runId: string, status: string) => {
-    const run = { ...thread.runs.get(runId)!, status };
+    const now = new Date(Date.now() + sequence).toISOString();
+    const run = {
+      ...thread.runs.get(runId)!,
+      status,
+      ...(status === "running" && !thread.runs.get(runId)!.startedAt ? { startedAt: now } : {}),
+      ...(["completed", "failed", "interrupted", "cancelled"].includes(status) ? { completedAt: now } : {}),
+    };
     thread.runs.set(runId, run);
     emit(thread, { type: "run.updated", payload: run });
     if (faults.duplicateEnds && ["completed", "failed", "interrupted"].includes(status)) emit(thread, { type: "run.updated", payload: run });
   };
   const active = (thread: Thread) => [...thread.runs.values()].find((r) => ["queued", "running", "waiting"].includes(String(r.status)));
 
-  /** How a run plays out, from its text: "question" asks, "forever" runs until stopped, anything else answers. */
+  const setSubagent = (thread: Thread, id: string, fields: Rec) => {
+    const value = { ...thread.subagents.get(id), ...fields };
+    thread.subagents.set(id, value);
+    emit(thread, { type: "subagent.updated", payload: value });
+  };
+  const delegate = (thread: Thread, runId: string, id: string) =>
+    setSubagent(thread, id, { id, threadId: thread.id, runId, origin: "app_owned", childThreadId: `child-${id}`, status: "running", result: null });
+  /**
+   * A child ends: its result is published first (delivery pending), then T3 Code wakes its owner with a run of its own, which
+   * plays out from `reply` like any other.
+   */
+  const childDone = (thread: Thread, id: string, reply: string) => {
+    setSubagent(thread, id, { status: "completed", result: reply, completionDelivery: { state: "pending", observedByRunId: null } });
+    setTimeout(() => {
+      const runId = addRun(thread, `delegated:${id}`, reply, "agent");
+      setSubagent(thread, id, { completionDelivery: { state: "delivered", observedByRunId: runId } });
+    }, 15);
+  };
+
+  /**
+   * How a run plays out, from its text: "question" asks, "forever" runs until stopped, "delegate" starts a child and ends
+   * without waiting for it, anything else answers.
+   */
   const play = (thread: Thread, runId: string, text: string) => {
     setRun(thread, runId, "running");
     if (text.includes("forever")) return;
+    if (text.includes("delegate")) {
+      delegate(thread, runId, `task-${runId}`);
+      setTimeout(() => finish(thread, runId, `delegated: ${text}`), 20);
+      return;
+    }
     if (text.includes("question")) {
       const requestId = `rr-${runId}`;
       item(thread, runId, {
@@ -90,15 +134,27 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     const next = [...thread.runs.values()].find((r) => r.status === "queued");
     if (next) play(thread, String(next.id), String(next.text));
   };
-  const addRun = (thread: Thread, messageId: string, text: string) => {
-    const runId = `run:${thread.id}:${thread.runs.size + 1}`;
+  const addRun = (thread: Thread, messageId: string, text: string, createdBy = "user", extra: Rec = {}) => {
+    const ordinal = thread.runs.size + 1;
+    const runId = `run:${thread.id}:${ordinal}`;
     const busy = active(thread);
-    const run = { id: runId, threadId: thread.id, userMessageId: messageId, status: busy ? "queued" : "starting", text };
+    const run = {
+      id: runId,
+      threadId: thread.id,
+      ordinal,
+      userMessageId: messageId,
+      status: busy ? "queued" : "starting",
+      startedAt: null,
+      completedAt: null,
+      text,
+    };
     thread.runs.set(runId, run);
-    thread.messages.push({ id: messageId, role: "user", text });
-    emit(thread, { type: "message.updated", payload: { id: messageId, role: "user", text, runId } });
+    const message = { id: messageId, role: "user", text, runId, createdBy, ...extra };
+    thread.messages.push(message);
+    emit(thread, { type: "message.updated", payload: message });
     emit(thread, { type: "run.created", payload: run });
     if (!busy) setTimeout(() => play(thread, runId, text), 5);
+    return runId;
   };
 
   const handle = (tag: string, payload: Rec): unknown => {
@@ -122,7 +178,16 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         const done = receipts.get(String(payload.commandId));
         if (done) return { ...(done as Rec), resumed: true };
         const id = String(payload.threadId);
-        const thread: Thread = { id, projectId: String(payload.projectId), events: [], runs: new Map(), items: new Map(), messages: [] };
+        const thread: Thread = {
+          id,
+          projectId: String(payload.projectId),
+          events: [],
+          runs: new Map(),
+          items: new Map(),
+          messages: [],
+          subagents: new Map(),
+          providerThreads: new Map(),
+        };
         threads.set(id, thread);
         const initial = payload.initialMessage as Rec;
         addRun(thread, String(initial.messageId), String(initial.text));
@@ -150,6 +215,21 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
             const run = thread.runs.get(String(payload.runId));
             if (run && !["completed", "failed", "interrupted", "cancelled"].includes(String(run.status)))
               setTimeout(() => finish(thread, String(run.id), "", payload.type === "run.interrupt" ? "interrupted" : "cancelled"), 5);
+            break;
+          }
+          case "thread.stop": {
+            // Stop ends the thread's runs and, by default, every task under it.
+            for (const run of thread.runs.values())
+              if (["queued", "starting", "running", "waiting"].includes(String(run.status))) finish(thread, String(run.id), "", "interrupted");
+            if (payload.stopDelegatedTasks !== false)
+              for (const task of thread.subagents.values())
+                if (["pending", "running", "waiting"].includes(String(task.status))) setSubagent(thread, String(task.id), { status: "cancelled" });
+            for (const pt of thread.providerThreads.values())
+              if ((pt.pendingBackgroundTasks as Rec[]).length) {
+                const value = { ...pt, pendingBackgroundTasks: [] };
+                thread.providerThreads.set(String(pt.id), value);
+                emit(thread, { type: "provider-thread.updated", payload: value });
+              }
             break;
           }
           case "runtime-request.respond": {
@@ -189,6 +269,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       runs: [...thread.runs.values()],
       turnItems: [...thread.items.values()],
       messages: thread.messages,
+      subagents: [...thread.subagents.values()],
+      providerThreads: [...thread.providerThreads.values()],
     },
   });
 
@@ -350,6 +432,20 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     /** Like the user stopping or finishing a run in T3 Code itself. */
     finish: (threadId: string, runId: string, text: string, status = "completed") => finish(threads.get(threadId)!, runId, text, status),
     runsOf: (threadId: string) => [...(threads.get(threadId)?.runs.values() ?? [])],
+    subagentsOf: (threadId: string) => [...(threads.get(threadId)?.subagents.values() ?? [])],
+    /** Like the owner's agent delegating a task from `runId`. */
+    delegate: (threadId: string, runId: string, id: string) => delegate(threads.get(threadId)!, runId, id),
+    /** A delegated task ends, and T3 Code wakes its owner with a run that plays out from `reply`. */
+    childDone: (threadId: string, id: string, reply: string) => childDone(threads.get(threadId)!, id, reply),
+    /** The provider thread's pending background tasks, as T3 Code tracks them. */
+    background: (threadId: string, tasks: Rec[]) => {
+      const thread = threads.get(threadId)!;
+      const value = { id: `pt-${threadId}`, threadId, pendingBackgroundTasks: tasks };
+      thread.providerThreads.set(value.id, value);
+      emit(thread, { type: "provider-thread.updated", payload: value });
+    },
+    /** Starts a run in the thread as T3 Code itself would, like a monitor's update (its message's `notification`). */
+    wake: (threadId: string, messageId: string, text: string, message: Rec = {}) => addRun(threads.get(threadId)!, messageId, text, "agent", message),
     dropSockets: () => {
       for (const ws of sockets) ws.terminate();
     },
