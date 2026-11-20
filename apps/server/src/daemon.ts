@@ -210,6 +210,7 @@ const make = Effect.gen(function* () {
   const toolSources = new Map<number, () => readonly TopTool[]>();
   const dirty = yield* FiberMap.make<number>();
   const saving = yield* Semaphore.make(1);
+  const ordering = yield* Semaphore.make(1);
 
   if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot, kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
   if (kit.folder) yield* moveLegacySouls(kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
@@ -450,12 +451,19 @@ const make = Effect.gen(function* () {
       return { version: saved };
     }),
     setBotOrder: Effect.fn("Daemon.setBotOrder")(function* (ids) {
-      const named = [...new Set(ids)].filter((id) => bots.has(id));
-      const order = [...named, ...[...bots.keys()].filter((id) => !named.includes(id))];
-      yield* store.setBotOrder(order);
-      const live = order.map((id) => [id, bots.get(id)!] as const);
-      bots.clear();
-      for (const [id, bot] of live) bots.set(id, bot);
+      yield* ordering.withPermits(1)(
+        Effect.gen(function* () {
+          const named = [...new Set(ids)].filter((id) => bots.has(id));
+          const order = [...named, ...[...bots.keys()].filter((id) => !named.includes(id))];
+          yield* store.setBotOrder(order);
+          // The roster as it is now, not as it was before the write: a bot deleted meanwhile stays gone, and one made
+          // meanwhile stays, after the ordered ones (the store lists it there too).
+          const rank = new Map(order.map((id, i) => [id, i]));
+          const live = [...bots.entries()].sort(([a], [b]) => (rank.get(a) ?? order.length) - (rank.get(b) ?? order.length));
+          bots.clear();
+          for (const [id, bot] of live) bots.set(id, bot);
+        }),
+      );
       yield* events.publish({ _tag: "BotOrder" });
     }),
     deleteBot: Effect.fn("Daemon.deleteBot")(function* (id) {

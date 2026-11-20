@@ -189,3 +189,27 @@ test("reordering bots from a client: the daemon lists them so at once, skips ids
   );
   await again.close();
 });
+
+test("a reorder racing a delete or a new bot keeps the roster whole: the deleted bot stays gone, the new one stays, last", async () => {
+  // The order's write takes a moment, so the delete and the new bot land while it's being saved.
+  const slow = (store: Store.Store["Service"]): Store.Store["Service"] => ({
+    ...store,
+    setBotOrder: (ids) => Effect.andThen(Effect.sleep("30 millis"), store.setBotOrder(ids)),
+  });
+  const h = await harness({ bots: ["Atlas", "Juniper", "Moss"], store: slow });
+  const [atlas, juniper, moss] = h.bots as [number, number, number];
+  const names = () => h.daemon.bots().map((bot) => bot.name);
+  await h.run(Effect.all([h.daemon.setBotOrder([moss, juniper, atlas]), h.daemon.deleteBot(juniper)], { concurrency: "unbounded" }));
+  assert.deepEqual(names(), ["Moss", "Atlas"]);
+  const [, made] = await h.run(Effect.all([h.daemon.setBotOrder([atlas, moss]), h.daemon.createBot("Quill", "")], { concurrency: "unbounded" }));
+  assert.deepEqual(names(), ["Atlas", "Moss", "Quill"]);
+  assert.ok(h.daemon.bots().some((bot) => bot.id === made));
+  await h.close();
+  const again = await harness({ dir: h.dir });
+  assert.deepEqual(
+    again.daemon.bots().map((bot) => bot.name),
+    ["Atlas", "Moss", "Quill"],
+    "and the store agrees after a restart",
+  );
+  await again.close();
+});
