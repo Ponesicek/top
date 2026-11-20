@@ -81,3 +81,15 @@ test("a refused reorder doesn't undo a newer reorder made here", async () => {
   await second;
   expect(names()).toEqual(["Juniper", "Moss", "Atlas"]);
 });
+
+test("two reorders both refused, the second while the first is still out, end in the daemon's order", async () => {
+  for (const refusedFirst of [1, 0]) {
+    const { client, socket, names } = await connected();
+    const reorders = [client.setBotOrder([3, 1, 2]), client.setBotOrder([2, 3, 1])];
+    socket.answer(false, refusedFirst);
+    await expect(reorders[refusedFirst]).rejects.toThrow();
+    socket.answer(false, 1 - refusedFirst);
+    await expect(reorders[1 - refusedFirst]).rejects.toThrow();
+    expect(names()).toEqual(["Atlas", "Juniper", "Moss"]);
+  }
+});

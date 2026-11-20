@@ -182,6 +182,8 @@ export class TopClient {
   readonly #conversations = new Map<BotId, ConversationSync>();
   /** Counts lists from the daemon and reorders made here, so an undone reorder can tell whether it's still the latest. */
   #rosterTurn = 0;
+  /** The order in the daemon's last list: what a refused reorder goes back to. */
+  #confirmedOrder: readonly BotId[] = [];
   readonly #listeners = new Set<() => void>();
   readonly #url: string;
   #filesPath: string | undefined;
@@ -274,20 +276,13 @@ export class TopClient {
 
   /**
    * Lists the bots in this order here at once, and on every client once the daemon has it. When the daemon doesn't take
-   * it, the order before comes back, unless a newer list or reorder has arrived since.
+   * it, the daemon's last order comes back, unless a newer list or reorder has arrived since.
    */
   setBotOrder(ids: readonly BotId[]): Promise<void> {
-    const before = this.#snapshot.bots;
     const turn = ++this.#rosterTurn;
-    this.#publish({ bots: inOrder(before, ids) });
+    this.#publish({ bots: inOrder(this.#snapshot.bots, ids) });
     return this.#command({ t: "setBotOrder", bots: ids }).catch((error: unknown) => {
-      if (this.#rosterTurn === turn)
-        this.#publish({
-          bots: inOrder(
-            this.#snapshot.bots,
-            before.map((b) => b.id),
-          ),
-        });
+      if (this.#rosterTurn === turn) this.#publish({ bots: inOrder(this.#snapshot.bots, this.#confirmedOrder) });
       throw error;
     });
   }
@@ -499,6 +494,7 @@ export class TopClient {
       }
       case "bots": {
         this.#rosterTurn++;
+        this.#confirmedOrder = frame.bots.map((b) => b.id);
         const live = new Set(frame.bots.map((b) => b.id));
         for (const id of this.#conversations.keys()) if (!live.has(id)) this.#conversations.delete(id);
         this.#publish({ bots: frame.bots, ready: true });
