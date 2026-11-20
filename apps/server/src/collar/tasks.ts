@@ -87,6 +87,7 @@ const spawned = (tasks: Tasks, snapshot: Snapshot, args: { readonly session?: st
     ? undefined
     : {
         agent: {
+          title: snapshot.task.title,
           harness: tasks.adapters.find((a) => a.id === snapshot.session.harness)?.label ?? snapshot.session.harness,
           cwd: snapshot.session.cwd,
           ...(snapshot.session.model ? { model: snapshot.session.model } : {}),
@@ -126,7 +127,12 @@ export const tasksGroup: CollarGroup = (daemon) => {
         {
           harness: Type.Optional(Type.Enum(harnesses, { description: "Which harness runs it. Required unless `session` is given." })),
           prompt: Type.String({ description: "What to do, with everything the harness needs to know: it hasn't seen this conversation." }),
-          title: Type.Optional(Type.String({ description: "A few words for the task, shown to the user. Default: the prompt's first line." })),
+          title: Type.Optional(
+            Type.String({
+              description:
+                "A few words for the task, shown to the user on its card, and the name of the thread a T3 Code task starts. Default: the prompt's first line.",
+            }),
+          ),
           cwd: Type.Optional(Type.String({ description: "The folder it works in (absolute, ~/…, or relative to your folder). Default: your folder." })),
           session: Type.Optional(Type.String({ description: "Continue this session (ses_…) from an earlier task, with its conversation." })),
           fork: Type.Optional(Type.Boolean({ description: "With `session`: branch it into a new session instead of continuing it." })),

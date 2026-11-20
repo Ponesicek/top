@@ -818,7 +818,7 @@ test("a coding task leaves one fixed receipt where a new session starts; clients
   let s = await untilBot(bot, (x) => told(x) === 1, "the first task to end");
   const [first] = starts(s);
   assert.match(first!.agent!.cwd, /bots/);
-  assert.deepEqual(first!.agent, { harness: "Fake harness", cwd: first!.agent!.cwd });
+  assert.deepEqual(first!.agent, { title: "Build", harness: "Fake harness", cwd: first!.agent!.cwd });
   assert.deepEqual(waitingFrames(), [[]], "a task that only works and ends sends nothing to the app");
   const session = /"session":"(ses_\w+)"/.exec(first!.text)![1]!;
 

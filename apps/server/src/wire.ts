@@ -23,14 +23,20 @@ const askOf = Schema.decodeUnknownOption(Schema.Struct({ ask: Ask }));
 const agentOf = Schema.decodeUnknownOption(Schema.Struct({ agent: AgentSpawn }));
 const legacyTaskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
 const legacyStartOf = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ started: Schema.Struct({ harness: Schema.String, cwd: Schema.String, model: Schema.optional(Schema.String) }) })),
+  Schema.fromJsonString(
+    Schema.Struct({
+      started: Schema.Struct({ title: Schema.optional(Schema.String), harness: Schema.String, cwd: Schema.String, model: Schema.optional(Schema.String) }),
+    }),
+  ),
 );
 
 /** A start saved before receipts kept their own details still shows one, from its result. */
 function legacyAgent(details: unknown, text: string): AgentSpawn | undefined {
   if (Option.isNone(legacyTaskOf(details))) return undefined;
   const started = Option.getOrUndefined(legacyStartOf(text))?.started;
-  return started ? { harness: started.harness, cwd: started.cwd, ...(started.model ? { model: started.model } : {}) } : undefined;
+  return started
+    ? { ...(started.title ? { title: started.title } : {}), harness: started.harness, cwd: started.cwd, ...(started.model ? { model: started.model } : {}) }
+    : undefined;
 }
 
 export function toWire(stored: StoredEntry, full = false): Entry | undefined {

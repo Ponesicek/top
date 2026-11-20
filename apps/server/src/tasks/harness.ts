@@ -67,6 +67,8 @@ export type HarnessEvent =
 
 export type OpenSpec = {
   readonly session: string;
+  /** The task's title: a harness that names what it starts names it this, as the conversation's card does. */
+  readonly title: string;
   readonly cwd: string;
   readonly model: string | undefined;
   readonly options: Readonly<Record<string, unknown>>;

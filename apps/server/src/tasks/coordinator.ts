@@ -651,7 +651,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           fork = true;
         }
       }
-      return { session: session.id, cwd: session.cwd, model: session.model ?? undefined, options: session.options, resume, fork };
+      return { session: session.id, title: live.row.title, cwd: session.cwd, model: session.model ?? undefined, options: session.options, resume, fork };
     });
 
   const runStarted = (live: Live) =>

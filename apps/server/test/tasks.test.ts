@@ -405,7 +405,7 @@ test("the bot drives it with its tools, and the transcript keeps a fixed receipt
   await s.h.run(s.h.daemon.submit(s.h.bot, "go", 'call collar__task_start {"harness": "fake", "prompt": "fix it"}', "followUp", null));
   const entry = await until("the tool result", async () => (await s.h.entries()).find((e) => e.kind === "tool" && e.message.toolName === "collar__task_start"));
   const wire = toWire(entry) as { agent?: unknown; text: string };
-  assert.deepEqual(wire.agent, { harness: "Fake harness", cwd: s.folder() });
+  assert.deepEqual(wire.agent, { title: "fix it", harness: "Fake harness", cwd: s.folder() });
   const result = JSON.parse(textOfContent((entry as Extract<StoredEntry, { kind: "tool" }>).message.content)) as { started: { id: string; state: string } };
   assert.equal((await ended(s, result.started.id)).state, "completed");
   assert.deepEqual(toWire(entry), wire, "the receipt doesn't follow the task");
@@ -413,7 +413,7 @@ test("the bot drives it with its tools, and the transcript keeps a fixed receipt
 });
 
 test("a start saved before receipts had their own details still shows one, from its result", () => {
-  const started = { started: { id: "task_0123456789", harness: "codex", session: "ses_1", cwd: "/w", model: "gpt" } };
+  const started = { started: { id: "task_0123456789", title: "Fix it", harness: "codex", session: "ses_1", cwd: "/w", model: "gpt" } };
   const entry = {
     kind: "tool",
     seq: 1,
@@ -429,7 +429,7 @@ test("a start saved before receipts had their own details still shows one, from 
       timestamp: 1,
     },
   } as unknown as StoredEntry;
-  assert.deepEqual((toWire(entry) as { agent?: unknown }).agent, { harness: "codex", cwd: "/w", model: "gpt" });
+  assert.deepEqual((toWire(entry) as { agent?: unknown }).agent, { title: "Fix it", harness: "codex", cwd: "/w", model: "gpt" });
 });
 
 type Controlled = { adapter: FakeHarness; emit: () => (event: HarnessEvent) => void; interrupts: () => number; ackSteer: () => void };

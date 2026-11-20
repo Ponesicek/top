@@ -172,6 +172,7 @@ export type WaitingTask = typeof WaitingTask.Type;
 
 /** What a bot's task_start leaves in its transcript when it starts a new session, fixed when it started. */
 export const AgentSpawn = Struct({
+  title: Optional(Schema.String),
   harness: Schema.String,
   cwd: Schema.String,
   model: Optional(Schema.String),

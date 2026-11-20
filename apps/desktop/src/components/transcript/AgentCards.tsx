@@ -118,16 +118,18 @@ function Questions({ task, input, online }: { task: string; input: TaskInputView
   );
 }
 
-/** Where a bot handed work to an agent: fixed when it started, it never changes after. */
+/** Where a bot handed work to an agent, under the name the agent's harness got too: fixed when it started, it never changes after. */
 export const AgentReceipt = memo(function AgentReceipt({ row, className }: { row: AgentRow; className?: string }) {
-  const { harness, cwd, model } = row.agent;
+  const { title, harness, cwd, model } = row.agent;
   return (
     <div className={cn("py-1.5", className)}>
       <div className={CARD}>
         <div className="flex min-w-0 items-center gap-2">
           <SquareTerminal size={14} className="flex-none text-muted-foreground" aria-hidden />
           <span className="flex-none text-meta text-muted-foreground">{harness}</span>
-          <span className="min-w-0 flex-1 truncate text-small font-medium text-foreground">An agent was spawned</span>
+          <span className="min-w-0 flex-1 truncate text-small font-medium text-foreground" title={title}>
+            {title ?? "An agent was spawned"}
+          </span>
         </div>
         <span className="truncate text-meta text-muted-foreground" title={`${cwd} · full access${model ? ` · ${model}` : ""}`}>
           {homeShort(cwd)} · Full access
