@@ -85,7 +85,7 @@ pnpm server:fake     # fake bots that answer only when you message them
 
 The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "write a report", "crash",
 or any MCP tool by its full name: `call github_work__search {"query": "top"}`. "Search the web for …" plays OpenAI's
-web search (see Web search) once it's switched on for the bot; "… fails" and "… refused" play a failed search and OpenAI
+web search (see Web search); "… fails" and "… refused" play a failed search and OpenAI
 refusing it. "Ask permission to …", "ask me which", "ask me to pick", "ask me what" and "ask me for a token" play the
 cards in Questions and secrets.
 Their home is `apps/server/.data/fake`, laid out like `~/.top` (a reset clears their folders too). Daemon flags: `--model`, `--thinking`, `--allow-origin`, `--port`, `--host`,
@@ -268,8 +268,8 @@ found and which bots have which; a new bot has none, however many are installed.
 ### Web search
 
 On an OpenAI model (the Responses API, signed in with ChatGPT or with an API key), a bot can search the web with
-OpenAI's own web search. Settings → **Web search** switches it on per bot (a bot has it off until then); it reaches the
-bot from its next message. No search key or other provider is involved, and nothing is fetched by Top itself.
+OpenAI's own web search. Every bot has it; there's nothing to switch on (a bot's off switch from older versions stays
+stored but isn't read). No search key or other provider is involved, and nothing is fetched by Top itself.
 
 - **OpenAI runs it**, inside the model request (`store: false`, `stream: true`, on `api.openai.com/v1/responses`). It
   isn't one of the bot's tools: it has no tool step, no crash policy, and nothing is run again after a restart. While it
@@ -279,8 +279,8 @@ bot from its next message. No search key or other provider is involved, and noth
   and they open outside the app. A failed search shows as failed; nothing is listed that OpenAI didn't report.
 - **Whether you may use it is OpenAI's call.** Sign in with ChatGPT doesn't promise it: OpenAI says web search there
   "remains subject to model and account/workspace policy", and no model list says which models have it. When OpenAI
-  refuses it, the answer fails and says so, with what OpenAI said, and isn't retried; switch it off for that bot to
-  carry on. Top never quietly answers without it.
+  refuses it, the answer fails and says so, with what OpenAI said, and isn't retried. Top never quietly answers
+  without it.
 - **Pages are evidence, not instructions.** A bot that may search is told not to follow directions found on the web.
   Earlier searches go back to OpenAI with the conversation (each request carries it whole), as OpenAI sent them.
 

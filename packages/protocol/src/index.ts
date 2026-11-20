@@ -37,7 +37,6 @@ export const BotSummary = Struct({
   asks: Optional(Schema.Int),
   wakeAt: Optional(Schema.Number),
   lastSeq: Seq,
-  webSearch: Optional(Schema.Boolean),
 });
 export type BotSummary = typeof BotSummary.Type;
 
@@ -490,7 +489,6 @@ export const ClientFrame = Schema.Union([
   Struct({ t: Schema.Literal("enableSkills"), req, bot: BotId, names: List(Schema.String), on: Schema.Boolean }),
   Struct({ t: Schema.Literal("previewSkillFolder"), req, folder: Schema.String }),
   Struct({ t: Schema.Literal("addSkillFolder"), req, folder: Schema.String, bots: List(BotId) }),
-  Struct({ t: Schema.Literal("setWebSearch"), req, bot: BotId, on: Schema.Boolean }),
   Struct({ t: Schema.Literal("rescanSkills"), req }),
   Struct({ t: Schema.Literal("chatgptSignIn"), req, backgroundConsent: Schema.Literal(true) }),
   Struct({ t: Schema.Literal("chatgptSignInFinish"), req, url: Schema.String }),
@@ -539,7 +537,6 @@ export const RequestResult = {
   enableSkills: Schema.Null,
   previewSkillFolder: SkillFolder,
   addSkillFolder: SkillFolderAdded,
-  setWebSearch: Schema.Null,
   rescanSkills: Schema.Null,
   chatgptSignIn: Struct({ url: Schema.String }),
   chatgptSignInFinish: Schema.Null,

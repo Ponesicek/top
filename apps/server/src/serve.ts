@@ -355,8 +355,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
             return yield* skills.addFolder(frame.folder, bots);
           }),
         );
-      case "setWebSearch":
-        return answer(frame, daemon.setWebSearch(frame.bot, frame.on));
       case "rescanSkills":
         return answer(
           frame,

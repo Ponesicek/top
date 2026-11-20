@@ -81,8 +81,7 @@ export const BotRow = Schema.Struct({
   model: Text,
   runActive: Schema.BooleanFromBit,
   restarts: Int,
-  webSearch: Schema.BooleanFromBit,
-}).pipe(Schema.encodeKeys({ runActive: "run_active", webSearch: "web_search" }));
+}).pipe(Schema.encodeKeys({ runActive: "run_active" }));
 export type BotRow = typeof BotRow.Type;
 
 export type LegacySoul = { readonly bot: number; readonly name: string; readonly description: string };
@@ -305,6 +304,7 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
       PRIMARY KEY (bot, name)
     )`;
   }),
+  // Kept for older data; web search is on for every bot that can use it, whatever this says.
   "5_bot_web_search": addColumn("bots", "web_search", "INTEGER NOT NULL DEFAULT 0"),
   "6_context_files": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -414,7 +414,6 @@ export class Store extends Context.Service<
     readonly setRunActive: (bot: number, active: boolean) => Effect.Effect<void>;
     readonly setRestarts: (bot: number, restarts: number) => Effect.Effect<void>;
     readonly setModel: (bot: number, model: string) => Effect.Effect<void>;
-    readonly setWebSearch: (bot: number, on: boolean) => Effect.Effect<void>;
 
     readonly files: (bot: number) => Effect.Effect<Map<string, FileStat> | undefined>;
     readonly recordFiles: (bot: number, listing: ReadonlyMap<string, FileStat>, changes: readonly FileChange[]) => Effect.Effect<StoredEntry | undefined>;
@@ -643,7 +642,6 @@ const make = Effect.gen(function* () {
       setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
       setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
       setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),
-      setWebSearch: (bot, on) => Effect.asVoid(q(sql`UPDATE bots SET web_search = ${on ? 1 : 0} WHERE id = ${bot}`)),
 
       files: (bot) =>
         Effect.gen(function* () {

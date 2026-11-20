@@ -297,10 +297,6 @@ export class TopClient {
     return this.#request({ t: "addSkillFolder", folder, bots });
   }
 
-  setWebSearch(bot: BotId, on: boolean): Promise<void> {
-    return this.#command({ t: "setWebSearch", bot, on });
-  }
-
   rescanSkills(): Promise<void> {
     return this.#command({ t: "rescanSkills" });
   }
