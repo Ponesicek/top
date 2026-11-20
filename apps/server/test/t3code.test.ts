@@ -760,6 +760,50 @@ test("a stop that comes as the run ends on its own still stops its delegated wor
   const stoppedThere = await ended(s, there.task.id);
   assert.equal(stoppedThere.state, "failed");
   assert.match(stoppedThere.error ?? "", /stopped in T3 Code/);
+
+  // ...and on a monitor's run going then.
+  const watched = await start(s, { prompt: "run forever" });
+  const watchedThread = `top-${watched.session.id}`;
+  const watchedRun = await runIn(s, watchedThread);
+  s.t3.background(watchedThread, [{ taskId: "bg", kind: "background_task" }]);
+  s.t3.finish(watchedThread, String(watchedRun.id), "the interim answer");
+  await held(s, watched.task.id);
+  s.t3.wake(watchedThread, "monitor-stop", "forever: a monitor", { notification: { source: { kind: "monitor" }, outcome: "updated" } });
+  await until("the monitor's run", () => s.t3.runsOf(watchedThread).find((r) => r.userMessageId === "monitor-stop" && r.status === "running"));
+  s.t3.stop(watchedThread);
+  const stoppedWatching = await ended(s, watched.task.id);
+  assert.equal(stoppedWatching.state, "failed", stoppedWatching.result ?? "");
+
+  // ...and while Top was away.
+  const away = await start(s, { prompt: "delegate then stop while Top is down" });
+  await held(s, away.task.id);
+  await s.h.close();
+  s.t3.stop(`top-${away.session.id}`);
+  const back = await setup({ dir: s.dir, t3: s.t3 });
+  const stoppedAway = await ended(back, away.task.id);
+  assert.equal(stoppedAway.state, "failed", stoppedAway.result ?? "");
+  assert.match(stoppedAway.error ?? "", /stopped in T3 Code/);
+});
+
+test("a newer message someone moves ahead of the task's queued one in T3 Code isn't the task's", async () => {
+  const s = await setup();
+  const first = await start(s, { prompt: "plain first" });
+  assert.equal((await ended(s, first.task.id)).result, "done: plain first");
+  const thread = `top-${first.session.id}`;
+  s.t3.wake(thread, "someone", "forever: someone's work");
+  const busy = await runIn(s, thread);
+  const queued = await start(s, { prompt: "after that", session: first.session.id });
+  await until("the task's run to queue", () => s.t3.runsOf(thread).some((r) => r.userMessageId === `top:${queued.task.id}` && r.status === "queued"));
+  const newer = s.t3.wake(thread, "newer", "a question of someone's");
+  s.t3.promote(thread, newer);
+  s.t3.finish(thread, String(busy.id), "someone's answer");
+  await until("the newer run to ask", () => s.t3.runsOf(thread).find((r) => r.id === newer && r.status === "waiting"));
+  await settle();
+  assert.equal((await task(s, queued.task.id)).state, "running", "its question isn't the task's");
+  s.t3.answerThere(thread, "answered there");
+  const done = await ended(s, queued.task.id);
+  assert.equal(done.result, "done: after that");
+  assert.equal((await s.h.run(s.tasks.snapshot(s.h.bot, queued.task.id))).inputs.length, 0);
 });
 
 test("T3 Code's command output and prompts reach Top whole, so its secret-hiding sees a secret before anything is clipped", () => {

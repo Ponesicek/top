@@ -401,19 +401,19 @@ async function openThread(
   };
 
   const startOf = (r: Rec) => (str(r.startedAt) ? Date.parse(str(r.startedAt)!) : Number.POSITIVE_INFINITY);
+  /** Runs that started once the turn's own run had: whatever T3 Code ran for it from then on, in the order they ran. */
+  const since = (own: Rec) =>
+    [...runs.values()]
+      .filter((r) => r === own || (str(own.startedAt) !== undefined && startOf(r) >= startOf(own)))
+      .sort((a, b) => startOf(a) - startOf(b) || Number(a.ordinal) - Number(b.ordinal));
   /**
-   * The turn's own run and every run after it in the thread, such as the ones T3 Code wakes it with when delegated work
-   * reports back: numbered after it, or started after it (T3 Code may run a held, lower-numbered one later), in the
-   * order they ran. Not a monitor's progress runs: their questions and answers aren't the task's.
+   * The turn's own run and the runs after it, such as the ones T3 Code wakes it with when delegated work reports back.
+   * By when they ran, not their numbers: T3 Code may run a held, lower-numbered one later, or a newer one first. Not a
+   * monitor's progress runs: their questions and answers aren't the task's.
    */
   const turnRuns = (turn: Current): Rec[] => {
     const own = turn.runId ? runs.get(turn.runId) : undefined;
-    if (!own) return [];
-    const from = Number(own.ordinal);
-    const later = (r: Rec) => (Number.isFinite(from) && Number(r.ordinal) > from) || (str(own.startedAt) !== undefined && startOf(r) >= startOf(own));
-    return [...runs.values()]
-      .filter((r) => r === own || (later(r) && !monitorRuns.has(String(r.id))))
-      .sort((a, b) => startOf(a) - startOf(b) || Number(a.ordinal) - Number(b.ordinal));
+    return own ? since(own).filter((r) => r === own || !monitorRuns.has(String(r.id))) : [];
   };
   const ended = (run: Rec) => TERMINAL_RUN.has(String(run.status));
   const ranAfter = (a: Rec, b: Rec) => {
@@ -541,8 +541,16 @@ async function openThread(
     }
     turn.done = true;
     const its = [...items.values()].filter((i) => i.runId === outcome.id).sort((a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
-    // Stop in T3 Code while it held: T3 Code records the stop on the run that had already ended, and cancels the work.
-    const stoppedThere = turn.holding && its.some((i) => i.type === "run_interrupt_request");
+    // Stop in T3 Code while it held (or while Top was away): T3 Code records the stop after the answer's run ended, on that
+    // run or one still going then, like a monitor's, and cancels the work.
+    const answeredAt = Date.parse(str(outcome.completedAt) ?? "");
+    const stoppedThere =
+      !turn.cut &&
+      since(own).some((r) =>
+        [...items.values()].some(
+          (i) => i.runId === r.id && i.type === "run_interrupt_request" && Date.parse(str(i.updatedAt) ?? str(i.startedAt) ?? "") >= answeredAt,
+        ),
+      );
     const status = turn.cut || stoppedThere ? "interrupted" : String(outcome.status);
     const answers = its.filter((i) => i.type === "assistant_message" && i.streaming !== true && str(i.text)?.trim());
     const result = str(answers.at(-1)?.text);

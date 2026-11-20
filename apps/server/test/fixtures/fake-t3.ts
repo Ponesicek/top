@@ -49,18 +49,24 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
 
+  // Never goes back, and moves on with every change, so what happened later reads later.
+  let last = 0;
+  const clock = () => {
+    last = Math.max(last + 1, Date.now());
+    return new Date(last).toISOString();
+  };
   const emit = (thread: Thread, event: Rec) => {
     const entry = { sequence: ++sequence, event };
     thread.events.push(entry);
     for (const send of subscribers.get(thread.id) ?? []) send({ kind: "event", ...entry });
   };
   const item = (thread: Thread, runId: string, fields: Rec) => {
-    const value: Rec = { threadId: thread.id, runId, ordinal: thread.items.size, streaming: false, ...fields };
+    const value: Rec = { threadId: thread.id, runId, ordinal: thread.items.size, streaming: false, updatedAt: clock(), ...fields };
     thread.items.set(String(value.id), value);
     emit(thread, { type: "turn-item.updated", payload: value });
   };
   const setRun = (thread: Thread, runId: string, status: string) => {
-    const now = new Date(Date.now() + sequence).toISOString();
+    const now = clock();
     const run = {
       ...thread.runs.get(runId)!,
       status,
@@ -220,9 +226,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
           }
           case "thread.stop": {
             // Stop ends the thread's runs and, by default, every task under it. With none running, it's recorded on the latest.
-            const latest = [...thread.runs.values()].at(-1);
-            if (latest && !active(thread))
-              item(thread, String(latest.id), { id: `stop-${payload.commandId}`, type: "run_interrupt_request", status: "completed", message: "Stop" });
+            // Recorded on the run going now, else on the latest.
+            const target = active(thread) ?? [...thread.runs.values()].at(-1);
+            if (target)
+              item(thread, String(target.id), { id: `stop-${payload.commandId}`, type: "run_interrupt_request", status: "completed", message: "Stop" });
             for (const run of thread.runs.values())
               if (["queued", "starting", "running", "waiting"].includes(String(run.status))) finish(thread, String(run.id), "", "interrupted");
             if (payload.stopDelegatedTasks !== false)
@@ -457,6 +464,15 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       thread.runs.set(runId, run);
       emit(thread, { type: "run.updated", payload: run });
       if (![...thread.runs.values()].some((r) => ["starting", "running", "waiting"].includes(String(r.status)))) play(thread, runId, String(run.text));
+    },
+    /** Moves a queued run to the front of the queue, as a user reordering it in T3 Code. */
+    promote: (threadId: string, runId: string) => {
+      const thread = threads.get(threadId)!;
+      const run = thread.runs.get(runId)!;
+      const rest = [...thread.runs].filter(([id]) => id !== runId);
+      thread.runs.clear();
+      thread.runs.set(runId, run);
+      for (const [id, r] of rest) thread.runs.set(id, r);
     },
     /** Like Stop in T3 Code itself. */
     stop: (threadId: string) => handle("orchestration.dispatchCommand", { type: "thread.stop", commandId: `there:${Math.random()}`, threadId }),
