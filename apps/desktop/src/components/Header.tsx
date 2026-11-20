@@ -24,22 +24,33 @@ function Elapsed({ since }: { since: number }) {
   return <> · {s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}</>;
 }
 
-function FilesToggle({ bot, open }: { bot: BotId; open: boolean }) {
+export const FILES_TOGGLE_ID = "files-toggle";
+
+/**
+ * Shows and hides the Files panel. It sits at the window's top-right corner, over the header or the panel's, so it
+ * stays in one place whether the panel is open or not.
+ */
+export function FilesToggle({ bot, open }: { bot: BotId; open: boolean }) {
   const count = useBotFiles(bot)?.files.length;
   if (count === undefined) return null;
   return (
-    <Tooltip content={`${open ? "Hide" : "Show"} files (Ctrl+Shift+E)`} side="bottom">
-      <Button
-        variant="ghost"
-        className={cn("h-8 flex-none gap-1.5 px-2.5", open && "bg-foreground/7 text-foreground")}
-        onClick={togglePanel}
-        aria-pressed={open}
-        aria-label={`Files, ${count}`}
-      >
-        <Files size={16} />
-        <span className="text-meta tabular-nums">{count}</span>
-      </Button>
-    </Tooltip>
+    <div className="fixed top-0 right-[calc(var(--titlebar-inset)+1rem)] z-30 flex h-15 items-center narrow:right-2">
+      <Tooltip content={`${open ? "Hide" : "Show"} files (Ctrl+Shift+E)`} side="bottom">
+        <Button
+          id={FILES_TOGGLE_ID}
+          variant="ghost"
+          className={cn("h-8 flex-none gap-1.5 px-2.5 narrow:h-11 narrow:min-w-11", open && "bg-foreground/7 text-foreground")}
+          onClick={togglePanel}
+          aria-pressed={open}
+          aria-expanded={open}
+          aria-controls={open ? "files-panel" : undefined}
+          aria-label={`Files, ${count}`}
+        >
+          <Files size={16} />
+          <span className="text-meta tabular-nums">{count}</span>
+        </Button>
+      </Tooltip>
+    </div>
   );
 }
 
@@ -62,8 +73,8 @@ export const Header = memo(function Header({
     <header className="h-15 flex-none overflow-hidden border-b [scrollbar-gutter:stable] [-webkit-app-region:drag] [&_button]:[-webkit-app-region:no-drag]">
       <div
         className={cn(
-          "mx-auto flex h-full max-w-220 items-center justify-between gap-4 pl-8 [--column:55rem]",
-          filesOpen ? "pr-8" : "clear-window-controls [--controls-gap:1.5rem]",
+          "mx-auto flex h-full max-w-220 items-center justify-between gap-4 pl-8 [--column:55rem] narrow:pr-20",
+          filesOpen ? "pr-8" : "clear-window-controls [--controls-gap:6.5rem]",
         )}
       >
         <div className="flex min-w-0 items-center gap-2.75">
@@ -95,7 +106,6 @@ export const Header = memo(function Header({
             </Badge>
           )}
         </div>
-        <FilesToggle bot={sync.id} open={filesOpen} />
       </div>
     </header>
   );

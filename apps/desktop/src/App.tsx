@@ -6,7 +6,7 @@ import { Composer } from "./components/Composer.tsx";
 import { EditMenu } from "./components/EditMenu.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
 import { FilesPanel } from "./components/files/FilesPanel.tsx";
-import { Header } from "./components/Header.tsx";
+import { FilesToggle, Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
 import { Settings } from "./components/Settings.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -15,7 +15,7 @@ import { UpdatePopup } from "./components/UpdatePopup.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { readShowTools, saveShowTools } from "./display.ts";
-import { togglePanel, useBotFiles, usePanel } from "./files.ts";
+import { togglePanel, useBotFiles, usePanel, usePanelLayout } from "./files.ts";
 import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
 import { conversation, markSeen, sidebarOrder, top, useBot, useClient, useRoster } from "./top.ts";
@@ -136,6 +136,7 @@ export function App() {
 
   const sync = bot ? conversation(bot.id) : undefined;
   const panel = usePanel();
+  const layout = usePanelLayout();
   const hasFiles = useBotFiles(bot?.id) !== undefined;
   const filesOpen = panel.open && !settingsOpen && !!bot && hasFiles;
 
@@ -148,7 +149,12 @@ export function App() {
 
   return (
     <TooltipProvider delay={500}>
-      <div className={cn("grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]", filesOpen && "grid-cols-[280px_1fr_auto]")}>
+      <div
+        className={cn(
+          "relative grid h-full grid-cols-[280px_minmax(0,1fr)] [--chat-min:340px] [--sidebar-width:280px] narrow:grid-cols-[72px_minmax(0,1fr)]",
+          filesOpen && !layout.overlay && "grid-cols-[280px_minmax(var(--chat-min),1fr)_auto]",
+        )}
+      >
         <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
         <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
           {!settingsOpen && !(bot && sync) && <div className="h-15 flex-none [-webkit-app-region:drag]" aria-hidden />}
@@ -163,7 +169,7 @@ export function App() {
             />
           ) : bot && sync ? (
             <>
-              <Header sync={sync} name={bot.name} avatar={bot.avatar} filesOpen={filesOpen} />
+              <Header sync={sync} name={bot.name} avatar={bot.avatar} filesOpen={filesOpen && !layout.overlay} />
               <div
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
                 aria-hidden
@@ -181,7 +187,8 @@ export function App() {
             <Empty>Waiting for the Top daemon…</Empty>
           )}
         </main>
-        {filesOpen && bot && <FilesPanel bot={bot.id} name={bot.name} />}
+        {filesOpen && bot && <FilesPanel bot={bot.id} name={bot.name} layout={layout} />}
+        {!settingsOpen && bot && <FilesToggle bot={bot.id} open={filesOpen} />}
         <NewBotDialog
           open={creating}
           onOpenChange={setCreating}

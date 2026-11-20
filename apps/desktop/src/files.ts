@@ -3,10 +3,11 @@ import type { BotFiles, BotId } from "@top/client";
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
+import { useSyncExternalStore } from "react";
+import { PANEL_DEFAULT, type PanelLayout, panelLayout } from "./panelLayout.ts";
 import { registry, useClient } from "./top.ts";
 
-export const PANEL_MIN = 300;
-export const PANEL_DEFAULT = 460;
+export { PANEL_DEFAULT, PANEL_MIN } from "./panelLayout.ts";
 
 type PanelState = {
   readonly open: boolean;
@@ -37,6 +38,17 @@ function set(change: Partial<PanelState>) {
 
 export function usePanel(): PanelState {
   return useAtomValue(panelAtom);
+}
+
+const onResize = (listener: () => void) => {
+  addEventListener("resize", listener);
+  return () => removeEventListener("resize", listener);
+};
+
+/** Where the panel goes in the window as it is now, following every resize. */
+export function usePanelLayout(): PanelLayout {
+  const viewport = useSyncExternalStore(onResize, () => innerWidth);
+  return panelLayout(viewport, usePanel().width);
 }
 
 export const togglePanel = () => set({ open: !registry.get(panelAtom).open });
