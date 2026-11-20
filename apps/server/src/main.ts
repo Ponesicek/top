@@ -317,8 +317,7 @@ const installCommand = Command.make(
       const given = Option.isSome(model) || tailscale || tailscaleAllow.length > 0;
       const args = given
         ? [
-            "--model",
-            Option.getOrElse(model, () => DEFAULT_MODEL),
+            ...(Option.isSome(model) ? ["--model", model.value] : []),
             ...(tailscale || tailscaleAllow.length ? ["--tailscale"] : []),
             ...tailscaleAllow.flatMap((who) => ["--tailscale-allow", who]),
           ]
