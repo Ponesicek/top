@@ -217,8 +217,10 @@ type Current = {
   done: boolean;
   /** Its run ended while the thread's delegated work went on: the turn ends when that settles. */
   holding: boolean;
-  /** Stopped from Top while it held: it ends as stopped, not as its run's earlier answer. */
-  cut: boolean;
+  /** Followed after a restart only to carry out a cancel: the cancel, not its run's end, decides how it ends. */
+  readonly followOnly: boolean;
+  /** Stopped from Top while it held: it ends as stopped, not as its run's earlier answer, once T3 Code took the stop. */
+  cut: "sending" | "confirmed" | undefined;
   readonly asked: Set<string>;
   readonly settled: Set<string>;
   readonly answered: Set<string>;
@@ -487,9 +489,13 @@ async function openThread(
     const own = runs.get(turn.runId);
     if (!own || !ended(own)) return;
     let outcome = own;
+    // Its stop isn't confirmed yet; if it never is, the task's cancel times out instead.
+    if (turn.cut === "sending") return;
     if (turn.stopped) {
       // Stopped from Top: over once nothing it stopped still runs, whatever the delegated work does.
       if (ours.some((r) => !ended(r) && r.status !== "queued")) return;
+    } else if (turn.followOnly) {
+      return;
     } else if (own.status !== "rolled_back") {
       const { working, delegated } = delegatedWork();
       if (working || delegated) {
@@ -504,7 +510,10 @@ async function openThread(
         return;
       }
       // Settled: the answer is the run that ended last, often one T3 Code woke the owner with.
-      outcome = ours.filter((r) => ended(r) && r.status !== "rolled_back" && !monitorRuns.has(String(r.id))).reduce((a, b) => (ranAfter(b, a) ? b : a), own);
+      // A run that never started, like a queued one cancelled, has no answer.
+      outcome = ours
+        .filter((r) => ended(r) && r.status !== "rolled_back" && !monitorRuns.has(String(r.id)) && r.startedAt != null)
+        .reduce((a, b) => (ranAfter(b, a) ? b : a), own);
     }
     turn.done = true;
     const status = turn.cut ? "interrupted" : String(outcome.status);
@@ -691,7 +700,8 @@ async function openThread(
         runId: undefined,
         done: false,
         holding: false,
-        cut: false,
+        followOnly: turn.followOnly === true,
+        cut: undefined,
         asked: new Set(),
         settled: new Set(),
         answered: new Set(),
@@ -774,7 +784,7 @@ async function openThread(
     steer: async (text: string) => {
       const turn = current;
       // Its own run, or one T3 Code woke it with when delegated work reported back.
-      const run = turn && !turn.done ? turnRuns(turn).find((r) => ACTIVE_RUN.has(String(r.status))) : undefined;
+      const run = turn && !turn.done ? turnRuns(turn).find((r) => ACTIVE_RUN.has(String(r.status)) && !monitorRuns.has(String(r.id))) : undefined;
       if (!turn || turn.done || !run) {
         if (turn?.holding)
           throw new Error(
@@ -812,10 +822,13 @@ async function openThread(
       try {
         const own = runs.get(runId);
         if (own && ended(own)) {
-          // Its run is over and the turn waits on delegated work: stop the thread, which stops that work and any run
-          // it woke, as Stop in T3 Code does.
-          turn.cut = true;
-          await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." }).finally(evaluate);
+          // Its run is over: the turn waits on delegated work, or a cancel from before a restart found it ended. Stop the
+          // thread, which stops that work and any run it woke, as Stop in T3 Code does.
+          // The same command after a restart is one stop, so one T3 Code already took counts as taken.
+          turn.cut = "sending";
+          await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." });
+          turn.cut = "confirmed";
+          evaluate();
         } else if (own?.status !== "queued") await stop("run.interrupt");
         else
           await stop("queued-run.cancel").catch(async (error: unknown) => {

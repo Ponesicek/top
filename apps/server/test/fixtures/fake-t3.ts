@@ -437,6 +437,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     delegate: (threadId: string, runId: string, id: string) => delegate(threads.get(threadId)!, runId, id),
     /** A delegated task ends, and T3 Code wakes its owner with a run that plays out from `reply`. */
     childDone: (threadId: string, id: string, reply: string) => childDone(threads.get(threadId)!, id, reply),
+    /** Like Stop in T3 Code itself. */
+    stop: (threadId: string) => handle("orchestration.dispatchCommand", { type: "thread.stop", commandId: `there:${Math.random()}`, threadId }),
     /** The provider thread's pending background tasks, as T3 Code tracks them. */
     background: (threadId: string, tasks: Rec[]) => {
       const thread = threads.get(threadId)!;

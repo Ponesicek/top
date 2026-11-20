@@ -565,8 +565,11 @@ test("background work holds the task, a monitor's progress update doesn't become
   s.t3.background(thread, [{ taskId: "bg-1", kind: "background_task" }]);
   s.t3.finish(thread, String(run.id), "started it in the background");
   await held(s, running.task.id);
-  s.t3.wake(thread, "monitor-1", "a monitor's progress", { notification: { source: { kind: "monitor" }, outcome: "updated" } });
-  await until("the monitor's run to end", () => s.t3.runsOf(thread).find((r) => r.userMessageId === "monitor-1" && r.status === "completed"));
+  s.t3.wake(thread, "monitor-1", "forever: a monitor's progress", { notification: { source: { kind: "monitor" }, outcome: "updated" } });
+  const monitorRun = await until("the monitor's run", () => s.t3.runsOf(thread).find((r) => r.userMessageId === "monitor-1" && r.status === "running"));
+  const steer = await s.h.run(Effect.result(s.tasks.send(s.h.bot, running.task.id, "steer-monitor", "steer", "use tabs")));
+  assert.equal(steer._tag, "Failure", "a monitor's progress run isn't the task's to steer");
+  s.t3.finish(thread, String(monitorRun.id), "nothing new yet");
   await settle();
   assert.equal((await task(s, running.task.id)).state, "running", "the background work still holds it");
   s.t3.background(thread, []);
@@ -652,6 +655,43 @@ test("while a task waits on delegated work, a cancel stops the thread's work and
   s.t3.childDone(queuedThread, `task-run:${queuedThread}:1`, "child finished");
   const done = await ended(s, queued.task.id);
   assert.equal(done.result, "done: then write tests", "the queued message ran after the owner's answer, and the task ended after it");
+});
+
+test("a run T3 Code wakes the task with takes its steering, an unconfirmed stop never reads as stopped, and a cancel carried over a restart stays a cancel", async () => {
+  const s = await setup();
+  const steered = await start(s, { prompt: "delegate then steer" });
+  const thread = `top-${steered.session.id}`;
+  await held(s, steered.task.id);
+  s.t3.childDone(thread, `task-run:${thread}:1`, "forever: the owner works on the result");
+  const woken = await until("the woken run", () => s.t3.runsOf(thread).find((r) => r.ordinal === 2 && r.status === "running"));
+  await s.h.run(s.tasks.send(s.h.bot, steered.task.id, "steer-woken", "steer", "use tabs"));
+  const steer = s.t3.requests.findLast((r) => r.payload.type === "message.dispatch" && (r.payload.dispatchMode as { type: string }).type === "steer_active")!;
+  assert.deepEqual(steer.payload.dispatchMode, { type: "steer_active", targetRunId: woken.id });
+  s.t3.finish(thread, String(woken.id), "steered answer");
+  assert.equal((await ended(s, steered.task.id)).result, "steered answer");
+
+  s.t3.faults.silentTypes.add("thread.stop");
+  const unconfirmed = await start(s, { prompt: "delegate then a stop T3 Code never answers" });
+  const quiet = `top-${unconfirmed.session.id}`;
+  await held(s, unconfirmed.task.id);
+  const cancelled = await s.h.run(s.tasks.cancel(s.h.bot, unconfirmed.task.id));
+  assert.equal(cancelled.task.state, "cancelled");
+  assert.match(cancelled.task.error ?? "", /didn't confirm the stop/, "an unconfirmed stop says so");
+  assert.equal(s.t3.subagentsOf(quiet)[0]!.status, "running");
+
+  // A cancel saved before Top restarted, carried out in T3 Code while Top was down: still a cancel, never the first run's answer.
+  const carried = await start(s, { prompt: "delegate then restart" });
+  const other = `top-${carried.session.id}`;
+  await held(s, carried.task.id);
+  void s.h.run(s.tasks.cancel(s.h.bot, carried.task.id)).catch(() => {});
+  await until("the cancel to be saved", () => s.h.run(s.h.store.tasks.cancelRequested(carried.task.id)));
+  await s.h.close();
+  s.t3.faults.silentTypes.clear();
+  s.t3.stop(other);
+  const second = await setup({ dir: s.dir, t3: s.t3 });
+  const after = await ended(second, carried.task.id);
+  assert.equal(after.state, "cancelled");
+  assert.equal(after.result, null);
 });
 
 test("T3 Code's command output and prompts reach Top whole, so its secret-hiding sees a secret before anything is clipped", () => {
