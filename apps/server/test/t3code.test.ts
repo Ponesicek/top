@@ -366,6 +366,81 @@ test("an answer saved just before Top restarted is delivered after it, and the t
   assert.equal(done.result, 'answer: {"color":"red"}');
 });
 
+test("an answer T3 Code refuses opens the request again, and a new answer goes through", async () => {
+  const s = await setup();
+  s.t3.faults.refuseAnswer = "blue";
+  const asking = await start(s, { prompt: "a question" });
+  await inState(s, asking.task.id, "waiting_for_input");
+  const input = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
+  const refused = await s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["blue"] } })));
+  assert.equal(refused._tag, "Failure");
+  assert.match(
+    (refused as { failure: { message: string } }).failure.message,
+    /T3 Code refused the answer to request \d+: "blue" isn't an answer this takes\. The request is waiting again/,
+  );
+  await inState(s, asking.task.id, "waiting_for_input");
+  const again = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
+  assert.equal(again.id, input.id, "the same request waits again");
+  await s.h.run(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Red"] } }));
+  assert.equal((await ended(s, asking.task.id)).result, 'answer: {"color":"red"}');
+  const ids = s.t3.requests.filter((r) => r.payload.type === "runtime-request.respond").map((r) => r.payload.commandId);
+  assert.equal(new Set(ids).size, 2, "a new answer is a new command, not the refused one replayed");
+});
+
+test("a session stays with the T3 Code environment it started on, even after Top is paired with another", async () => {
+  const first = await setup();
+  const running = await start(first, { prompt: "run forever" });
+  await runIn(first, `top-${running.session.id}`);
+  assert.equal((await first.h.run(first.h.store.tasks.session(running.session.id)))!.options.environment, "env-1");
+  await first.h.close();
+  const launches = first.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length;
+  // Paired with another environment that has a project at the same path.
+  first.t3.setEnvironment("env-2");
+  await writeT3Config(first.file, {
+    url: first.t3.origin,
+    token: first.t3.token(),
+    environmentId: "env-2",
+    label: "other",
+    serverVersion: "",
+    connectedAt: "",
+  });
+  const second = await setup({ dir: first.dir, t3: first.t3 });
+  const cut = await ended(second, running.task.id);
+  assert.equal(cut.state, "failed");
+  assert.match(cut.error ?? "", /belongs to the T3 Code environment it started on \(env-1\).*nothing was sent there/);
+  assert.equal(second.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length, launches, "nothing was launched on the other one");
+});
+
+test("a cancel Top started before it restarted is carried out after it: the run is stopped, and a turn never sent stays unsent", async () => {
+  const first = await setup();
+  const running = await start(first, { prompt: "run forever" });
+  const thread = `top-${running.session.id}`;
+  await runIn(first, thread);
+  await inState(first, running.task.id, "running");
+  first.t3.faults.silentTypes.add("run.interrupt");
+  void first.h.run(first.tasks.cancel(first.h.bot, running.task.id)).catch(() => {});
+  await until("the cancel to be saved", () => first.h.run(first.h.store.tasks.cancelRequested(running.task.id)));
+
+  first.t3.faults.configDelayMs = 5_000;
+  const unsent = await start(first, { prompt: "never sent" });
+  await inState(first, unsent.task.id, "running");
+  void first.h.run(first.tasks.cancel(first.h.bot, unsent.task.id)).catch(() => {});
+  await until("the second cancel to be saved", () => first.h.run(first.h.store.tasks.cancelRequested(unsent.task.id)));
+  await first.h.close();
+  first.t3.faults.silentTypes.clear();
+  first.t3.faults.configDelayMs = 0;
+  const launches = first.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length;
+
+  const second = await setup({ dir: first.dir, t3: first.t3 });
+  const stopped = await ended(second, running.task.id);
+  assert.equal(stopped.state, "cancelled");
+  assert.equal(second.t3.runsOf(thread)[0]!.status, "interrupted", "T3 Code's run was stopped after the restart");
+  const never = await ended(second, unsent.task.id);
+  assert.equal(never.state, "cancelled");
+  assert.equal(second.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length, launches, "the unsent turn was never launched");
+  assert.equal(second.t3.runsOf(`top-${unsent.session.id}`).length, 0);
+});
+
 test("addresses are explicit, and plain HTTP is accepted only where it stays private", () => {
   assert.equal(t3Origin(" https://box.tail1.ts.net/some/path "), "https://box.tail1.ts.net");
   assert.throws(() => t3Origin("box.tail1.ts.net"), /isn't an address/);

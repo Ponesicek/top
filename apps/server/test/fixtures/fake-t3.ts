@@ -27,6 +27,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     dropOnOpen: false,
     silent: false,
     silentTypes: new Set<string>(),
+    refuseAnswer: undefined as string | undefined,
   };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
@@ -149,6 +150,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
             const uir = [...thread.items.values()].find((i) => i.requestId === payload.requestId);
             if (uir?.status !== "waiting") throw new Error("That request isn't pending.");
             const answers = payload.answers as Rec;
+            if (faults.refuseAnswer && JSON.stringify(answers).includes(faults.refuseAnswer))
+              throw new Error(`"${faults.refuseAnswer}" isn't an answer this takes.`);
             const value = { ...uir, status: "completed" };
             thread.items.set(String(uir.id), value);
             emit(thread, { type: "turn-item.updated", payload: value });

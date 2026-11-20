@@ -4,6 +4,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as Effect from "effect/Effect";
 import { afterAll, test } from "vitest";
 import type { Tasks } from "../src/tasks/coordinator.ts";
 import { describe as describeT3, exchangePairingCode, RpcSocket, writeT3Config } from "../src/tasks/t3api.ts";
@@ -139,6 +140,36 @@ test.skipIf(!binary)(
     assert.equal(answered.state, "completed", answered.error ?? "");
     assert.match(answered.result ?? "", new RegExp(word), "the typed answer reached the harness in T3 Code");
 
+    // Answered in T3 Code first: T3 Code refuses Top's answer, Top says so and the request is withdrawn.
+    const elsewhere = await start("t3b", {
+      prompt:
+        "Use your AskUserQuestion tool to ask me for a code word, offering the options alpha and beta. After I answer, reply with only the code word I gave.",
+    });
+    const waiting = await h.run(tasks().wait(h.bot, elsewhere.task.id, 300_000, "input_or_end"));
+    const pendingInput = waiting.snapshot.inputs[0];
+    assert.ok(pendingInput, `T3 Code asked: ${waiting.snapshot.task.state}`);
+    const elsewhereThread = `top-${elsewhere.session.id}`;
+    const asked2 = (await rpc.request("orchestration.getThreadProjection", { threadId: elsewhereThread })) as {
+      turnItems: { type: string; requestId?: string; status: string; questions?: { id: string }[] }[];
+    };
+    const item = asked2.turnItems.find((i) => i.type === "user_input_request" && i.status === "waiting")!;
+    await rpc.request("orchestration.dispatchCommand", {
+      type: "runtime-request.respond",
+      commandId: randomUUID(),
+      threadId: elsewhereThread,
+      requestId: item.requestId,
+      answers: { [item.questions![0]!.id]: "beta" },
+    });
+    const late = await h.run(
+      Effect.result(tasks().respond("bot", h.bot, elsewhere.task.id, pendingInput.id, { answers: { [pendingInput.questions[0]!.id]: ["alpha"] } })),
+    );
+    const finishedElsewhere = await end(elsewhere.task.id);
+    assert.equal(finishedElsewhere.state, "completed", finishedElsewhere.error ?? "");
+    assert.match(finishedElsewhere.result ?? "", /beta/, "the answer given in T3 Code is the one that counted");
+    if (late._tag === "Failure") assert.match(late.failure.message, /T3 Code refused the answer|withdrawn/, "refused by T3 Code, or already withdrawn in Top");
+    const after = (await h.run(h.store.tasks.inputsOf(elsewhere.task.id)))[0]!;
+    assert.notEqual(after.state, "pending", "no request is left waiting in Top");
+
     const long = 'Run the shell command `node -e "setTimeout(() => {}, 25000)"` in the foreground, then reply with only FIRST.';
     const steering = await start("t4", { prompt: long });
     await running(steering.task.id);
@@ -167,6 +198,19 @@ test.skipIf(!binary)(
     const survivedThread = `top-${surviving.session.id}`;
     assert.equal((await runsFor(survivedThread, `top:${surviving.task.id}`)).length, 1, "the restart didn't start the turn again");
     assert.ok((await h.run(tasks().read(h.bot, surviving.task.id, 0, 200))).events.some((e) => e.text.includes("following it again")));
+
+    // Top restarts while a cancel is under way: after the restart it still stops T3 Code's run.
+    const restartCancel = await start("t5c", { prompt: long.replace("25000", "90000") });
+    await running(restartCancel.task.id);
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    void h.run(tasks().cancel(h.bot, restartCancel.task.id)).catch(() => {});
+    await until("the cancel to be saved", () => h.run(h.store.tasks.cancelRequested(restartCancel.task.id)), 10_000);
+    await h.close();
+    h = await open();
+    const cancelledAcross = await end(restartCancel.task.id);
+    assert.equal(cancelledAcross.state, "cancelled", cancelledAcross.error ?? "");
+    const [acrossRun] = await runsFor(`top-${restartCancel.session.id}`, `top:${restartCancel.task.id}`);
+    assert.ok(acrossRun && ["interrupted", "cancelled"].includes(acrossRun.status), `T3 Code's run stopped (${acrossRun?.status})`);
 
     const cancelling = await start("t6", { prompt: long.replace("25000", "90000") });
     await running(cancelling.task.id);

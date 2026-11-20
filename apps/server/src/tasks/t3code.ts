@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { TaskQuestion } from "@top/protocol";
 import Type from "typebox";
 import { duration } from "../time.ts";
@@ -181,18 +181,25 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
       const cfg = await load();
       await verify(cfg);
       const projects = await listProjects(cfg.url, cfg.token);
+      // The session belongs to this environment: pairing Top with another one later never sends its turns there.
+      const bound = (root: string) => ({ cwd: root, options: { environment: cfg.environmentId } });
       if (cwd === undefined) {
-        if (projects.length === 1) return projects[0]!.workspaceRoot;
+        if (projects.length === 1) return bound(projects[0]!.workspaceRoot);
         throw new Error(`Say which T3 Code project it works in with \`cwd\`, a folder on ${cfg.label}. ${projectList(projects)}`);
       }
       if (!cwd.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(cwd))
         throw new Error(`For T3 Code, \`cwd\` is a folder on ${cfg.label}: give its absolute path. ${projectList(projects)}`);
       const found = projects.find((p) => trimSlash(p.workspaceRoot) === trimSlash(cwd));
       if (!found) throw new Error(`T3 Code on ${cfg.label} has no project at ${cwd}. ${projectList(projects)}`);
-      return found.workspaceRoot;
+      return bound(found.workspaceRoot);
     },
     open: async (spec, emit) => {
       const cfg = await load();
+      const environment = str(spec.options.environment);
+      if (environment && environment !== cfg.environmentId)
+        throw new HarnessUnavailable(
+          `This session belongs to the T3 Code environment it started on (${environment}), and Top is now paired with another one (${cfg.label}), so nothing was sent there. Pair Top with that one again to carry on.`,
+        );
       return openThread(cfg, spec, emit, { verify, reconnectForMs, replyMs: config.replyMs ?? REPLY_MS });
     },
   };
@@ -581,6 +588,20 @@ async function openThread(
       current = mine;
       /** Sends the turn unless a stop came first; false when it didn't. */
       const send = async () => {
+        if (!threadExists && turn.followOnly) {
+          // A launch may have reached T3 Code before Top restarted: look for its thread rather than launch it.
+          const found = await request("orchestration.getThreadProjection", { threadId }).then(
+            () => true,
+            (error: unknown) => {
+              if (error instanceof T3Refused) return false;
+              throw error;
+            },
+          );
+          if (!found) return false;
+          threadExists = true;
+          emit({ type: "session", externalId: threadId });
+          await followed();
+        }
         if (!threadExists) {
           const [selection, project] = await Promise.all([chooseModel(), projectFor()]);
           if (mine.stopped) return false;
@@ -604,7 +625,7 @@ async function openThread(
           emit({ type: "session", externalId: threadId, model: selection.model });
           // A turn sent before a restart is already there; its key keeps a second send from adding it again.
         } else if (!sentMessages.has(messageId) && ![...runs.values()].some((r) => r.userMessageId === messageId)) {
-          if (mine.stopped) return false;
+          if (mine.stopped || turn.followOnly) return false;
           const sent = command(
             {
               type: "message.dispatch",
@@ -675,12 +696,19 @@ async function openThread(
         emit({ type: "log", kind: "error", text: `T3 Code didn't take the stop: ${message(error)}` });
       }
     },
-    answer: (requestId: string, answer: HarnessAnswer) => {
+    answer: async (requestId: string, answer: HarnessAnswer) => {
       if (answer.kind !== "question") return;
       const item = [...items.values()].find((i) => i.type === "user_input_request" && i.requestId === requestId) ?? {};
-      command({ type: "runtime-request.respond", commandId: `top:answer:${requestId}`, threadId, requestId, answers: t3Answers(item, answer.answers) }).catch(
-        (error: unknown) => emit({ type: "log", kind: "error", text: `T3 Code didn't take the answer: ${message(error)}` }),
-      );
+      const answers = t3Answers(item, answer.answers);
+      // The same answer sent again (after a lost reply or a restart) is one command; a new answer after a refusal is another.
+      const version = createHash("sha256").update(JSON.stringify(answers)).digest("hex").slice(0, 16);
+      try {
+        await command({ type: "runtime-request.respond", commandId: `top:answer:${requestId}:${version}`, threadId, requestId, answers });
+      } catch (error) {
+        // Refused by T3 Code: the request waits again in Top. Anything else is the connection, which ends the task anyway.
+        if (error instanceof T3Refused) throw error;
+        emit({ type: "log", kind: "error", text: `T3 Code didn't take the answer: ${message(error)}` });
+      }
     },
     close: async () => {
       closed = true;

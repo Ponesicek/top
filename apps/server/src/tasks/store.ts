@@ -348,6 +348,20 @@ export function makeTaskQueries(
     messageByKey: (key: string) => Effect.map(first(sql`SELECT * FROM task_messages WHERE key = ${key}`), (row) => row && messageOf(row)),
     pendingMessages: (id: string) =>
       Effect.map(rows(sql`SELECT * FROM task_messages WHERE task = ${id} AND state = 'pending' ORDER BY id`), (r) => r.map(messageOf)),
+    /** A cancel Top had started on the task, saved before it was announced, so a restart carries it on. */
+    cancelRequested: (id: string) =>
+      Effect.map(
+        first(sql`SELECT 1 AS found FROM task_events WHERE task = ${id} AND kind = 'state' AND text = 'cancelling' LIMIT 1`),
+        (row) => row !== undefined,
+      ),
+    /** An answer the harness refused: the request waits again. */
+    reopenInput: (id: number) =>
+      Effect.flatMap(
+        first(
+          sql`UPDATE task_inputs SET state = 'pending', answer = NULL, answered_by = NULL, answered_at = NULL WHERE id = ${id} AND state = 'answered' RETURNING id`,
+        ),
+        (row) => (row ? input(id) : Effect.succeed(undefined)),
+      ),
     lastSentQueued: (id: string) =>
       Effect.map(
         first(sql`SELECT * FROM task_messages WHERE task = ${id} AND mode = 'queue' AND state = 'sent' ORDER BY id DESC LIMIT 1`),
