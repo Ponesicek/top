@@ -20,7 +20,6 @@ const KEEP_HIDING = 8;
 const MAX_KEPT = 200;
 const NAME = /^b(\d+)-[0-9a-f]{32}$/;
 const ASK_TOOLS = new Set([`${COLLAR}__ask_permission`, `${COLLAR}__ask_question`, `${COLLAR}__request_secret`]);
-const TASK_START = `${COLLAR}__task_start`;
 type JsonObject = { readonly [key: string]: JsonValue };
 const isObject = (value: JsonValue | undefined): value is JsonObject => !!value && typeof value === "object" && !Array.isArray(value);
 
@@ -197,7 +196,6 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
       const keepIds = (tool: string, details: JsonValue): JsonValue => {
         const cleaned = deep(details);
         if (!isObject(details) || !isObject(cleaned)) return cleaned;
-        if (tool === TASK_START && typeof details.task === "string") return { ...cleaned, task: details.task };
         if (ASK_TOOLS.has(tool) && isObject(details.ask) && isObject(cleaned.ask) && typeof details.ask.kind === "string")
           return { ...cleaned, ask: { ...cleaned.ask, kind: details.ask.kind } };
         return cleaned;

@@ -1,4 +1,4 @@
-import { type TaskError, taskEnded } from "@top/protocol";
+import { type AgentSpawn, type TaskError, taskEnded } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { DEFAULT_READ, MAX_READ, type ReadResult, type Snapshot, type Tasks } from "../tasks/coordinator.ts";
@@ -13,7 +13,7 @@ const RESULT_IN_READ = 12_000;
 
 const iso = (ms: number | null | undefined) => (ms ? new Date(ms).toISOString() : undefined);
 
-const json = (value: unknown, details?: { readonly task: string }): ToolResult => ({ ...text(JSON.stringify(value)), details: details ?? {} });
+const json = (value: unknown, details?: { readonly agent: AgentSpawn }): ToolResult => ({ ...text(JSON.stringify(value)), details: details ?? {} });
 
 const refused = (error: unknown): ToolResult => ({ ...text(error instanceof Error ? error.message : String(error)), isError: true });
 
@@ -81,6 +81,18 @@ const run = <A>(effect: Effect.Effect<A, TaskError>, ok: (value: A) => ToolResul
     Effect.catch((error) => Effect.succeed(refused(error))),
   );
 
+/** The transcript's receipt for a start, fixed now: only a new session gets one, never a session carried on. */
+const spawned = (tasks: Tasks, snapshot: Snapshot, args: { readonly session?: string | undefined; readonly fork?: boolean | undefined }) =>
+  args.session !== undefined && !args.fork
+    ? undefined
+    : {
+        agent: {
+          harness: tasks.adapters.find((a) => a.id === snapshot.session.harness)?.label ?? snapshot.session.harness,
+          cwd: snapshot.session.cwd,
+          ...(snapshot.session.model ? { model: snapshot.session.model } : {}),
+        },
+      };
+
 const ids = { id: Type.String({ description: "The task's id, from collar__task_start (task_…)." }) };
 
 export const tasksGroup: CollarGroup = (daemon) => {
@@ -123,12 +135,12 @@ export const tasksGroup: CollarGroup = (daemon) => {
         },
         { additionalProperties: false },
       ),
-      recover: (_args, ctx) =>
+      recover: (args, ctx) =>
         Effect.gen(function* () {
           const found = yield* daemon.store.tasks.taskByKey(ctx.key);
           if (!found) return false;
           const snapshot = yield* Effect.orElseSucceed(tasks.snapshot(ctx.bot, found.id), () => undefined);
-          return snapshot ? json({ started: taskJson(snapshot), note: "Recovered after a daemon restart." }, { task: found.id }) : false;
+          return snapshot ? json({ started: taskJson(snapshot), note: "Recovered after a daemon restart." }, spawned(tasks, snapshot, args)) : false;
         }),
       run: (args, ctx) =>
         Effect.gen(function* () {
@@ -156,7 +168,7 @@ export const tasksGroup: CollarGroup = (daemon) => {
               capabilities: snapshot.capabilities ? capabilityList(snapshot.capabilities) : undefined,
               next: "It runs in the background. You'll get a message when it ends or asks you something: carry on, or end your turn.",
             },
-            { task: snapshot.task.id },
+            spawned(tasks, snapshot, args),
           );
         }),
     }),

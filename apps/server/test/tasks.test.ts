@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROTOCOL_VERSION } from "@top/protocol";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as PubSub from "effect/PubSub";
+import * as Scope from "effect/Scope";
 import { test } from "vitest";
+import { WebSocket } from "ws";
 import { textOf as textOfContent } from "../src/messages.ts";
 import { HIDDEN } from "../src/secrets.ts";
 import type { StoredEntry } from "../src/store.ts";
@@ -17,13 +22,31 @@ import { type Harness, harness, until } from "./harness.ts";
 type Setup = { h: Harness; fake: FakeHarness; tasks: Tasks; folder: (bot?: number) => string };
 
 async function setup(
-  options: { harness?: FakeHarnessConfig; fake?: FakeHarness; bots?: string[]; maxTasks?: number; dir?: string; start?: boolean } = {},
+  options: {
+    harness?: FakeHarnessConfig;
+    fake?: FakeHarness;
+    bots?: string[];
+    maxTasks?: number;
+    dir?: string;
+    start?: boolean;
+    cancelGraceMs?: number;
+    serve?: boolean;
+  } = {},
 ): Promise<Setup> {
   const fake = options.fake ?? fakeHarness({ stepMs: 30, ...options.harness });
   const names = options.bots ?? ["Atlas"];
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "top-tasks-"));
   for (const name of names) mkdirSync(botFolder(join(dir, "bots"), name), { recursive: true });
-  const h = await harness({ dir, harnesses: [fake], context: true, bots: names, maxTasks: options.maxTasks, taskCancelGraceMs: 300, gatherMs: 20 });
+  const h = await harness({
+    dir,
+    harnesses: [fake],
+    context: true,
+    bots: names,
+    maxTasks: options.maxTasks,
+    taskCancelGraceMs: options.cancelGraceMs ?? 300,
+    gatherMs: 20,
+    ...(options.serve ? { serve: {} } : {}),
+  });
   if (options.start !== false) await h.run(h.daemon.start);
   const folder = (bot = h.bot) => botFolder(join(dir, "bots"), names[h.bots.indexOf(bot)]!);
   return { h, fake, tasks: h.daemon.tasks!, folder };
@@ -377,17 +400,36 @@ test("deleting a bot cancels its tasks and removes them with it; Stop cancels th
   assert.equal((await ended(s, atlasTask.snapshot.task.id)).state, "cancelled");
 });
 
-test("the bot drives it with its tools, and the transcript links the call to its task", async () => {
+test("the bot drives it with its tools, and the transcript keeps a fixed receipt of the agent it started", async () => {
   const s = await setup();
   await s.h.run(s.h.daemon.submit(s.h.bot, "go", 'call collar__task_start {"harness": "fake", "prompt": "fix it"}', "followUp", null));
   const entry = await until("the tool result", async () => (await s.h.entries()).find((e) => e.kind === "tool" && e.message.toolName === "collar__task_start"));
-  const wire = toWire(entry) as { task?: string; text: string };
-  assert.match(wire.task!, /^task_\w{10}$/);
+  const wire = toWire(entry) as { agent?: unknown; text: string };
+  assert.deepEqual(wire.agent, { harness: "Fake harness", cwd: s.folder() });
   const result = JSON.parse(textOfContent((entry as Extract<StoredEntry, { kind: "tool" }>).message.content)) as { started: { id: string; state: string } };
-  assert.equal(result.started.id, wire.task);
-  assert.equal((await ended(s, wire.task!)).state, "completed");
-  const views = await s.h.run(s.tasks.views);
-  assert.equal(views.find((v) => v.id === wire.task)?.state, "completed");
+  assert.equal((await ended(s, result.started.id)).state, "completed");
+  assert.deepEqual(toWire(entry), wire, "the receipt doesn't follow the task");
+  assert.deepEqual(await s.h.run(s.tasks.waiting), []);
+});
+
+test("a start saved before receipts had their own details still shows one, from its result", () => {
+  const started = { started: { id: "task_0123456789", harness: "codex", session: "ses_1", cwd: "/w", model: "gpt" } };
+  const entry = {
+    kind: "tool",
+    seq: 1,
+    bot: 1,
+    at: 1,
+    message: {
+      role: "toolResult",
+      toolCallId: "c",
+      toolName: "collar__task_start",
+      content: [{ type: "text", text: JSON.stringify(started) }],
+      details: { task: "task_0123456789" },
+      isError: false,
+      timestamp: 1,
+    },
+  } as unknown as StoredEntry;
+  assert.deepEqual((toWire(entry) as { agent?: unknown }).agent, { harness: "codex", cwd: "/w", model: "gpt" });
 });
 
 type Controlled = { adapter: FakeHarness; emit: () => (event: HarnessEvent) => void; interrupts: () => number; ackSteer: () => void };
@@ -445,6 +487,50 @@ test("a harness that never confirms an interrupt is still cancelled after the gr
   assert.equal(cancelled.task.state, "cancelled");
   assert.equal(ctl.interrupts(), 1);
   assert.ok(Date.now() - began < 5_000, "it didn't wait on the stuck interrupt");
+});
+
+test("the app hears a task's questions come and go, and nothing else of it, even while a cancel waits on the harness", async () => {
+  const ctl = controlled({ interrupt: "hang" });
+  const s = await setup({ fake: ctl.adapter, cancelGraceMs: 3_000 });
+  const scope = await s.h.run(Scope.make());
+  const { subscription } = await s.h.run(s.h.events.subscribe.pipe(Scope.provide(scope)));
+  const heard: number[] = [];
+  const take = async () => {
+    for (const e of await s.h.run(PubSub.takeAll(subscription))) if (e._tag === "WaitingTasks") heard.push(e.tasks.length);
+    return heard;
+  };
+  const { snapshot } = await start(s, { prompt: "anything" });
+  await inState(s, snapshot.task.id, "running");
+  ctl.emit()({ type: "log", kind: "message", text: "working on it" });
+  ctl.emit()({ type: "request", request: { id: "q1", title: "Which?", questions: [{ id: "a", question: "Which?", options: [] }] } });
+  await until("the question to reach the app", async () => (await take()).length === 1);
+  assert.equal((await s.h.run(s.tasks.waiting)).length, 1, "a client connecting now starts from what the others were sent");
+  await new Promise((r) => setTimeout(r, 400));
+  const cancelling = s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+  await until("the withdrawn question to leave the app before the stuck stop gives up", async () => (await take()).length === 2, 1_000);
+  assert.deepEqual(heard, [1, 0]);
+  assert.deepEqual(await s.h.run(s.tasks.waiting), []);
+  assert.equal((await cancelling).task.state, "cancelled");
+  await s.h.run(Scope.close(scope, Exit.void));
+});
+
+test("an app is sent the questions waiting now, never a stale list carried by an event, such as one replayed from before it connected", async () => {
+  const s = await setup({ serve: true });
+  const frames: { t: string; tasks?: { id: string }[] }[] = [];
+  const socket = new WebSocket(`ws://127.0.0.1:${s.h.port}`, { origin: "file://" });
+  socket.on("message", (data) => frames.push(JSON.parse(String(data))));
+  await new Promise((resolve) => socket.on("open", resolve));
+  socket.send(JSON.stringify({ t: "hello", clientId: "replay", protocol: PROTOCOL_VERSION }));
+  const waitingFrames = () => frames.filter((f) => f.t === "waitingTasks").map((f) => f.tasks!.map((t) => t.id));
+  await until("the first list", () => waitingFrames().length === 1);
+  // What a replayed event looks like: a question that was already answered by the time the app connected.
+  const answered = { id: "task_0123456789", bot: s.h.bot, title: "Old", inputs: [{ id: 1, title: "Which?", questions: [] }] };
+  await s.h.run(s.h.events.publish({ _tag: "WaitingTasks", tasks: [answered] }));
+  const { snapshot } = await start(s, { prompt: "a question" });
+  await until("the live question", () => waitingFrames().some((ids) => ids.includes(snapshot.task.id)));
+  assert.deepEqual(waitingFrames(), [[], [snapshot.task.id]], "the stale list was never sent");
+  await s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+  socket.close();
 });
 
 test("a task that ended without its message (a crash in between) is announced at the next start", async () => {

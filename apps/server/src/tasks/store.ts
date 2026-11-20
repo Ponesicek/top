@@ -240,15 +240,6 @@ export function makeTaskQueries(
     activeTasks: Effect.map(rows(sql`SELECT * FROM tasks WHERE state IN ('queued', 'starting', 'running', 'waiting_for_input') ORDER BY created_at, id`), (r) =>
       r.map(taskOf),
     ),
-    recentTasks: (limit: number) =>
-      Effect.map(
-        rows(sql`
-          SELECT * FROM tasks WHERE state IN ('queued', 'starting', 'running', 'waiting_for_input')
-          UNION
-          SELECT * FROM (SELECT * FROM tasks ORDER BY created_at DESC, id DESC LIMIT ${limit})
-          ORDER BY created_at, id`),
-        (r) => r.map(taskOf),
-      ),
     sessionBusy: (session: string, except: string) =>
       Effect.map(
         first(sql`SELECT id FROM tasks WHERE session = ${session} AND id != ${except} AND state IN ('starting', 'running', 'waiting_for_input') LIMIT 1`),

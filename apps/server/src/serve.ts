@@ -135,7 +135,18 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
   yield* send({ t: "asks", asks: yield* daemon.asks.waiting });
-  if (daemon.tasks) yield* send({ t: "tasks", tasks: [...(yield* daemon.tasks.views)] });
+  // Every change sends what's waiting now, not the event's own list: an event from before the first send is replayed
+  // after it, and would put back a question that was answered meanwhile.
+  let sentWaiting = "";
+  const sendWaiting = daemon.tasks
+    ? Effect.flatMap(daemon.tasks.waiting, (now) => {
+        const json = JSON.stringify(now);
+        if (json === sentWaiting) return Effect.void;
+        sentWaiting = json;
+        return send({ t: "waitingTasks", tasks: [...now] });
+      })
+    : Effect.void;
+  yield* sendWaiting;
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -167,8 +178,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "update", update: event.view });
       case "Asks":
         return Effect.flatMap(daemon.asks.waiting, (asks) => send({ t: "asks", asks }));
-      case "Tasks":
-        return send({ t: "tasks", tasks: [...event.views] });
+      case "WaitingTasks":
+        return sendWaiting;
     }
   };
   yield* Effect.forkScoped(
@@ -395,13 +406,6 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return answer(
           frame,
           Effect.flatMap(tasksOf(), (t) => Effect.asVoid(t.respond("user", undefined, frame.task, frame.input, { answers: frame.answers }))),
-        );
-      case "cancelTask":
-        return answer(
-          frame,
-          Effect.flatMap(tasksOf(), (t) =>
-            Effect.flatMap(t.snapshot(undefined, frame.task), () => Effect.asVoid(Effect.forkIn(Effect.ignore(t.cancel(undefined, frame.task)), scope))),
-          ),
         );
     }
   };
