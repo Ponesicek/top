@@ -466,6 +466,26 @@ test("saved secrets are hidden in a command's output as it streams, also when on
   const none = outputHider(() => []);
   const chunk = Buffer.from("plain");
   assert.equal(none.write(chunk), chunk);
+
+  values = ["tok_shared", "tok_shared_PRIVATE_9931"];
+  const run = (chunks: string[]) => {
+    const hider = outputHider(() => values);
+    return Buffer.concat([...chunks.map((c) => hider.write(Buffer.from(c))), hider.end()]).toString();
+  };
+  for (const chunks of [
+    ["a tok_shared", "_PRIVATE_9931 b"],
+    ["a tok_shared_PRI", "VATE_9931 b"],
+    ["a tok_shared", " b"],
+  ])
+    assert.equal(run(chunks), `a ${HIDDEN} b`, `a shorter value never eats the start of a longer one: ${chunks.join("|")}`);
+  values = ["abcd", "cdXY"];
+  assert.equal(run(["1abcd", "XY2"]), `1${HIDDEN}2`, "overlapping values are hidden as one");
+
+  values = ["tok_gone_4411"];
+  const expiring = outputHider(() => values);
+  const held = expiring.write(Buffer.from("x tok_go"));
+  values = [];
+  assert.equal(Buffer.concat([held, expiring.write(Buffer.from("ne y")), expiring.write(Buffer.from(" z")), expiring.end()]).toString(), "x tok_gone y z");
 });
 
 test("a real command's output, kept or written to pi's temp file, never holds a saved secret, even when it times out", { timeout: 60_000 }, async () => {
@@ -489,18 +509,37 @@ test("a real command's output, kept or written to pi's temp file, never holds a 
 
     // 51,199 bytes whose last byte starts a character that never finishes: pi passes its 50 KB limit only when
     // it flushes that byte at the timeout, after its last progress update, and writes a log it never reports.
-    const payload = Buffer.concat([Buffer.from(`${value}\n`), Buffer.alloc(51_199 - value.length - 2, "x"), Buffer.from([0x0a, 0xe2])]);
+    // The value is as long as the marker, so hiding it doesn't change when pi passes its limit.
+    const flush = "tok_flush_case_1234567";
+    assert.equal(flush.length, HIDDEN.length);
+    await h.run(h.secrets.save(h.bot, flush));
+    const payload = Buffer.concat([Buffer.from(`${flush}\n`), Buffer.alloc(51_199 - flush.length - 2, "x"), Buffer.from([0x0a, 0xe2])]);
     writeFileSync(join(h.dir, "payload.bin"), payload);
     const flushed = async (tool: TopTool) => {
-      const error = await h.run(Effect.flip(tool.run({ command: "cat payload.bin; sleep 5", timeout: 1 }, { key: "u", bot: h.bot })));
+      const reported: string[] = [];
+      const onUpdate = (partial: ToolResult) => {
+        const path = (partial.details as { fullOutputPath?: string } | undefined)?.fullOutputPath;
+        if (path) reported.push(path);
+      };
+      const error = await h.run(Effect.flip(tool.run({ command: "cat payload.bin; sleep 5", timeout: 1 }, { key: "u", bot: h.bot, onUpdate })));
       const log = logOf(error.message);
       assert.ok(log, "the flush at the timeout made pi keep the full output");
       logs.push(log);
+      assert.deepEqual(reported, [], "pi never reported that log while the command ran");
       return readFileSync(log, "utf8");
     };
-    assert.ok((await flushed(bashOf())).includes(value), "without the hider, pi's log holds the secret");
+    assert.ok((await flushed(bashOf())).includes(flush), "without the hider, pi's log holds the secret");
     const hidden = await flushed(bash);
-    assert.ok(!hidden.includes(value) && hidden.startsWith(HIDDEN), "with it, the log never sees the secret");
+    assert.ok(!hidden.includes(flush) && hidden.startsWith(HIDDEN), "with it, the log never sees the secret");
+
+    await h.run(h.secrets.save(h.bot, "tok_shared"));
+    await h.run(h.secrets.save(h.bot, "tok_shared_PRIVATE_9931"));
+    const split = await h.run(
+      bash.run({ command: "head -c 60000 /dev/zero | tr '\\0' x; printf ' tok_shared'; sleep 0.3; printf '_PRIVATE_9931\\n'" }, { key: "s", bot: h.bot }),
+    );
+    const splitLog = (split.details as { fullOutputPath?: string }).fullOutputPath!;
+    logs.push(splitLog);
+    assert.ok(!readFileSync(splitLog, "utf8").includes("_PRIVATE_9931"), "a longer value split right after a shorter one is hidden whole");
 
     writeFileSync(old, `old ${value}`);
     await h.run(Effect.flip(bash.run({ command: `echo "[Full output: ${old}]"; sleep 5`, timeout: 1 }, { key: "f", bot: h.bot })));

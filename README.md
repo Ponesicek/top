@@ -301,8 +301,8 @@ cards (no answer reaches it); deleting the bot removes them.
   bot is told to hand it to the command that needs it from the file, standard input or an environment variable the
   program reads itself, never as a command argument, which other users of the computer can read. The value never goes into the
   conversation, the database, the logs or the bot's context. Top replaces it with `[secret hidden by Top]` in
-  everything a tool returns (its output, details, progress, errors, and the full output pi keeps of a long command,
-  deleted instead if it's too big to clean),
+  everything a tool returns (its output, details, progress and errors; a command's output is cleaned as it streams,
+  before pi shows it, keeps it or writes the full output of a long command to a temp file),
   as is and URL- or JSON-encoded, so a command that prints it doesn't hand it to the model. That holds while the file
   lives and, for values of 8 characters or more, until the daemon restarts, since a command may have copied it
   somewhere. It's protection against accidents, not against a bot set on getting it: part of the value, or the value

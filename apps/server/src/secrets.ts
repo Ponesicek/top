@@ -51,41 +51,45 @@ export type OutputHider = {
 
 const MARKER = Buffer.from(HIDDEN);
 
-/** Hides `values()` in a stream of output chunks, also when a value is split between chunks. */
+/**
+ * Hides `values()` in a stream of output chunks, also when a value is split between chunks or values
+ * overlap. Each chunk is scanned once per value; overlapping matches are hidden as one.
+ */
 export function outputHider(values: () => readonly string[]): OutputHider {
   let carry = Buffer.alloc(0);
   const hide = (buf: Buffer, final: boolean): Buffer => {
     const needles = values().map((v) => Buffer.from(v));
+    carry = Buffer.alloc(0);
     if (!needles.length) return buf;
-    const out: Buffer[] = [];
-    let pos = 0;
-    for (;;) {
-      let at = -1;
-      let length = 0;
-      for (const needle of needles) {
-        const found = buf.indexOf(needle, pos);
-        if (found >= 0 && (at < 0 || found < at || (found === at && needle.length > length))) {
-          at = found;
-          length = needle.length;
-        }
-      }
-      if (at < 0) break;
-      out.push(buf.subarray(pos, at), MARKER);
-      pos = at + length;
-    }
-    let keep = buf.length;
+    // Hold back from the first place a value may continue in the next chunk.
+    let hold = buf.length;
     if (!final) {
       const longest = Math.max(...needles.map((n) => n.length));
-      for (let start = Math.max(pos, buf.length - longest + 1); start < buf.length; start++) {
+      for (let start = Math.max(0, buf.length - longest + 1); start < buf.length && hold === buf.length; start++) {
         const tail = buf.subarray(start);
-        if (needles.some((n) => n.length > tail.length && n.subarray(0, tail.length).equals(tail))) {
-          keep = start;
-          break;
-        }
+        if (needles.some((n) => n.length > tail.length && n.subarray(0, tail.length).equals(tail))) hold = start;
       }
     }
-    out.push(buf.subarray(pos, keep));
-    carry = Buffer.from(buf.subarray(keep));
+    const spans: [number, number][] = [];
+    for (const needle of needles) {
+      for (let at = buf.indexOf(needle); at >= 0; at = buf.indexOf(needle, at + 1)) spans.push([at, at + needle.length]);
+    }
+    spans.sort((x, y) => x[0] - y[0]);
+    const out: Buffer[] = [];
+    let pos = 0;
+    let i = 0;
+    while (i < spans.length) {
+      let [start, end] = spans[i]!;
+      for (i++; i < spans.length && spans[i]![0] <= end; i++) end = Math.max(end, spans[i]![1]);
+      if (end > hold) {
+        hold = Math.min(hold, start);
+        break;
+      }
+      out.push(buf.subarray(pos, start), MARKER);
+      pos = end;
+    }
+    out.push(buf.subarray(pos, Math.max(pos, hold)));
+    carry = Buffer.from(buf.subarray(Math.max(pos, hold)));
     return Buffer.concat(out);
   };
   return {
