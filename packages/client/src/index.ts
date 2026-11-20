@@ -263,6 +263,22 @@ export class TopClient {
     return this.#command({ t: "deleteBot", bot: id });
   }
 
+  /** Lists the bots in this order here at once, and on every client once the daemon has it. A refused order is undone here. */
+  setBotOrder(ids: readonly BotId[]): Promise<void> {
+    const before = this.#snapshot.bots;
+    const rank = new Map(ids.map((id, i) => [id, i]));
+    const ranked = (b: BotSummary) => rank.get(b.id) ?? ids.length + before.indexOf(b);
+    this.#publish({ bots: [...before].sort((a, b) => ranked(a) - ranked(b)) });
+    return this.#command({ t: "setBotOrder", bots: ids }).catch((error: unknown) => {
+      const now = this.#snapshot.bots;
+      if (now.length === before.length && now.every((b) => before.some((o) => o.id === b.id))) {
+        const back = new Map(before.map((b, i) => [b.id, i]));
+        this.#publish({ bots: [...now].sort((a, b) => back.get(a.id)! - back.get(b.id)!) });
+      }
+      throw error;
+    });
+  }
+
   contextFiles(bot: BotId): Promise<readonly ContextFileView[]> {
     return this.#request({ t: "contextFiles", bot });
   }

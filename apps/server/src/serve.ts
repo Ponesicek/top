@@ -164,6 +164,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return watching.has(event.bot) ? Effect.flatMap(inboxOf(store, event.bot), (items) => send({ t: "inbox", bot: event.bot, items })) : Effect.void;
       case "Bot":
         return send({ t: "bot", bot: event.summary });
+      case "BotOrder":
+        return send({ t: "bots", bots: daemon.bots() });
       case "BotRemoved":
         watching.delete(event.bot);
         return send({ t: "botRemoved", bot: event.bot });
@@ -297,6 +299,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         );
       case "deleteBot":
         return answer(frame, daemon.deleteBot(frame.bot));
+      case "setBotOrder":
+        return answer(frame, daemon.setBotOrder(frame.bots));
       case "contextFiles":
         return answer(frame, daemon.contextFiles(frame.bot));
       case "saveContextFile":

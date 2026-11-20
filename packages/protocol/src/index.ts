@@ -472,6 +472,7 @@ export const ClientFrame = Schema.Union([
     avatar: Optional(Schema.Int),
   }),
   Struct({ t: Schema.Literal("deleteBot"), req, bot: BotId }),
+  Struct({ t: Schema.Literal("setBotOrder"), req, bots: List(BotId) }),
   Struct({ t: Schema.Literal("contextFiles"), req, bot: BotId }),
   Struct({ t: Schema.Literal("saveContextFile"), req, bot: BotId, name: ContextFileName, content: Schema.String, version: Schema.String }),
   Struct({
@@ -526,6 +527,7 @@ export const RequestResult = {
   abort: Schema.Null,
   createBot: Struct({ id: BotId }),
   deleteBot: Schema.Null,
+  setBotOrder: Schema.Null,
   contextFiles: List(ContextFileView),
   saveContextFile: Struct({ version: Schema.String }),
   saveMcpServer: Struct({ id: McpServerId }),

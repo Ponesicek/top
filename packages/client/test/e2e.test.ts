@@ -478,6 +478,34 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   assert.equal((await until(d.subscribe, d.getSnapshot, (s) => s.ready, "the empty roster")).bots.length, 0);
 });
 
+test("bots reordered on one client are in that order on every client, and stay so after a restart", async () => {
+  const daemon = new Daemon();
+  await daemon.start();
+  const a = await connect(daemon, 0);
+  const b = await connect(daemon, 0);
+  const ids = a.top.getSnapshot().bots.map((bot) => bot.id);
+  assert.ok(ids.length >= 3, "the fake bots");
+  const order = [ids[2]!, ids[0]!, ...ids.slice(3), ids[1]!];
+  const done = a.top.setBotOrder(order);
+  assert.deepEqual(
+    a.top.getSnapshot().bots.map((bot) => bot.id),
+    order,
+    "in order here at once",
+  );
+  await done;
+  await until(b.top.subscribe, b.top.getSnapshot, (s) => s.bots.map((bot) => bot.id).join() === order.join(), "the order on the other client");
+
+  await daemon.kill();
+  await daemon.start();
+  const c = new TopClient({ url: daemon.url });
+  cleanup.push(() => c.close());
+  const roster = (await until(c.subscribe, c.getSnapshot, (s) => s.ready, "the roster after restart")).bots;
+  assert.deepEqual(
+    roster.map((bot) => bot.id),
+    order,
+  );
+});
+
 test("MCP servers set up from the app: every client sees them, bots get them only when assigned", async () => {
   const daemon = new Daemon();
   await daemon.start();

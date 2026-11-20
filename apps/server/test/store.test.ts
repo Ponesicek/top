@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer";
 import { afterAll, test } from "vitest";
 import * as Sqlite from "../src/sqlite.ts";
 import * as Store from "../src/store.ts";
-import { BEFORE_ASKS, BEFORE_CONTEXT_FILES, BEFORE_TASKS } from "./harness.ts";
+import { BEFORE_ASKS, BEFORE_CONTEXT_FILES, BEFORE_TASKS, harness } from "./harness.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "top-store-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -133,4 +133,59 @@ test("a database from before harness tasks gains their tables, keeps everything 
       assert.equal(yield* store.tasks.session(session.id), undefined);
     }),
   );
+});
+
+test("bots are listed in the order they were made until someone reorders them; the order outlasts a restart and a bot made later goes last", async () => {
+  const filename = join(dir, "order.sqlite");
+  const names = (bots: readonly Store.BotRow[]) => bots.map((bot) => bot.name);
+  const ids = await withStore(filename, (store) =>
+    Effect.gen(function* () {
+      const made = [
+        yield* store.createBot("Atlas", "fake/model"),
+        yield* store.createBot("Juniper", "fake/model"),
+        yield* store.createBot("Moss", "fake/model"),
+      ];
+      assert.deepEqual(names(yield* store.bots), ["Atlas", "Juniper", "Moss"], "creation order, nothing rewritten");
+      return made;
+    }),
+  );
+  const db = new DatabaseSync(filename);
+  assert.deepEqual(
+    db
+      .prepare("SELECT position FROM bots ORDER BY id")
+      .all()
+      .map((row) => row.position),
+    [null, null, null],
+    "the new column leaves existing bots alone",
+  );
+  db.close();
+
+  await withStore(filename, (store) =>
+    Effect.gen(function* () {
+      yield* store.setBotOrder([ids[2]!, ids[0]!, ids[1]!]);
+      assert.deepEqual(names(yield* store.bots), ["Moss", "Atlas", "Juniper"]);
+      yield* store.createBot("Quill", "fake/model");
+      assert.deepEqual(names(yield* store.bots), ["Moss", "Atlas", "Juniper", "Quill"], "a bot made after a reorder goes last");
+    }),
+  );
+  assert.deepEqual(await withStore(filename, (store) => Effect.map(store.bots, names)), ["Moss", "Atlas", "Juniper", "Quill"], "kept across a restart");
+});
+
+test("reordering bots from a client: the daemon lists them so at once, skips ids it doesn't know, keeps any left out after the rest, and starts with that order", async () => {
+  const h = await harness({ bots: ["Atlas", "Juniper", "Moss", "Quill"] });
+  const [atlas, juniper, moss, quill] = h.bots as [number, number, number, number];
+  const names = () => h.daemon.bots().map((bot) => bot.name);
+  assert.deepEqual(names(), ["Atlas", "Juniper", "Moss", "Quill"]);
+  const before = await h.run(h.events.published);
+  await h.run(h.daemon.setBotOrder([quill, 999, moss, quill]));
+  assert.deepEqual(names(), ["Quill", "Moss", "Atlas", "Juniper"]);
+  assert.ok((await h.run(h.events.published)) > before, "every client is told");
+  await h.run(h.daemon.setBotOrder([juniper, atlas, moss, quill]));
+  await h.close();
+  const again = await harness({ dir: h.dir });
+  assert.deepEqual(
+    again.daemon.bots().map((bot) => bot.name),
+    ["Juniper", "Atlas", "Moss", "Quill"],
+  );
+  await again.close();
 });

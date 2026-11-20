@@ -165,6 +165,8 @@ export class Daemon extends Context.Service<
     readonly runner: (bot: number) => Effect.Effect<BotRunner, UnknownBotError>;
     readonly runners: () => BotRunner[];
     readonly createBot: (name: string, description: string, avatar?: number) => Effect.Effect<number, BotError>;
+    /** Lists the bots in this order, on every client. Bots it leaves out keep their place after the ones it names. */
+    readonly setBotOrder: (ids: readonly number[]) => Effect.Effect<void>;
     readonly contextFiles: (bot: number) => Effect.Effect<readonly ContextFileView[], UnknownBotError | BotError>;
     readonly saveContextFile: (
       bot: number,
@@ -446,6 +448,15 @@ const make = Effect.gen(function* () {
       );
       yield* touch(bot);
       return { version: saved };
+    }),
+    setBotOrder: Effect.fn("Daemon.setBotOrder")(function* (ids) {
+      const named = [...new Set(ids)].filter((id) => bots.has(id));
+      const order = [...named, ...[...bots.keys()].filter((id) => !named.includes(id))];
+      yield* store.setBotOrder(order);
+      const live = order.map((id) => [id, bots.get(id)!] as const);
+      bots.clear();
+      for (const [id, bot] of live) bots.set(id, bot);
+      yield* events.publish({ _tag: "BotOrder" });
     }),
     deleteBot: Effect.fn("Daemon.deleteBot")(function* (id) {
       const live = bots.get(id);

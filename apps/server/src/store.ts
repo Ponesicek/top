@@ -342,6 +342,8 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
       SET message = json_set(message, '$.details', json_object('ask', json_set(json_extract(message, '$.details.permission'), '$.kind', 'permission')))
       WHERE kind = 'tool' AND json_type(message, '$.details.permission') = 'object'`;
   }),
+  // The order the bots are listed in, once someone reorders them; until then (NULL) it's the order they were made in.
+  "9_bot_position": addColumn("bots", "position", "INTEGER"),
 };
 
 const refuseNewerData = Effect.gen(function* () {
@@ -403,6 +405,8 @@ export class Store extends Context.Service<
     readonly bots: Effect.Effect<BotRow[]>;
     readonly bot: (id: number) => Effect.Effect<BotRow | undefined>;
     readonly createBot: (name: string, model: string, avatar?: number) => Effect.Effect<number>;
+    /** Lists the bots in this order from now on; a bot made later goes after them. */
+    readonly setBotOrder: (ids: readonly number[]) => Effect.Effect<void>;
     readonly legacySouls: Effect.Effect<LegacySoul[]>;
     readonly settleLegacySoul: (bot: number) => Effect.Effect<void>;
     readonly markDeleted: (bot: number) => Effect.Effect<void>;
@@ -604,7 +608,9 @@ const make = Effect.gen(function* () {
       filesSecret,
       transaction,
 
-      bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY id`), (r) => r.map(botOf)),
+      bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY position IS NULL, position, id`), (r) => r.map(botOf)),
+      setBotOrder: (ids) =>
+        transaction(Effect.forEach(ids, (id, position) => q(sql`UPDATE bots SET position = ${position} WHERE id = ${id}`), { discard: true })),
       bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
       createBot: (name, model, avatar = 0) =>
         Effect.map(first(sql`INSERT INTO bots (name, avatar, model) VALUES (${name}, ${avatar}, ${model}) RETURNING id`), (row) => Number(row!.id)),
