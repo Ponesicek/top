@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as FiberHandle from "effect/FiberHandle";
 import * as Latch from "effect/Latch";
 import { type Attachments, userContent, withImageData } from "./attachments.ts";
-import { contextTokens, kTokens, summaryMessage, WINDOW_SHARE } from "./compaction.ts";
+import { compactLimit, contextTokens, kTokens, summaryMessage } from "./compaction.ts";
 import { type Compact, runLoop, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
 import type { EntryBody, TopUserMessage, TranscriptMessage, UserText } from "./messages.ts";
 import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
@@ -106,8 +106,7 @@ export const makeRunner = Effect.fnUntraced(function* (
 
   const key = (seq: number, toolCallId: string) => `${id}:${seq}:${toolCallId}`;
 
-  const window = model.contextWindow > 0 ? Math.floor(model.contextWindow * WINDOW_SHARE) : Number.POSITIVE_INFINITY;
-  const compactAt = options.compactAtTokens && options.compactAtTokens > 0 ? Math.min(options.compactAtTokens, window) : undefined;
+  const compactAt = compactLimit(options.compactAtTokens, model.contextWindow);
   const compact: Compact | undefined =
     compactAt === undefined
       ? undefined

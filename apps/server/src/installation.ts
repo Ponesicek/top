@@ -9,7 +9,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { BUILD } from "./build.ts";
 
-export const DEFAULT_MODEL = "openai/gpt-6.1-sol";
+export const DEFAULT_MODEL = "openai/gpt-6.2-sol";
 const SERVICE = "top.service";
 
 export const installLayout = (home: string) => {

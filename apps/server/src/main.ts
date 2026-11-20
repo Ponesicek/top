@@ -113,7 +113,7 @@ const skillsOf = (home: Home.Layout) => ({ library: home.skills, local: (bot: St
 const realBots = (args: Args, model: string, home: Home.Layout) =>
   Effect.gen(function* () {
     const slash = model.indexOf("/");
-    if (slash <= 0) return yield* new StartError({ message: `--model takes provider/model-id, e.g. openai/gpt-6.1-sol (got "${model}").` });
+    if (slash <= 0) return yield* new StartError({ message: `--model takes provider/model-id, e.g. openai/gpt-6.2-sol (got "${model}").` });
     const providerId = model.slice(0, slash);
     const fs = yield* FileSystem.FileSystem;
     const credentials = new AuthFile(home.auth, fs);

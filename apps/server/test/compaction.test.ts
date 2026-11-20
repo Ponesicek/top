@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Effect from "effect/Effect";
 import { test } from "vitest";
-import { compactionCut, contextTokens, cutIndex, SUMMARY_HEAD, SUMMARY_REQUEST, summaryMessage } from "../src/compaction.ts";
+import { CompactAtTokens, compactionCut, compactLimit, contextTokens, cutIndex, SUMMARY_HEAD, SUMMARY_REQUEST, summaryMessage } from "../src/compaction.ts";
 import type { Context } from "../src/fake-bots.ts";
+import { DEFAULT_MODEL } from "../src/installation.ts";
 import { type TranscriptMessage, textOf } from "../src/messages.ts";
 import { harness, idle, until } from "./harness.ts";
 
@@ -54,6 +58,23 @@ test("a transcript is compacted when it's over the limit, and again only once ha
   const summary = summaryMessage("y".repeat(8_000), 5);
   assert.equal(compactionCut([system, summary, long(6)], 2_500), undefined);
   assert.equal(compactionCut([system, summary, long(6), long(7)], 2_500)?.cut, 4);
+});
+
+test("a bot on the default model is compacted past 120k tokens, unless TOP_COMPACT_AT_TOKENS says otherwise or 80% of the window is less", () => {
+  const atTokens = (env: Record<string, string>) => Effect.runSync(Effect.provide(CompactAtTokens, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
+  assert.equal(atTokens({}), 120_000);
+  assert.equal(atTokens({ TOP_COMPACT_AT_TOKENS: "90000" }), 90_000);
+  const [provider, id] = DEFAULT_MODEL.split("/") as [string, string];
+  const model = builtinModels().getModel(provider, id);
+  assert.ok(model, `pi-ai lists ${DEFAULT_MODEL}`);
+  assert.equal(DEFAULT_MODEL, "openai/gpt-6.2-sol");
+  const limit = compactLimit(atTokens({}), model.contextWindow);
+  assert.equal(limit, 120_000);
+  assert.equal(compactionCut([system, user("hi"), answer("hello", 119_990)], limit!), undefined, "120,000 tokens fit");
+  assert.equal(compactionCut([system, user("hi"), answer("hello", 119_991)], limit!)?.tokens, 120_001);
+  assert.equal(compactLimit(120_000, 128_000), 102_400, "a smaller window leaves 20% for the answer");
+  assert.equal(compactLimit(120_000, 0), 120_000, "a model with no window given");
+  assert.equal(compactLimit(0, 272_000), undefined, "0 turns compaction off");
 });
 
 test("a long transcript is summarised before the next request, from the cache, and the bot goes on from the summary", async () => {

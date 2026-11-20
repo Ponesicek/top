@@ -15,6 +15,7 @@ import { afterEach, test, vi } from "vitest";
 import { SUMMARY_HEAD } from "../src/compaction.ts";
 import { contextGuide, fileSection, readContextFile, saveContextFile, seedSoul, soulIdentity, versionOf } from "../src/contextFiles.ts";
 import type { Context } from "../src/fake-bots.ts";
+import { DEFAULT_MODEL } from "../src/installation.ts";
 import { type TranscriptMessage, textOf } from "../src/messages.ts";
 import { fromPromise, type TopTool, text } from "../src/tools.ts";
 import { BEFORE_CONTEXT_FILES, type Harness, harness, idle, until } from "./harness.ts";
@@ -603,7 +604,7 @@ async function payloads(provider: "openai" | "anthropic") {
     provider === "openai"
       ? { openai: { type: "oauth", access: "test-access", refresh: "test-refresh", expires: Date.now() + 3_600_000 } }
       : { anthropic: { type: "api_key", key: "test-key" } };
-  const id = provider === "openai" ? "openai/gpt-6.1-sol" : "anthropic/claude-opus-5-5";
+  const id = provider === "openai" ? DEFAULT_MODEL : "anthropic/claude-opus-5-5";
   const h = await harness({ context: true, model: { models: builtinModels({ credentials: new SignedIn(credentials) }), id } });
   await h.run(h.daemon.start);
   put(h, "SOUL.md", "# Atlas\n\nWatches the build.\n");
@@ -622,6 +623,7 @@ const withoutCacheMark = (messages: unknown): Record<string, unknown>[] =>
 test("OpenAI Responses: the update goes in place as a developer message, after an input prefix and tools that don't change", async () => {
   const [one, two, three] = await payloads("openai");
   const input = (body: Record<string, unknown> | undefined) => body!.input as Record<string, unknown>[];
+  for (const body of [one, two, three]) assert.equal(body!.model, "gpt-6.2-sol", "a bot on the default model asks for GPT-6.2 Sol");
   for (const body of [two, three]) {
     assert.deepEqual(body!.tools, one!.tools);
     assert.deepEqual(body!.instructions, one!.instructions);
@@ -643,23 +645,26 @@ test("OpenAI Responses: the update goes in place as a developer message, after a
   assert.match(String(leading[0]!.content), /<context_files>[\s\S]*# Atlas/);
 });
 
-test("Anthropic Messages: system and tools stay the same, and the update is a system message in place; only the cache mark moves", async () => {
-  // pi-ai marks the last message for caching, turning its string content into the one text block it stands for.
+test("Anthropic Messages: each request continues the last one's thread, so system, tools and earlier messages stay the same, and the update is a system message in place", async () => {
+  // pi-ai sends api.anthropic.com a message thread: the first request creates it, and a later one continues it, with
+  // only the new messages, when system, tools and every earlier message are unchanged; otherwise it sends them all again.
   const [one, two, three] = await payloads("anthropic");
   const messages = (body: Record<string, unknown> | undefined) => withoutCacheMark(body!.messages);
-  for (const body of [two, three]) {
-    assert.deepEqual(body!.system, one!.system);
-    assert.deepEqual(body!.tools, one!.tools);
-  }
-  assert.deepEqual(messages(two).slice(0, messages(one).length), messages(one));
-  assert.deepEqual(messages(three).slice(0, messages(two).length), messages(two));
-  const added = messages(three).slice(messages(two).length);
+  assert.deepEqual(one!.thread, { type: "create" });
+  assert.deepEqual(two!.thread, { type: "continue", previous_message_id: "msg_1" });
+  assert.deepEqual(three!.thread, { type: "continue", previous_message_id: "msg_2" });
+  for (const body of [two, three]) assert.equal(body!.system ?? body!.tools, undefined, "the thread keeps the first request's");
+  assert.deepEqual(
+    messages(two).map((m) => m.role),
+    ["user", "system"],
+  );
+  const added = messages(three);
   assert.deepEqual(
     added.map((m) => m.role),
-    ["assistant", "user", "system", "system"],
+    ["user", "system", "system"],
     "pi-ai holds a system update until after the next user message, where Anthropic accepts it",
   );
-  assert.deepEqual(added[3], messages(two).at(-1), "the last is the effort note pi-ai adds after every message");
-  assert.match(JSON.stringify(added[2]!.content), /Updated system prompt section \\"MEMORY.md\\"[\s\S]*Deploys go through staging/);
+  assert.deepEqual(added[2], messages(two).at(-1), "the last is the effort note pi-ai adds after every message");
+  assert.match(JSON.stringify(added[1]!.content), /Updated system prompt section \\"MEMORY.md\\"[\s\S]*Deploys go through staging/);
   assert.match(JSON.stringify(one!.system), /<context_files>[\s\S]*# Atlas/);
 });
