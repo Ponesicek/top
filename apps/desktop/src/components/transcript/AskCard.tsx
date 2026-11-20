@@ -78,7 +78,7 @@ function Frame({
         ref={card}
         tabIndex={-1}
         aria-labelledby={titleId}
-        className="flex w-fit max-w-[min(100%,32rem)] min-w-0 flex-col gap-1 rounded-xl bg-muted px-3.5 py-3 inset-ring inset-ring-border outline-hidden focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        className="flex w-fit max-w-[min(100%,32rem)] min-w-0 flex-col gap-1 rounded-xl bg-muted px-3.5 py-3 inset-ring inset-ring-border outline-hidden focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-primary"
       >
         <span className="text-meta text-muted-foreground">{meta}</span>
         <span id={titleId} className="text-small leading-snug font-medium break-words whitespace-pre-wrap text-foreground">

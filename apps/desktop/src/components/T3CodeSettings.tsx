@@ -169,9 +169,9 @@ function Details({ view, id }: { view: T3CodeView; id: string }) {
       <ul className="m-0 flex max-h-60 list-none flex-col overflow-y-auto rounded-field bg-secondary p-1 text-meta">
         {shown.map((item) => (
           <li key={item.key} className="flex min-w-0 items-baseline gap-2 rounded-md px-2 py-1" title={item.path ?? item.title}>
-            <span className="flex-none text-micro text-muted-foreground">{item.path === undefined ? "Provider" : "Project"}</span>
-            <span className="min-w-0 truncate font-label text-foreground">{item.title}</span>
-            {item.meta && <span className="flex-none text-muted-foreground">{item.meta}</span>}
+            <span className="flex-none text-micro text-muted-foreground narrow:hidden">{item.path === undefined ? "Provider" : "Project"}</span>
+            <span className="max-w-[60%] min-w-0 flex-none truncate font-label text-foreground">{item.title}</span>
+            {item.meta && <span className="min-w-0 truncate text-muted-foreground">{item.meta}</span>}
             {item.path && (
               <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-muted-foreground [direction:rtl]">
                 <bdi>{item.path}</bdi>
@@ -270,7 +270,7 @@ function Connected({
         <Button
           variant="link"
           size="link"
-          className="ml-3.75 self-start text-muted-foreground"
+          className="ml-3.75 max-w-[calc(100%-0.9375rem)] self-start text-left whitespace-normal text-muted-foreground"
           aria-expanded={open}
           aria-controls={open ? detailsId : undefined}
           onClick={() => setOpen((o) => !o)}

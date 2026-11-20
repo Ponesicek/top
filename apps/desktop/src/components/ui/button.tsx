@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils.ts";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full font-semibold text-small leading-none outline-hidden transition duration-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-default [&_svg]:pointer-events-none [&_svg]:shrink-0 [-webkit-app-region:no-drag]",
+  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full font-semibold text-small leading-none outline-hidden transition duration-90 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-default [&_svg]:pointer-events-none [&_svg]:shrink-0 [-webkit-app-region:no-drag]",
   {
     defaultVariants: { size: "default", variant: "default" },
     variants: {
