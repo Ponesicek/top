@@ -12,6 +12,7 @@ import {
   readT3Config,
   T3AuthError,
   type T3Config,
+  T3NotSent,
   type T3Project,
   T3Refused,
   T3Unreachable,
@@ -40,6 +41,7 @@ export const t3codeOptions = Type.Object(
 const NOT_CONNECTED =
   "T3 Code isn't connected to Top. On the daemon's computer run `top t3code connect <T3 Code's address>` with a pairing code from that T3 Code, then try again.";
 const RECONNECT_FOR_MS = 10 * 60_000;
+const REPLY_MS = 60_000;
 const TERMINAL_RUN = new Set(["completed", "failed", "cancelled", "interrupted", "rolled_back"]);
 const ACTIVE_RUN = new Set(["starting", "running", "waiting"]);
 const SETTLED_ITEM = new Set(["completed", "failed", "cancelled", "interrupted"]);
@@ -121,7 +123,12 @@ function itemLog(item: Rec): { kind: LogKind; text: string } | undefined {
   }
 }
 
-export type T3CodeConfig = { readonly file: string; readonly reconnectForMs?: number | undefined };
+export type T3CodeConfig = {
+  readonly file: string;
+  readonly reconnectForMs?: number | undefined;
+  /** How long a socket may go without answering a request, or without catching up a thread's stream, before Top drops it. */
+  readonly replyMs?: number | undefined;
+};
 
 export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
   const reconnectForMs = config.reconnectForMs ?? RECONNECT_FOR_MS;
@@ -186,7 +193,7 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
     },
     open: async (spec, emit) => {
       const cfg = await load();
-      return openThread(cfg, spec, emit, { verify, reconnectForMs });
+      return openThread(cfg, spec, emit, { verify, reconnectForMs, replyMs: config.replyMs ?? REPLY_MS });
     },
   };
 }
@@ -207,7 +214,7 @@ async function openThread(
   cfg: T3Config,
   spec: OpenSpec,
   emit: (event: HarnessEvent) => void,
-  options: { readonly verify: (cfg: T3Config) => Promise<unknown>; readonly reconnectForMs: number },
+  options: { readonly verify: (cfg: T3Config) => Promise<unknown>; readonly reconnectForMs: number; readonly replyMs: number },
 ) {
   const origin = cfg.url;
   const threadId = spec.resume ?? `top-${spec.session}`;
@@ -279,18 +286,31 @@ async function openThread(
 
   /**
    * Sends a request until T3 Code answers it. Only for reads and commands whose id makes a repeat a no-op.
-   * `stopped` is asked just before the first send, however long reconnecting took; once sent, it's seen through.
+   * `stopped` is asked before each attempt until one has left Top, however long reconnecting took; once sent, it's seen through.
+   * A socket that doesn't answer in time is dropped, so the reconnect window applies.
    */
   const request = async (tag: string, payload: unknown, stopped?: () => boolean): Promise<unknown> => {
+    let sent = false;
     for (let tries = 1; ; tries++) {
       const s = await connect();
-      if (tries === 1 && stopped?.()) throw new StoppedBeforeSend();
+      if (!sent && stopped?.()) throw new StoppedBeforeSend();
       try {
-        const reply = await s.request(tag, payload);
+        const asked = s.request(tag, payload);
+        let timer: NodeJS.Timeout | undefined;
+        const reply = await Promise.race([
+          asked,
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              s.close();
+              reject(new T3Unreachable(`T3 Code didn't answer ${tag} in ${duration(options.replyMs)}.`));
+            }, options.replyMs);
+          }),
+        ]).finally(() => clearTimeout(timer));
         // Reachable again only once T3 Code answers, not when a socket merely opens.
         lostSince = undefined;
         return reply;
       } catch (error) {
+        if (!(error instanceof T3NotSent)) sent = true;
         if (!(error instanceof T3Unreachable) || closed) throw error;
         // The reconnect window, not a count, ends this: it holds until T3 Code answers.
         await new Promise((resolve) => setTimeout(resolve, Math.min(250 * tries, 5_000)));
@@ -415,18 +435,24 @@ async function openThread(
       const s = await connect();
       await new Promise<void>((resolve, reject) => {
         let first = true;
+        // Caught up means T3 Code sent the snapshot or the missed events, then its `synchronized` marker.
+        const timer = setTimeout(() => {
+          if (first) s.close();
+        }, options.replyMs);
         unsubscribe = s.subscribe(
           "orchestration.subscribeThread",
-          { threadId, ...(lastSequence !== undefined ? { afterSequence: lastSequence } : {}) },
+          { threadId, requestCompletionMarker: true, ...(lastSequence !== undefined ? { afterSequence: lastSequence } : {}) },
           (value) => {
-            lostSince = undefined;
             onItem(value);
-            if (first) {
+            if (first && record(value).kind === "synchronized") {
               first = false;
+              clearTimeout(timer);
+              lostSince = undefined;
               resolve();
             }
           },
           (error) => {
+            clearTimeout(timer);
             if (first) reject(error);
             // A dropped socket is picked up again by `lost`; this is a stream that ended on an open one.
             if (!s.open || socket !== s || closed || following !== attempt) return;
@@ -435,7 +461,6 @@ async function openThread(
             else followed().catch((failure: unknown) => exit(message(failure)));
           },
         );
-        if (lastSequence !== undefined) resolve();
       });
     })();
     following = attempt;

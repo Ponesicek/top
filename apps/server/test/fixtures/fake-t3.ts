@@ -25,6 +25,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     duplicateEnds: false,
     configDelayMs: 0,
     dropOnOpen: false,
+    silent: false,
   };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
@@ -197,6 +198,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       const message = JSON.parse(String(data)) as Rec;
       if (message._tag === "Ping") return send({ _tag: "Pong" });
       if (message._tag !== "Request") return;
+      if (faults.silent) return;
       const id = message.id;
       const tag = String(message.tag);
       const payload = (message.payload ?? {}) as Rec;
@@ -209,6 +211,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         if (typeof payload.afterSequence === "number") {
           for (const entry of thread.events.filter((e) => e.sequence > (payload.afterSequence as number))) out({ kind: "event", ...entry });
         } else out(snapshot(thread));
+        if (payload.requestCompletionMarker === true) out({ kind: "synchronized" });
         const set = subscribers.get(thread.id) ?? new Set();
         subscribers.set(thread.id, set);
         set.add(out);

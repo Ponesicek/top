@@ -28,6 +28,8 @@ export class T3AuthError extends Error {}
 export class T3Refused extends Error {}
 /** The request may or may not have reached T3 Code. */
 export class T3Unreachable extends Error {}
+/** The request never left Top: the socket was already closing. */
+export class T3NotSent extends T3Unreachable {}
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
 const str = (value: unknown) => (typeof value === "string" ? value : undefined);
@@ -279,7 +281,7 @@ export class RpcSocket {
   }
 
   request(tag: string, payload: unknown): Promise<unknown> {
-    if (this.closedWith) return Promise.reject(this.closedWith);
+    if (this.closedWith || this.ws.readyState !== WebSocket.OPEN) return Promise.reject(new T3NotSent("The connection to T3 Code was closing."));
     const id = String(this.next++);
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

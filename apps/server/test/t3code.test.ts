@@ -30,7 +30,13 @@ async function setup(options: { dir?: string; t3?: FakeT3 } = {}): Promise<Setup
   const file = join(dir, "t3code.json");
   if (!options.dir)
     await writeT3Config(file, { url: t3.origin, token: t3.token(), environmentId: "env-1", label: "fake", serverVersion: "0.0.0-fake", connectedAt: "now" });
-  const h = await harness({ dir, harnesses: [t3codeAdapter({ file, reconnectForMs: 3_000 })], context: true, taskCancelGraceMs: 2_000, gatherMs: 20 });
+  const h = await harness({
+    dir,
+    harnesses: [t3codeAdapter({ file, reconnectForMs: 3_000, replyMs: 1_000 })],
+    context: true,
+    taskCancelGraceMs: 2_000,
+    gatherMs: 20,
+  });
   await h.run(h.daemon.start);
   return { h, t3, tasks: h.daemon.tasks!, file, dir };
 }
@@ -119,7 +125,7 @@ test("a dropped connection is followed from where it left off, and an end T3 Cod
   const done = await ended(s, running.task.id);
   assert.equal(done.state, "completed");
   assert.equal(done.result, "finished while Top was away");
-  assert.ok((await log(s, running.task.id)).some((t) => t === "reconnected to T3 Code"));
+  assert.ok((await log(s, running.task.id)).some((t) => t.startsWith("lost the connection to T3 Code")));
   const resumed = s.t3.requests.filter((r) => r.tag === "orchestration.subscribeThread").at(-1)!.payload;
   assert.equal(typeof resumed.afterSequence, "number", "it asked only for what it missed");
   await until("the bot to hear", async () => (await told(s, running.task.id)).length > 0);
@@ -141,6 +147,23 @@ test("a socket that keeps opening and dropping gives up when the reconnect windo
   );
   assert.match(done.error ?? "", /Lost T3 Code at http:\/\/127\.0\.0\.1:\d+ for 3s .*may still be running there/);
   assert.equal(s.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length, 0);
+});
+
+test("a T3 Code that keeps the socket open but stops answering is dropped, and the task gives up after the window", async () => {
+  const s = await setup();
+  const running = await start(s, { prompt: "run forever" });
+  await runIn(s, `top-${running.session.id}`);
+  s.t3.faults.silent = true;
+  s.t3.dropSockets();
+  const done = await until(
+    "the task to give up",
+    async () => {
+      const t = await task(s, running.task.id);
+      return t.state === "failed" && t;
+    },
+    20_000,
+  );
+  assert.match(done.error ?? "", /Lost T3 Code at .* for 3s .*may still be running there/);
 });
 
 test("questions reach the bot and the user, and the answer goes back as the option's value", async () => {
