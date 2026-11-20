@@ -298,7 +298,8 @@ export function makeTaskQueries(
     pruneEvents: (id: string, keep: number) =>
       Effect.asVoid(
         q(
-          sql`DELETE FROM task_events WHERE task = ${id} AND seq < (SELECT seq FROM task_events WHERE task = ${id} ORDER BY seq DESC LIMIT 1 OFFSET ${keep - 1})`,
+          // The cancel marker stays: a restart reads it to carry the cancel on.
+          sql`DELETE FROM task_events WHERE task = ${id} AND NOT (kind = 'state' AND text = 'cancelling') AND seq < (SELECT seq FROM task_events WHERE task = ${id} ORDER BY seq DESC LIMIT 1 OFFSET ${keep - 1})`,
         ),
       ),
 

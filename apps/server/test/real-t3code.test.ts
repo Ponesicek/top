@@ -166,7 +166,8 @@ test.skipIf(!binary)(
     const finishedElsewhere = await end(elsewhere.task.id);
     assert.equal(finishedElsewhere.state, "completed", finishedElsewhere.error ?? "");
     assert.match(finishedElsewhere.result ?? "", /beta/, "the answer given in T3 Code is the one that counted");
-    if (late._tag === "Failure") assert.match(late.failure.message, /T3 Code refused the answer|withdrawn/, "refused by T3 Code, or already withdrawn in Top");
+    if (late._tag === "Failure")
+      assert.match(late.failure.message, /T3 Code didn't take the answer|withdrawn/, "refused by T3 Code, or already withdrawn in Top");
     const after = (await h.run(h.store.tasks.inputsOf(elsewhere.task.id)))[0]!;
     assert.notEqual(after.state, "pending", "no request is left waiting in Top");
 

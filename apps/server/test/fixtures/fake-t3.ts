@@ -28,6 +28,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     silent: false,
     silentTypes: new Set<string>(),
     refuseAnswer: undefined as string | undefined,
+    respondDelayMs: 0,
   };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
@@ -228,6 +229,20 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         setTimeout(() => send({ _tag: "Exit", requestId: id, exit: { _tag: "Success", value: handle(tag, payload) } }), delay);
         return;
       }
+      if (payload.type === "runtime-request.respond" && faults.respondDelayMs) {
+        const delay = faults.respondDelayMs;
+        faults.respondDelayMs = 0;
+        setTimeout(() => {
+          let late: Rec;
+          try {
+            late = { _tag: "Success", value: handle(tag, payload) };
+          } catch (error) {
+            late = { _tag: "Failure", cause: [{ _tag: "Fail", error: { message: (error as Error).message } }] };
+          }
+          send({ _tag: "Exit", requestId: id, exit: late });
+        }, delay);
+        return;
+      }
       let exit: Rec;
       try {
         exit = { _tag: "Success", value: handle(tag, payload) };
@@ -272,6 +287,12 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       tickets.add(ticket);
       return json(res, 200, { ticket, expiresAt: new Date(Date.now() + 60_000).toISOString() });
     }
+    const threadRoute = /^\/api\/orchestration\/threads\/([^/]+)$/.exec(url.pathname);
+    if (threadRoute) {
+      if (!authorized(req)) return json(res, 401, { code: "auth_invalid" });
+      const thread = threads.get(decodeURIComponent(threadRoute[1]!));
+      return thread ? json(res, 200, snapshot(thread)) : json(res, 404, { code: "not_found", reason: "thread_not_found" });
+    }
     if (url.pathname === "/api/projects") {
       if (!authorized(req)) return json(res, 401, { code: "auth_invalid" });
       return json(res, 200, { projects: projects.map((p) => ({ ...p, title: p.id, archivedAt: null })) });
@@ -306,6 +327,16 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     },
     revoke: () => {
       token = "revoked";
+    },
+    /** Like the user answering in T3 Code itself. */
+    answerThere: (threadId: string, text: string | undefined) => {
+      const thread = threads.get(threadId)!;
+      const uir = [...thread.items.values()].find((i) => i.type === "user_input_request" && i.status === "waiting")!;
+      const value = { ...uir, status: "completed" };
+      thread.items.set(String(uir.id), value);
+      emit(thread, { type: "turn-item.updated", payload: value });
+      if (text !== undefined) setTimeout(() => finish(thread, String(uir.runId), text), 5);
+      return String(uir.runId);
     },
     rotate: (next: string) => {
       token = next;

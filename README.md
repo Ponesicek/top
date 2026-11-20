@@ -408,8 +408,9 @@ work, the files and the provider sign-ins are all on T3 Code's computer.
   isn't sent twice, a finished run gives its answer, an answer Top saved before the restart is
   delivered, and a cancel Top had started is carried out (a turn it never sent stays unsent). A
   session stays with the T3 Code environment it started on: paired with another one later, Top
-  refuses to carry it on there rather than start it again. An answer T3 Code refuses opens the
-  request again, and `task_respond` says why. Cancel stops only the task's own run (`run.interrupt`, or takes it out of the queue), never
+  refuses to carry it on there rather than start it again. An answer T3 Code refuses, or never
+  confirms while it still waits, opens the request again, and `task_respond` says why; one answered
+  in T3 Code first wins. Cancel stops only the task's own run (`run.interrupt`, or takes it out of the queue), never
   another thread; like T3 Code's own Stop, that also stops background work still running in the
   session's thread. A stop T3 Code doesn't confirm in time leaves the task cancelled with a note that it
   may still be running there. A run someone stops in T3 Code fails the task, saying so. An expired or

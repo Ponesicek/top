@@ -16,6 +16,7 @@ import {
   type T3Project,
   T3Refused,
   T3Unreachable,
+  threadKnown,
 } from "./t3api.ts";
 
 export const T3CODE = "t3code";
@@ -42,6 +43,7 @@ const NOT_CONNECTED =
   "T3 Code isn't connected to Top. On the daemon's computer run `top t3code connect <T3 Code's address>` with a pairing code from that T3 Code, then try again.";
 const RECONNECT_FOR_MS = 10 * 60_000;
 const REPLY_MS = 60_000;
+const SETTLE_MS = 10_000;
 const TERMINAL_RUN = new Set(["completed", "failed", "cancelled", "interrupted", "rolled_back"]);
 const ACTIVE_RUN = new Set(["starting", "running", "waiting"]);
 const SETTLED_ITEM = new Set(["completed", "failed", "cancelled", "interrupted"]);
@@ -128,6 +130,8 @@ export type T3CodeConfig = {
   readonly reconnectForMs?: number | undefined;
   /** How long a socket may go without answering a request, or without catching up a thread's stream, before Top drops it. */
   readonly replyMs?: number | undefined;
+  /** How long a cancelled turn that may have been sent before a restart gets to show up in T3 Code before it counts as unsent. */
+  readonly settleMs?: number | undefined;
 };
 
 export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
@@ -200,7 +204,7 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
         throw new HarnessUnavailable(
           `This session belongs to the T3 Code environment it started on (${environment}), and Top is now paired with another one (${cfg.label}), so nothing was sent there. Pair Top with that one again to carry on.`,
         );
-      return openThread(cfg, spec, emit, { verify, reconnectForMs, replyMs: config.replyMs ?? REPLY_MS });
+      return openThread(cfg, spec, emit, { verify, reconnectForMs, replyMs: config.replyMs ?? REPLY_MS, settleMs: config.settleMs ?? SETTLE_MS });
     },
   };
 }
@@ -221,7 +225,7 @@ async function openThread(
   cfg: T3Config,
   spec: OpenSpec,
   emit: (event: HarnessEvent) => void,
-  options: { readonly verify: (cfg: T3Config) => Promise<unknown>; readonly reconnectForMs: number; readonly replyMs: number },
+  options: { readonly verify: (cfg: T3Config) => Promise<unknown>; readonly reconnectForMs: number; readonly replyMs: number; readonly settleMs: number },
 ) {
   const origin = cfg.url;
   const threadId = spec.resume ?? `top-${spec.session}`;
@@ -239,6 +243,7 @@ async function openThread(
   const sentMessages = new Set<string>();
   let current: Current | undefined;
   let sending: Promise<unknown> | undefined;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, options.settleMs));
 
   const exit = (error: string) => {
     if (exited || closed) return;
@@ -298,20 +303,28 @@ async function openThread(
    */
   const request = async (tag: string, payload: unknown, stopped?: () => boolean): Promise<unknown> => {
     let sent = false;
+    let why = "no answer yet";
     const since = Date.now();
+    // One window for the whole request, across reconnecting, backing off and waiting for the reply.
+    const left = () => options.reconnectForMs - (Date.now() - since);
     for (let tries = 1; ; tries++) {
       const s = await connect();
       if (!sent && stopped?.()) throw new StoppedBeforeSend();
+      if (left() <= 0)
+        throw new Error(`T3 Code didn't answer ${tag} for ${duration(options.reconnectForMs)} (${why}). Its thread ${threadId} may still be running there.`);
       try {
         const asked = s.request(tag, payload);
         let timer: NodeJS.Timeout | undefined;
         const reply = await Promise.race([
           asked,
           new Promise((_, reject) => {
-            timer = setTimeout(() => {
-              s.close();
-              reject(new T3Unreachable(`T3 Code didn't answer ${tag} in ${duration(options.replyMs)}.`));
-            }, options.replyMs);
+            timer = setTimeout(
+              () => {
+                s.close();
+                reject(new T3Unreachable(`T3 Code didn't answer ${tag} in time.`));
+              },
+              Math.min(options.replyMs, left()),
+            );
           }),
         ]).finally(() => clearTimeout(timer));
         // Reachable again only once T3 Code answers, not when a socket merely opens.
@@ -320,13 +333,9 @@ async function openThread(
       } catch (error) {
         if (!(error instanceof T3NotSent)) sent = true;
         if (!(error instanceof T3Unreachable) || closed) throw error;
-        // Each request has its own window too: a thread's stream catching up says nothing about this request.
-        if (Date.now() - since >= options.reconnectForMs)
-          throw new Error(
-            `T3 Code didn't answer ${tag} for ${duration(options.reconnectForMs)} (${error.message}). Its thread ${threadId} may still be running there.`,
-          );
-        // The reconnect window, not a count, ends this: it holds until T3 Code answers.
-        await new Promise((resolve) => setTimeout(resolve, Math.min(250 * tries, 5_000)));
+        why = error.message;
+        // The window, not a count, ends this; a thread's stream catching up says nothing about this request.
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(250 * tries, 5_000, left()))));
       }
     }
   };
@@ -589,14 +598,9 @@ async function openThread(
       /** Sends the turn unless a stop came first; false when it didn't. */
       const send = async () => {
         if (!threadExists && turn.followOnly) {
-          // A launch may have reached T3 Code before Top restarted: look for its thread rather than launch it.
-          const found = await request("orchestration.getThreadProjection", { threadId }).then(
-            () => true,
-            (error: unknown) => {
-              if (error instanceof T3Refused) return false;
-              throw error;
-            },
-          );
+          // A launch may have reached T3 Code before Top restarted, or still be on its way: look for its thread, twice
+          // with a pause between, rather than launch it. Only T3 Code's own "thread_not_found" counts as absent.
+          const found = (await threadKnown(origin, cfg.token, threadId)) || (await settle().then(() => threadKnown(origin, cfg.token, threadId)));
           if (!found) return false;
           threadExists = true;
           emit({ type: "session", externalId: threadId });
@@ -625,7 +629,12 @@ async function openThread(
           emit({ type: "session", externalId: threadId, model: selection.model });
           // A turn sent before a restart is already there; its key keeps a second send from adding it again.
         } else if (!sentMessages.has(messageId) && ![...runs.values()].some((r) => r.userMessageId === messageId)) {
-          if (mine.stopped || turn.followOnly) return false;
+          if (mine.stopped) return false;
+          if (turn.followOnly) {
+            // Not there yet: give a send that was on its way when Top stopped time to land, then look again.
+            await settle();
+            return sentMessages.has(messageId) || [...runs.values()].some((r) => r.userMessageId === messageId);
+          }
           const sent = command(
             {
               type: "message.dispatch",
@@ -705,9 +714,10 @@ async function openThread(
       try {
         await command({ type: "runtime-request.respond", commandId: `top:answer:${requestId}:${version}`, threadId, requestId, answers });
       } catch (error) {
-        // Refused by T3 Code: the request waits again in Top. Anything else is the connection, which ends the task anyway.
-        if (error instanceof T3Refused) throw error;
-        emit({ type: "log", kind: "error", text: `T3 Code didn't take the answer: ${message(error)}` });
+        // Refused, or never confirmed while T3 Code still waits on it: the request waits again in Top.
+        const still = [...items.values()].find((i) => i.type === "user_input_request" && i.requestId === requestId);
+        if (error instanceof T3Refused || still?.status === "waiting") throw error;
+        emit({ type: "log", kind: "error", text: `T3 Code didn't confirm the answer, but no longer waits on it: ${message(error)}` });
       }
     },
     close: async () => {

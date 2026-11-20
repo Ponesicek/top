@@ -32,7 +32,7 @@ async function setup(options: { dir?: string; t3?: FakeT3 } = {}): Promise<Setup
     await writeT3Config(file, { url: t3.origin, token: t3.token(), environmentId: "env-1", label: "fake", serverVersion: "0.0.0-fake", connectedAt: "now" });
   const h = await harness({
     dir,
-    harnesses: [t3codeAdapter({ file, reconnectForMs: 3_000, replyMs: 1_000 })],
+    harnesses: [t3codeAdapter({ file, reconnectForMs: 3_000, replyMs: 1_000, settleMs: 200 })],
     context: true,
     taskCancelGraceMs: 2_000,
     gatherMs: 20,
@@ -376,7 +376,7 @@ test("an answer T3 Code refuses opens the request again, and a new answer goes t
   assert.equal(refused._tag, "Failure");
   assert.match(
     (refused as { failure: { message: string } }).failure.message,
-    /T3 Code refused the answer to request \d+: "blue" isn't an answer this takes\. The request is waiting again/,
+    /T3 Code didn't take the answer to request \d+: "blue" isn't an answer this takes\. The request is waiting again/,
   );
   await inState(s, asking.task.id, "waiting_for_input");
   const again = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
@@ -385,6 +385,68 @@ test("an answer T3 Code refuses opens the request again, and a new answer goes t
   assert.equal((await ended(s, asking.task.id)).result, 'answer: {"color":"red"}');
   const ids = s.t3.requests.filter((r) => r.payload.type === "runtime-request.respond").map((r) => r.payload.commandId);
   assert.equal(new Set(ids).size, 2, "a new answer is a new command, not the refused one replayed");
+});
+
+test("an answer given in T3 Code while Top's is on its way wins, and Top's late refusal reopens nothing", async () => {
+  const s = await setup();
+  const asking = await start(s, { prompt: "a question" });
+  await inState(s, asking.task.id, "waiting_for_input");
+  const input = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
+  s.t3.faults.respondDelayMs = 300;
+  const answering = s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Red"] } })));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Answered over there; the run carries on, so Top's refusal lands while the turn is still going.
+  const thread = `top-${asking.session.id}`;
+  const runId = s.t3.answerThere(thread, undefined);
+  await answering;
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.notEqual((await s.h.run(s.h.store.tasks.inputsOf(asking.task.id)))[0]!.state, "pending", "nothing waits again in Top");
+  assert.equal((await task(s, asking.task.id)).state, "running");
+  s.t3.finish(thread, runId, "answered over there");
+  assert.equal((await ended(s, asking.task.id)).result, "answered over there");
+});
+
+test("an answer T3 Code never confirms while it still waits opens the request again", async () => {
+  const s = await setup();
+  const asking = await start(s, { prompt: "a question" });
+  await inState(s, asking.task.id, "waiting_for_input");
+  const input = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
+  s.t3.faults.silentTypes.add("runtime-request.respond");
+  const unconfirmed = await s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Red"] } })));
+  assert.equal(unconfirmed._tag, "Failure");
+  assert.match(
+    (unconfirmed as { failure: { message: string } }).failure.message,
+    /didn't take the answer .*didn't answer orchestration\.dispatchCommand for 3s/,
+  );
+  await inState(s, asking.task.id, "waiting_for_input");
+  s.t3.faults.silentTypes.clear();
+  await s.h.run(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Blue"] } }));
+  assert.equal((await ended(s, asking.task.id)).result, 'answer: {"color":"Blue"}');
+});
+
+test("cancelling a task Top is just picking up again after a restart still stops it in T3 Code", async () => {
+  const first = await setup();
+  const running = await start(first, { prompt: "run forever" });
+  const thread = `top-${running.session.id}`;
+  await runIn(first, thread);
+  await inState(first, running.task.id, "running");
+  await first.h.close();
+  const second = await setup({ dir: first.dir, t3: first.t3 });
+  const cancelled = await second.h.run(second.tasks.cancel(second.h.bot, running.task.id));
+  assert.equal(cancelled.task.state, "cancelled");
+  assert.equal(second.t3.runsOf(thread)[0]!.status, "interrupted", "T3 Code's run was stopped, not just Top's record");
+});
+
+test("the cancel marker outlives pruning of a busy task's events", async () => {
+  const s = await setup();
+  await s.h.run(s.h.store.tasks.createSession({ id: "ses_p", bot: s.h.bot, harness: T3CODE, cwd: "/srv/app", model: null, options: {}, parent: null }));
+  await s.h.run(s.h.store.tasks.createTask({ id: "task_p", bot: s.h.bot, key: "kp", session: "ses_p", title: "p", prompt: "p", images: [] }, "running"));
+  await s.h.run(s.h.store.tasks.appendEvents([{ task: "task_p", bot: s.h.bot, at: 1, kind: "state", text: "cancelling" }]));
+  await s.h.run(
+    s.h.store.tasks.appendEvents(Array.from({ length: 30 }, (_, i) => ({ task: "task_p", bot: s.h.bot, at: i + 2, kind: "message" as const, text: `m${i}` }))),
+  );
+  await s.h.run(s.h.store.tasks.pruneEvents("task_p", 5));
+  assert.equal(await s.h.run(s.h.store.tasks.cancelRequested("task_p")), true);
 });
 
 test("a session stays with the T3 Code environment it started on, even after Top is paired with another", async () => {

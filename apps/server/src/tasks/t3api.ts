@@ -191,6 +191,19 @@ export async function listProjects(origin: string, token: string): Promise<reado
     .filter((p) => p.id && p.workspaceRoot);
 }
 
+/** Whether T3 Code has this thread: only its explicit "thread_not_found" counts as no; anything else is an error. */
+export async function threadKnown(origin: string, token: string, threadId: string): Promise<boolean> {
+  const response = await http(origin, `/api/orchestration/threads/${encodeURIComponent(threadId)}`, {
+    headers: { ...bearer(token), "x-t3-orchestration-protocol": String(T3_PROTOCOL) },
+  });
+  if (response.ok) return true;
+  const body = record(await json(response));
+  if (response.status === 404 && body.reason === "thread_not_found") return false;
+  if (response.status === 401)
+    throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential. Pair again with \`top t3code connect ${origin}\`.`);
+  throw new T3Unreachable(`T3 Code at ${origin} didn't say whether it has thread ${threadId} (HTTP ${response.status}).`);
+}
+
 /** A short-lived ticket for one socket, so the credential never goes into a socket URL. */
 async function rpcTicket(origin: string, token: string): Promise<string> {
   const response = await http(origin, "/api/auth/websocket-ticket/rpc", { method: "POST", headers: bearer(token) });
