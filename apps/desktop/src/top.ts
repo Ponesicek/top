@@ -233,6 +233,12 @@ export function pin(id: BotId) {
   if (!pins.includes(id)) setPins([...pins, id]);
 }
 
+/** Pinned bots in this order; the ids must be the pinned ones. */
+export function reorderPins(ids: readonly BotId[]) {
+  const pins = registry.get(pinsAtom);
+  if (ids.length === pins.length && ids.every((id) => pins.includes(id))) setPins([...ids]);
+}
+
 export function unpin(id: BotId) {
   const pins = registry.get(pinsAtom);
   if (pins.includes(id)) setPins(pins.filter((p) => p !== id));

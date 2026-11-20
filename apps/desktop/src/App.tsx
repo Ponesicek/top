@@ -113,7 +113,7 @@ export function App() {
           e.preventDefault();
           select(target.id);
         }
-      } else if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      } else if (e.altKey && !e.shiftKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
         const list = sidebarOrder();
         const i = list.findIndex((b) => String(b.id) === String(bot?.id));
         const next = list[(i + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length];

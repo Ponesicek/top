@@ -104,7 +104,12 @@ becomes a text file (`Ctrl+Shift+V` pastes it inline). The bot gets each file's 
 tools, and PNG, JPEG, GIF and WebP images as images too. They're kept in `~/.top/server/attachments`: an
 upload no message used goes after a day, the rest go with their bot.
 
-Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
+Drag a bot in the list to move it (on a touchscreen, hold it a moment first), or press `Alt+Shift+↑↓` on it, or use
+**Move up** / **Move down** in its right-click menu. The order is kept by the daemon, so every device shows it; a bot
+made later goes last. Pinned bots (**Pin to top** in the same menu) stay pinned on that device only, and reorder among
+themselves the same way.
+
+Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots (in the order shown), `Enter` sends (queues while busy), `Ctrl+Enter` steers,
 `Esc` stops, `Ctrl+Shift+E` shows the bot's files, `Ctrl+,` opens settings, `Ctrl+=` / `Ctrl+-` / `Ctrl+0`
 change the interface size (also in settings), `Ctrl+Shift+P` toggles the performance overlay.
 
