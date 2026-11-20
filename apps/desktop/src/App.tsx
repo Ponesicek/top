@@ -15,7 +15,7 @@ import { UpdatePopup } from "./components/UpdatePopup.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { readShowTools, saveShowTools } from "./display.ts";
-import { togglePanel, useBotFiles, usePanel, usePanelLayout } from "./files.ts";
+import { toggleFiles, useBotFiles, usePanel, usePanelLayout } from "./files.ts";
 import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
 import { conversation, markSeen, sidebarOrder, top, useBot, useClient, useRoster } from "./top.ts";
@@ -100,7 +100,7 @@ export function App() {
         setScale(e.key === "0" ? 1 : stepScale(scale, e.key === "-" ? -1 : 1));
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "e") {
         e.preventDefault();
-        togglePanel();
+        toggleFiles();
       } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === ",") {
         e.preventDefault();
         setSettingsOpen(true);
@@ -139,6 +139,7 @@ export function App() {
   const layout = usePanelLayout();
   const hasFiles = useBotFiles(bot?.id) !== undefined;
   const filesOpen = panel.open && !settingsOpen && !!bot && hasFiles;
+  const covered = filesOpen && layout.overlay;
 
   const summary = useBot(bot?.id);
   const seenId = summary?.id;
@@ -155,8 +156,11 @@ export function App() {
           filesOpen && !layout.overlay && "grid-cols-[280px_minmax(var(--chat-min),1fr)_auto]",
         )}
       >
-        <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
-        <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
+        {/* What the Files panel covers can't be reached with Tab behind it. */}
+        <div className="contents" inert={covered && layout.width >= innerWidth}>
+          <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
+        </div>
+        <main className="relative flex min-h-0 min-w-0 flex-col bg-background" inert={covered}>
           {!settingsOpen && !(bot && sync) && <div className="h-15 flex-none [-webkit-app-region:drag]" aria-hidden />}
           {settingsOpen ? (
             <Settings

@@ -52,6 +52,19 @@ export function usePanelLayout(): PanelLayout {
 }
 
 export const togglePanel = () => set({ open: !registry.get(panelAtom).open });
+
+export const FILES_TOGGLE_ID = "files-toggle";
+
+/** Closes the panel; when focus was in it, focus goes back to the button that opens it. */
+export function closeFiles() {
+  const active = document.activeElement;
+  const inside = !active || active === document.body || !!document.getElementById("files-panel")?.contains(active);
+  closePanel();
+  if (inside) requestAnimationFrame(() => document.getElementById(FILES_TOGGLE_ID)?.focus());
+}
+
+/** Ctrl+Shift+E and the Files button: open, or close the same way the panel's own close does. */
+export const toggleFiles = () => (registry.get(panelAtom).open ? closeFiles() : togglePanel());
 export const closePanel = () => set({ open: false });
 export const setPanelWidth = (width: number) => set({ width: Math.round(width) });
 

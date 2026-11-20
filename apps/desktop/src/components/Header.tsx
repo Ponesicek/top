@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { BotId, ConversationSync } from "@top/client";
 import { Files, WifiOff } from "lucide-react";
 import { memo, useEffect, useState } from "react";
-import { togglePanel, useBotFiles } from "../files.ts";
+import { FILES_TOGGLE_ID, toggleFiles, useBotFiles } from "../files.ts";
 import { cn } from "../lib/utils.ts";
 import { isWorking } from "../rows.ts";
 import { conversationAtom, useBot } from "../top.ts";
@@ -24,8 +24,6 @@ function Elapsed({ since }: { since: number }) {
   return <> · {s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}</>;
 }
 
-export const FILES_TOGGLE_ID = "files-toggle";
-
 /**
  * Shows and hides the Files panel. It sits at the window's top-right corner, over the header or the panel's, so it
  * stays in one place whether the panel is open or not.
@@ -34,13 +32,13 @@ export function FilesToggle({ bot, open }: { bot: BotId; open: boolean }) {
   const count = useBotFiles(bot)?.files.length;
   if (count === undefined) return null;
   return (
-    <div className="fixed top-0 right-[calc(var(--titlebar-inset)+1rem)] z-30 flex h-15 items-center narrow:right-2">
+    <div className="fixed top-0 right-[calc(var(--titlebar-inset)+1rem)] z-30 flex h-15 items-center narrow:right-[calc(var(--titlebar-inset)+0.5rem)]">
       <Tooltip content={`${open ? "Hide" : "Show"} files (Ctrl+Shift+E)`} side="bottom">
         <Button
           id={FILES_TOGGLE_ID}
           variant="ghost"
           className={cn("h-8 flex-none gap-1.5 px-2.5 narrow:h-11 narrow:min-w-11", open && "bg-foreground/7 text-foreground")}
-          onClick={togglePanel}
+          onClick={toggleFiles}
           aria-pressed={open}
           aria-expanded={open}
           aria-controls={open ? "files-panel" : undefined}

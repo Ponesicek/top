@@ -2,7 +2,7 @@ import type { BotFiles, BotId, FileView } from "@top/client";
 import { Check, ChevronLeft, Copy, ExternalLink, FolderOpen, Link, X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
-  closePanel,
+  closeFiles,
   dirOf,
   formatAgo,
   formatSize,
@@ -20,7 +20,6 @@ import {
 import { cn } from "../../lib/utils.ts";
 import { type PanelLayout, panelMax } from "../../panelLayout.ts";
 import { top } from "../../top.ts";
-import { FILES_TOGGLE_ID } from "../Header.tsx";
 import { Button } from "../ui/button.tsx";
 import { Tooltip } from "../ui/tooltip.tsx";
 import { FileIcon } from "./FileIcon.tsx";
@@ -50,19 +49,13 @@ function IconAction({ label, onClick, children, className }: { label: string; on
   );
 }
 
-/** Closes the panel and puts focus back on the button that opens it. */
-function close() {
-  closePanel();
-  requestAnimationFrame(() => document.getElementById(FILES_TOGGLE_ID)?.focus());
-}
-
 /** The panel's header; its right end stays clear for the Files button, which sits over it at the window's corner. */
 function PanelHeader({ children }: { children: React.ReactNode }) {
   return (
-    <header className="flex h-15 flex-none items-center gap-1 border-b pr-[calc(var(--titlebar-inset)+6rem)] pl-2 [-webkit-app-region:drag] narrow:pr-14 [&_button]:[-webkit-app-region:no-drag]">
+    <header className="@container flex h-15 flex-none items-center gap-1 border-b pr-[calc(var(--titlebar-inset)+5rem)] pl-2 [-webkit-app-region:drag] narrow:pr-[calc(var(--titlebar-inset)+4rem)] [&_button]:[-webkit-app-region:no-drag]">
       {children}
       <span className="flex-1" />
-      <IconAction label="Close files (Esc)" onClick={close} className="narrow:size-11">
+      <IconAction label="Close files (Esc)" onClick={closeFiles} className="narrow:size-11">
         <X size={17} />
       </IconAction>
     </header>
@@ -213,7 +206,7 @@ function FileViewer({ bot, path, files }: { bot: BotId; path: string; files: Bot
             {file ? `${formatSize(file.size)} · ${formatAgo(file.mtime)}` : "Removed"}
           </span>
         </div>
-        <span className="h-5 w-px flex-none bg-border" aria-hidden />
+        <span className="h-5 w-px flex-none bg-border @max-xs:hidden" aria-hidden />
         {files && (
           <IconAction label={copied === "path" ? "Copied" : "Copy path"} onClick={() => copy("path", localPath(files, path))}>
             {copied === "path" ? <Check size={16} /> : <Copy size={16} />}
@@ -221,7 +214,8 @@ function FileViewer({ bot, path, files }: { bot: BotId; path: string; files: Bot
         )}
         {url && (
           <>
-            <IconAction label={copied === "link" ? "Copied" : "Copy link"} onClick={() => copy("link", url)}>
+            {/* Under 320px there's no room for it beside Close and the Files button; Open in browser has the link too. */}
+            <IconAction label={copied === "link" ? "Copied" : "Copy link"} onClick={() => copy("link", url)} className="@max-xs:hidden">
               {copied === "link" ? <Check size={16} /> : <Link size={16} />}
             </IconAction>
             <IconAction label="Open in browser" onClick={() => window.open(url, "_blank", "noopener")}>
@@ -267,7 +261,7 @@ export const FilesPanel = memo(function FilesPanel({ bot, name, layout }: { bot:
       if (!overlay && !ref.current?.contains(document.activeElement)) return;
       e.preventDefault();
       e.stopPropagation();
-      close();
+      closeFiles();
     };
     addEventListener("keydown", onKey, { capture: true });
     return () => removeEventListener("keydown", onKey, { capture: true });
