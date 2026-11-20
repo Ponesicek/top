@@ -173,6 +173,7 @@ export class ConversationSync {
       Effect.map(this.#connection.request({ t: "history", bot: this.id, before: first.seq, limit: PAGE }), (page) => {
         this.#earlier = page.more;
         this.#merge(page.entries);
+        this.#retirePending(page.entries);
         this.#publish();
       }),
     );
@@ -187,6 +188,7 @@ export class ConversationSync {
           return page.more && lowest !== undefined ? [{ after: g.after, before: lowest }] : [];
         });
         this.#merge(page.entries);
+        this.#retirePending(page.entries);
         this.#publish();
       }),
     );
@@ -254,9 +256,11 @@ export class ConversationSync {
     return items;
   }
 
-  #retirePending() {
+  /** Drops sends the daemon has saved or queued: those in the newest entries, and in `merged`, history just loaded from anywhere. */
+  #retirePending(merged: readonly Entry[] = []) {
     if (!this.#pending.length) return;
     const known = new Set(this.#inbox.map((q) => q.requestId));
+    for (const entry of merged) if (entry.kind === "user" && entry.requestId) known.add(entry.requestId);
     for (let i = this.#entries.length - 1, n = 0; i >= 0 && n < 200; i--, n++) {
       const entry = this.#entries[i]!;
       if (entry.kind === "user" && entry.requestId) known.add(entry.requestId);
