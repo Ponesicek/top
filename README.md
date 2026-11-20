@@ -490,8 +490,8 @@ the Claude Code sign-in on this computer).
 
 Two harnesses run in their vendor's cloud, on the user's subscription, through the vendors' own CLIs
 and the sign-ins already on the daemon's computer: `codex-cloud` (`codex cloud`, which needs a ChatGPT
-sign-in) and `claude-cloud` (`claude --cloud`, which needs a claude.ai sign-in and the organization's
-`allow_remote_sessions` policy). No API key, API, SSH or machine of Top's own is involved. Neither is
+sign-in) and `claude-cloud` (`claude -p --cloud`, into a cloud session the user started, which needs a
+claude.ai sign-in and the organization's `allow_remote_sessions` policy). No API key, API, SSH or machine of Top's own is involved. Neither is
 ever a default: a bot names one in `harness`. Neither takes a `cwd`, a `model`, images or questions;
 they work on what their options name, and the conversation's card shows that, with a cloud icon,
 instead of a folder. Following one holds none of the `TOP_MAX_TASKS` slots.
@@ -511,24 +511,26 @@ instead of a folder. Following one holds none of the `TOP_MAX_TASKS` slots.
   keeps being followed through a Top restart. A send whose outcome Top never heard (a restart in the
   middle, a timeout, an error that may have come after the task was made) fails, saying to check `codex cloud list`:
   Top never sends a task twice.
-- **Claude Code cloud** takes `repo` (`owner/name` on GitHub) and `branch`. Each new session starts from
-  a fresh `git clone --single-branch` of that branch in a private folder, never from the user's
-  checkouts, removed after. Claude Code cloud receives that branch's code and its full history,
-  including anything sensitive in older commits: it clones it from GitHub, or uploads it as a bundle
-  when the Claude GitHub App isn't on the repository. Top takes `CCR_FORCE_BUNDLE` out of its
-  environment, so it never asks for a bundle itself. The CLI can't report a session's progress or
-  result, so the task ends `handed_off` with the session's link (only `claude.ai/code` links are
-  taken). Continuing its session (`session`) queues one message into it (`claude -p --cloud <id>`):
-  a queued message, not a live steer, and its acknowledgement isn't completion. With no session id
-  printed, the task fails as unknown, saying to check claude.ai/code; it's never retried.
+- **Claude Code cloud** only sends to a session the user already started. Top can't start one: the
+  official CLI starts a cloud session only in an interactive terminal ("Without an interactive terminal,
+  --cloud can only send the prompt to an existing cloud session", Claude Code 2.1.329). The user starts
+  it on claude.ai/code, in the Claude app, or with `claude --cloud` in their own terminal, and gives the
+  bot its id (`session_…`, `cse_…`) or link for `cloud_session`; only `https://claude.ai/code/<id>`
+  links are taken, checked as URLs. Each task queues one message into it with `claude -p --cloud <id>
+  --output-format json`, the message on stdin, from an empty private folder, so Top uploads nothing from
+  this computer's checkouts. It's a queued message, not a live steer, and its acknowledgement isn't
+  completion: the task ends `handed_off`, since the CLI can't report a session's progress or result.
+  Continuing the Top session (`session`) sends the next message to the same cloud session. A refusal
+  (`ok: false`, an archived or missing session, a sign-in or policy error) fails the task; a send whose
+  outcome Top never heard fails as "may or may not have reached it", and is never resent.
 - **Stopping.** Neither CLI can stop a task, so `task_cancel` is refused and nothing is touched, and
   the bot's Stop leaves them be. Deleting a bot only makes Top stop following its cloud tasks, without
-  a word to the vendor. A Claude Code cloud task cut off by a restart fails, saying Top can't tell
+  a word to the vendor. A Claude Code cloud message cut off by a restart fails, saying Top can't tell
   whether it got there.
 - **Formats.** What `codex cloud` prints is read from its source at `rust-v0.171.0`
-  (`codex-rs/cloud-tasks`); what `claude --cloud` prints, from its documentation. The tests use
-  stand-ins for both CLIs and for `git`, and never reach either cloud. Fake bots get `fake-cloud`:
-  `call collar__task_start {"harness": "fake-cloud", "prompt": "fix it", "options": {"repo": "acme/app"}}`.
+  (`codex-rs/cloud-tasks`); what `claude -p --cloud` prints, from its documentation. The tests use
+  stand-ins for both CLIs, and never reach either cloud. Fake bots get `fake-cloud`:
+  `call collar__task_start {"harness": "fake-cloud", "prompt": "fix it", "options": {"cloud_session": "fake_1"}}`.
 
 ## Releases and updates
 

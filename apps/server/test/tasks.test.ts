@@ -12,6 +12,7 @@ import { WebSocket } from "ws";
 import { textOf as textOfContent } from "../src/messages.ts";
 import { HIDDEN } from "../src/secrets.ts";
 import type { StoredEntry } from "../src/store.ts";
+import { claudeCloudAdapter } from "../src/tasks/claudecloud.ts";
 import { codexCloudAdapter } from "../src/tasks/codexcloud.ts";
 import type { StartRequest, Tasks } from "../src/tasks/coordinator.ts";
 import { type FakeHarness, type FakeHarnessConfig, fakeHarness } from "../src/tasks/fake.ts";
@@ -737,7 +738,7 @@ test("a saved secret a harness echoes is hidden from the task's log, questions, 
 
 const FAKE_CODEX_CLOUD = join(import.meta.dirname, "fixtures", "fake-codex-cloud.mjs");
 const cloudStart = (s: Setup, request: Partial<StartRequest> & { prompt: string }) =>
-  start(s, { harness: "fake-cloud", options: { repo: "acme/app" }, ...request });
+  start(s, { harness: "fake-cloud", options: { cloud_session: "fake_1" }, ...request });
 
 test("a cloud harness hands work off: the task ends handed_off, not completed, holds no running slot, and the bot hears where it went", async () => {
   const cloud = fakeHarness({ stepMs: 30, where: "cloud" });
@@ -745,7 +746,7 @@ test("a cloud harness hands work off: the task ends handed_off, not completed, h
   const blocker = await start(s, { prompt: "run forever" });
   await inState(s, blocker.snapshot.task.id, "running");
   const handed = await cloudStart(s, { prompt: "fix the login bug" });
-  assert.equal(handed.snapshot.session.cwd, "github.com/acme/app @ main");
+  assert.equal(handed.snapshot.session.cwd, "fake.invalid/fake_1");
   const done = await ended(s, handed.snapshot.task.id);
   assert.equal(done.state, "handed_off", "it ran though the one running slot was taken");
   assert.match(done.result!, /^Sent to Fake cloud: https:\/\/example\.invalid\/fake\/1\. Top can't see its progress or result there\.$/);
@@ -762,8 +763,8 @@ test("a cloud harness takes no cwd or model, and cancel, steer and queue are ref
   const cloud = fakeHarness({ stepMs: 30, where: "cloud", capabilities: { resume: false } });
   const s = await setup({ extra: [cloud] });
   assert.match(
-    await failure(s, startE(s, { harness: "fake-cloud", prompt: "x", options: { repo: "a/b" }, cwd: "/tmp" })),
-    /^Fake cloud runs in its vendor's cloud and takes no `cwd`: name what it works on in its options \(repo\)\.$/,
+    await failure(s, startE(s, { harness: "fake-cloud", prompt: "x", options: { cloud_session: "fake_1" }, cwd: "/tmp" })),
+    /^Fake cloud runs in its vendor's cloud and takes no `cwd`: name what it works on in its options \(cloud_session\)\.$/,
   );
   const running = await cloudStart(s, { prompt: "run forever" });
   const id = running.snapshot.task.id;
@@ -789,7 +790,9 @@ test("deleting a bot lets go of its cloud tasks without a word to the vendor", a
   const cloud = fakeHarness({ stepMs: 30, where: "cloud" });
   const s = await setup({ bots: ["Atlas", "Juniper"], extra: [cloud] });
   const juniper = s.h.bots[1]!;
-  const mine = await s.h.run(s.tasks.start({ bot: juniper, key: "j-cloud", harness: "fake-cloud", prompt: "run forever", options: { repo: "a/b" } }));
+  const mine = await s.h.run(
+    s.tasks.start({ bot: juniper, key: "j-cloud", harness: "fake-cloud", prompt: "run forever", options: { cloud_session: "fake_1" } }),
+  );
   await inState(s, mine.snapshot.task.id, "running");
   await s.h.run(s.h.daemon.deleteBot(juniper));
   await until("Juniper's tasks to go", async () => (await s.h.run(s.h.store.tasks.task(mine.snapshot.task.id))) === undefined);
@@ -822,13 +825,13 @@ test("the receipt of a cloud task says it's in the cloud, with what it works on"
     s.h.daemon.submit(
       s.h.bot,
       "go",
-      'call collar__task_start {"harness": "fake-cloud", "prompt": "fix it", "options": {"repo": "acme/app"}}',
+      'call collar__task_start {"harness": "fake-cloud", "prompt": "fix it", "options": {"cloud_session": "fake_1"}}',
       "followUp",
       null,
     ),
   );
   const entry = await until("the tool result", async () => (await s.h.entries()).find((e) => e.kind === "tool" && e.message.toolName === "collar__task_start"));
-  assert.deepEqual((toWire(entry) as { agent?: unknown }).agent, { title: "fix it", harness: "Fake cloud", cwd: "github.com/acme/app @ main", where: "cloud" });
+  assert.deepEqual((toWire(entry) as { agent?: unknown }).agent, { title: "fix it", harness: "Fake cloud", cwd: "fake.invalid/fake_1", where: "cloud" });
   const result = JSON.parse(textOfContent((entry as Extract<StoredEntry, { kind: "tool" }>).message.content)) as { next: string };
   assert.match(result.next, /^Top hands it off in the background\./);
 });
@@ -900,4 +903,42 @@ test("S7 task_cancel on a handed-off task says the work may still be going on in
     cancelled: false,
     note: "It was handed off to its vendor's cloud, where the work may still be going on: Top can't stop it there.",
   });
+});
+
+test("Claude Code cloud through Top: a task names the user's session by link, keeps its bare id, and a continued session sends to it", async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "top-cl-tasks-"));
+  process.env.FAKE_CL_DIR = fixture;
+  try {
+    const s = await setup({ extra: [claudeCloudAdapter({ command: join(import.meta.dirname, "fixtures", "fake-claude-cloud.mjs") })] });
+    assert.match(await failure(s, startE(s, { harness: "claude-cloud", prompt: "fix it" })), /Bad options for Claude Code cloud: .*cloud_session/);
+    assert.match(
+      await failure(s, startE(s, { harness: "claude-cloud", prompt: "fix it", options: { cloud_session: "https://evil.example/code/session_01X" } })),
+      /Top can't start one: ask the user to start it/,
+    );
+    const first = await start(s, {
+      harness: "claude-cloud",
+      prompt: "fix the login bug",
+      options: { cloud_session: "https://claude.ai/code/session_01USER?from=cli" },
+    });
+    assert.equal(first.snapshot.session.cwd, "claude.ai/code/session_01USER");
+    assert.deepEqual(first.snapshot.session.options, { cloud_session: "session_01USER" });
+    assert.equal((await ended(s, first.snapshot.task.id)).state, "handed_off");
+    assert.equal((await s.h.run(s.h.store.tasks.session(first.snapshot.session.id)))?.externalId, "session_01USER");
+    const second = await start(s, { harness: undefined, prompt: "now add a test", session: first.snapshot.session.id });
+    assert.equal((await ended(s, second.snapshot.task.id)).state, "handed_off");
+    const sent = readFileSync(join(fixture, "calls.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { args: string[]; message?: string })
+      .filter((c) => c.args.includes("-p"));
+    assert.deepEqual(
+      sent.map((c) => [c.args[2], c.message]),
+      [
+        ["session_01USER", "fix the login bug"],
+        ["session_01USER", "now add a test"],
+      ],
+    );
+  } finally {
+    delete process.env.FAKE_CL_DIR;
+  }
 });

@@ -16,10 +16,14 @@ export function stripAnsi(text: string): string {
   return text.replace(ANSI, "");
 }
 
+/** Tests only: runs once a private folder is made, before what uses it, so a test can act in between. */
+export const testHooks: { prepared?: ((dir: string) => Promise<void>) | undefined } = {};
+
 /** A folder only the daemon's user can read, for a CLI to run in: never the user's checkout. Gone after `use`. */
 export async function inPrivateDir<T>(prefix: string, use: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), `top-${prefix}-`));
   try {
+    await testHooks.prepared?.(dir);
     return await use(dir);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -49,12 +53,15 @@ export type RunOptions = {
   readonly onOutput?: ((stdout: string, stderr: string) => void) | undefined;
   /** Its own process group, so a signal meant for the daemon's (a Ctrl-C) doesn't stop it halfway through a send. */
   readonly detached?: boolean | undefined;
+  /** Asked last, after all setup and just before the process starts: true leaves it unstarted (`skipped`). */
+  readonly skip?: (() => boolean) | undefined;
 };
 
 const MAX_OUTPUT = 1_000_000;
 
 /** Runs a CLI to its end, or its time limit (then SIGTERM, SIGKILL after 5 s). Never throws. */
 export function runCli(path: string, args: readonly string[], options: RunOptions): Promise<Ran> {
+  if (options.skip?.()) return Promise.resolve(SKIPPED);
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";

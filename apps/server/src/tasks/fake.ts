@@ -14,7 +14,7 @@ export type FakeHarnessConfig = {
   readonly failOpen?: string;
   readonly closed?: () => void;
   readonly label?: string;
-  /** "cloud": takes no `cwd`, works on its `repo` option, and only hands work off (its turns end `handed_off`). */
+  /** "cloud": takes no `cwd`, sends to its `cloud_session` option, and only hands work off (its turns end `handed_off`). */
   readonly where?: Where;
 };
 
@@ -59,13 +59,13 @@ export function fakeHarness(config: FakeHarnessConfig = {}): FakeHarness {
         }
       : { ...ALL, ...config.capabilities },
     options: cloud
-      ? Type.Object({ repo: Type.String({ description: "Testing only: a repository name." }) }, { additionalProperties: false })
+      ? Type.Object({ cloud_session: Type.String({ description: "Testing only: a cloud session's id." }) }, { additionalProperties: false })
       : Type.Object({ speed: Type.Optional(Type.Number({ minimum: 0, description: "Testing only." })) }, { additionalProperties: false }),
     ...(cloud
       ? {
           locate: async (cwd: string | undefined, start: { readonly options: Readonly<Record<string, unknown>> }) => {
             if (cwd !== undefined) throw new Error("Fake cloud takes no `cwd`.");
-            return { cwd: `github.com/${String(start.options.repo)} @ main` };
+            return { cwd: `fake.invalid/${String(start.options.cloud_session)}` };
           },
         }
       : {}),
