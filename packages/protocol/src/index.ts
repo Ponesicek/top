@@ -135,10 +135,11 @@ export const AskReply = Schema.Union([
 ]);
 export type AskReply = typeof AskReply.Type;
 
-export const TASK_STATES = ["queued", "starting", "running", "waiting_for_input", "completed", "failed", "cancelled"] as const;
+/** `handed_off`: given to a cloud harness that Top can't follow, so how it goes there is unknown to Top. It isn't `completed`. */
+export const TASK_STATES = ["queued", "starting", "running", "waiting_for_input", "completed", "failed", "cancelled", "handed_off"] as const;
 export const TaskState = Schema.Literals(TASK_STATES);
 export type TaskState = typeof TaskState.Type;
-export const ENDED_TASK_STATES: readonly TaskState[] = ["completed", "failed", "cancelled"];
+export const ENDED_TASK_STATES: readonly TaskState[] = ["completed", "failed", "cancelled", "handed_off"];
 export const taskEnded = (state: TaskState) => ENDED_TASK_STATES.includes(state);
 
 export const TaskQuestionOption = Struct({ label: Schema.String, description: Optional(Schema.String) });
@@ -175,6 +176,8 @@ export const AgentSpawn = Struct({
   harness: Schema.String,
   cwd: Schema.String,
   model: Optional(Schema.String),
+  /** Set for a harness in its vendor's cloud: `cwd` then names the repository or environment there, not a folder. */
+  where: Optional(Schema.Literal("cloud")),
 });
 export type AgentSpawn = typeof AgentSpawn.Type;
 

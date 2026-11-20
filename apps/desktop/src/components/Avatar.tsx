@@ -1,5 +1,5 @@
 import type { BotStatus } from "@top/client";
-import { memo } from "react";
+import { type CSSProperties, memo } from "react";
 import { cn } from "../lib/utils.ts";
 
 const HUES = {
@@ -157,6 +157,23 @@ const SIZES = {
   lg: "size-14",
 } as const;
 
+export type AvatarMotion = "calm" | "pondering" | "busy" | "strained" | "down";
+
+const MOTIONS: Record<BotStatus, AvatarMotion> = {
+  idle: "calm",
+  thinking: "pondering",
+  tool: "busy",
+  retrying: "strained",
+  failed: "down",
+};
+
+export const avatarMotion = (status: BotStatus | undefined): AvatarMotion | undefined => (status ? MOTIONS[status] : undefined);
+
+export function avatarRhythm(seed: string): { phase: number; lean: 1 | -1 } {
+  const r = random(seed, 29);
+  return { phase: Math.round(r() * 100) / 100, lean: r() < 0.5 ? -1 : 1 };
+}
+
 export const Avatar = memo(function Avatar({
   name,
   avatar,
@@ -167,33 +184,46 @@ export const Avatar = memo(function Avatar({
 }: {
   name: string;
   avatar?: number | undefined;
-  status?: BotStatus;
+  status?: BotStatus | undefined;
   size?: keyof typeof SIZES;
   title?: string;
   className?: string;
 }) {
   const seed = avatarSeed(name, avatar);
   const { body, eyes } = lookFor(seed);
+  const motion = avatarMotion(status);
+  const rhythm = motion && avatarRhythm(seed);
   return (
     <span
       className={cn(
-        "relative flex-none select-none [--avatar-body:var(--hue)] [--avatar-eye:#fff] [filter:var(--avatar-filter)] in-data-[avatars=mono]:[--avatar-body:var(--color-foreground)] in-data-[avatars=mono]:[--avatar-eye:var(--hue)]",
+        "avatar relative flex-none select-none [--avatar-body:var(--hue)] [--avatar-eye:#fff] [filter:var(--avatar-filter)] in-data-[avatars=mono]:[--avatar-body:var(--color-foreground)] in-data-[avatars=mono]:[--avatar-eye:var(--hue)]",
         SIZES[size],
         HUES[botHue(seed)],
         className,
       )}
+      data-state={motion}
+      style={
+        rhythm &&
+        ({
+          "--avatar-phase": rhythm.phase,
+          "--avatar-lean": rhythm.lean,
+          "--avatar-gaze": `${n((eyes.xs[0] + eyes.xs[1]) / 2)}% ${eyes.y}%`,
+        } as CSSProperties)
+      }
       aria-hidden
       title={title}
     >
-      <svg viewBox="0 0 100 100" className="size-full overflow-visible" aria-hidden="true">
-        <g className="fill-(--avatar-body)">
+      <span className="avatar-body relative block size-full">
+        <svg viewBox="0 0 100 100" className="block size-full overflow-visible fill-(--avatar-body)" aria-hidden="true">
           <BodyShape body={body} />
-        </g>
-        <g className="fill-(--avatar-eye)">
-          <Eye kind={eyes.kind} x={eyes.xs[0]} y={eyes.y} s={eyes.size} />
-          <Eye kind={eyes.kind} x={eyes.xs[1]} y={eyes.y} s={eyes.size} />
-        </g>
-      </svg>
+        </svg>
+        <span className="avatar-eyes absolute inset-0">
+          <svg viewBox="0 0 100 100" className="avatar-lids block size-full overflow-visible fill-(--avatar-eye)" aria-hidden="true">
+            <Eye kind={eyes.kind} x={eyes.xs[0]} y={eyes.y} s={eyes.size} />
+            <Eye kind={eyes.kind} x={eyes.xs[1]} y={eyes.y} s={eyes.size} />
+          </svg>
+        </span>
+      </span>
       {status === "failed" && (
         <i className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-[2.5px] border-(--avatar-ring,var(--color-sidebar)) bg-destructive" />
       )}

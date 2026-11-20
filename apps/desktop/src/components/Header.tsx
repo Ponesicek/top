@@ -76,7 +76,7 @@ export const Header = memo(function Header({
         )}
       >
         <div className="flex min-w-0 items-center gap-2.75">
-          <Avatar name={name} avatar={avatar} size="sm" />
+          <Avatar name={name} avatar={avatar} status={bot?.status} size="sm" />
           <div className="flex min-w-0 flex-col">
             <h1 className="m-0 text-base leading-tight font-heading tracking-name">{name}</h1>
             <span

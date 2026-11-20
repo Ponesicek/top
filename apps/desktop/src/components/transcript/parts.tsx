@@ -66,7 +66,7 @@ function ErrorNote({ children, className }: { children: React.ReactNode; classNa
   return (
     <div
       className={cn(
-        "mt-2 inline-flex items-center gap-1.5 rounded-md bg-destructive-surface px-2.5 py-1.25 text-meta leading-snug font-label text-destructive-foreground",
+        "mt-2 flex w-fit items-center gap-1.5 rounded-md bg-destructive-surface px-2.5 py-1.25 text-meta leading-snug font-label text-destructive-foreground",
         className,
       )}
     >
