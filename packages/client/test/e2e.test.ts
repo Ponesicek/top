@@ -126,9 +126,10 @@ const untilSummary = (top: TopClient, id: number, predicate: (b: BotSummary) => 
 const entries = (s: ConversationSnapshot) => s.items.flatMap((i) => (i.kind === "entry" ? [i.entry] : []));
 const ofKind = <K extends Entry["kind"]>(s: ConversationSnapshot, kind: K) => entries(s).filter((e): e is Extract<Entry, { kind: K }> => e.kind === kind);
 
-async function connect(daemon: Daemon, botIndex: number) {
+async function connect(daemon: Daemon, botIndex: number, opened?: TopClient[]) {
   const top = new TopClient({ url: daemon.url });
   cleanup.push(() => top.close());
+  opened?.push(top);
   await until(top.subscribe, top.getSnapshot, (s) => s.ready, "the roster");
   const id = top.getSnapshot().bots[botIndex]!.id;
   const bot = top.conversation(id);
@@ -476,6 +477,41 @@ test("bots made and deleted from the app: every client sees it, and a restart ke
   const d = new TopClient({ url: daemon.url });
   cleanup.push(() => d.close());
   assert.equal((await until(d.subscribe, d.getSnapshot, (s) => s.ready, "the empty roster")).bots.length, 0);
+});
+
+test("bots reordered on one client are in that order on every client, and stay so after a restart", async () => {
+  const daemon = new Daemon();
+  // This test's daemon and clients stop when it ends, not at the end of the file.
+  const opened: TopClient[] = [];
+  try {
+    await daemon.start();
+    const a = await connect(daemon, 0, opened);
+    const b = await connect(daemon, 0, opened);
+    const ids = a.top.getSnapshot().bots.map((bot) => bot.id);
+    assert.ok(ids.length >= 3, "the fake bots");
+    const order = [ids[2]!, ids[0]!, ...ids.slice(3), ids[1]!];
+    const done = a.top.setBotOrder(order);
+    assert.deepEqual(
+      a.top.getSnapshot().bots.map((bot) => bot.id),
+      order,
+      "in order here at once",
+    );
+    await done;
+    await until(b.top.subscribe, b.top.getSnapshot, (s) => s.bots.map((bot) => bot.id).join() === order.join(), "the order on the other client");
+
+    await daemon.kill();
+    await daemon.start();
+    const c = new TopClient({ url: daemon.url });
+    opened.push(c);
+    const roster = (await until(c.subscribe, c.getSnapshot, (s) => s.ready, "the roster after restart")).bots;
+    assert.deepEqual(
+      roster.map((bot) => bot.id),
+      order,
+    );
+  } finally {
+    for (const client of opened) client.close();
+    await daemon.kill();
+  }
 });
 
 test("MCP servers set up from the app: every client sees them, bots get them only when assigned", async () => {

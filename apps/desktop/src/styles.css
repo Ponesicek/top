@@ -573,6 +573,25 @@
   cursor: col-resize;
   user-select: none;
 }
+
+.reordering,
+.reordering * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+[data-dragging] {
+  position: relative;
+  z-index: 10;
+  border-radius: 1rem;
+  background: var(--color-sidebar);
+  box-shadow: var(--shadow-popover-value);
+  scale: 1.02;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-dragging] {
+    scale: none;
+  }
+}
 .resizing iframe {
   pointer-events: none;
 }

@@ -1,6 +1,6 @@
 import type { ConversationSnapshot, Entry, TranscriptItem, WaitingTask } from "@top/client";
 import { describe, expect, it } from "vitest";
-import { committedRows, displayRows, tailRows, taskQuestionRows } from "../src/rows.ts";
+import { committedRows, displayRows, tailRows, taskQuestionRows, withTail } from "../src/rows.ts";
 
 const BOT = 3;
 const ASK = "collar__ask_permission";
@@ -299,5 +299,45 @@ describe("citation markers OpenAI left raw", () => {
   it("still shows an answer that was only a marker, with the pages read", () => {
     const rows = displayRows(committedRows([asked(), researched(opened(RELEASES)), entry({ kind: "assistant", text: "citeturn1view0" })]), false);
     expect(rows.at(-1)).toMatchObject({ kind: "assistant", text: "", pagesRead: [{ url: RELEASES, title: "releases" }] });
+  });
+});
+
+describe("a message you send", () => {
+  const reply = () => entry({ kind: "assistant", text: "Done." });
+  const pending = (requestId: string, text: string, state = "sending") => ({ requestId, text, state, createdAt: 5, attempts: 0 });
+  const snapshotOf = (items: TranscriptItem[], sent: ReturnType<typeof pending>[], inbox: unknown[] = []) =>
+    ({ items, inbox, pending: sent }) as unknown as ConversationSnapshot;
+  const rowsOf = (s: ConversationSnapshot, working = false) => displayRows(withTail(committedRows(s.items), tailRows(s, working)), false);
+
+  it("keeps one row, with one key, from sending to queued to saved, so it isn't drawn again", () => {
+    const history = [entry({ kind: "user", text: "earlier" }), reply()];
+    const sending = rowsOf(snapshotOf(history, [pending("r1", "deploy web")]));
+    const queued = rowsOf(snapshotOf(history, [], [{ requestId: "r1", text: "deploy web", mode: "followUp", at: 5 }]), true);
+    const saved = rowsOf(snapshotOf([...history, entry({ kind: "user", text: "deploy web", requestId: "r1" })], []), true);
+    const keyOf = (rows: ReturnType<typeof rowsOf>) => rows.find((r) => r.kind === "user" && r.text === "deploy web")?.key;
+    expect(keyOf(sending)).toBe("mr1");
+    expect(keyOf(queued)).toBe("mr1");
+    expect(keyOf(saved)).toBe("mr1");
+  });
+
+  it("shows once while the daemon has saved it and this client still has it as sent: never lost, never doubled", () => {
+    const history = [entry({ kind: "user", text: "earlier" }), reply()];
+    const both = snapshotOf(
+      [...history, entry({ kind: "user", text: "deploy web", requestId: "r1" })],
+      [pending("r1", "deploy web", "accepted"), pending("r2", "and email the team")],
+    );
+    const users = rowsOf(both).filter((r) => r.kind === "user");
+    expect(users.map((r) => [r.key, r.kind === "user" && r.state])).toEqual([
+      [expect.stringMatching(/^e/), undefined],
+      ["mr1", undefined],
+      ["mr2", "sending"],
+    ]);
+    const keys = rowsOf(both).map((r) => r.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("a message saved without a request id, like one from before, keeps its sequence key", () => {
+    const rows = committedRows([entry({ kind: "user", text: "old" })]);
+    expect(rows[0]!.key).toMatch(/^e\d+$/);
   });
 });

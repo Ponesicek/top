@@ -163,9 +163,7 @@ export function McpServers() {
         }
       >
         {servers.length === 0 ? (
-          <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">
-            Give bots tools from other apps and services. Each bot gets only the servers you choose.
-          </p>
+          <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">No servers yet.</p>
         ) : (
           servers.map((server) => <ServerRow key={server.id} server={server} bots={bots} onEdit={() => openEditor(server.id)} />)
         )}

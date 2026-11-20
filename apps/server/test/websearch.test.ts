@@ -1,7 +1,7 @@
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { BotError } from "@top/protocol";
-import * as Effect from "effect/Effect";
 import { afterEach, assert, beforeEach, expect, test, vi } from "vitest";
 import type { TopAssistantMessage, TranscriptMessage } from "../src/messages.ts";
 import { captureWebSearch, permanentFailure, searchRefusal, searchStep, WEB_SEARCH_SECTION, withWebSearch } from "../src/websearch.ts";
@@ -143,9 +143,8 @@ const answers = async (h: Harness) => (await h.entries()).filter((e) => e.kind =
 const tools = (request: Record<string, unknown> | undefined) => (request?.tools as { type: string }[] | undefined) ?? [];
 const items = (request: Record<string, unknown> | undefined) => (request?.input as { type?: string; id?: string; role?: string }[] | undefined) ?? [];
 
-test("signed in with ChatGPT, a bot that may search asks OpenAI's web search on the public Responses route, keeps the search and its citations, and sends it back next time", async () => {
+test("signed in with ChatGPT, a bot asks OpenAI's web search on the public Responses route, keeps the search and its citations, and sends it back next time", async () => {
   const h = await harness({ model: openai(), webSearch: true });
-  await h.run(h.daemon.setWebSearch(h.bot, true));
   let release!: () => void;
   replies.push(() => sse(searched(new Promise((resolve) => (release = resolve)))));
   await h.run(h.daemon.submit(h.bot, "search-first", "what is top?", "followUp", null));
@@ -199,26 +198,28 @@ test("signed in with ChatGPT, a bot that may search asks OpenAI's web search on 
   expect(tools(requests[2])).toEqual([{ type: "web_search" }]);
 });
 
-test("a bot that may not search doesn't offer it, but earlier searches still go back with their reasoning", async () => {
+test("every bot searches, also one made when search was a setting that stayed off, and its stored setting is left as it was", async () => {
   const h = await harness({ model: openai(), webSearch: true });
-  await h.run(h.daemon.setWebSearch(h.bot, true));
+  const stored = () => {
+    const db = new DatabaseSync(join(h.dir, "top.sqlite"), { readOnly: true });
+    try {
+      return db.prepare("SELECT web_search FROM bots WHERE id = ?").get(h.bot)?.web_search;
+    } finally {
+      db.close();
+    }
+  };
+  expect(stored()).toBe(0);
   replies.push(() => sse(searched()));
   await send(h, "what is top?");
-  await h.run(h.daemon.setWebSearch(h.bot, false));
-  expect(h.daemon.bots().find((b) => b.id === h.bot)?.webSearch).toBe(false);
-
-  replies.push(() => sse(plain("resp_2", "Sure.")));
-  await send(h, "and now?");
-  expect(tools(requests[1])).toEqual([]);
-  expect(requests[1]?.include ?? []).not.toContain("web_search_call.action.sources");
-  expect(items(requests[1]).flatMap((item) => (item.id ? [item.id] : []))).toEqual(["rs_1", "ws_1", "msg_1"]);
-  const latest = (await h.run(h.store.context(h.bot))).findLast((m) => m.role === "system");
-  expect(JSON.stringify(latest)).not.toContain("<web_search>");
+  expect(tools(requests[0])).toEqual([{ type: "web_search" }]);
+  const developer = JSON.stringify(items(requests[0]).filter((item) => item.role === "developer" || item.role === "system"));
+  expect(developer).toContain("<web_search>");
+  expect(stored()).toBe(0);
+  expect(h.daemon.bots()[0]).not.toHaveProperty("webSearch");
 });
 
 test("OpenAI refusing web search for the account fails the answer once, saying so, instead of answering without it", async () => {
   const h = await harness({ model: openai(), webSearch: true });
-  await h.run(h.daemon.setWebSearch(h.bot, true));
   const refusal = {
     error: {
       message: "This capability is not available for this account.",
@@ -242,7 +243,6 @@ test("OpenAI refusing web search for the account fails the answer once, saying s
 
 test("a search OpenAI says failed shows as failed, and the answer cites nothing", async () => {
   const h = await harness({ model: openai(), webSearch: true });
-  await h.run(h.daemon.setWebSearch(h.bot, true));
   replies.push(() =>
     sse([
       { type: "response.created", response: { id: "resp_f", status: "in_progress", output: [] } },
@@ -267,11 +267,8 @@ test("a search OpenAI says failed shows as failed, and the answer cites nothing"
   expect(wire).not.toHaveProperty("error");
 });
 
-test("bots on a model that can't search have nothing to switch, and answer as before", async () => {
+test("bots on a model that can't search answer as before", async () => {
   const h = await harness();
-  expect(h.daemon.bots()[0]).not.toHaveProperty("webSearch");
-  const refused = await h.run(Effect.flip(h.daemon.setWebSearch(h.bot, true)));
-  expect(refused).toBeInstanceOf(BotError);
   await send(h, "search the web for backoff");
   const wire = toWire((await answers(h))[0]!);
   assert.ok(wire?.kind === "assistant");
@@ -280,11 +277,8 @@ test("bots on a model that can't search have nothing to switch, and answer as be
   expect(requests).toHaveLength(0);
 });
 
-test("the fake model plays OpenAI's search through the same hooks, once it's switched on", async () => {
+test("the fake model plays OpenAI's search through the same hooks", async () => {
   const h = await harness({ webSearch: true });
-  expect(h.daemon.bots()[0]?.webSearch).toBe(false);
-  await h.run(h.daemon.setWebSearch(h.bot, true));
-  await until("the summary to show it", () => h.daemon.bots()[0]?.webSearch === true);
   await send(h, "search the web for retry backoff");
   const wire = toWire((await answers(h))[0]!);
   assert.ok(wire?.kind === "assistant");
@@ -296,9 +290,8 @@ test("the fake model plays OpenAI's search through the same hooks, once it's swi
   expect(failed.error).toMatch(/^OpenAI refused web search/);
 });
 
-test("compacting a bot that may search keeps search in the summary request, so it starts like the request before it", async () => {
+test("compacting a bot keeps search in the summary request, so it starts like the request before it", async () => {
   const h = await harness({ model: openai(), webSearch: true, compactAtTokens: 10 });
-  await h.run(h.daemon.setWebSearch(h.bot, true));
   replies.push(() => sse(searched()));
   await send(h, "what is top?");
   replies.push(() => sse(plain("resp_summary", "## Goal\nKnow what Top is.")));

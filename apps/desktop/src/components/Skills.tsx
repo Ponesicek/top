@@ -288,15 +288,11 @@ export function Skills() {
           </span>
         }
       >
-        <p className="m-0 px-4.5 py-3.5 text-meta leading-normal text-muted-foreground">
-          A skill is a folder with a <span className={PATH}>SKILL.md</span>. Shared skills are in <span className={cn(PATH, "break-all")}>{view.library}</span>:
-          every bot you switch one on for uses the same files, so a change to it (yours or a bot's) reaches all of them. A bot's own skills are in{" "}
-          <span className={PATH}>.agents/skills</span> in its folder, and take the place of a shared one with the same name. A bot uses only the skills you
-          switch on for it; type <span className={PATH}>/</span> in its message box to ask for one.
-          {refreshError && <span className="mt-1 block text-destructive-foreground">{refreshError}</span>}
-        </p>
+        {refreshError && <p className="m-0 px-4.5 py-3.5 text-meta leading-normal text-destructive-foreground">{refreshError}</p>}
         {empty && (
-          <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">No skills found yet. Add a folder of them, or put one in and press Rescan.</p>
+          <p className="m-0 px-4.5 py-3.5 text-meta text-muted-foreground">
+            No skills yet. Add a folder, or put one in <span className={cn(PATH, "break-all")}>{view.library}</span> and press Rescan.
+          </p>
         )}
         {packs.map(([folder, skills]) => (
           <SkillPack key={`pack:${folder}`} folder={folder} skills={skills} bots={bots} ofBot={ofBot} />

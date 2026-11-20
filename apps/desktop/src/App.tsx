@@ -1,14 +1,12 @@
 import type { BotId } from "@top/client";
 import { useCallback, useEffect, useState } from "react";
-import { type AvatarStyle, applyAvatarStyle, readAvatarStyle } from "./avatarStyle.ts";
-import { type ChatStyle, readChatStyle, readShowTools, saveChatStyle, saveShowTools } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { SignInGate } from "./components/ChatGPT.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { EditMenu } from "./components/EditMenu.tsx";
 import { Empty, EmptyCard } from "./components/Empty.tsx";
 import { FilesPanel } from "./components/files/FilesPanel.tsx";
-import { Header } from "./components/Header.tsx";
+import { FilesToggle, Header } from "./components/Header.tsx";
 import { PerfHud } from "./components/PerfHud.tsx";
 import { Settings } from "./components/Settings.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -16,7 +14,8 @@ import { Transcript } from "./components/Transcript.tsx";
 import { UpdatePopup } from "./components/UpdatePopup.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
-import { togglePanel, useBotFiles, usePanel } from "./files.ts";
+import { readShowTools, saveShowTools } from "./display.ts";
+import { toggleFiles, useBotFiles, usePanel, usePanelLayout } from "./files.ts";
 import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
 import { conversation, markSeen, sidebarOrder, top, useBot, useClient, useRoster } from "./top.ts";
@@ -58,20 +57,10 @@ export function App() {
   });
   const [hud, setHudState] = useState(readPerfHud);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [chatStyle, setChatStyleState] = useState<ChatStyle>(readChatStyle);
-  const setChatStyle = useCallback((style: ChatStyle) => {
-    setChatStyleState(style);
-    saveChatStyle(style);
-  }, []);
   const [showTools, setShowToolsState] = useState(readShowTools);
   const setShowTools = useCallback((on: boolean) => {
     setShowToolsState(on);
     saveShowTools(on);
-  }, []);
-  const [avatarStyle, setAvatarStyleState] = useState<AvatarStyle>(readAvatarStyle);
-  const setAvatarStyle = useCallback((style: AvatarStyle) => {
-    setAvatarStyleState(style);
-    applyAvatarStyle(style);
   }, []);
   const [scale, setScaleState] = useState<Scale>(readScale);
   const setScale = useCallback((next: Scale) => {
@@ -115,7 +104,7 @@ export function App() {
         setScale(e.key === "0" ? 1 : stepScale(scale, e.key === "-" ? -1 : 1));
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "e") {
         e.preventDefault();
-        togglePanel();
+        toggleFiles();
       } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === ",") {
         e.preventDefault();
         setSettingsOpen(true);
@@ -128,7 +117,7 @@ export function App() {
           e.preventDefault();
           select(target.id);
         }
-      } else if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      } else if (e.altKey && !e.shiftKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
         const list = sidebarOrder();
         const i = list.findIndex((b) => String(b.id) === String(bot?.id));
         const next = list[(i + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length];
@@ -151,8 +140,10 @@ export function App() {
 
   const sync = bot ? conversation(bot.id) : undefined;
   const panel = usePanel();
+  const layout = usePanelLayout();
   const hasFiles = useBotFiles(bot?.id) !== undefined;
   const filesOpen = panel.open && !settingsOpen && !!bot && hasFiles;
+  const covered = filesOpen && layout.overlay;
 
   const summary = useBot(bot?.id);
   const seenId = summary?.id;
@@ -163,31 +154,35 @@ export function App() {
 
   return (
     <TooltipProvider delay={500}>
-      <div className={cn("grid h-full grid-cols-[280px_1fr] narrow:grid-cols-[72px_1fr]", filesOpen && "grid-cols-[280px_1fr_auto]")}>
-        <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
-        <main className="relative flex min-h-0 min-w-0 flex-col bg-background">
+      <div
+        className={cn(
+          "relative grid h-full grid-cols-[280px_minmax(0,1fr)] [--chat-min:340px] [--sidebar-width:280px] narrow:grid-cols-[72px_minmax(0,1fr)]",
+          filesOpen && !layout.overlay && "grid-cols-[280px_minmax(var(--chat-min),1fr)_auto]",
+        )}
+      >
+        {/* What the Files panel covers can't be reached with Tab behind it. */}
+        <div className="contents" inert={covered && layout.width >= innerWidth}>
+          <Sidebar selected={bot?.id} onSelect={select} onNewBot={openNewBot} settingsOpen={settingsOpen} onOpenSettings={openSettings} />
+        </div>
+        <main className="relative flex min-h-0 min-w-0 flex-col bg-background" inert={covered}>
           {!settingsOpen && !(bot && sync) && <div className="h-15 flex-none [-webkit-app-region:drag]" aria-hidden />}
           {settingsOpen ? (
             <Settings
               perfHud={hud}
               onPerfHudChange={setPerfHud}
-              chatStyle={chatStyle}
-              onChatStyleChange={setChatStyle}
               showTools={showTools}
               onShowToolsChange={setShowTools}
-              avatarStyle={avatarStyle}
-              onAvatarStyleChange={setAvatarStyle}
               scale={scale}
               onScaleChange={setScale}
             />
           ) : bot && sync ? (
             <>
-              <Header sync={sync} name={bot.name} avatar={bot.avatar} filesOpen={filesOpen} />
+              <Header sync={sync} name={bot.name} avatar={bot.avatar} filesOpen={filesOpen && !layout.overlay} />
               <div
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
                 aria-hidden
               />
-              <Transcript key={String(bot.id)} sync={sync} style={chatStyle} showTools={showTools} />
+              <Transcript key={String(bot.id)} sync={sync} showTools={showTools} />
               <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
             </>
           ) : ready ? (
@@ -200,7 +195,8 @@ export function App() {
             <Empty>Waiting for the Top daemon…</Empty>
           )}
         </main>
-        {filesOpen && bot && <FilesPanel bot={bot.id} name={bot.name} />}
+        {filesOpen && bot && <FilesPanel bot={bot.id} name={bot.name} layout={layout} />}
+        {!settingsOpen && bot && <FilesToggle bot={bot.id} open={filesOpen} />}
         <NewBotDialog
           open={creating}
           onOpenChange={setCreating}

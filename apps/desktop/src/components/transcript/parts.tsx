@@ -1,18 +1,17 @@
 import type { BotSummary, Citation, ConversationSync, SkillUse, ToolOutcome, WebSearchStep } from "@top/client";
 import { AlertTriangle, Check, ChevronRight, CircleSlash, Globe, RotateCcw, ShieldCheck, Wrench } from "lucide-react";
-import { type ComponentProps, createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { cn } from "../../lib/utils.ts";
 import { withBotFiles } from "../../markdown.ts";
 import { jumpTo, messageParts } from "../../quotes.ts";
 import type { DisplayRow, Row, ToolEntry, ToolGroupRow } from "../../rows.ts";
 import { top, useBot, useClient } from "../../top.ts";
-import { Avatar } from "../Avatar.tsx";
 import { Badge } from "../ui/badge.tsx";
 import { Button } from "../ui/button.tsx";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible.tsx";
 
-export type UserRowData = Extract<Row, { kind: "user" }>;
-export type AssistantRowData = Extract<Row, { kind: "assistant" }>;
+type UserRowData = Extract<Row, { kind: "user" }>;
+type AssistantRowData = Extract<Row, { kind: "assistant" }>;
 
 export type BotIdentity = { readonly sync: ConversationSync; readonly name: string; readonly avatar: number | undefined };
 
@@ -27,11 +26,6 @@ export function useIdentity(): BotIdentity {
 
 export function useBotStatus(): BotSummary | undefined {
   return useBot(useIdentity().sync.id);
-}
-
-export function BotAvatar({ titled, ...props }: Omit<ComponentProps<typeof Avatar>, "name" | "avatar" | "title"> & { titled?: boolean }) {
-  const { name, avatar } = useIdentity();
-  return <Avatar name={name} avatar={avatar} {...(titled ? { title: name } : {})} {...props} />;
 }
 
 export type RowRenderer = (rows: readonly DisplayRow[], index: number) => React.ReactNode;
@@ -68,7 +62,7 @@ export function useElapsed(bot: BotSummary | undefined): number {
   return bot ? Math.max(0, Math.floor((Date.now() - bot.since) / 1000)) : 0;
 }
 
-export function ErrorNote({ children, className }: { children: React.ReactNode; className?: string | undefined }) {
+function ErrorNote({ children, className }: { children: React.ReactNode; className?: string | undefined }) {
   return (
     <div
       className={cn(
@@ -90,7 +84,7 @@ export function AnswerError({ error, className }: { error: string; className?: s
   );
 }
 
-export const chevron = "transition-transform duration-120 group-data-panel-open/disclosure:rotate-90";
+const chevron = "transition-transform duration-120 group-data-panel-open/disclosure:rotate-90";
 
 const OUTCOME_ICON: Record<ToolOutcome, typeof Check> = {
   interrupted: AlertTriangle,
@@ -108,7 +102,7 @@ const OUTCOME_LABEL: Record<ToolOutcome, string> = {
   stopped: "Stopped",
 };
 
-export function StepIcon({ className, children }: { className: string; children: React.ReactNode }) {
+function StepIcon({ className, children }: { className: string; children: React.ReactNode }) {
   return (
     <span className={cn("grid size-4.5 flex-none place-items-center rounded-full", className)} aria-hidden>
       {children}

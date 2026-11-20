@@ -186,18 +186,6 @@ export function useRoster(): readonly RosterBot[] {
   return useAtomValue(rosterAtom, (roster) => roster.bots);
 }
 
-const webSearchAtom = Atom.make((get): { readonly key: string; readonly on: ReadonlyMap<BotId, boolean> } => {
-  const bots = get(clientAtom).bots.flatMap((b) => (b.webSearch === undefined ? [] : [[b.id, b.webSearch] as const]));
-  const key = JSON.stringify(bots);
-  const previous = get.self<{ key: string; on: ReadonlyMap<BotId, boolean> }>();
-  if (Option.isSome(previous) && previous.value.key === key) return previous.value;
-  return { key, on: new Map(bots) };
-});
-
-export function useWebSearch(): ReadonlyMap<BotId, boolean> {
-  return useAtomValue(webSearchAtom, (state) => state.on);
-}
-
 export function useBot(id: BotId | undefined): BotSummary | undefined {
   return useClient((snapshot) => (id === undefined ? undefined : snapshot.bots.find((b) => b.id === id)));
 }
@@ -243,6 +231,12 @@ function setPins(next: readonly BotId[]) {
 export function pin(id: BotId) {
   const pins = registry.get(pinsAtom);
   if (!pins.includes(id)) setPins([...pins, id]);
+}
+
+/** Pinned bots in this order; the ids must be the pinned ones. */
+export function reorderPins(ids: readonly BotId[]) {
+  const pins = registry.get(pinsAtom);
+  if (ids.length === pins.length && ids.every((id) => pins.includes(id))) setPins([...ids]);
 }
 
 export function unpin(id: BotId) {

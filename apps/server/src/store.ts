@@ -81,8 +81,7 @@ export const BotRow = Schema.Struct({
   model: Text,
   runActive: Schema.BooleanFromBit,
   restarts: Int,
-  webSearch: Schema.BooleanFromBit,
-}).pipe(Schema.encodeKeys({ runActive: "run_active", webSearch: "web_search" }));
+}).pipe(Schema.encodeKeys({ runActive: "run_active" }));
 export type BotRow = typeof BotRow.Type;
 
 export type LegacySoul = { readonly bot: number; readonly name: string; readonly description: string };
@@ -305,6 +304,7 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
       PRIMARY KEY (bot, name)
     )`;
   }),
+  // Kept for older data; web search is on for every bot that can use it, whatever this says.
   "5_bot_web_search": addColumn("bots", "web_search", "INTEGER NOT NULL DEFAULT 0"),
   "6_context_files": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -342,6 +342,8 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
       SET message = json_set(message, '$.details', json_object('ask', json_set(json_extract(message, '$.details.permission'), '$.kind', 'permission')))
       WHERE kind = 'tool' AND json_type(message, '$.details.permission') = 'object'`;
   }),
+  // The order the bots are listed in, once someone reorders them; until then (NULL) it's the order they were made in.
+  "9_bot_position": addColumn("bots", "position", "INTEGER"),
 };
 
 const refuseNewerData = Effect.gen(function* () {
@@ -403,6 +405,8 @@ export class Store extends Context.Service<
     readonly bots: Effect.Effect<BotRow[]>;
     readonly bot: (id: number) => Effect.Effect<BotRow | undefined>;
     readonly createBot: (name: string, model: string, avatar?: number) => Effect.Effect<number>;
+    /** Lists the bots in this order from now on; a bot made later goes after them. */
+    readonly setBotOrder: (ids: readonly number[]) => Effect.Effect<void>;
     readonly legacySouls: Effect.Effect<LegacySoul[]>;
     readonly settleLegacySoul: (bot: number) => Effect.Effect<void>;
     readonly markDeleted: (bot: number) => Effect.Effect<void>;
@@ -414,7 +418,6 @@ export class Store extends Context.Service<
     readonly setRunActive: (bot: number, active: boolean) => Effect.Effect<void>;
     readonly setRestarts: (bot: number, restarts: number) => Effect.Effect<void>;
     readonly setModel: (bot: number, model: string) => Effect.Effect<void>;
-    readonly setWebSearch: (bot: number, on: boolean) => Effect.Effect<void>;
 
     readonly files: (bot: number) => Effect.Effect<Map<string, FileStat> | undefined>;
     readonly recordFiles: (bot: number, listing: ReadonlyMap<string, FileStat>, changes: readonly FileChange[]) => Effect.Effect<StoredEntry | undefined>;
@@ -605,7 +608,9 @@ const make = Effect.gen(function* () {
       filesSecret,
       transaction,
 
-      bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY id`), (r) => r.map(botOf)),
+      bots: Effect.map(rows(sql`SELECT * FROM bots WHERE deleted = 0 ORDER BY position IS NULL, position, id`), (r) => r.map(botOf)),
+      setBotOrder: (ids) =>
+        transaction(Effect.forEach(ids, (id, position) => q(sql`UPDATE bots SET position = ${position} WHERE id = ${id}`), { discard: true })),
       bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
       createBot: (name, model, avatar = 0) =>
         Effect.map(first(sql`INSERT INTO bots (name, avatar, model) VALUES (${name}, ${avatar}, ${model}) RETURNING id`), (row) => Number(row!.id)),
@@ -643,7 +648,6 @@ const make = Effect.gen(function* () {
       setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
       setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
       setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),
-      setWebSearch: (bot, on) => Effect.asVoid(q(sql`UPDATE bots SET web_search = ${on ? 1 : 0} WHERE id = ${bot}`)),
 
       files: (bot) =>
         Effect.gen(function* () {

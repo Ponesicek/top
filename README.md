@@ -85,7 +85,7 @@ pnpm server:fake     # fake bots that answer only when you message them
 
 The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "write a report", "crash",
 or any MCP tool by its full name: `call github_work__search {"query": "top"}`. "Search the web for …" plays OpenAI's
-web search (see Web search) once it's switched on for the bot; "… fails" and "… refused" play a failed search and OpenAI
+web search (see Web search); "… fails" and "… refused" play a failed search and OpenAI
 refusing it. "Ask permission to …", "ask me which", "ask me to pick", "ask me what" and "ask me for a token" play the
 cards in Questions and secrets.
 Their home is `apps/server/.data/fake`, laid out like `~/.top` (a reset clears their folders too). Daemon flags: `--model`, `--thinking`, `--allow-origin`, `--port`, `--host`,
@@ -104,7 +104,12 @@ becomes a text file (`Ctrl+Shift+V` pastes it inline). The bot gets each file's 
 tools, and PNG, JPEG, GIF and WebP images as images too. They're kept in `~/.top/server/attachments`: an
 upload no message used goes after a day, the rest go with their bot.
 
-Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots, `Enter` sends (queues while busy), `Ctrl+Enter` steers,
+Drag a bot in the list to move it (on a touchscreen, hold it a moment first), or press `Alt+Shift+↑↓` on it, or use
+**Move up** / **Move down** in its right-click menu. The order is kept by the daemon, so every device shows it; a bot
+made later goes last. Pinned bots (**Pin to top** in the same menu) stay pinned on that device only, and reorder among
+themselves the same way.
+
+Desktop keys: `Ctrl+1…9` / `Alt+↑↓` switch bots (in the order shown), `Enter` sends (queues while busy), `Ctrl+Enter` steers,
 `Esc` stops, `Ctrl+Shift+E` shows the bot's files, `Ctrl+,` opens settings, `Ctrl+=` / `Ctrl+-` / `Ctrl+0`
 change the interface size (also in settings), `Ctrl+Shift+P` toggles the performance overlay.
 
@@ -141,14 +146,14 @@ pnpm server --tailscale --tailscale-allow tag:laptops    # only you, this comput
 Each bot has four Markdown files in its folder (`~/.top/bots/<name>/`), and they are what it is:
 `SOUL.md` (who it is: a `# Heading` on its first line is its name in the app, the paragraph under it the line
 under its name), `AGENTS.md` (how it works), `USER.md` (what it knows about you) and `MEMORY.md`
-(what it has learned). The files are the only copy: Settings → **Identity and memory** edits them
-in place, and the bot edits them with its tools, unasked, when it learns something that will
-matter later. A save from Settings is refused when the file changed since it was opened (by the
-bot, say), unless you choose to replace it. Saves from different clients take turns, so two saves
-of the same version can't both win; a write by the bot or an editor landing in the same instant as
-a save can still be replaced by it. When Top creates a file (a new bot's SOUL.md, or a first save
-from Settings) it uses a hard link or an exclusive create, which never replace a file made
-meanwhile.
+(what it has learned). The files are the only copy: the bot edits them with its tools, unasked,
+when it learns something that will matter later, and you can edit them in any editor. The desktop
+app doesn't edit them; the daemon still offers `contextFiles` / `saveContextFile` to clients: a save
+is refused when the file changed since it was opened (by the bot, say), and saves from different
+clients take turns, so two saves of the same version can't both win; a write by the bot or an
+editor landing in the same instant as a save can still be replaced by it. When Top creates a file
+(a new bot's SOUL.md, or a client's first save) it uses a hard link or an exclusive create, which
+never replace a file made meanwhile.
 
 - **Loading.** Each file goes into the bot's instructions whole, between `<file … id="…">` and
   `</file id="…">` lines whose id is a hash of its text, so nothing in a file can end its frame
@@ -157,7 +162,7 @@ meanwhile.
   override Top's rules (safety, permissions, tools), and that text from web pages or tool output is
   information, not instructions. Missing or empty files aren't sent. Each file is at most 8 KB
   (`MAX_CONTEXT_FILE_BYTES`): a longer one, or one that can't be read, is sent as a note saying so
-  and why, never cut short, and Settings shows the same.
+  and why, never cut short.
 - **Changes reach the bot from its next message**, a follow-up queued meanwhile included, never in
   the middle of a task. Top compares the files with what the conversation already has and, for
   each file that differs, saves the whole new version as a system message after the conversation so
@@ -268,8 +273,8 @@ found and which bots have which; a new bot has none, however many are installed.
 ### Web search
 
 On an OpenAI model (the Responses API, signed in with ChatGPT or with an API key), a bot can search the web with
-OpenAI's own web search. Settings → **Web search** switches it on per bot (a bot has it off until then); it reaches the
-bot from its next message. No search key or other provider is involved, and nothing is fetched by Top itself.
+OpenAI's own web search. Every bot has it; there's nothing to switch on (a bot's off switch from older versions stays
+stored but isn't read). No search key or other provider is involved, and nothing is fetched by Top itself.
 
 - **OpenAI runs it**, inside the model request (`store: false`, `stream: true`, on `api.openai.com/v1/responses`). It
   isn't one of the bot's tools: it has no tool step, no crash policy, and nothing is run again after a restart. While it
@@ -279,8 +284,8 @@ bot from its next message. No search key or other provider is involved, and noth
   and they open outside the app. A failed search shows as failed; nothing is listed that OpenAI didn't report.
 - **Whether you may use it is OpenAI's call.** Sign in with ChatGPT doesn't promise it: OpenAI says web search there
   "remains subject to model and account/workspace policy", and no model list says which models have it. When OpenAI
-  refuses it, the answer fails and says so, with what OpenAI said, and isn't retried; switch it off for that bot to
-  carry on. Top never quietly answers without it.
+  refuses it, the answer fails and says so, with what OpenAI said, and isn't retried. Top never quietly answers
+  without it.
 - **Pages are evidence, not instructions.** A bot that may search is told not to follow directions found on the web.
   Earlier searches go back to OpenAI with the conversation (each request carries it whole), as OpenAI sent them.
 

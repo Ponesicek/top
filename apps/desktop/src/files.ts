@@ -3,10 +3,11 @@ import type { BotFiles, BotId } from "@top/client";
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
+import { useSyncExternalStore } from "react";
+import { PANEL_DEFAULT, type PanelLayout, panelLayout } from "./panelLayout.ts";
 import { registry, useClient } from "./top.ts";
 
-export const PANEL_MIN = 300;
-export const PANEL_DEFAULT = 460;
+export { PANEL_DEFAULT, PANEL_MIN } from "./panelLayout.ts";
 
 type PanelState = {
   readonly open: boolean;
@@ -39,7 +40,31 @@ export function usePanel(): PanelState {
   return useAtomValue(panelAtom);
 }
 
+const onResize = (listener: () => void) => {
+  addEventListener("resize", listener);
+  return () => removeEventListener("resize", listener);
+};
+
+/** Where the panel goes in the window as it is now, following every resize. */
+export function usePanelLayout(): PanelLayout {
+  const viewport = useSyncExternalStore(onResize, () => innerWidth);
+  return panelLayout(viewport, usePanel().width);
+}
+
 export const togglePanel = () => set({ open: !registry.get(panelAtom).open });
+
+export const FILES_TOGGLE_ID = "files-toggle";
+
+/** Closes the panel; when focus was in it, focus goes back to the button that opens it. */
+export function closeFiles() {
+  const active = document.activeElement;
+  const inside = !active || active === document.body || !!document.getElementById("files-panel")?.contains(active);
+  closePanel();
+  if (inside) requestAnimationFrame(() => document.getElementById(FILES_TOGGLE_ID)?.focus());
+}
+
+/** Ctrl+Shift+E and the Files button: open, or close the same way the panel's own close does. */
+export const toggleFiles = () => (registry.get(panelAtom).open ? closeFiles() : togglePanel());
 export const closePanel = () => set({ open: false });
 export const setPanelWidth = (width: number) => set({ width: Math.round(width) });
 

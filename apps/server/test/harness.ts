@@ -77,6 +77,8 @@ export type HarnessOptions = {
   readonly harnesses?: readonly HarnessAdapter[];
   readonly maxTasks?: number | undefined;
   readonly taskCancelGraceMs?: number;
+  /** Wraps the store, to slow a write down or make it fail. */
+  readonly store?: (store: Store.Store["Service"]) => Store.Store["Service"];
 };
 
 export const skillsConfig = (dir: string) => ({
@@ -90,7 +92,9 @@ type Services = Store.Store | Events.Events | Daemon.Daemon | Daemon.BotKit | Se
 
 export async function harness(options: HarnessOptions = {}) {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "top-test-"));
-  const base = Layer.mergeAll(Events.layer, Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: join(dir, "top.sqlite") }))));
+  const stored = Store.layer.pipe(Layer.provide(Sqlite.layer({ filename: join(dir, "top.sqlite") })));
+  const wrapped = options.store ? Layer.effect(Store.Store, Effect.map(Store.Store, options.store)).pipe(Layer.provide(stored)) : stored;
+  const base = Layer.mergeAll(Events.layer, wrapped);
   const firstBots = Layer.effectDiscard(
     Effect.gen(function* () {
       const store = yield* Store.Store;

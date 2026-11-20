@@ -25,8 +25,8 @@ export function Row({
   const labelId = useId();
   const descriptionId = useId();
   return (
-    <div className="flex items-center justify-between gap-6 px-4.5 py-3.5">
-      <div className="flex min-w-0 flex-col gap-0.5">
+    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 px-4.5 py-3.5">
+      <div className="flex min-w-[min(100%,12rem)] flex-1 flex-col gap-0.5">
         <span id={labelId} className="text-small leading-snug font-label">
           {label}
         </span>
@@ -62,7 +62,7 @@ export function BotChip({
       onClick={onClick}
       title={title}
       className={cn(
-        "inline-flex h-6.5 items-center gap-1.5 rounded-full px-2.5 text-meta leading-none font-label transition-colors duration-90 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55",
+        "inline-flex h-6.5 items-center gap-1.5 rounded-full px-2.5 text-meta leading-none font-label transition-colors duration-90 outline-hidden focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55",
         on ? "bg-primary-soft text-link inset-ring inset-ring-primary/35" : "bg-secondary text-muted-foreground enabled:hover:text-foreground",
       )}
     >
@@ -84,7 +84,7 @@ export function Segmented<T extends string>({
   labelledBy: string;
 }) {
   return (
-    <div role="radiogroup" aria-labelledby={labelledBy} className="flex flex-none gap-0.5 rounded-field bg-secondary p-0.75">
+    <div role="radiogroup" aria-labelledby={labelledBy} className="flex max-w-full flex-none gap-0.5 overflow-x-auto rounded-field bg-secondary p-0.75">
       {options.map((o) => (
         // biome-ignore lint/a11y/useSemanticElements: a segmented control; TODO: Base UI RadioGroup, which adds arrow-key navigation
         <button
@@ -94,7 +94,7 @@ export function Segmented<T extends string>({
           aria-checked={o.value === value}
           onClick={() => onChange(o.value)}
           className={cn(
-            "rounded-[7px] px-3 py-1 text-meta font-label text-secondary-foreground transition-colors duration-120 hover:text-foreground",
+            "flex-none rounded-[7px] px-3 py-1 text-meta font-label narrow:min-h-11 text-secondary-foreground transition-colors duration-120 hover:text-foreground",
             o.value === value && "bg-popover text-foreground shadow-row-selected",
           )}
         >

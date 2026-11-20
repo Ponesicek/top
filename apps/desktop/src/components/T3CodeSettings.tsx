@@ -1,5 +1,6 @@
 import { type T3CodeView, TimeoutError } from "@top/client";
 import * as Schema from "effect/Schema";
+import { ChevronRight } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { cn } from "../lib/utils.ts";
 import { top } from "../top.ts";
@@ -131,7 +132,57 @@ function ConnectForm({ address: initial, onDone, onFailed }: { address: string; 
 function statusLine(view: T3CodeView, checking: boolean): string {
   if (checking) return "Checking…";
   if (view.error) return "Can't use it now";
-  return [`T3 Code ${view.serverVersion ?? ""}`.trim(), view.expiresAt ? `session until ${day(view.expiresAt)}` : undefined].filter(Boolean).join(" · ");
+  return ["Connected", view.serverVersion && `T3 Code ${view.serverVersion}`, view.expiresAt && `session until ${day(view.expiresAt)}`]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+type Detail = { readonly key: string; readonly title: string; readonly meta: string | undefined; readonly path?: string };
+
+/** Providers and projects, one per line: shown only when asked for, and searchable once there are many. */
+function Details({ view, id }: { view: T3CodeView; id: string }) {
+  const [query, setQuery] = useState("");
+  const items: Detail[] = [
+    ...(view.providers ?? []).map((p) => ({
+      key: `p:${p.id}`,
+      title: p.id,
+      meta: [p.status === "ready" ? p.defaultModel : p.status].filter(Boolean).join(" · ") || undefined,
+    })),
+    ...(view.projects ?? []).map((p) => ({ key: `j:${p.path}`, title: p.title, meta: undefined, path: p.path })),
+  ];
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? items.filter((i) => `${i.title} ${i.meta ?? ""} ${i.path ?? ""}`.toLowerCase().includes(needle)) : items;
+  return (
+    <div id={id} className="flex flex-col gap-1.5 pl-3.75">
+      {items.length > 8 && (
+        <Input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.currentTarget.value)}
+          placeholder="Filter"
+          aria-label="Filter providers and projects"
+          className="py-1.5 text-small narrow:min-h-11"
+        />
+      )}
+      <ul className="m-0 flex max-h-60 list-none flex-col overflow-y-auto rounded-field bg-secondary p-1 text-meta">
+        {shown.map((item) => (
+          <li key={item.key} className="flex min-w-0 items-baseline gap-2 rounded-md px-2 py-1" title={item.path ?? item.title}>
+            <span className="flex-none text-micro text-muted-foreground narrow:hidden">{item.path === undefined ? "Provider" : "Project"}</span>
+            <span className="max-w-[60%] min-w-0 flex-none truncate font-label text-foreground">{item.title}</span>
+            {item.meta && <span className="min-w-0 truncate text-muted-foreground">{item.meta}</span>}
+            {item.path && (
+              <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-muted-foreground [direction:rtl]">
+                <bdi>{item.path}</bdi>
+              </span>
+            )}
+          </li>
+        ))}
+        {shown.length === 0 && <li className="px-2 py-1 text-muted-foreground">{items.length ? "No match" : "No providers or projects yet"}</li>}
+      </ul>
+    </div>
+  );
 }
 
 function Connected({
@@ -150,6 +201,8 @@ function Connected({
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
   const disconnect = async () => {
     setBusy(true);
     setError(undefined);
@@ -164,9 +217,11 @@ function Connected({
   };
   const problem = error ?? (checking ? undefined : view.error);
   const ok = !checking && !view.error;
-  const ready = view.providers?.filter((p) => p.status === "ready") ?? [];
+  const providers = view.providers?.length ?? 0;
+  const ready = view.providers?.filter((p) => p.status === "ready").length ?? 0;
+  const projects = view.projects?.length ?? 0;
   return (
-    <div className="flex flex-col gap-3 px-4.5 py-3.5">
+    <div className="flex flex-col gap-2.5 px-4.5 py-3.5">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-2">
@@ -177,25 +232,27 @@ function Connected({
               )}
               aria-hidden
             />
-            <span className="truncate text-small leading-snug font-label">{view.label ?? view.url}</span>
+            <span className="truncate text-small leading-snug font-label" title={view.url}>
+              {view.label ?? view.url}
+            </span>
           </span>
-          <span className="pl-3.75 text-meta break-words text-muted-foreground" role="status">
-            <span className="font-mono text-[11.5px] break-all">{view.url}</span> · {statusLine(view, checking)}
+          <span className="pl-3.75 text-meta text-muted-foreground" role="status">
+            {statusLine(view, checking)}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5 pl-3.75">
           {view.error && !checking && (
-            <Button size="xs" className="px-2.5" onClick={onPair}>
+            <Button size="xs" className="px-2.5 narrow:min-h-11" onClick={onPair}>
               Pair again
             </Button>
           )}
-          <Button variant="outline" size="xs" className="px-2.5" disabled={checking || busy} onClick={onCheck}>
+          <Button variant="outline" size="xs" className="px-2.5 narrow:min-h-11" disabled={checking || busy} onClick={onCheck}>
             Check
           </Button>
           <Button
             variant={confirm ? "destructive" : "ghost-destructive"}
             size="xs"
-            className="px-2.5"
+            className="px-2.5 narrow:min-h-11"
             disabled={busy}
             onClick={() => (confirm ? void disconnect() : setConfirm(true))}
             onBlur={() => setConfirm(false)}
@@ -210,33 +267,23 @@ function Connected({
         </p>
       )}
       {ok && (
-        <div className="flex flex-col gap-1 pl-3.75 text-meta leading-normal text-muted-foreground">
-          <span>Bots can hand it coding tasks (harness "t3code") from their next message.</span>
-          <span>
-            Providers:{" "}
-            {ready.length ? ready.map((p) => `${p.id}${p.defaultModel ? ` (${p.defaultModel})` : ""}`).join(", ") : "none ready; switch one on in T3 Code"}
-          </span>
-          <span className="min-w-0 break-words">
-            Projects:{" "}
-            {view.projects?.length ? (
-              view.projects.map((p, i) => (
-                <span key={p.path}>
-                  {i > 0 && ", "}
-                  <span className="font-mono text-[11.5px]" title={p.title}>
-                    {p.path}
-                  </span>
-                </span>
-              ))
-            ) : (
-              <>none yet; add a folder as a project in T3 Code so tasks can work in it</>
-            )}
-          </span>
-        </div>
+        <Button
+          variant="link"
+          size="link"
+          className="ml-3.75 max-w-[calc(100%-0.9375rem)] self-start text-left whitespace-normal text-muted-foreground narrow:min-h-11"
+          aria-expanded={open}
+          aria-controls={open ? detailsId : undefined}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <ChevronRight size={13} strokeWidth={2.2} className={cn("transition-transform duration-120 motion-reduce:transition-none", open && "rotate-90")} />
+          {plural(providers, "provider")}
+          {ready < providers && ` (${ready} ready)`} · {plural(projects, "project")}
+        </Button>
       )}
+      {ok && open && <Details view={view} id={detailsId} />}
       {confirm && (
         <p className="m-0 pl-3.75 text-meta leading-normal text-muted-foreground">
-          Top forgets its session. Tasks already running keep going until they end. To cut Top off in T3 Code too, revoke its session there, in Settings →
-          Sharing &amp; access.
+          Running tasks keep going. To revoke Top's session in T3 Code too: Settings → Sharing &amp; access.
         </p>
       )}
     </div>
@@ -299,9 +346,7 @@ export function T3CodeSettings() {
         ) : (
           <div className="flex flex-col gap-2 px-4.5 py-3.5">
             <p className="m-0 text-meta leading-normal text-muted-foreground" role="status">
-              {!view && checking
-                ? "Checking…"
-                : "Let your bots hand coding tasks to T3 Code, on this computer or another one, with a pairing code from that T3 Code."}
+              {!view && checking ? "Checking…" : "Not connected"}
             </p>
             {forgotten && (
               <p className="m-0 text-meta leading-normal text-muted-foreground">

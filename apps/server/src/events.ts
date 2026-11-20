@@ -12,6 +12,7 @@ export type DaemonEvent =
   | { readonly _tag: "Inbox"; readonly bot: number }
   | { readonly _tag: "Bot"; readonly summary: BotSummary }
   | { readonly _tag: "BotRemoved"; readonly bot: number }
+  | { readonly _tag: "BotOrder" }
   | { readonly _tag: "Files"; readonly bot: number; readonly folder: string; readonly listing: Listing }
   | { readonly _tag: "McpServer"; readonly view: McpServerView }
   | { readonly _tag: "McpServerRemoved"; readonly id: number }

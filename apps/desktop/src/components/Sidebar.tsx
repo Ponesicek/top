@@ -1,12 +1,14 @@
 import { ContextMenu } from "@base-ui/react/context-menu";
 import type { BotId, BotSummary } from "@top/client";
-import { Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
-import { memo, type ReactNode, useCallback, useState } from "react";
+import { ArrowDown, ArrowUp, Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
+import { memo, type ReactNode, useCallback, useId, useRef, useState } from "react";
 import { cn } from "../lib/utils.ts";
-import { pin, serverUrl, sidebarGroups, unpin, useClient, usePins, useSeen } from "../top.ts";
+import { withRestOrder } from "../order.ts";
+import { pin, reorderPins, serverUrl, sidebarGroups, top, unpin, useClient, usePins, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";
 import { StatusDot } from "./StatusDot.tsx";
+import { type Group, menuOpened, reordering, useSidebarReorder } from "./sidebarReorder.ts";
 import { UpdateButton } from "./UpdateButton.tsx";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
@@ -43,28 +45,52 @@ const MENU_POPUP =
 const MENU_ITEM =
   "flex cursor-default items-center gap-2.5 rounded-lg px-2.5 py-1.75 text-small leading-none font-label outline-none select-none data-highlighted:bg-foreground/7 [&_svg]:text-muted-foreground";
 
+type Reorder = { readonly group: Group; readonly up: boolean; readonly down: boolean; readonly onMove: (id: BotId, by: -1 | 1) => void };
+
 function BotMenu({
   bot,
   pinned,
+  reorder,
   onDelete,
   className,
   children,
 }: {
   bot: BotSummary;
   pinned: boolean;
+  reorder: Reorder;
   onDelete: (bot: BotSummary) => void;
   className?: string;
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <ContextMenu.Root>
-      <ContextMenu.Trigger className={className}>{children}</ContextMenu.Trigger>
+    <ContextMenu.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (next && reordering()) return;
+        if (next) menuOpened();
+        setOpen(next);
+      }}
+    >
+      <ContextMenu.Trigger className={className} data-reorder={reorder.group} data-bot={bot.id}>
+        {children}
+      </ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Positioner className="z-40" collisionPadding={8}>
           <ContextMenu.Popup className={MENU_POPUP} onKeyDown={(e) => e.stopPropagation()}>
             <ContextMenu.Item className={MENU_ITEM} onClick={() => (pinned ? unpin(bot.id) : pin(bot.id))}>
               {pinned ? <PinOff size={15} strokeWidth={1.9} /> : <Pin size={15} strokeWidth={1.9} />}
               {pinned ? "Unpin" : "Pin to top"}
+            </ContextMenu.Item>
+            <ContextMenu.Item className={cn(MENU_ITEM, "data-disabled:opacity-45")} disabled={!reorder.up} onClick={() => reorder.onMove(bot.id, -1)}>
+              <ArrowUp size={15} strokeWidth={1.9} />
+              Move up
+              <kbd className="ml-auto pl-3 font-sans text-micro text-muted-foreground">Alt+Shift+↑</kbd>
+            </ContextMenu.Item>
+            <ContextMenu.Item className={cn(MENU_ITEM, "data-disabled:opacity-45")} disabled={!reorder.down} onClick={() => reorder.onMove(bot.id, 1)}>
+              <ArrowDown size={15} strokeWidth={1.9} />
+              Move down
+              <kbd className="ml-auto pl-3 font-sans text-micro text-muted-foreground">Alt+Shift+↓</kbd>
             </ContextMenu.Item>
             <ContextMenu.Separator className="mx-1.5 my-1 h-px bg-border" />
             <ContextMenu.Item
@@ -86,6 +112,7 @@ type ItemProps = {
   selected: boolean;
   unread: boolean;
   index: number;
+  reorder: Reorder;
   onSelect: (id: BotId) => void;
   onDelete: (bot: BotSummary) => void;
 };
@@ -100,14 +127,14 @@ function AskMark({ className }: { className?: string }) {
   );
 }
 
-const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
+const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, reorder, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
   const asking = !busy && !!bot.asks;
   const fresh = unread && !busy && !asking;
   const mark = (busy && bot.status !== "failed") || fresh;
   const status = fresh ? "Idle · new messages" : statusLabel(bot);
   return (
-    <BotMenu bot={bot} pinned onDelete={onDelete} className="flex min-w-0">
+    <BotMenu bot={bot} pinned reorder={reorder} onDelete={onDelete} className="flex min-w-0">
       <button
         type="button"
         className={cn(
@@ -144,13 +171,13 @@ const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSe
   );
 });
 
-const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
+const BotItem = memo(function BotItem({ bot, selected, unread, index, reorder, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
   const fresh = unread && !busy;
   const failed = bot.status === "failed";
   const shortcut = shortcutFor(index);
   return (
-    <BotMenu bot={bot} pinned={false} onDelete={onDelete} className="group/bot relative flex flex-col">
+    <BotMenu bot={bot} pinned={false} reorder={reorder} onDelete={onDelete} className="group/bot relative flex flex-col">
       <button
         type="button"
         className={cn(
@@ -232,6 +259,22 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
   );
 });
 
+/** Stable per group and position, so a bot's row only re-renders when it can move another way. */
+function useReorderProps(onMove: Reorder["onMove"]) {
+  const cache = useRef(new Map<string, Reorder>());
+  const latest = useRef(onMove);
+  latest.current = onMove;
+  return (group: Group, up: boolean, down: boolean): Reorder => {
+    const key = `${group}${up}${down}`;
+    let props = cache.current.get(key);
+    if (!props) {
+      props = { group, up, down, onMove: (id, by) => latest.current(id, by) };
+      cache.current.set(key, props);
+    }
+    return props;
+  };
+}
+
 function host(url: string): string {
   try {
     return new URL(url).host;
@@ -255,14 +298,29 @@ export function Sidebar({
 }) {
   const bots = useClient((snapshot) => snapshot.bots);
   const pins = usePins();
-  const { pinned, rest } = sidebarGroups(bots, pins);
-  const item = (Item: typeof BotItem, bot: BotSummary, index: number) => {
+  const groups = sidebarGroups(bots, pins);
+  const byId = new Map(bots.map((b) => [b.id, b]));
+  const reorder = useSidebarReorder({
+    groups: { pinned: groups.pinned.map((b) => b.id), rest: groups.rest.map((b) => b.id) },
+    nameOf: (id) => byId.get(id)?.name ?? "Bot",
+    onCommit: (group, ids) => {
+      if (group === "pinned") return reorderPins(ids);
+      const now = top.getSnapshot().bots.map((b) => b.id);
+      void top.setBotOrder(withRestOrder(now, pins, ids)).catch(() => {});
+    },
+  });
+  const hintId = useId();
+  const reorderProps = useReorderProps(reorder.step);
+  const pinned = reorder.shown("pinned").flatMap((id) => byId.get(id) ?? []);
+  const rest = reorder.shown("rest").flatMap((id) => byId.get(id) ?? []);
+  const item = (Item: typeof BotItem, bot: BotSummary, index: number, group: Group, place: number, size: number) => {
     const isSelected = !settingsOpen && bot.id === selected;
     return (
       <Item
         key={bot.id}
         bot={bot}
         index={index}
+        reorder={reorderProps(group, place > 0, place < size - 1)}
         selected={isSelected}
         unread={!isSelected && bot.lastSeq > (seen[bot.id] ?? 0)}
         onSelect={onSelect}
@@ -281,18 +339,34 @@ export function Sidebar({
   }, []);
   return (
     <aside className="flex min-w-0 flex-col border-r bg-sidebar">
-      <nav className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-2.5 pb-2.5 mac-window:pt-11">
-        {pinned.length > 0 && <div className="grid grid-cols-3 gap-1 narrow:grid-cols-1">{pinned.map((bot, i) => item(PinnedTile, bot, i))}</div>}
+      <nav
+        ref={reorder.navRef}
+        className="bots flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 pt-2.5 pb-2.5 mac-window:pt-11"
+        aria-label="Bots"
+        aria-describedby={hintId}
+        onPointerDown={reorder.onPointerDown}
+        onKeyDown={reorder.onKeyDown}
+        onDragStart={(e) => e.preventDefault()}
+      >
+        {pinned.length > 0 && (
+          <div className="grid grid-cols-3 gap-1 narrow:grid-cols-1">{pinned.map((bot, i) => item(PinnedTile, bot, i, "pinned", i, pinned.length))}</div>
+        )}
         {pinned.length > 0 && rest.length > 0 && <div className="mx-2 my-1.5 hidden h-px bg-border narrow:block" aria-hidden />}
-        {rest.map((bot, i) => item(BotItem, bot, pinned.length + i))}
+        {rest.map((bot, i) => item(BotItem, bot, pinned.length + i, "rest", i, rest.length))}
       </nav>
+      <span id={hintId} hidden>
+        Drag a bot, or press Alt+Shift+Up or Down, to move it.
+      </span>
+      <div className="sr-only" aria-live="polite" role="status">
+        {reorder.announcement}
+      </div>
       <DeleteBotDialog bot={deleting} open={deleteOpen} onOpenChange={setDeleteOpen} onClosed={() => setDeleting(undefined)} />
       <div className="relative flex flex-none items-center gap-2 px-3 pt-2 pb-3 narrow:flex-col-reverse narrow:px-0">
         <Tooltip content="Settings (Ctrl+,)" side="right">
           <Button
             variant="ghost"
             size="xs"
-            className={cn("font-medium text-secondary-foreground", settingsOpen && "bg-foreground/7 text-foreground")}
+            className={cn("font-medium text-secondary-foreground narrow:size-11", settingsOpen && "bg-foreground/7 text-foreground")}
             onClick={onOpenSettings}
             aria-label="Settings"
             aria-current={settingsOpen ? "page" : undefined}
@@ -310,7 +384,13 @@ export function Sidebar({
         <span className="ml-auto flex flex-none items-center gap-1.5 narrow:ml-0 narrow:flex-col-reverse">
           <UpdateButton onOpenSettings={onOpenSettings} />
           <Tooltip content="New bot" side="right">
-            <Button variant="outline" size="icon" className="size-8 text-secondary-foreground hover:text-foreground" onClick={onNewBot} aria-label="New bot">
+            <Button
+              variant="outline"
+              size="icon"
+              className="size-8 text-secondary-foreground hover:text-foreground narrow:size-11"
+              onClick={onNewBot}
+              aria-label="New bot"
+            >
               <Plus size={17} strokeWidth={1.9} />
             </Button>
           </Tooltip>

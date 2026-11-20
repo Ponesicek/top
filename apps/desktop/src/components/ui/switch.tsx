@@ -5,7 +5,7 @@ function Switch({ className, ...props }: SwitchPrimitive.Root.Props) {
   return (
     <SwitchPrimitive.Root
       className={cn(
-        "inline-flex h-5.5 w-9 shrink-0 items-center rounded-full bg-input p-0.5 outline-none transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary data-checked:bg-primary data-disabled:opacity-50 [-webkit-app-region:no-drag]",
+        "inline-flex h-5.5 w-9 shrink-0 items-center rounded-full bg-input p-0.5 outline-hidden transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-primary data-checked:bg-primary data-disabled:opacity-50 [-webkit-app-region:no-drag]",
         className,
       )}
       data-slot="switch"
