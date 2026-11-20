@@ -96,7 +96,7 @@ const AssistantRow = memo(function AssistantRow({ row, cont, turn, end }: { row:
           {row.text && <Markdown html={html} answer={row.seq} />}
           {row.citations.length > 0 && <Sources citations={row.citations} />}
           {row.pagesRead && <Sources citations={row.pagesRead} label="Pages read" />}
-          {row.error && <AnswerError error={row.error} />}
+          {row.error && <AnswerError error={row.error} className="first:mt-0" />}
         </div>
       </div>
       {end && <TurnTime at={row.at} turn={turn} align="start" />}
@@ -125,7 +125,7 @@ function WorkingRow({ cont }: { cont: boolean }) {
     <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
       {cont ? <span className="w-7 flex-none" /> : <BotAvatar status={bot?.status} size="sm" className="-mt-0.5" />}
       <div className="min-w-0 flex-1">
-        <div className={cn("inline-flex items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
+        <div className={cn("flex w-fit items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
           <StepIcon className={tool || searching ? "bg-tool-surface text-tool" : "bg-warning-surface text-warning"}>
             {searching ? (
               <Globe size={12} strokeWidth={2.4} className="animate-pulse motion-reduce:animate-none" />
@@ -135,8 +135,10 @@ function WorkingRow({ cont }: { cont: boolean }) {
               <Dots />
             )}
           </StepIcon>
-          {bot ? statusLabel(bot) : "Working"}
-          {seconds >= 2 && <span className="text-meta text-muted-foreground tabular-nums"> · {seconds} s</span>}
+          <span>
+            {bot ? statusLabel(bot) : "Working"}
+            {seconds >= 2 && <span className="text-meta text-muted-foreground tabular-nums"> · {seconds} s</span>}
+          </span>
         </div>
         <RetryNote bot={bot} />
       </div>
