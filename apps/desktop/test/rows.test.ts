@@ -197,9 +197,16 @@ describe("agents' questions", () => {
   });
 
   it("get their own card at the end, for this bot only, the same row while nothing changes", () => {
-    const tasks = [waiting("t1", 1), waiting("t2", 0), waiting("t3", 1, BOT + 1)];
+    const tasks = [waiting("t1", 1), waiting("t3", 1, BOT + 1)];
     const rows = taskQuestionRows(tasks, BOT);
     expect(rows).toMatchObject([{ kind: "taskQuestion", key: "question-t1", task: { id: "t1" } }]);
     expect(taskQuestionRows(tasks, BOT)[0]).toBe(rows[0]);
+  });
+
+  it("come after the bot's file changes, not above them", () => {
+    const files = entry({ kind: "files", files: [{ path: "a.ts", change: "added" }] });
+    const committed = committedRows([said(), files]);
+    const rows = displayRows(committed.concat(taskQuestionRows([waiting("t1", 1)], BOT)), false);
+    expect(rows.map((r) => r.kind)).toEqual(["assistant", "files", "taskQuestion"]);
   });
 });

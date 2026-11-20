@@ -356,6 +356,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       live.inputs.clear();
       live.external.clear();
       yield* q.withdrawInputs(live.id);
+      yield* Queue.offer(dirty, undefined);
     });
 
   const afterInput = (live: Live) =>

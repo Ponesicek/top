@@ -3,6 +3,9 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as PubSub from "effect/PubSub";
+import * as Scope from "effect/Scope";
 import { test } from "vitest";
 import { textOf as textOfContent } from "../src/messages.ts";
 import { HIDDEN } from "../src/secrets.ts";
@@ -17,13 +20,21 @@ import { type Harness, harness, until } from "./harness.ts";
 type Setup = { h: Harness; fake: FakeHarness; tasks: Tasks; folder: (bot?: number) => string };
 
 async function setup(
-  options: { harness?: FakeHarnessConfig; fake?: FakeHarness; bots?: string[]; maxTasks?: number; dir?: string; start?: boolean } = {},
+  options: { harness?: FakeHarnessConfig; fake?: FakeHarness; bots?: string[]; maxTasks?: number; dir?: string; start?: boolean; cancelGraceMs?: number } = {},
 ): Promise<Setup> {
   const fake = options.fake ?? fakeHarness({ stepMs: 30, ...options.harness });
   const names = options.bots ?? ["Atlas"];
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "top-tasks-"));
   for (const name of names) mkdirSync(botFolder(join(dir, "bots"), name), { recursive: true });
-  const h = await harness({ dir, harnesses: [fake], context: true, bots: names, maxTasks: options.maxTasks, taskCancelGraceMs: 300, gatherMs: 20 });
+  const h = await harness({
+    dir,
+    harnesses: [fake],
+    context: true,
+    bots: names,
+    maxTasks: options.maxTasks,
+    taskCancelGraceMs: options.cancelGraceMs ?? 300,
+    gatherMs: 20,
+  });
   if (options.start !== false) await h.run(h.daemon.start);
   const folder = (bot = h.bot) => botFolder(join(dir, "bots"), names[h.bots.indexOf(bot)]!);
   return { h, fake, tasks: h.daemon.tasks!, folder };
@@ -464,6 +475,29 @@ test("a harness that never confirms an interrupt is still cancelled after the gr
   assert.equal(cancelled.task.state, "cancelled");
   assert.equal(ctl.interrupts(), 1);
   assert.ok(Date.now() - began < 5_000, "it didn't wait on the stuck interrupt");
+});
+
+test("the app hears a task's questions come and go, and nothing else of it, even while a cancel waits on the harness", async () => {
+  const ctl = controlled({ interrupt: "hang" });
+  const s = await setup({ fake: ctl.adapter, cancelGraceMs: 3_000 });
+  const scope = await s.h.run(Scope.make());
+  const { subscription } = await s.h.run(s.h.events.subscribe.pipe(Scope.provide(scope)));
+  const heard: number[] = [];
+  const take = async () => {
+    for (const e of await s.h.run(PubSub.takeAll(subscription))) if (e._tag === "WaitingTasks") heard.push(e.tasks.length);
+    return heard;
+  };
+  const { snapshot } = await start(s, { prompt: "anything" });
+  await inState(s, snapshot.task.id, "running");
+  ctl.emit()({ type: "log", kind: "message", text: "working on it" });
+  ctl.emit()({ type: "request", request: { id: "q1", title: "Which?", questions: [{ id: "a", question: "Which?", options: [] }] } });
+  await until("the question to reach the app", async () => (await take()).length === 1);
+  await new Promise((r) => setTimeout(r, 400));
+  const cancelling = s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+  await until("the withdrawn question to leave the app before the stuck stop gives up", async () => (await take()).length === 2, 1_000);
+  assert.deepEqual(heard, [1, 0]);
+  assert.equal((await cancelling).task.state, "cancelled");
+  await s.h.run(Scope.close(scope, Exit.void));
 });
 
 test("a task that ended without its message (a crash in between) is announced at the next start", async () => {

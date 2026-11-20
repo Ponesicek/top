@@ -170,7 +170,7 @@ const questionRows = new WeakMap<WaitingTask, Row>();
 /** A task's questions get their own card at the end, wherever the task started. */
 export function taskQuestionRows(tasks: readonly WaitingTask[], bot: number): Row[] {
   return tasks
-    .filter((t) => t.bot === bot && t.inputs.length > 0)
+    .filter((t) => t.bot === bot)
     .map((task) => {
       let row = questionRows.get(task);
       if (!row) {
@@ -326,7 +326,7 @@ export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[
     }
     if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length) continue;
     flush();
-    if (row.kind === "working" || author(row) !== "bot") flushFiles();
+    if (row.kind === "working" || row.kind === "taskQuestion" || author(row) !== "bot") flushFiles();
     out.push(row);
   }
   flush();
