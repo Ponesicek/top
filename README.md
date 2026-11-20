@@ -404,7 +404,8 @@ going through a restart and Top follows it again (see below).
 | Options | `effort`, `max_turns` | `reasoning_effort` | `provider` (a T3 Code provider instance) |
 
 **Setting up.** Top uses the `claude` and `codex` already installed and signed in on the daemon's
-computer (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere), and never signs them in, out, or
+computer: on its PATH, or in `~/.local/bin`, where their installers put them and a systemd service's
+PATH doesn't reach (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere). It never signs them in, out, or
 changes their settings. Settings an organization manages on the computer still apply, as they do
 for the user. Missing or signed-out harnesses fail the task with what to do. Fake bots get
 a fake harness instead: message one `call collar__task_start {"harness": "fake", "prompt": "a question"}`;

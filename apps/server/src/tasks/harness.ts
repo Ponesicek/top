@@ -1,3 +1,7 @@
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import type { TaskQuestion } from "@top/protocol";
 import type { TObject } from "typebox";
 
@@ -96,6 +100,39 @@ export interface HarnessAdapter {
 }
 
 export class HarnessUnavailable extends Error {}
+
+const executable = async (path: string) => {
+  try {
+    if (!(await stat(path)).isFile()) return false;
+    await access(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Finds a harness's CLI. A path is used as given; a bare name is looked up on PATH and then in ~/.local/bin,
+ * where Claude Code's and Codex's installers put them. A service's PATH (systemd's, launchd's) leaves that
+ * folder out even when the user's terminal has it.
+ */
+export async function findCli(command: string, label: string, envVar: string, install: string): Promise<string> {
+  if (command.includes("/")) {
+    if (await executable(command)) return command;
+    throw new HarnessUnavailable(
+      `${label} isn't at \`${command}\`: there's no program there on the daemon's computer. Point ${envVar} at it, or unset ${envVar}.`,
+    );
+  }
+  const local = join(homedir(), ".local", "bin");
+  for (const dir of [...(process.env.PATH ?? "").split(delimiter), local]) {
+    if (!dir) continue;
+    const candidate = join(dir, command);
+    if (await executable(candidate)) return candidate;
+  }
+  throw new HarnessUnavailable(
+    `${label} isn't installed on the daemon's computer (no \`${command}\` on its PATH or in ${local}). ${install}, and try again; ${envVar} can point at it.`,
+  );
+}
 
 const SECRET_PATTERNS: readonly (readonly [RegExp, boolean])[] = [
   [/\bsk-[A-Za-z0-9_-]{12,}/g, false],
