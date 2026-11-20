@@ -2,7 +2,17 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
-import { type Attachment, Attachment as AttachmentSchema, type FileChange, McpServerConfig, MessageSource, ToolOutcome } from "@top/protocol";
+import {
+  Ask,
+  type AskOutcome,
+  type Attachment,
+  Attachment as AttachmentSchema,
+  type FileChange,
+  McpServerConfig,
+  MessageSource,
+  type QuestionReply,
+  ToolOutcome,
+} from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -13,13 +23,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 import { summaryMessage } from "./compaction.ts";
 import {
+  AnswerView,
   AssistantView,
   type Compaction,
   CompactionView,
   type EntryBody,
   FilesView,
   NoticeView,
-  PermissionView,
   SystemView,
   ToolResultView,
   type TranscriptMessage,
@@ -33,7 +43,7 @@ const Text = Schema.String;
 const NullableText = Schema.NullOr(Schema.String);
 const Source = Schema.NullOr(MessageSource);
 
-export const EntryKind = Schema.Literals(["system", "user", "assistant", "tool", "notice", "files", "permission", "compaction"]);
+export const EntryKind = Schema.Literals(["system", "user", "assistant", "tool", "notice", "files", "answer", "compaction"]);
 export type EntryKind = typeof EntryKind.Type;
 
 export const FileStat = Schema.Struct({ size: Schema.Number, mtime: Schema.Number });
@@ -59,7 +69,7 @@ export const StoredEntry = Schema.Union([
   entryOf_("tool", ToolResultView),
   entryOf_("notice", NoticeView),
   entryOf_("files", FilesView),
-  entryOf_("permission", PermissionView),
+  entryOf_("answer", AnswerView),
   entryOf_("compaction", CompactionView),
 ]);
 export type StoredEntry = typeof StoredEntry.Type;
@@ -118,15 +128,9 @@ export const JobRow = Schema.Struct({
 }).pipe(Schema.encodeKeys({ startedAt: "started_at" }));
 export type JobRow = typeof JobRow.Type;
 
-export const PermissionState = Schema.Literals(["pending", "allowed", "denied", "withdrawn"]);
-export const PermissionRow = Schema.Struct({
-  id: Int,
-  bot: Int,
-  action: Text,
-  reason: NullableText,
-  state: PermissionState,
-});
-export type PermissionRow = typeof PermissionRow.Type;
+type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
+export type AskBody = DistributiveOmit<Ask, "id">;
+export type AskRow = { readonly id: number; readonly bot: number; readonly ask: Ask; readonly state: "pending" | AskOutcome };
 
 const McpOAuthShape = Schema.Struct({ serverUrl: Schema.String, tokens: Schema.optionalKey(Schema.Struct({ access_token: Schema.String })) });
 const isMcpOAuthShape = Schema.is(McpOAuthShape);
@@ -313,6 +317,31 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     const sql = yield* SqlClient.SqlClient;
     for (const statement of TASK_TABLES.split(";\n")) yield* sql.unsafe(statement);
   }),
+  "8_asks": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE asks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot INTEGER NOT NULL REFERENCES bots(id),
+      key TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      body TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'pending',
+      at INTEGER NOT NULL
+    )`;
+    yield* sql`INSERT INTO asks (id, bot, key, kind, body, state, at)
+      SELECT id, bot, key, 'permission',
+        CASE WHEN reason IS NULL THEN json_object('action', action) ELSE json_object('action', action, 'reason', reason) END,
+        state, at
+      FROM permissions`;
+    yield* sql`DROP TABLE permissions`;
+    yield* sql`CREATE INDEX asks_pending ON asks(state, bot)`;
+    yield* sql`UPDATE entries SET kind = 'answer' WHERE kind = 'permission'`;
+    yield* sql`UPDATE entries SET source = 'answer' WHERE source = 'permission'`;
+    yield* sql`UPDATE inbox SET source = 'answer' WHERE source = 'permission'`;
+    yield* sql`UPDATE entries
+      SET message = json_set(message, '$.details', json_object('ask', json_set(json_extract(message, '$.details.permission'), '$.kind', 'permission')))
+      WHERE kind = 'tool' AND json_type(message, '$.details.permission') = 'object'`;
+  }),
 };
 
 const refuseNewerData = Effect.gen(function* () {
@@ -344,7 +373,13 @@ const inboxOf = (row: Row): InboxRow => {
 const attachmentOf = decoder(Schema.decodeUnknownSync(AttachmentRow));
 const wakeOf = decoder(Schema.decodeUnknownSync(WakeRow));
 const jobOf = decoder(Schema.decodeUnknownSync(JobRow));
-const permissionOf = decoder(Schema.decodeUnknownSync(PermissionRow));
+const askOf = Schema.decodeUnknownSync(Ask);
+const askRowOf = (row: Row): AskRow => ({
+  id: Number(row.id),
+  bot: Number(row.bot),
+  ask: askOf({ ...JSON.parse(String(row.body)), kind: row.kind, id: Number(row.id) }),
+  state: String(row.state) as AskRow["state"],
+});
 const mcpServerOf = decoder(Schema.decodeUnknownSync(McpServerRow));
 const botOf = decoder(Schema.decodeUnknownSync(BotRow));
 const toolCallOf = decoder(Schema.decodeUnknownSync(ToolCallRow));
@@ -394,7 +429,7 @@ export class Store extends Context.Service<
     readonly assignMcp: (server: number, bot: number, on: boolean) => Effect.Effect<void>;
 
     readonly enabledSkills: Effect.Effect<Map<number, string[]>>;
-    readonly enableSkill: (bot: number, name: string, on: boolean) => Effect.Effect<void>;
+    readonly enableSkills: (bot: number, names: readonly string[], on: boolean) => Effect.Effect<void>;
 
     readonly append: <K extends EntryKind>(bot: number, kind: K, message: EntryBody[K], extra?: AppendExtra) => Effect.Effect<StoredEntry>;
     readonly entry: (seq: number) => Effect.Effect<StoredEntry | undefined>;
@@ -440,15 +475,15 @@ export class Store extends Context.Service<
     readonly runningJobs: Effect.Effect<JobRow[]>;
     readonly endJob: (id: number, state: Exclude<JobState, "running">, text?: string) => Effect.Effect<InboxRow | undefined>;
 
-    readonly ask: (bot: number, key: string, action: string, reason: string | undefined) => Effect.Effect<PermissionRow>;
-    readonly askedBy: (key: string) => Effect.Effect<PermissionRow | undefined>;
-    readonly waiting: Effect.Effect<PermissionRow[]>;
-    readonly waitingOf: (bot: number) => Effect.Effect<PermissionRow[]>;
+    readonly ask: (bot: number, key: string, body: AskBody) => Effect.Effect<AskRow>;
+    readonly askedBy: (key: string) => Effect.Effect<AskRow | undefined>;
+    readonly waiting: Effect.Effect<AskRow[]>;
+    readonly waitingOf: (bot: number) => Effect.Effect<AskRow[]>;
     readonly settle: (
       bot: number,
       id: number,
-      answer: Exclude<PermissionRow["state"], "pending">,
-      text?: string,
+      outcome: AskOutcome,
+      extra?: { readonly reply?: QuestionReply | undefined; readonly text?: string | undefined },
     ) => Effect.Effect<{ entry: StoredEntry; message: InboxRow | undefined } | undefined>;
 
     readonly toolStarted: (bot: number, assistantSeq: number, toolCallId: string, name: string, args: Readonly<Record<string, unknown>>) => Effect.Effect<void>;
@@ -553,7 +588,7 @@ const make = Effect.gen(function* () {
           "files",
           "wakes",
           "jobs",
-          "permissions",
+          "asks",
           "attachments",
           "legacy_souls",
         ])
@@ -588,7 +623,7 @@ const make = Effect.gen(function* () {
             yield* q(sql`DELETE FROM bot_skills WHERE bot = ${bot}`);
             yield* q(sql`UPDATE wakes SET state = 'cancelled' WHERE bot = ${bot} AND state = 'pending'`);
             yield* q(sql`UPDATE jobs SET state = 'stopped' WHERE bot = ${bot} AND state = 'running'`);
-            yield* q(sql`UPDATE permissions SET state = 'withdrawn' WHERE bot = ${bot} AND state = 'pending'`);
+            yield* q(sql`UPDATE asks SET state = 'withdrawn' WHERE bot = ${bot} AND state = 'pending'`);
           }),
         ),
       purgeBot,
@@ -678,10 +713,17 @@ const make = Effect.gen(function* () {
           return map;
         },
       ),
-      enableSkill: (bot, name, on) =>
-        Effect.asVoid(
-          q(
-            on ? sql`INSERT OR IGNORE INTO bot_skills (bot, name) VALUES (${bot}, ${name})` : sql`DELETE FROM bot_skills WHERE bot = ${bot} AND name = ${name}`,
+      enableSkills: (bot, names, on) =>
+        transaction(
+          Effect.forEach(
+            names,
+            (name) =>
+              q(
+                on
+                  ? sql`INSERT OR IGNORE INTO bot_skills (bot, name) VALUES (${bot}, ${name})`
+                  : sql`DELETE FROM bot_skills WHERE bot = ${bot} AND name = ${name}`,
+              ),
+            { discard: true },
           ),
         ),
 
@@ -821,26 +863,24 @@ const make = Effect.gen(function* () {
           }),
         ),
 
-      ask: (bot, key, action, reason) =>
+      ask: (bot, key, { kind, ...body }) =>
         Effect.gen(function* () {
-          yield* q(sql`INSERT OR IGNORE INTO permissions (bot, key, action, reason, at) VALUES (${bot}, ${key}, ${action}, ${reason ?? null}, ${yield* now})`);
-          return permissionOf((yield* first(sql`SELECT * FROM permissions WHERE key = ${key}`))!);
+          yield* q(sql`INSERT OR IGNORE INTO asks (bot, key, kind, body, at) VALUES (${bot}, ${key}, ${kind}, ${JSON.stringify(body)}, ${yield* now})`);
+          return askRowOf((yield* first(sql`SELECT * FROM asks WHERE key = ${key}`))!);
         }),
-      askedBy: (key) => Effect.map(first(sql`SELECT * FROM permissions WHERE key = ${key}`), (row) => row && permissionOf(row)),
+      askedBy: (key) => Effect.map(first(sql`SELECT * FROM asks WHERE key = ${key}`), (row) => row && askRowOf(row)),
       waiting: Effect.map(
-        rows(
-          sql`SELECT permissions.* FROM permissions JOIN bots ON bots.id = permissions.bot WHERE state = 'pending' AND bots.deleted = 0 ORDER BY permissions.id`,
-        ),
-        (r) => r.map(permissionOf),
+        rows(sql`SELECT asks.* FROM asks JOIN bots ON bots.id = asks.bot WHERE state = 'pending' AND bots.deleted = 0 ORDER BY asks.id`),
+        (r) => r.map(askRowOf),
       ),
-      waitingOf: (bot) => Effect.map(rows(sql`SELECT * FROM permissions WHERE bot = ${bot} AND state = 'pending' ORDER BY id`), (r) => r.map(permissionOf)),
-      settle: (bot, id, answer, text) =>
+      waitingOf: (bot) => Effect.map(rows(sql`SELECT * FROM asks WHERE bot = ${bot} AND state = 'pending' ORDER BY id`), (r) => r.map(askRowOf)),
+      settle: (bot, id, outcome, extra = {}) =>
         transaction(
           Effect.gen(function* () {
-            const settled = yield* rows(sql`UPDATE permissions SET state = ${answer} WHERE id = ${id} AND bot = ${bot} AND state = 'pending' RETURNING id`);
+            const settled = yield* rows(sql`UPDATE asks SET state = ${outcome} WHERE id = ${id} AND bot = ${bot} AND state = 'pending' RETURNING id`);
             if (!settled.length) return undefined;
-            const entry = yield* append(bot, "permission", { request: id, answer });
-            const message = text === undefined ? undefined : yield* queueEvent(bot, `permission:${id}`, text, "permission");
+            const entry = yield* append(bot, "answer", { request: id, answer: outcome, ...(extra.reply ? { reply: extra.reply } : {}) });
+            const message = extra.text === undefined ? undefined : yield* queueEvent(bot, `answer:${id}`, extra.text, "answer");
             return { entry, message };
           }),
         ),

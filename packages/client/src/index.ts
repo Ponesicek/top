@@ -10,15 +10,18 @@ import {
   type McpServerConfig,
   type McpServerId,
   type McpServerView,
-  type PermissionRequest,
   PROTOCOL_VERSION,
+  type QuestionReply,
   type ResultOf,
   type ServerFrame,
+  type SkillFolder,
+  type SkillFolderAdded,
   type SkillsView,
   type TaskAnswers,
   type TaskView,
   type UpdateView,
   type Viewer,
+  type WaitingAsk,
 } from "@top/protocol";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -35,6 +38,9 @@ const parseAttachment = Schema.decodeOption(Schema.fromJsonString(Attachment));
 export type {
   AccountView,
   ActiveSkill,
+  Ask,
+  AskKind,
+  AskOutcome,
   Attachment,
   BotId,
   BotSkills,
@@ -52,11 +58,16 @@ export type {
   McpServerId,
   McpServerState,
   McpServerView,
-  PermissionAnswer,
   PermissionAsk,
-  PermissionRequest,
+  QuestionAsk,
+  QuestionOption,
+  QuestionReply,
   QueuedMessage,
+  SecretAsk,
   Seq,
+  SkillFolder,
+  SkillFolderAdded,
+  SkillFolderEntry,
   SkillSource,
   SkillsView,
   SkillUse,
@@ -71,6 +82,7 @@ export type {
   UpdateRelease,
   UpdateView,
   Viewer,
+  WaitingAsk,
   WebSearchStep,
   WhenBusy,
 } from "@top/protocol";
@@ -138,10 +150,12 @@ export type TopSnapshot = {
   readonly viewer: Viewer | undefined;
   readonly server: { readonly version: string | undefined; readonly channel: Channel | undefined } | undefined;
   readonly update: UpdateView | undefined;
-  readonly permissions: readonly PermissionRequest[];
+  readonly asks: readonly WaitingAsk[];
   readonly tasks: readonly TaskView[];
   readonly outdated: "client" | "server" | undefined;
 };
+
+export type AskTarget = { readonly id: number; readonly bot: BotId };
 
 export class TopClient {
   readonly clientId: string;
@@ -179,7 +193,7 @@ export class TopClient {
       viewer: undefined,
       server: undefined,
       update: undefined,
-      permissions: [],
+      asks: [],
       tasks: [],
       outdated: undefined,
     };
@@ -203,7 +217,7 @@ export class TopClient {
             this.#publish({
               connection: status,
               attempt: this.#connection.attempt(),
-              ...(status !== "open" && this.#snapshot.permissions.length ? { permissions: [] } : {}),
+              ...(status !== "open" && this.#snapshot.asks.length ? { asks: [] } : {}),
             });
           },
         },
@@ -264,8 +278,18 @@ export class TopClient {
     return this.#command({ t: "assignMcp", server, bot, on });
   }
 
-  enableSkill(bot: BotId, name: string, on: boolean): Promise<void> {
-    return this.#command({ t: "enableSkill", bot, name, on });
+  enableSkills(bot: BotId, names: readonly string[], on: boolean): Promise<void> {
+    return this.#command({ t: "enableSkills", bot, names, on });
+  }
+
+  /** What adding a folder of skills (on the daemon's computer) would link, and what it would leave out. Changes nothing. */
+  previewSkillFolder(folder: string): Promise<SkillFolder> {
+    return this.#request({ t: "previewSkillFolder", folder });
+  }
+
+  /** Links the folder's new skills into the shared library and switches its usable ones on for `bots`. */
+  addSkillFolder(folder: string, bots: readonly BotId[]): Promise<SkillFolderAdded> {
+    return this.#request({ t: "addSkillFolder", folder, bots });
   }
 
   setWebSearch(bot: BotId, on: boolean): Promise<void> {
@@ -316,8 +340,20 @@ export class TopClient {
     return this.#command({ t: "setUpdateChannel", channel });
   }
 
-  answerPermission(request: Pick<PermissionRequest, "id" | "bot">, allow: boolean): Promise<void> {
-    return this.#command({ t: "answerPermission", id: request.id, bot: request.bot, allow });
+  answerPermission(request: AskTarget, allow: boolean): Promise<void> {
+    return this.#command({ t: "answer", id: request.id, bot: request.bot, reply: { kind: "permission", allow } });
+  }
+
+  answerQuestion(request: AskTarget, reply: QuestionReply): Promise<void> {
+    return this.#command({ t: "answer", id: request.id, bot: request.bot, reply: { kind: "question", ...reply } });
+  }
+
+  decline(request: AskTarget): Promise<void> {
+    return this.#command({ t: "answer", id: request.id, bot: request.bot, reply: { kind: "decline" } });
+  }
+
+  saveSecret(request: AskTarget, value: string): Promise<void> {
+    return this.#command({ t: "saveSecret", id: request.id, bot: request.bot, value });
   }
 
   answerTask(task: string, input: number, answers: TaskAnswers): Promise<void> {
@@ -460,8 +496,8 @@ export class TopClient {
       case "update":
         this.#publish({ update: frame.update });
         return;
-      case "permissions":
-        this.#publish({ permissions: frame.requests });
+      case "asks":
+        this.#publish({ asks: frame.asks });
         return;
       case "tasks":
         this.#publish({ tasks: frame.tasks });

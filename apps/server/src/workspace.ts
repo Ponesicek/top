@@ -1,9 +1,20 @@
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
-import { createBashTool, createEditTool, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
+import {
+  type BashOperations,
+  createBashTool,
+  createEditTool,
+  createFindTool,
+  createGrepTool,
+  createLocalBashOperations,
+  createLsTool,
+  createReadTool,
+  createWriteTool,
+} from "@earendil-works/pi-coding-agent";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import type { Static, TSchema } from "typebox";
+import type { OutputHider } from "./secrets.ts";
 import { defineTool, fromPromise, type ToolResult, type TopTool } from "./tools.ts";
 
 const REPLAY_SAFE = new Set(["read", "ls", "grep", "find", "write"]);
@@ -46,10 +57,30 @@ function adapt<P extends TSchema & object>(tool: CodingTool<P>): TopTool {
   });
 }
 
-export function computerTools(folder: string): TopTool[] {
+/**
+ * Runs commands as pi does, but passes their output through `hider` first, so saved secrets are
+ * hidden before pi shows the output, keeps it, or writes its full output to a temp file.
+ */
+export function hidingOperations(inner: BashOperations, hider: () => OutputHider): BashOperations {
+  return {
+    exec: async (command, cwd, options) => {
+      const hide = hider();
+      const pass = (data: Buffer) => {
+        if (data.length) options.onData(data);
+      };
+      try {
+        return await inner.exec(command, cwd, { ...options, onData: (data) => pass(hide.write(data)) });
+      } finally {
+        pass(hide.end());
+      }
+    },
+  };
+}
+
+export function computerTools(folder: string, hider?: () => OutputHider): TopTool[] {
   return [
     adapt(createReadTool(folder)),
-    adapt(createBashTool(folder)),
+    adapt(createBashTool(folder, hider ? { operations: hidingOperations(createLocalBashOperations(), hider) } : undefined)),
     adapt(createEditTool(folder)),
     adapt(createWriteTool(folder)),
     adapt(createGrepTool(folder)),

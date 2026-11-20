@@ -61,6 +61,7 @@ export type TasksConfig = {
   readonly maxRunning?: number | undefined;
   readonly folder?: ((bot: number) => Effect.Effect<string | undefined>) | undefined;
   readonly cancelGraceMs?: number | undefined;
+  readonly hide?: ((text: string) => string) | undefined;
 };
 
 export type TasksEvents = {
@@ -185,6 +186,7 @@ export function notifyText(task: TaskRow, session: SessionRow, label: string): s
 }
 
 export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: TasksConfig, events: TasksEvents) {
+  const scrub = (text: string) => redact(config.hide ? config.hide(text) : text);
   const scope = yield* Effect.scope;
   const adapters = new Map(config.adapters.map((a) => [a.id, a]));
   const slots = yield* Semaphore.make(config.maxRunning ?? 4);
@@ -222,7 +224,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const log = (live: Live, kind: TaskEventKind, text: string) =>
     Effect.map(now, (at) => {
-      const clipped = clip(redact(text.trim()), EVENT_CHARS);
+      const clipped = clip(scrub(text.trim()), EVENT_CHARS);
       if (!clipped) return;
       buffer.push({ task: live.id, bot: live.bot, at, kind, text: clipped });
       if (kind !== "state" && kind !== "usage") {
@@ -319,8 +321,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           }),
         );
         const kept = end.result ?? live.result;
-        const result = kept === undefined ? undefined : redact(kept);
-        const said = end.error === undefined ? undefined : redact(end.error);
+        const result = kept === undefined ? undefined : scrub(kept);
+        const said = end.error === undefined ? undefined : scrub(end.error);
         const error = said && dropped ? `${said}\n(${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : said;
         const row = yield* q.setState(live.id, ACTIVE_STATES, state, {
           ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
@@ -432,13 +434,19 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 live.harness?.answer(request.id, { kind: "cancelled" });
                 return;
               }
-              const { input } = yield* q.addInput({
-                task: live.id,
-                bot: live.bot,
-                external: request.id,
-                title: clip(redact(request.title), 400),
-                questions: request.questions,
-              });
+              const title = clip(scrub(request.title), 400);
+              const questions = request.questions.map((question) => ({
+                ...question,
+                question: scrub(question.question),
+                ...(question.header === undefined ? {} : { header: scrub(question.header) }),
+                options: question.options
+                  .filter((option) => scrub(option.label) === option.label)
+                  .map((option) => ({
+                    ...option,
+                    ...(option.description === undefined ? {} : { description: scrub(option.description) }),
+                  })),
+              }));
+              const { input } = yield* q.addInput({ task: live.id, bot: live.bot, external: request.id, title, questions });
               // Followed again after a restart: an answer Top saved may not have reached the harness, which asks again.
               if (live.resumed && input.state === "answered" && input.answer) {
                 yield* deliver(live, input, request.id, { kind: "question", answers: (input.answer as TaskAnswer).answers }, undefined);
@@ -455,8 +463,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 live,
                 `input:${input.id}`,
                 [
-                  `[Task ${live.id} needs input] ${live.row.title} (${label(live.session.harness)}) asks: ${request.title}`,
-                  ...(request.questions ?? []).map(
+                  `[Task ${live.id} needs input] ${live.row.title} (${label(live.session.harness)}) asks: ${title}`,
+                  ...questions.map(
                     (q) => `- ${q.id}: ${q.question}${q.options.length ? ` Options: ${q.options.map((o) => JSON.stringify(o.label)).join(", ")}` : ""}`,
                   ),
                   "",
@@ -552,7 +560,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             if (sending.wait) yield* Deferred.succeed(sending.wait.reply, undefined);
             return;
           }
-          const said = `${label(live.session.harness)} didn't take the answer to request ${input.id}: ${clip(redact(why), 400).replace(/\.$/, "")}`;
+          const said = `${label(live.session.harness)} didn't take the answer to request ${input.id}: ${clip(scrub(why), 400).replace(/\.$/, "")}`;
           const reopened = yield* q.reopenInput(input.id);
           if (reopened) {
             live.inputs.set(reopened.id, reopened);

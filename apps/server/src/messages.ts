@@ -1,5 +1,5 @@
 import type { AssistantMessage, ImageContent, SystemMessage, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { Attachment, Citation, FileChange, PermissionAnswer, SkillUse } from "@top/protocol";
+import { AskOutcome, Attachment, Citation, FileChange, QuestionReply, SkillUse } from "@top/protocol";
 import * as Schema from "effect/Schema";
 
 export interface UserText extends TextContent {
@@ -31,7 +31,7 @@ export type EntryBody = {
   readonly tool: ToolResultMessage;
   readonly notice: { readonly text: string };
   readonly files: { readonly files: readonly FileChange[] };
-  readonly permission: { readonly request: number; readonly answer: PermissionAnswer };
+  readonly answer: typeof AnswerView.Type;
   readonly compaction: Compaction;
 };
 
@@ -97,7 +97,7 @@ export const CompactionView = Schema.Struct({
   timestamp: Schema.Number,
 });
 export const FilesView = Schema.Struct({ files: Schema.Array(FileChange) });
-export const PermissionView = Schema.Struct({ request: Schema.Int, answer: PermissionAnswer });
+export const AnswerView = Schema.Struct({ request: Schema.Int, answer: AskOutcome, reply: Optional(QuestionReply) });
 
 export type AssistantView = typeof AssistantView.Type;
 export type Content = AssistantView["content"] | typeof UserView.Type.content | typeof ToolResultView.Type.content;

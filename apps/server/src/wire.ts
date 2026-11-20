@@ -1,4 +1,4 @@
-import { type Entry, PermissionAsk, type ToolCallView } from "@top/protocol";
+import { Ask, type Entry, type ToolCallView } from "@top/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { textOf } from "./messages.ts";
@@ -19,7 +19,7 @@ export function summarize(args: unknown): string {
   return text.length > ARGS_SUMMARY_CHARS ? `${text.slice(0, ARGS_SUMMARY_CHARS - 1)}…` : text;
 }
 
-const permissionOf = Schema.decodeUnknownOption(Schema.Struct({ permission: PermissionAsk }));
+const askOf = Schema.decodeUnknownOption(Schema.Struct({ ask: Ask }));
 const taskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
 
 export function toWire(stored: StoredEntry, full = false): Entry | undefined {
@@ -32,8 +32,14 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       return { ...base, kind: "notice", text: stored.message.text };
     case "files":
       return { ...base, kind: "files", files: stored.message.files };
-    case "permission":
-      return { ...base, kind: "permission", request: stored.message.request, answer: stored.message.answer };
+    case "answer":
+      return {
+        ...base,
+        kind: "answer",
+        request: stored.message.request,
+        answer: stored.message.answer,
+        ...(stored.message.reply ? { reply: stored.message.reply } : {}),
+      };
     case "user": {
       const { content, attachments } = stored.message;
       const skill = typeof content === "string" ? undefined : content.flatMap((p) => (p.type === "text" && p.skill ? [p.skill] : []))[0];
@@ -73,7 +79,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       const message = stored.message;
       const text = textOf(message.content);
       const cut = !full && text.length > TOOL_PREVIEW_CHARS;
-      const permission = Option.getOrUndefined(permissionOf(message.details))?.permission;
+      const ask = Option.getOrUndefined(askOf(message.details))?.ask;
       const task = Option.getOrUndefined(taskOf(message.details))?.task;
       return {
         ...base,
@@ -84,7 +90,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         ...(cut ? { truncated: true as const } : {}),
         ...(message.isError ? { isError: true as const } : {}),
         ...(stored.outcome ? { outcome: stored.outcome } : {}),
-        ...(permission ? { permission } : {}),
+        ...(ask ? { ask } : {}),
         ...(task ? { task } : {}),
       };
     }

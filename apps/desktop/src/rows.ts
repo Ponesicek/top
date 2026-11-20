@@ -1,4 +1,6 @@
 import type {
+  Ask,
+  AskOutcome,
   Attachment,
   BotSummary,
   Citation,
@@ -7,8 +9,7 @@ import type {
   FileChange,
   Gap,
   PendingMessage,
-  PermissionAnswer,
-  PermissionAsk,
+  QuestionReply,
   QueuedMessage,
   SkillUse,
   TaskView,
@@ -18,7 +19,7 @@ import type {
 } from "@top/client";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
-type PermissionEntry = Extract<Entry, { kind: "permission" }>;
+type AnswerEntry = Extract<Entry, { kind: "answer" }>;
 
 export type Row =
   | { readonly kind: "earlier"; readonly key: string }
@@ -49,7 +50,14 @@ export type Row =
   | { readonly kind: "tool"; readonly key: string; readonly entry: ToolEntry }
   | { readonly kind: "notice"; readonly key: string; readonly text: string }
   | { readonly kind: "wake"; readonly key: string }
-  | { readonly kind: "permission"; readonly key: string; readonly bot: number; readonly ask: PermissionAsk; readonly answer?: PermissionAnswer }
+  | {
+      readonly kind: "ask";
+      readonly key: string;
+      readonly bot: number;
+      readonly ask: Ask;
+      readonly answer?: AskOutcome;
+      readonly reply?: QuestionReply;
+    }
   | { readonly kind: "task"; readonly key: string; readonly bot: number; readonly task: string; readonly title?: string }
   | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
@@ -57,9 +65,9 @@ export type Row =
 const entryRows = new WeakMap<Entry, Row>();
 const NONE: readonly never[] = [];
 
-const hidden = (source: string | undefined) => source === "job" || source === "permission" || source === "task";
+const hidden = (source: string | undefined) => source === "job" || source === "answer" || source === "task";
 
-function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
+function rowForEntry(entry: Exclude<Entry, AnswerEntry>): Row {
   let row = entryRows.get(entry);
   if (row) return row;
   const key = `e${entry.seq}`;
@@ -106,14 +114,21 @@ function rowForEntry(entry: Exclude<Entry, PermissionEntry>): Row {
 
 const itemRowsCache = new WeakMap<readonly TranscriptItem[], Row[]>();
 
-type PermissionRow = Extract<Row, { kind: "permission" }>;
-const permissionRows = new WeakMap<ToolEntry, PermissionRow>();
+type AskRow = Extract<Row, { kind: "ask" }>;
+const askRows = new WeakMap<ToolEntry, AskRow>();
 
-function permissionRow(entry: ToolEntry, ask: PermissionAsk, settled: PermissionEntry | undefined): PermissionRow {
-  const prev = permissionRows.get(entry);
-  if (prev && prev.answer === settled?.answer) return prev;
-  const row: PermissionRow = { kind: "permission", key: `e${entry.seq}`, bot: entry.bot, ask, ...(settled ? { answer: settled.answer } : {}) };
-  permissionRows.set(entry, row);
+function askRow(entry: ToolEntry, ask: Ask, settled: AnswerEntry | undefined): AskRow {
+  const prev = askRows.get(entry);
+  if (prev && prev.answer === settled?.answer && prev.reply === settled?.reply) return prev;
+  const row: AskRow = {
+    kind: "ask",
+    key: `e${entry.seq}`,
+    bot: entry.bot,
+    ask,
+    ...(settled ? { answer: settled.answer } : {}),
+    ...(settled?.reply ? { reply: settled.reply } : {}),
+  };
+  askRows.set(entry, row);
   return row;
 }
 
@@ -143,15 +158,14 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
   let rows = itemRowsCache.get(items);
   if (rows) return rows;
   rows = [];
-  const settled = new Map<number, PermissionEntry>();
-  for (const item of items) if (item.kind === "entry" && item.entry.kind === "permission") settled.set(item.entry.request, item.entry);
+  const settled = new Map<number, AnswerEntry>();
+  for (const item of items) if (item.kind === "entry" && item.entry.kind === "answer") settled.set(item.entry.request, item.entry);
   for (const item of items) {
     if (item.kind === "earlier") rows.push({ kind: "earlier", key: "earlier" });
     else if (item.kind === "gap") rows.push({ kind: "gap", key: `gap${item.gap.after}`, gap: item.gap });
     else if (item.entry.kind === "user" && hidden(item.entry.source)) continue;
-    else if (item.entry.kind === "permission") continue;
-    else if (item.entry.kind === "tool" && item.entry.permission)
-      rows.push(permissionRow(item.entry, item.entry.permission, settled.get(item.entry.permission.id)));
+    else if (item.entry.kind === "answer") continue;
+    else if (item.entry.kind === "tool" && item.entry.ask) rows.push(askRow(item.entry, item.entry.ask, settled.get(item.entry.ask.id)));
     else if (item.entry.kind === "tool" && item.entry.task && !item.entry.isError) rows.push(taskRow(item.entry, item.entry.task));
     else rows.push(rowForEntry(item.entry));
   }
@@ -231,7 +245,7 @@ export type FilesRow = Extract<Row, { kind: "files" }>;
 
 export function author(row: DisplayRow): "user" | "bot" | undefined {
   if (row.kind === "user") return "user";
-  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working" || row.kind === "permission" || row.kind === "task") return "bot";
+  if (row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "working" || row.kind === "ask" || row.kind === "task") return "bot";
   return undefined;
 }
 

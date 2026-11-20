@@ -57,7 +57,7 @@ const setup = (tools: TopTool[] = [], dir?: string) => harness({ tools, foregrou
 const textOf = (entry: StoredEntry) =>
   entry.kind === "notice"
     ? entry.message.text
-    : entry.kind === "files" || entry.kind === "permission" || entry.kind === "compaction"
+    : entry.kind === "files" || entry.kind === "answer" || entry.kind === "compaction"
       ? ""
       : textOfContent(entry.message.content);
 const fromTop = async (h: Harness, source: "wake" | "job") => (await h.entries()).filter((e) => e.kind === "user" && e.source === source);
@@ -249,7 +249,7 @@ const collarOf = (h: Harness) => ({
   store: h.store,
   jobs: h.daemon.jobs,
   wakes: h.daemon.wakes,
-  permissions: h.daemon.permissions,
+  asks: h.daemon.asks,
   changed: h.daemon.changed,
   toolsOf: h.daemon.toolsOf,
 });

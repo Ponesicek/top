@@ -25,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import { type Asks, makeAsks } from "./asks.ts";
 import { Attachments } from "./attachments.ts";
 import { collarTools } from "./collar/index.ts";
 import { contextSections, hasContextFiles, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
@@ -33,8 +34,8 @@ import { type FilesFolder, makeFilesFolder } from "./files.ts";
 import { type Jobs, makeJobs } from "./jobs.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import { Mcp } from "./mcp.ts";
-import { makePermissions, type Permissions } from "./permissions.ts";
 import { type BotRunner, makeRunner } from "./runner.ts";
+import { Secrets } from "./secrets.ts";
 import { seedHistory } from "./seed.ts";
 import { makeSkills, type Skills, type SkillsConfig } from "./skills.ts";
 import { type BotRow, type InboxRow, PLANNED_RESTART, Store, type StoredEntry } from "./store.ts";
@@ -188,7 +189,7 @@ export class Daemon extends Context.Service<
     readonly files: (bot: number) => FilesFolder | undefined;
     readonly jobs: Jobs;
     readonly wakes: WakeClock;
-    readonly permissions: Permissions;
+    readonly asks: Asks;
     readonly skills: Skills | undefined;
     readonly tasks: Tasks | undefined;
   }
@@ -198,6 +199,7 @@ const make = Effect.gen(function* () {
   const store = yield* Store;
   const events = yield* Events;
   const kit = yield* BotKit;
+  const secrets = yield* Secrets;
   const fs = yield* FileSystem.FileSystem;
   const mcp = Option.getOrUndefined(yield* Effect.serviceOption(Mcp));
   const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
@@ -213,16 +215,12 @@ const make = Effect.gen(function* () {
   const seeded = (yield* store.bots)[0];
   if (kit.seed && seeded) yield* seedHistory(seeded.id, kit.seed);
 
-  const waiting = (bot: number): Effect.Effect<{ background?: number; approvals?: number; wakeAt?: number }> =>
+  const waiting = (bot: number): Effect.Effect<{ background?: number; asks?: number; wakeAt?: number }> =>
     Effect.gen(function* () {
       const background = jobs.count(bot);
-      const approvals = (yield* store.waitingOf(bot)).length;
+      const asks = (yield* store.waitingOf(bot)).length;
       const wakeAt = (yield* store.wakes(bot))[0]?.dueAt;
-      return {
-        ...(background ? { background } : {}),
-        ...(approvals ? { approvals } : {}),
-        ...(wakeAt !== undefined ? { wakeAt } : {}),
-      };
+      return { ...(background ? { background } : {}), ...(asks ? { asks } : {}), ...(wakeAt !== undefined ? { wakeAt } : {}) };
     });
 
   const summarize = (bot: number, runner: BotRunner | undefined): Effect.Effect<BotSummary> =>
@@ -282,10 +280,10 @@ const make = Effect.gen(function* () {
   const jobs: Jobs = yield* makeJobs({ deliver: queued, changed }, kit.foregroundMs, kit.repeatGapMs);
   const wakes = yield* makeWakeClock(queued);
   const toolsOf = (bot: number) => toolSources.get(bot)?.() ?? [];
-  const permissions = makePermissions(store, {
+  const asks = makeAsks(store, secrets, {
     entry: (entry) => (bots.has(entry.bot) ? Effect.andThen(events.publish({ _tag: "Entry", entry }), touch(entry.bot)) : Effect.void),
     deliver: queued,
-    changed: (bot) => Effect.andThen(events.publish({ _tag: "Permissions" }), changed(bot)),
+    changed: (bot) => Effect.andThen(events.publish({ _tag: "Asks" }), changed(bot)),
   });
   const tasks: Tasks | undefined = kit.harnesses?.length
     ? yield* makeTasks(
@@ -294,12 +292,13 @@ const make = Effect.gen(function* () {
           adapters: kit.harnesses,
           maxRunning: kit.maxTasks,
           cancelGraceMs: kit.taskCancelGraceMs,
+          hide: secrets.redact,
           folder: (bot) => Effect.map(store.bot(bot), (row) => (row && kit.folder ? kit.folder(row) : undefined)),
         },
         { deliver: queued, publish: (views) => events.publish({ _tag: "Tasks", views }) },
       )
     : undefined;
-  const collar = collarTools({ store, jobs, wakes, permissions, tasks, changed, toolsOf });
+  const collar = collarTools({ store, jobs, wakes, asks, tasks, changed, toolsOf });
   const skills = kit.skills
     ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
     : undefined;
@@ -313,11 +312,11 @@ const make = Effect.gen(function* () {
           if (!isLive()) return Effect.void;
           return Effect.andThen(events.publish({ _tag: "Entry", entry }), entry.kind !== "system" ? touch(bot.id) : Effect.void);
         });
-      const own = [...(typeof kit.tools === "function" ? yield* kit.tools(bot) : kit.tools), ...collar];
-      const plain = mcp ? () => [...own, ...mcp.toolsFor(bot.id)] : () => own;
-      toolSources.set(bot.id, plain);
+      const own = [...(typeof kit.tools === "function" ? yield* kit.tools(bot) : kit.tools), ...collar].map(secrets.guard);
+      const servers = () => (mcp ? mcp.toolsFor(bot.id).map(secrets.guard) : []);
+      toolSources.set(bot.id, () => [...own, ...servers()]);
       const wrapped = own.map(jobs.wrap);
-      const tools = mcp ? () => [...wrapped, ...mcp.toolsFor(bot.id).map(jobs.wrap)] : () => wrapped;
+      const tools = () => [...wrapped, ...servers().map(jobs.wrap)];
       const fixed = kit.sections ? yield* kit.sections(bot) : undefined;
       const searchOn = Effect.map(store.bot(bot.id), (row) => row?.webSearch === true);
       const folder = kit.folder?.(bot);
@@ -458,7 +457,8 @@ const make = Effect.gen(function* () {
       yield* store.markDeleted(id);
       yield* wakes.changed;
       yield* events.publish({ _tag: "BotRemoved", bot: id });
-      yield* events.publish({ _tag: "Permissions" });
+      yield* events.publish({ _tag: "Asks" });
+      yield* secrets.removeBot(id);
       if (mcp) yield* mcp.botRemoved(id);
       if (skills) yield* skills.rescan;
       const { runner } = live;
@@ -492,7 +492,7 @@ const make = Effect.gen(function* () {
       const runner = yield* runnerOf(bot);
       yield* runner.abort;
       yield* jobs.stopAll(bot);
-      yield* permissions.withdraw(bot);
+      yield* asks.withdraw(bot);
       if (tasks) yield* Effect.forkIn(tasks.stopAll(bot), scope);
     }),
     start: Effect.gen(function* () {
@@ -515,10 +515,10 @@ const make = Effect.gen(function* () {
     files: (bot) => bots.get(bot)?.folder,
     jobs,
     wakes,
-    permissions,
+    asks,
     skills,
     tasks,
   });
 });
 
-export const layer: Layer.Layer<Daemon, never, Store | Events | BotKit | FileSystem.FileSystem> = Layer.effect(Daemon, make);
+export const layer: Layer.Layer<Daemon, never, Store | Events | BotKit | Secrets | FileSystem.FileSystem> = Layer.effect(Daemon, make);

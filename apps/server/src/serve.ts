@@ -134,7 +134,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (daemon.skills) yield* send({ t: "skills", skills: daemon.skills.view() });
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
-  yield* send({ t: "permissions", requests: yield* daemon.permissions.waiting });
+  yield* send({ t: "asks", asks: yield* daemon.asks.waiting });
   if (daemon.tasks) yield* send({ t: "tasks", tasks: [...(yield* daemon.tasks.views)] });
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
@@ -165,8 +165,8 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return send({ t: "account", account: event.view });
       case "Update":
         return send({ t: "update", update: event.view });
-      case "Permissions":
-        return Effect.flatMap(daemon.permissions.waiting, (requests) => send({ t: "permissions", requests }));
+      case "Asks":
+        return Effect.flatMap(daemon.asks.waiting, (asks) => send({ t: "asks", asks }));
       case "Tasks":
         return send({ t: "tasks", tasks: [...event.views] });
     }
@@ -196,6 +196,13 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const skillsOf = () => (daemon.skills ? Effect.succeed(daemon.skills) : Effect.fail(new NoSkills()));
   const tasksOf = () => (daemon.tasks ? Effect.succeed(daemon.tasks) : Effect.fail(new TaskError({ message: "This daemon runs no harnesses." })));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
+  const botRow = (id: number) =>
+    Effect.gen(function* () {
+      yield* known(id);
+      const bot = yield* store.bot(id);
+      if (!bot) return yield* new UnknownBotError({ bot: id });
+      return bot;
+    });
 
   const watch = (frame: Extract<ClientFrame, { t: "watch" }>) =>
     Effect.gen(function* () {
@@ -311,14 +318,26 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(mcpOf(), (m) => m.retry(frame.id)),
         );
-      case "enableSkill":
+      case "enableSkills":
         return answer(
           frame,
           Effect.gen(function* () {
             const skills = yield* skillsOf();
-            const bot = daemon.has(frame.bot) ? yield* store.bot(frame.bot) : undefined;
-            if (!bot) return yield* new UnknownBotError({ bot: frame.bot });
-            yield* skills.enable(bot, frame.name, frame.on);
+            yield* skills.enable(yield* botRow(frame.bot), frame.names, frame.on);
+          }),
+        );
+      case "previewSkillFolder":
+        return answer(
+          frame,
+          Effect.flatMap(skillsOf(), (s) => s.preview(frame.folder)),
+        );
+      case "addSkillFolder":
+        return answer(
+          frame,
+          Effect.gen(function* () {
+            const skills = yield* skillsOf();
+            const bots = yield* Effect.forEach([...new Set(frame.bots)], botRow);
+            return yield* skills.addFolder(frame.folder, bots);
           }),
         );
       case "setWebSearch":
@@ -368,8 +387,10 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
           frame,
           Effect.flatMap(updatesOf(), (u) => u.setChannel(frame.channel)),
         );
-      case "answerPermission":
-        return answer(frame, daemon.permissions.answer(frame.id, frame.bot, frame.allow));
+      case "answer":
+        return answer(frame, daemon.asks.answer(frame.id, frame.bot, frame.reply));
+      case "saveSecret":
+        return answer(frame, daemon.asks.saveSecret(frame.id, frame.bot, frame.value));
       case "answerTask":
         return answer(
           frame,

@@ -17,7 +17,7 @@ export type DaemonEvent =
   | { readonly _tag: "McpServerRemoved"; readonly id: number }
   | { readonly _tag: "Skills"; readonly view: SkillsView }
   | { readonly _tag: "Account"; readonly view: AccountView }
-  | { readonly _tag: "Permissions" }
+  | { readonly _tag: "Asks" }
   | { readonly _tag: "Tasks"; readonly views: readonly TaskView[] }
   | { readonly _tag: "Update"; readonly view: UpdateView };
 
