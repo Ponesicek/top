@@ -163,7 +163,7 @@ function Details({ view, id }: { view: T3CodeView; id: string }) {
           onChange={(e) => setQuery(e.currentTarget.value)}
           placeholder="Filter"
           aria-label="Filter providers and projects"
-          className="py-1.5 text-small"
+          className="py-1.5 text-small narrow:min-h-11"
         />
       )}
       <ul className="m-0 flex max-h-60 list-none flex-col overflow-y-auto rounded-field bg-secondary p-1 text-meta">
@@ -242,7 +242,7 @@ function Connected({
         </div>
         <div className="flex flex-wrap items-center gap-1.5 pl-3.75">
           {view.error && !checking && (
-            <Button size="xs" className="px-2.5" onClick={onPair}>
+            <Button size="xs" className="px-2.5 narrow:min-h-11" onClick={onPair}>
               Pair again
             </Button>
           )}
