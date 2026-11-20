@@ -9,7 +9,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { BUILD } from "./build.ts";
 
-export const DEFAULT_MODEL = "openai/gpt-6.1-sol";
+export const DEFAULT_MODEL = "openai/gpt-6.2-sol";
 const SERVICE = "top.service";
 
 export const installLayout = (home: string) => {
@@ -110,6 +110,19 @@ const run = (command: string, args: readonly string[]) =>
     );
   });
 
+/**
+ * The daemon's flags after `top install`: the ones given, on the model given, else the one already saved (so reinstalling
+ * with only Tailscale flags keeps it), else the default. With no flags given, a saved file is kept as it is.
+ */
+export const daemonFlags = (given: readonly string[] | undefined, saved: string | undefined): readonly string[] | undefined => {
+  if (given?.includes("--model")) return given;
+  if (!given && saved !== undefined) return undefined;
+  const lines = saved?.split("\n").map((line) => line.trim()) ?? [];
+  const at = lines.lastIndexOf("--model");
+  const model = (at >= 0 ? lines[at + 1] : undefined) || DEFAULT_MODEL;
+  return ["--model", model, ...(given ?? [])];
+};
+
 const io = <A>(what: string, promise: () => Promise<A>) =>
   Effect.tryPromise({ try: promise, catch: (cause) => new InstallError({ message: `${what}: ${cause instanceof Error ? cause.message : String(cause)}` }) });
 
@@ -142,7 +155,8 @@ export const install = (options: InstallOptions) =>
       await writeFile(layout.launcher, LAUNCHER);
       await chmod(layout.launcher, 0o755);
     });
-    const args = options.args ?? (existsSync(layout.args) ? undefined : ["--model", DEFAULT_MODEL]);
+    const saved = existsSync(layout.args) ? yield* io("Couldn't read the daemon's flags", () => readFile(layout.args, "utf8")) : undefined;
+    const args = daemonFlags(options.args, saved);
     if (args) yield* io("Couldn't write the daemon's flags", () => writeFile(layout.args, `${args.join("\n")}\n`));
     if (!existsSync(layout.channel)) yield* io("Couldn't write the channel", () => writeFile(layout.channel, `${BUILD.channel}\n`));
     yield* io("Couldn't clear an earlier update", async () => {

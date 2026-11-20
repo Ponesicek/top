@@ -2,8 +2,12 @@ import type { AssistantMessage, ImageContent, TextContent } from "@earendil-work
 import * as Config from "effect/Config";
 import type { TopUserMessage, TranscriptMessage } from "./messages.ts";
 
-export const CompactAtTokens = Config.Int("TOP_COMPACT_AT_TOKENS").pipe(Config.withDefault(60_000));
-export const WINDOW_SHARE = 0.8;
+export const CompactAtTokens = Config.Int("TOP_COMPACT_AT_TOKENS").pipe(Config.withDefault(120_000));
+const WINDOW_SHARE = 0.8;
+
+/** Where a bot's conversation is compacted: at `atTokens`, but never past 80% of the model's window, leaving room for the answer. */
+export const compactLimit = (atTokens: number | undefined, contextWindow: number): number | undefined =>
+  atTokens && atTokens > 0 ? Math.min(atTokens, contextWindow > 0 ? Math.floor(contextWindow * WINDOW_SHARE) : Number.POSITIVE_INFINITY) : undefined;
 
 export const SUMMARY_REQUEST = [
   "Your conversation has grown long, so it's being compacted: everything above will be replaced by a summary you write now, and you'll carry on from that summary alone. Write it for yourself. Don't call tools; answer with the summary only.",
