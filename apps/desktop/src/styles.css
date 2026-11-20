@@ -731,10 +731,10 @@
     --avatar-strain: 1;
   }
 
-  .avatar-body {
+  .avatar .avatar-body {
     transform-origin: 50% 78%;
   }
-  .avatar-lids {
+  .avatar .avatar-lids {
     transform-origin: var(--avatar-gaze, 50% 50%);
   }
   .avatar[data-state] :is(.avatar-body, .avatar-eyes, .avatar-lids) {
