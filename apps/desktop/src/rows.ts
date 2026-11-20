@@ -17,6 +17,7 @@ import type {
   TranscriptItem,
   WebSearchStep,
 } from "@top/client";
+import { hasCitationMarker, pagesOpened, withoutCitationMarkers, withoutOpenAiTag } from "./citations.ts";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 type AnswerEntry = Extract<Entry, { kind: "answer" }>;
@@ -43,6 +44,7 @@ export type Row =
       readonly tools: readonly ToolCallView[];
       readonly searches: readonly WebSearchStep[];
       readonly citations: readonly Citation[];
+      readonly pagesRead?: readonly Citation[];
       readonly hasThinking: boolean;
       readonly at: number;
       readonly error?: string | undefined;
@@ -114,6 +116,35 @@ function rowForEntry(entry: Exclude<Entry, AnswerEntry>): Row {
 
 const itemRowsCache = new WeakMap<readonly TranscriptItem[], Row[]>();
 
+type AssistantRowData = Extract<Row, { kind: "assistant" }>;
+
+// The pages the bot opened since the person's last message, up to and including rows[at];
+// undefined when some of that turn isn't loaded.
+function openedSince(rows: readonly Row[], at: number): Citation[] | undefined {
+  const steps: WebSearchStep[] = [];
+  for (let i = at; i >= 0; i--) {
+    const row = rows[i]!;
+    if (row.kind === "user") break;
+    if (row.kind === "earlier" || row.kind === "gap") return undefined;
+    if (row.kind === "assistant") steps.unshift(...row.searches);
+  }
+  return pagesOpened(steps);
+}
+
+// OpenAI didn't say which page a raw citation marker means, so the marker goes, and the answer lists the pages
+// the bot read in that turn instead, apart from its Sources: they're what it read, not what a sentence cites.
+const markedRows = new WeakMap<AssistantRowData, { signature: string; row: AssistantRowData }>();
+function withoutMarkers(row: AssistantRowData, opened: Citation[] | undefined): AssistantRowData {
+  const cited = new Set(row.citations.map((c) => withoutOpenAiTag(c.url)));
+  const pagesRead = (opened ?? []).filter((page) => !cited.has(withoutOpenAiTag(page.url)));
+  const signature = pagesRead.map((p) => p.url).join("\n");
+  const known = markedRows.get(row);
+  if (known?.signature === signature) return known.row;
+  const next: AssistantRowData = { ...row, text: withoutCitationMarkers(row.text), ...(pagesRead.length ? { pagesRead } : {}) };
+  markedRows.set(row, { signature, row: next });
+  return next;
+}
+
 type AskRow = Extract<Row, { kind: "ask" }>;
 const askRows = new WeakMap<ToolEntry, AskRow>();
 
@@ -168,6 +199,10 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
     else if (item.entry.kind === "tool" && item.entry.ask) rows.push(askRow(item.entry, item.entry.ask, settled.get(item.entry.ask.id)));
     else if (item.entry.kind === "tool" && item.entry.task && !item.entry.isError) rows.push(taskRow(item.entry, item.entry.task));
     else rows.push(rowForEntry(item.entry));
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row.kind === "assistant" && hasCitationMarker(row.text)) rows[i] = withoutMarkers(row, openedSince(rows, i));
   }
   itemRowsCache.set(items, rows);
   return rows;
@@ -327,7 +362,7 @@ export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[
       run.push(row.entry);
       continue;
     }
-    if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length) continue;
+    if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length && !row.citations.length && !row.pagesRead) continue;
     flush();
     if (row.kind === "working" || author(row) !== "bot") flushFiles();
     out.push(row);

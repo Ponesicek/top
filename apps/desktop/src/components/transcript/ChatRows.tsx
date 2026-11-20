@@ -128,6 +128,7 @@ const BotBubbles = memo(function BotBubbles({ row, first }: { row: Extract<Displ
         ),
       )}
       {row.citations.length > 0 && <Sources citations={row.citations} className="mt-0.5 max-w-[min(80%,620px)] pl-1" />}
+      {row.pagesRead && <Sources citations={row.pagesRead} label="Pages read" className="mt-0.5 max-w-[min(80%,620px)] pl-1" />}
       {row.error && <AnswerError error={row.error} className="mt-0 shadow-bubble" />}
     </div>
   );

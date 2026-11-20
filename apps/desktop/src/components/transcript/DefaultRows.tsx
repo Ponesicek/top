@@ -95,6 +95,7 @@ const AssistantRow = memo(function AssistantRow({ row, cont, turn, end }: { row:
           {row.searches.length > 0 && <WebSearches row={row} className={cn("py-0.5", row.text && "mb-1.5")} />}
           {row.text && <Markdown html={html} answer={row.seq} />}
           {row.citations.length > 0 && <Sources citations={row.citations} />}
+          {row.pagesRead && <Sources citations={row.pagesRead} label="Pages read" />}
           {row.error && <AnswerError error={row.error} />}
         </div>
       </div>

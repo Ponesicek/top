@@ -322,7 +322,15 @@ export const WebSearches = memo(function WebSearches({
   );
 });
 
-export const Sources = memo(function Sources({ citations, className }: { citations: readonly Citation[]; className?: string }) {
+export const Sources = memo(function Sources({
+  citations,
+  label = "Sources",
+  className,
+}: {
+  citations: readonly Citation[];
+  label?: string;
+  className?: string;
+}) {
   const links = citations.flatMap((c) => {
     const href = webHref(c.url);
     return href ? [{ href, title: c.title }] : [];
@@ -330,7 +338,7 @@ export const Sources = memo(function Sources({ citations, className }: { citatio
   if (!links.length) return null;
   return (
     <div className={cn("mt-2 flex flex-wrap items-center gap-1.5", className)}>
-      <span className="text-micro font-semibold text-muted-foreground">Sources</span>
+      <span className="text-micro font-semibold text-muted-foreground">{label}</span>
       {links.map(({ href, title }, i) => (
         <a
           key={href}
