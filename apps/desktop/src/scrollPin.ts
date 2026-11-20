@@ -15,6 +15,13 @@ export function stillPinned(pinned: boolean, scroll: Scroll, lastTop: number, by
   return !(byPerson && scroll.top < lastTop);
 }
 
+// What counts as the person scrolling up: only that may un-pin. Scrolling down, at the end or not, never does.
+const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
+export const keyScrollsUp = (key: string, shift: boolean) => UP_KEYS.has(key) || (key === " " && shift);
+export const wheelScrollsUp = (deltaY: number) => deltaY < 0;
+/** A finger moving down the screen drags the content down: that's scrolling up. */
+export const touchScrollsUp = (fromY: number, toY: number) => toY > fromY;
+
 const listeners = new Map<string, Set<() => void>>();
 
 /** Asks the conversation with this bot to go to its end and stay there: after you send it a message. */

@@ -6,7 +6,7 @@ import { copyCode } from "../lib/copyCode.ts";
 import { perf } from "../perf.ts";
 import { findPassage, onJump } from "../quotes.ts";
 import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows, taskQuestionRows, withTail } from "../rows.ts";
-import { INPUT_MS, onPinToEnd, stillPinned } from "../scrollPin.ts";
+import { INPUT_MS, keyScrollsUp, onPinToEnd, stillPinned, touchScrollsUp, wheelScrollsUp } from "../scrollPin.ts";
 import { useClient, useConversation } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
@@ -82,7 +82,7 @@ export const Transcript = memo(function Transcript({ sync, showTools = false }: 
   }, [virtualizer]);
 
   const lastTop = useRef(0);
-  // When the person last scrolled by hand (wheel, keys, touch), and whether they're dragging the scrollbar.
+  // When the person last scrolled up by hand (wheel, keys, touch), and whether they're dragging the scrollbar.
   const input = useRef({ at: Number.NEGATIVE_INFINITY, dragging: false });
   const onScroll = useCallback(() => {
     const el = scrollRef.current!;
@@ -110,7 +110,19 @@ export const Transcript = memo(function Transcript({ sync, showTools = false }: 
       input.current.at = performance.now();
     };
     const keys = (e: KeyboardEvent) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) touched();
+      if (keyScrollsUp(e.key, e.shiftKey)) touched();
+    };
+    const wheel = (e: WheelEvent) => {
+      if (wheelScrollsUp(e.deltaY)) touched();
+    };
+    let fingerY: number | undefined;
+    const fingerDown = (e: TouchEvent) => {
+      fingerY = e.touches[0]?.clientY;
+    };
+    const fingerMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY;
+      if (y !== undefined && fingerY !== undefined && touchScrollsUp(fingerY, y)) touched();
+      fingerY = y;
     };
     const grab = (e: PointerEvent) => {
       // A press on the scroll box itself, not on a row, is on its scrollbar.
@@ -121,8 +133,9 @@ export const Transcript = memo(function Transcript({ sync, showTools = false }: 
       input.current.dragging = false;
       touched();
     };
-    el.addEventListener("wheel", touched, { passive: true });
-    el.addEventListener("touchmove", touched, { passive: true });
+    el.addEventListener("wheel", wheel, { passive: true });
+    el.addEventListener("touchstart", fingerDown, { passive: true });
+    el.addEventListener("touchmove", fingerMove, { passive: true });
     el.addEventListener("keydown", keys);
     el.addEventListener("pointerdown", grab);
     addEventListener("pointerup", release);
@@ -135,8 +148,9 @@ export const Transcript = memo(function Transcript({ sync, showTools = false }: 
     });
     return () => {
       observer.disconnect();
-      el.removeEventListener("wheel", touched);
-      el.removeEventListener("touchmove", touched);
+      el.removeEventListener("wheel", wheel);
+      el.removeEventListener("touchstart", fingerDown);
+      el.removeEventListener("touchmove", fingerMove);
       el.removeEventListener("keydown", keys);
       el.removeEventListener("pointerdown", grab);
       removeEventListener("pointerup", release);

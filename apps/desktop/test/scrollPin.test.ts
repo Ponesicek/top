@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { onPinToEnd, pinToEnd, stillPinned } from "../src/scrollPin.ts";
+import { keyScrollsUp, onPinToEnd, pinToEnd, stillPinned, touchScrollsUp, wheelScrollsUp } from "../src/scrollPin.ts";
 
 const at = (top: number) => ({ top, height: 10_000, client: 600 });
 
@@ -38,4 +38,15 @@ test("a send pins only its own bot's conversation, and a closed one isn't called
   pinToEnd("1");
   expect(atlas).toHaveBeenCalledTimes(1);
   offMoss();
+});
+
+test("only scrolling up by hand counts: a wheel, key or finger going down never un-pins", () => {
+  expect([wheelScrollsUp(-40), wheelScrollsUp(40), wheelScrollsUp(0)]).toEqual([true, false, false]);
+  expect(["ArrowUp", "PageUp", "Home"].map((k) => keyScrollsUp(k, false))).toEqual([true, true, true]);
+  expect(["ArrowDown", "PageDown", "End", " ", "a"].map((k) => keyScrollsUp(k, false))).toEqual([false, false, false, false, false]);
+  expect(keyScrollsUp(" ", true)).toBe(true);
+  expect(touchScrollsUp(300, 340)).toBe(true);
+  expect(touchScrollsUp(300, 260)).toBe(false);
+  // A wheel down at the end, then the virtualizer corrects a row's height and the view moves up: still pinned.
+  expect(stillPinned(true, at(9_200), 9_400, wheelScrollsUp(60))).toBe(true);
 });
