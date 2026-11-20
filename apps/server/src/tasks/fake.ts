@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import Type from "typebox";
-import type { Capabilities, HarnessAdapter, HarnessAnswer, HarnessEvent, OpenSpec, Turn } from "./harness.ts";
+import type { Capabilities, HarnessAdapter, HarnessAnswer, HarnessEvent, OpenSpec, Turn, Where } from "./harness.ts";
 
 export const FAKE_HARNESS = "fake";
+export const FAKE_CLOUD = "fake-cloud";
 
 export type FakeHarnessConfig = {
   readonly id?: string;
@@ -12,6 +13,9 @@ export type FakeHarnessConfig = {
   readonly opened?: (spec: OpenSpec) => void;
   readonly failOpen?: string;
   readonly closed?: () => void;
+  readonly label?: string;
+  /** "cloud": takes no `cwd`, works on its `repo` option, and only hands work off (its turns end `handed_off`). */
+  readonly where?: Where;
 };
 
 export type FakeHarness = HarnessAdapter & {
@@ -35,11 +39,36 @@ const ALL: Capabilities = {
 export function fakeHarness(config: FakeHarnessConfig = {}): FakeHarness {
   const stepMs = config.stepMs ?? 300;
   const sessions: FakeHarness["sessions"] = [];
+  const cloud = config.where === "cloud";
   return {
-    id: config.id ?? FAKE_HARNESS,
-    label: "Fake harness",
-    capabilities: { ...ALL, ...config.capabilities },
-    options: Type.Object({ speed: Type.Optional(Type.Number({ minimum: 0, description: "Testing only." })) }, { additionalProperties: false }),
+    id: config.id ?? (cloud ? FAKE_CLOUD : FAKE_HARNESS),
+    label: config.label ?? (cloud ? "Fake cloud" : "Fake harness"),
+    ...(config.where ? { where: config.where } : {}),
+    capabilities: cloud
+      ? {
+          ...ALL,
+          fork: false,
+          steer: false,
+          queue: false,
+          questions: false,
+          images: false,
+          cancel: false,
+          reconnect: false,
+          follow: false,
+          ...config.capabilities,
+        }
+      : { ...ALL, ...config.capabilities },
+    options: cloud
+      ? Type.Object({ repo: Type.String({ description: "Testing only: a repository name." }) }, { additionalProperties: false })
+      : Type.Object({ speed: Type.Optional(Type.Number({ minimum: 0, description: "Testing only." })) }, { additionalProperties: false }),
+    ...(cloud
+      ? {
+          locate: async (cwd: string | undefined, start: { readonly options: Readonly<Record<string, unknown>> }) => {
+            if (cwd !== undefined) throw new Error("Fake cloud takes no `cwd`.");
+            return { cwd: `github.com/${String(start.options.repo)} @ main` };
+          },
+        }
+      : {}),
     sessions,
     check: async () => (config.unavailable ? { ok: false, error: config.unavailable } : { ok: true, version: "1.0.0" }),
     open: async (spec, emit) => {
@@ -82,6 +111,10 @@ export function fakeHarness(config: FakeHarnessConfig = {}): FakeHarness {
         if (lower.includes("crash")) return later(stepMs, () => emit({ type: "exited", error: "Fake harness stopped: it crashed" }));
         if (lower.includes("forever")) return;
         if (lower.includes("fail")) return later(stepMs, () => end({ status: "failed", error: "The fake turn failed." }));
+        if (cloud)
+          return later(stepMs, () =>
+            end({ status: "handed_off", result: `Sent to Fake cloud: https://example.invalid/fake/${n}. Top can't see its progress or result there.` }),
+          );
         if (lower.includes("question")) {
           return later(stepMs, () =>
             ask(

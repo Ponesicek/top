@@ -17,11 +17,13 @@ import { duration } from "../time.ts";
 import { stopped } from "../tools.ts";
 import {
   clip,
+  follows,
   type HarnessAdapter,
   type HarnessAnswer,
   type HarnessEvent,
   type HarnessSession,
   HarnessUnavailable,
+  inCloud,
   redact,
   type Turn,
   type Usage,
@@ -119,7 +121,11 @@ export type Tasks = {
   readonly sessions: (bot: number) => Effect.Effect<readonly SessionRow[]>;
   /** The tasks waiting for an answer, as clients were last told. */
   readonly waiting: Effect.Effect<readonly WaitingTask[]>;
-  readonly stopAll: (bot: number) => Effect.Effect<void>;
+  /**
+   * Stops the bot's tasks (its Stop button). `forget` (the bot is being deleted): a task its harness can't stop, in its vendor's
+   * cloud, is let go instead, without a word to the vendor: Top stops following it and it ends `handed_off`.
+   */
+  readonly stopAll: (bot: number, forget?: boolean) => Effect.Effect<void>;
   readonly recover: Effect.Effect<number>;
 };
 
@@ -130,7 +136,8 @@ type Signal =
   | { readonly type: "steer"; readonly message: TaskMessageRow; readonly reply: Deferred.Deferred<string | undefined> }
   | { readonly type: "queued"; readonly message: TaskMessageRow }
   | { readonly type: "cancel" }
-  | { readonly type: "cancel_timeout" };
+  | { readonly type: "cancel_timeout" }
+  | { readonly type: "release"; readonly why: string };
 
 /** Who waits to hear whether the harness took an answer: `task_respond` for a while, then nobody. */
 type AnswerWait = { readonly reply: Deferred.Deferred<string | undefined>; listening: boolean };
@@ -170,19 +177,31 @@ type Live = {
 
 const fail = (message: string) => Effect.fail(new TaskError({ message }));
 const newId = (prefix: string) => `${prefix}_${randomBytes(8).toString("base64url").replace(/[-_]/g, "x").slice(0, 10)}`;
+const cloudCwd = (adapter: HarnessAdapter) =>
+  `${adapter.label} runs in its vendor's cloud and takes no \`cwd\`: name what it works on in its options (${Object.keys(adapter.options.properties).join(", ")}).`;
 const firstLine = (text: string) => clip(text.trim().split("\n")[0]?.trim() ?? "", 200);
 
-export function notifyText(task: TaskRow, session: SessionRow, label: string): string {
-  const head = `[Task ${task.id} ${task.state === "completed" ? "completed" : task.state === "cancelled" ? "was cancelled" : "failed"}] ${task.title} (${label})`;
+const ENDED_AS: Record<string, string> = { completed: "completed", cancelled: "was cancelled", handed_off: "was handed off", failed: "failed" };
+
+/** How a bot carries on with a session, said only where its harness can continue one and it got going there. */
+export function carryOn(session: SessionRow, adapter: Pick<HarnessAdapter, "capabilities"> | undefined, lead = " "): string {
+  if (!session.externalId || (adapter && !adapter.capabilities.resume)) return "";
+  return `${lead}Its session ${session.id} is kept: to carry on, call collar__task_start with "session": "${session.id}".`;
+}
+
+export function notifyText(task: TaskRow, session: SessionRow, label: string, adapter?: Pick<HarnessAdapter, "capabilities">): string {
+  const head = `[Task ${task.id} ${ENDED_AS[task.state] ?? "failed"}] ${task.title} (${label})`;
   const ran = task.startedAt && task.endedAt ? `, after ${duration(task.endedAt - task.startedAt)}` : "";
-  const body =
-    task.state === "completed"
-      ? task.result
-        ? clip(task.result, NOTIFY_RESULT_CHARS)
-        : "(no answer text)"
-      : (task.error ?? (task.state === "cancelled" ? "Cancelled." : "It failed."));
+  const answered = task.state === "completed" || task.state === "handed_off";
+  const body = answered
+    ? task.result
+      ? clip(task.result, NOTIFY_RESULT_CHARS)
+      : "(no answer text)"
+    : (task.error ?? (task.state === "cancelled" ? "Cancelled." : "It failed."));
   const more = task.result && task.result.length > NOTIFY_RESULT_CHARS ? `\n\nThe whole answer is in collar__task_read {"id": "${task.id}"}.` : "";
-  return `${head}${ran}\n\n${body}${more}\n\nIts session is ${session.id}: to carry on with it, call collar__task_start with "session": "${session.id}".`;
+  const resumable = !adapter || adapter.capabilities.resume;
+  const next = resumable ? `\n\nIts session is ${session.id}: to carry on with it, call collar__task_start with "session": "${session.id}".` : "";
+  return `${head}${ran}\n\n${body}${more}${next}`;
 }
 
 export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: TasksConfig, events: TasksEvents) {
@@ -284,7 +303,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if (row) yield* events.deliver(row);
     });
 
-  const finish = (live: Live, state: "completed" | "failed" | "cancelled", end: { result?: string | undefined; error?: string | undefined } = {}) =>
+  const finish = (
+    live: Live,
+    state: "completed" | "failed" | "cancelled" | "handed_off",
+    end: { result?: string | undefined; error?: string | undefined } = {},
+  ) =>
     Effect.uninterruptible(
       Effect.gen(function* () {
         if (live.finished) return;
@@ -316,7 +339,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         yield* flush;
         lives.delete(live.id);
         const suppressed = live.waitersAny + live.waitersEnd > 0;
-        if (row) yield* notify(live, row.state, notifyText(row, live.session, label(live.session.harness)), suppressed);
+        if (row) yield* notify(live, row.state, notifyText(row, live.session, label(live.session.harness), live.adapter), suppressed);
         yield* changed(live);
         yield* Deferred.succeed(live.done, undefined);
       }),
@@ -391,6 +414,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
   const handle = (live: Live, signal: Signal): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (live.finished) {
+        if (signal.type === "harness" && signal.event.type === "session") signal.event.saved?.(new Error("The task has ended."));
         if (signal.type === "steer") yield* Deferred.succeed(signal.reply, "The task has ended.");
         if (signal.type === "answered" && signal.reply) yield* Deferred.succeed(signal.reply.reply, "The task has ended.");
         return;
@@ -399,12 +423,13 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         case "harness": {
           const event = signal.event;
           switch (event.type) {
-            case "session":
-              if (live.session.externalId !== event.externalId) {
-                yield* q.setExternalId(live.session.id, event.externalId);
-                live.session = { ...live.session, externalId: event.externalId };
-              }
+            case "session": {
+              const saved = live.session.externalId === event.externalId ? Exit.void : yield* Effect.exit(q.setExternalId(live.session.id, event.externalId));
+              if (Exit.isSuccess(saved)) live.session = { ...live.session, externalId: event.externalId };
+              event.saved?.(Exit.isSuccess(saved) ? undefined : new Error("Top couldn't save the session's id."));
+              if (Exit.isFailure(saved)) return yield* Effect.failCause(saved.cause);
               return;
+            }
             case "log":
               yield* log(live, event.kind, event.text);
               return;
@@ -497,6 +522,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 yield* runTurn(live, queuedTurn(live, next));
                 return;
               }
+              if (event.status === "handed_off") return yield* finish(live, "handed_off", { result: event.result ?? live.result ?? "" });
               if (live.cancelling) return yield* finish(live, "cancelled");
               if (event.status === "interrupted")
                 return yield* finish(live, "failed", { error: event.error ?? `${label(live.session.harness)} stopped the turn before it finished.` });
@@ -504,10 +530,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             }
             case "exited": {
               if (live.cancelling) return yield* finish(live, "cancelled");
-              const resumable = live.session.externalId
-                ? ` Its session ${live.session.id} is kept: to carry on, call collar__task_start with "session": "${live.session.id}".`
-                : "";
-              return yield* finish(live, "failed", { error: `${event.error}.${resumable}` });
+              return yield* finish(live, "failed", { error: `${event.error}.${carryOn(live.session, live.adapter)}` });
             }
           }
           return;
@@ -620,6 +643,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           );
           return;
         }
+        case "release":
+          if (live.stopping) return;
+          live.stopping = true;
+          yield* cancelInputs(live);
+          return yield* finish(live, "handed_off", { result: signal.why });
         case "cancel_timeout":
           return yield* finish(
             live,
@@ -722,7 +750,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const actor = (live: Live) =>
     Effect.gen(function* () {
-      yield* slots.withPermits(1)(runStarted(live));
+      // A cloud harness's work runs there, not here: following it holds none of this computer's running slots.
+      yield* inCloud(live.adapter) ? runStarted(live) : slots.withPermits(1)(runStarted(live));
       if (!live.finished) yield* finish(live, "failed", { error: "The task ended without an outcome." });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -821,9 +850,13 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       return { cwd: real };
     });
 
-  const locate = (adapter: HarnessAdapter & { locate: NonNullable<HarnessAdapter["locate"]> }, raw: string | undefined) =>
+  const locate = (
+    adapter: HarnessAdapter & { locate: NonNullable<HarnessAdapter["locate"]> },
+    raw: string | undefined,
+    start: { readonly options: Readonly<Record<string, unknown>>; readonly model: string | undefined },
+  ) =>
     Effect.tryPromise({
-      try: () => adapter.locate(raw?.trim() || undefined),
+      try: () => adapter.locate(raw?.trim() || undefined, start),
       catch: (error) => new TaskError({ message: error instanceof Error ? error.message : String(error) }),
     });
 
@@ -854,6 +887,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           if (!adapter) return yield* fail(`Session ${source.id} is ${source.harness}'s, which this daemon doesn't run.`);
           if (request.harness !== undefined && request.harness !== source.harness)
             return yield* fail(`Session ${source.id} is ${adapter.label}'s; leave out \`harness\` or use "${source.harness}".`);
+          if (inCloud(adapter) && request.cwd !== undefined) return yield* fail(cloudCwd(adapter));
           if (request.cwd !== undefined) {
             const cwd = adapter.locate ? request.cwd.trim() : (yield* resolveCwd(request.cwd, request.bot)).cwd;
             if (cwd !== source.cwd) return yield* fail(`Session ${source.id} works in ${source.cwd}. Start a new session to work somewhere else.`);
@@ -897,11 +931,15 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           if (!adapter)
             return yield* fail(`There's no harness "${harness}". This daemon runs ${[...adapters.keys()].map((h) => `"${h}"`).join(", ") || "none"}.`);
           if (request.fork) return yield* fail("`fork` branches an existing session: give it with `session`.");
+          if (inCloud(adapter) && request.cwd !== undefined) return yield* fail(cloudCwd(adapter));
           const options = yield* checkOptions(adapter, request.options ?? {});
           const folder = adapter.locate || !config.folder ? undefined : yield* config.folder(request.bot);
           const raw = request.cwd ?? folder;
           if (raw === undefined && !adapter.locate) return yield* fail("Say which folder it works in with `cwd`.");
-          const located = adapter.locate ? yield* locate({ ...adapter, locate: adapter.locate }, raw) : yield* resolveCwd(raw!, request.bot);
+          const model = request.model?.trim() || undefined;
+          const located = adapter.locate
+            ? yield* locate({ ...adapter, locate: adapter.locate }, raw, { options, model })
+            : yield* resolveCwd(raw!, request.bot);
           const cwd = located.cwd;
           images = yield* imagesFor(adapter, cwd);
           session = yield* q.createSession({
@@ -909,7 +947,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             bot: request.bot,
             harness: adapter.id,
             cwd,
-            model: request.model?.trim() || null,
+            model: model ?? null,
             options: "options" in located && located.options ? { ...options, ...located.options } : options,
             parent: null,
           });
@@ -954,15 +992,15 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const live = lives.get(row.id);
       const session = (yield* q.session(row.session))!;
       const adapter = adapters.get(session.harness);
-      if (taskEnded(row.state) || !live)
-        return yield* fail(`Task ${row.id} has ended (${row.state}). To carry on, call collar__task_start with "session": "${session.id}".`);
+      // Said as it always was, except for a harness that can't continue a session.
+      const next = adapter && !adapter.capabilities.resume ? "" : ` To carry on, call collar__task_start with "session": "${session.id}".`;
+      if (taskEnded(row.state) || !live) return yield* fail(`Task ${row.id} has ended (${row.state}).${next}`);
       if (!adapter?.capabilities[mode === "steer" ? "steer" : "queue"])
         return yield* fail(`${label(session.harness)} can't take ${mode === "steer" ? "steering" : "queued"} messages.`);
-      if (live.cancelling || live.closing)
-        return yield* fail(`Task ${row.id} is ending; it takes no more messages. To carry on, call collar__task_start with "session": "${session.id}".`);
+      if (live.cancelling || live.closing) return yield* fail(`Task ${row.id} is ending; it takes no more messages.${next}`);
       if (mode === "steer" && (live.phase !== "started" || !live.turnActive))
         return yield* fail(`No turn is running to steer (task ${row.id} is ${live.row.state}). Send it with mode "queue" to run after.`);
-      const ending = `Task ${row.id} is ending; it takes no more messages. To carry on, call collar__task_start with "session": "${session.id}".`;
+      const ending = `Task ${row.id} is ending; it takes no more messages.${next}`;
       const admitted = yield* live.lock.withPermits(1)(
         Effect.gen(function* () {
           if (live.cancelling || live.closing) return undefined;
@@ -1054,6 +1092,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const row = yield* owned(bot, id);
       const live = lives.get(row.id);
       if (!live || taskEnded(row.state)) return { task: (yield* q.task(row.id))!, cancelled: false };
+      // Nothing is touched: no stop is sent, nothing is killed, and the task's state stays as it is.
+      if (!live.adapter.capabilities.cancel)
+        return yield* fail(
+          `${live.adapter.label} can't stop a task${inCloud(live.adapter) ? " from Top: it runs in its vendor's cloud" : ""}, so task ${row.id} goes on (${row.state}).${follows(live.adapter.capabilities) ? " You'll get a message when it ends." : ""}`,
+        );
       yield* Effect.uninterruptible(
         Effect.gen(function* () {
           const pending = yield* live.lock.withPermits(1)(
@@ -1080,11 +1123,30 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       return { task: after, cancelled: after.state === "cancelled" };
     });
 
-  const stopAll: Tasks["stopAll"] = (bot) =>
+  /** Stops following a task its harness can't stop, without a word to the harness: it ends `handed_off`, saying so. */
+  const release = (live: Live) =>
+    Effect.gen(function* () {
+      const known = live.session.externalId && !live.session.externalId.startsWith("pending:");
+      const why = `Top stopped following it when its bot was deleted, without stopping it in ${live.adapter.label}${known ? `, where it may still be running (${live.session.externalId})` : ""}.`;
+      const pending = yield* live.lock.withPermits(1)(
+        Effect.gen(function* () {
+          if (live.phase !== "pending" || live.resumed) return false;
+          live.cancelling = true;
+          if (live.fiber) yield* Fiber.interrupt(live.fiber);
+          return true;
+        }),
+      );
+      // Never started, so nothing reached the harness: it's simply cancelled.
+      if (pending) return yield* finish(live, "cancelled");
+      Queue.offerUnsafe(live.signals, { type: "release", why });
+      yield* Deferred.await(live.done).pipe(Effect.timeout(Duration.seconds(30)), Effect.ignore);
+    });
+
+  const stopAll: Tasks["stopAll"] = (bot, forget = false) =>
     Effect.asVoid(
       Effect.forEach(
-        [...lives.values()].filter((l) => l.bot === bot),
-        (live) => cancel(bot, live.id).pipe(Effect.ignore),
+        [...lives.values()].filter((l) => l.bot === bot && (forget || l.adapter.capabilities.cancel)),
+        (live) => (live.adapter.capabilities.cancel ? cancel(bot, live.id) : release(live)).pipe(Effect.ignore),
         { concurrency: "unbounded" },
       ),
     );
@@ -1108,20 +1170,22 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const when = row.startedAt === null ? "before it started" : "while it ran";
       const why = !adapter
         ? `its harness (${session?.harness ?? "unknown"}) isn't available on this daemon anymore`
-        : `the daemon restarted ${when}, so ${adapter.label} stopped with it. It may have made some of its changes`;
-      const resume = session?.externalId ? ` Its session ${session.id} is kept: to carry on, call collar__task_start with "session": "${session.id}".` : "";
+        : inCloud(adapter)
+          ? `the daemon restarted while it was handing the task to ${adapter.label}, so Top can't tell whether it got there. Check there before starting it again: Top never sends it twice`
+          : `the daemon restarted ${when}, so ${adapter.label} stopped with it. It may have made some of its changes`;
+      const resume = session ? carryOn(session, adapter) : "";
       const ended = yield* q.setState(row.id, ACTIVE_STATES, "failed", {
         error: `Cut off: ${why}.${resume}${dropped ? ` (${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : ""}`,
       });
       if (ended && session) {
-        const message = yield* q.notify(ended.id, ended.state, notifyText(ended, session, adapter?.label ?? session.harness));
+        const message = yield* q.notify(ended.id, ended.state, notifyText(ended, session, adapter?.label ?? session.harness, adapter));
         if (message) yield* events.deliver(message);
       }
     }
     for (const ended of yield* q.unnotified) {
       const session = yield* q.session(ended.session);
       if (!session) continue;
-      const message = yield* q.notify(ended.id, ended.state, notifyText(ended, session, label(session.harness)));
+      const message = yield* q.notify(ended.id, ended.state, notifyText(ended, session, label(session.harness), adapters.get(session.harness)));
       if (message) yield* events.deliver(message);
     }
     yield* Queue.offer(dirty, undefined);

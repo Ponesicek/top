@@ -476,7 +476,7 @@ const make = Effect.gen(function* () {
       yield* jobs.stopAll(id);
       yield* Effect.forkIn(
         Effect.gen(function* () {
-          if (tasks) yield* tasks.stopAll(id);
+          if (tasks) yield* tasks.stopAll(id, true);
           yield* runner.waitForIdle;
           yield* Scope.close(live.scope, Exit.void);
           if (attachments) yield* attachments.removeBot(id);

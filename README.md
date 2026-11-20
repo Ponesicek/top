@@ -328,7 +328,8 @@ through the official Claude Agent SDK) or **Codex** (through `codex app-server`,
 protocol). Each harness runs its own agent loop and tools; Top coordinates the work, keeps it durable
 and puts its questions in front of the bot and the user. The harness, the model and where it runs are
 separate things: a task names a harness, may name a model in that harness's terms, and runs locally,
-or on another computer through **T3 Code** (below).
+or on another computer through **T3 Code** (below), or in its vendor's cloud through **Codex cloud** or
+**Claude Code cloud** (below).
 
 **The tools** (Collar, so `collar__task_start` and so on):
 
@@ -339,7 +340,7 @@ or on another computer through **T3 Code** (below).
 | `task_send` | More work for a running task, `mode` required: `steer` goes into the running turn (fails if none runs), `queue` runs as the next turn. An ended task takes none: continue its session instead. |
 | `task_respond` | Answers one waiting request by number. First answer wins; a second is refused. |
 | `task_wait` | Waits until the task ends or needs input (`until: "end"` waits through input), up to 30 min; says `"timedOut":true` otherwise. Rarely needed: see below. |
-| `task_cancel` | Interrupts the running turn, withdraws its requests, drops queued messages. The session stays. A task that already ended stays as it ended. |
+| `task_cancel` | Interrupts the running turn, withdraws its requests, drops queued messages. The session stays. A task that already ended stays as it ended. Refused, touching nothing, for a harness that can't stop its work (the cloud ones). |
 
 **Tasks and sessions.** A task is one piece of work: its prompt, any queued follow-ups, and an
 outcome. A session is the harness's own conversation (Claude Code's session id, Codex's thread id),
@@ -347,7 +348,8 @@ kept with the folder and model it was made with; later tasks can carry it on, on
 time. Tasks and sessions belong to the bot that made them.
 
 **States:** `queued` (waiting for one of `TOP_MAX_TASKS` slots, default 4) →
-`starting` → `running` ⇄ `waiting_for_input` → `completed`, `failed` or `cancelled`. Every change is
+`starting` → `running` ⇄ `waiting_for_input` → `completed`, `failed`, `cancelled` or `handed_off` (a
+cloud harness has the work and Top can't see how it goes: not a success). Every change is
 saved before it's announced. A task keeps its slot while it waits for input. A cancel that arrives
 as the turn completes leaves it completed, with its answer. The bot gets one message when a task ends, and one when the harness asks
 it a question, even while idle, so it never polls; a `task_wait` that's waiting gets the news instead.
@@ -483,6 +485,50 @@ work, the files and the provider sign-ins are all on T3 Code's computer.
 `TOP_REAL_T3=/path/to/t3 pnpm --filter @top/server test test/real-t3code.test.ts` boots an isolated T3
 Code server (its own data folder, port and project) and drives it end to end with Claude Haiku (it uses
 the Claude Code sign-in on this computer).
+
+#### Codex cloud and Claude Code cloud
+
+Two harnesses run in their vendor's cloud, on the user's subscription, through the vendors' own CLIs
+and the sign-ins already on the daemon's computer: `codex-cloud` (`codex cloud`, which needs a ChatGPT
+sign-in) and `claude-cloud` (`claude --cloud`, which needs a claude.ai sign-in and the organization's
+`allow_remote_sessions` policy). No API key, API, SSH or machine of Top's own is involved. Neither is
+ever a default: a bot names one in `harness`. Neither takes a `cwd`, a `model`, images or questions;
+they work on what their options name, and the conversation's card shows that, with a cloud icon,
+instead of a folder. Following one holds none of the `TOP_MAX_TASKS` slots.
+
+- **Checks.** Before a task, Top reads the CLI's `--version` and `--help` for what it needs, and the
+  kind of sign-in from `codex login status` or `claude auth status --json`. Only the kind is kept: an API
+  key sign-in (which `codex login status` prints, masked) or a Console one fails with how to sign in
+  with ChatGPT or claude.ai.
+- **Codex cloud** takes `environment` (an environment id the user gives the bot: theirs are in the
+  `codex cloud` picker, or `environment_id` in `codex cloud list --json`; Top doesn't list them),
+  `branch` and `attempts` (1–4). Top records that it's about to send the task before it runs
+  `codex cloud exec`, the prompt on stdin, in a private empty folder (each `codex cloud` command writes
+  an `error.log` with the account id where it runs), then follows the task with `codex cloud status`,
+  waiting 15 s, then twice as long each time up to 5 minutes, for at most 12 hours. READY or APPLIED
+  completes the task with its title, diff stat and link, and the changed files from `codex cloud diff`;
+  nothing is applied anywhere. ERROR fails it (Codex cloud uses it for a failed or cancelled task). It
+  keeps being followed through a Top restart. A send whose outcome Top never heard (a restart in the
+  middle, a timeout, an error that may have come after the task was made) fails, saying to check `codex cloud list`:
+  Top never sends a task twice.
+- **Claude Code cloud** takes `repo` (`owner/name` on GitHub) and `branch`. Each new session starts from
+  a fresh `git clone --single-branch` of that branch in a private folder, never from the user's
+  checkouts, removed after. Claude Code cloud receives that branch's code and its full history,
+  including anything sensitive in older commits: it clones it from GitHub, or uploads it as a bundle
+  when the Claude GitHub App isn't on the repository. Top takes `CCR_FORCE_BUNDLE` out of its
+  environment, so it never asks for a bundle itself. The CLI can't report a session's progress or
+  result, so the task ends `handed_off` with the session's link (only `claude.ai/code` links are
+  taken). Continuing its session (`session`) queues one message into it (`claude -p --cloud <id>`):
+  a queued message, not a live steer, and its acknowledgement isn't completion. With no session id
+  printed, the task fails as unknown, saying to check claude.ai/code; it's never retried.
+- **Stopping.** Neither CLI can stop a task, so `task_cancel` is refused and nothing is touched, and
+  the bot's Stop leaves them be. Deleting a bot only makes Top stop following its cloud tasks, without
+  a word to the vendor. A Claude Code cloud task cut off by a restart fails, saying Top can't tell
+  whether it got there.
+- **Formats.** What `codex cloud` prints is read from its source at `rust-v0.171.0`
+  (`codex-rs/cloud-tasks`); what `claude --cloud` prints, from its documentation. The tests use
+  stand-ins for both CLIs and for `git`, and never reach either cloud. Fake bots get `fake-cloud`:
+  `call collar__task_start {"harness": "fake-cloud", "prompt": "fix it", "options": {"repo": "acme/app"}}`.
 
 ## Releases and updates
 

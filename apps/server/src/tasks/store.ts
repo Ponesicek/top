@@ -1,4 +1,4 @@
-import { TaskQuestion, TaskState } from "@top/protocol";
+import { TaskQuestion, TaskState, taskEnded } from "@top/protocol";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -215,8 +215,13 @@ export function makeTaskQueries(
     session,
     sessionsOf: (bot: number, limit: number) =>
       Effect.map(rows(sql`SELECT * FROM harness_sessions WHERE bot = ${bot} ORDER BY used_at DESC LIMIT ${limit}`), (r) => r.map(sessionOf)),
+    /** Set once; only a `pending:` marker (a cloud harness saying it's about to send work) gives way to the id it then gets. */
     setExternalId: (id: string, externalId: string) =>
-      Effect.asVoid(q(sql`UPDATE harness_sessions SET external_id = ${externalId} WHERE id = ${id} AND (external_id IS NULL OR external_id = ${externalId})`)),
+      Effect.asVoid(
+        q(
+          sql`UPDATE harness_sessions SET external_id = ${externalId} WHERE id = ${id} AND (external_id IS NULL OR external_id = ${externalId} OR external_id LIKE 'pending:%')`,
+        ),
+      ),
     touchSession: (id: string) => Effect.flatMap(now, (at) => Effect.asVoid(q(sql`UPDATE harness_sessions SET used_at = ${at} WHERE id = ${id}`))),
 
     createTask: (row: NewTask, state: TaskState) =>
@@ -233,7 +238,7 @@ export function makeTaskQueries(
       Effect.map(rows(sql`SELECT * FROM tasks WHERE bot = ${bot} ORDER BY created_at DESC, id DESC LIMIT ${limit}`), (r) => r.map(taskOf)),
     unnotified: Effect.map(
       rows(sql`
-        SELECT * FROM tasks WHERE state IN ('completed', 'failed', 'cancelled') AND (notified IS NULL OR notified != state)
+        SELECT * FROM tasks WHERE state IN ('completed', 'failed', 'cancelled', 'handed_off') AND (notified IS NULL OR notified != state)
         ORDER BY ended_at, id`),
       (r) => r.map(taskOf),
     ),
@@ -249,7 +254,7 @@ export function makeTaskQueries(
     setState: (id: string, from: readonly TaskState[], to: TaskState, end: TaskEnd = {}) =>
       Effect.gen(function* () {
         const at = yield* now;
-        const ended = to === "completed" || to === "failed" || to === "cancelled";
+        const ended = taskEnded(to);
         const list = sql.in(from);
         const row = yield* first(sql`
           UPDATE tasks SET state = ${to},
