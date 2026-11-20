@@ -650,3 +650,101 @@ test("a queued message waiting for a slot stays unsent when the task is cancelle
   assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, a.task.id))).task.state, "cancelled");
   assert.equal((await s.h.run(s.h.store.tasks.messageByKey("queued-wait")))!.state, "dropped");
 });
+
+test("a continuation cut off while its run waits on delegated work gives the run back, and its answer still arrives", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  const wake = s.t3.wake(thread, "wake-1", "delegate more", nativeWake("c1"));
+  const c = await until("a continuation", async () => (await continuations(s, first.session.id))[0]);
+  await until("it to hold", async () => (await log(s, c.id)).some((t) => /still has delegated work/.test(t)));
+  s.t3.faults.dropOnOpen = true;
+  s.t3.dropSockets();
+  await until("it to give up", async () => (await task(s, c.id)).state === "failed", 20_000);
+  s.t3.childDone(thread, `task-${wake}`, "the child's report");
+  await until("the owner to answer", () => s.t3.runsOf(thread).find((r) => r.userMessageId === `delegated:task-${wake}` && r.status === "completed"));
+  s.t3.faults.dropOnOpen = false;
+  const again = await continuation(s, first.session.id, 2, 30_000);
+  assert.equal(again.adopt, wake);
+  assert.equal(again.result, "done: the child's report");
+});
+
+test("when Top starts, it looks at every session once: a wake left behind by a crash before a task's last look is reported", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  s.t3.faults.threadReadFailures = 1_000;
+  const wake = s.t3.wake(thread, "wake-1", "left behind", nativeWake("c1"));
+  await until("the wake to end", () => s.t3.runsOf(thread).find((r) => r.id === wake && r.status === "completed"));
+  const next = await start(s, { prompt: "plain next", session: first.session.id });
+  assert.equal((await ended(s, next.task.id)).result, "done: plain next");
+  await s.h.close();
+  s.t3.faults.threadReadFailures = 0;
+  const second = await setup({ dir: s.dir, t3: s.t3 });
+  const c = await continuation(second, first.session.id);
+  assert.equal(c.adopt, wake);
+  assert.equal(c.result, "done: left behind");
+});
+
+test("someone stopping their own run doesn't stop a continuation's answer, and another wake still going doesn't hold it", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  s.t3.nativeChildDone(thread, `run:${thread}:1`, "c2");
+  await settle(300);
+  s.t3.faults.dropOnOpen = true;
+  s.t3.dropSockets();
+  const wake = s.t3.wake(thread, "wake-1", "the wake's answer", nativeWake("c1"));
+  await until("the wake to end", () => s.t3.runsOf(thread).find((r) => r.id === wake && r.status === "completed"));
+  const theirs = s.t3.wake(thread, "theirs", "forever: someone's work", person);
+  await until("their run", () => s.t3.runsOf(thread).find((r) => r.id === theirs && r.status === "running"));
+  s.t3.stop(thread);
+  s.t3.faults.dropOnOpen = false;
+  const c = await continuation(s, first.session.id);
+  assert.equal(c.state, "completed", c.error ?? "");
+  assert.equal(c.result, "done: the wake's answer");
+
+  // Two independent wakes: the first one's continuation ends when its own work does, while the second still runs.
+  s.t3.nativeChildDone(thread, `run:${thread}:1`, "c3");
+  s.t3.faults.dropOnOpen = true;
+  s.t3.dropSockets();
+  const second = s.t3.wake(thread, "wake-2", "the second wake's answer", nativeWake("c2"));
+  const third = s.t3.wake(thread, "wake-3", "forever: the third wake", nativeWake("c3"));
+  await until("the third wake to run", () => s.t3.runsOf(thread).find((r) => r.id === third && r.status === "running"));
+  s.t3.faults.dropOnOpen = false;
+  const c2 = await until("its continuation", async () => (await continuations(s, first.session.id)).find((t) => t.adopt === second));
+  const done = await ended(s, c2.id);
+  assert.equal(done.result, "done: the second wake's answer");
+  assert.equal(s.t3.runsOf(thread).find((r) => r.id === third)!.status, "running");
+});
+
+test("cancelling a held task leaves someone else's delegated work alone, and a wake after a cancelled task stays its, whatever came next", async () => {
+  const s = await setup();
+  const holding = await start(s, { prompt: "delegate the long work" });
+  const thread = `top-${holding.session.id}`;
+  await until("it to hold", async () => (await log(s, holding.task.id)).some((t) => /still has delegated work/.test(t)));
+  const theirs = s.t3.wake(thread, "theirs", "delegate their work", person);
+  await until("their child", () => s.t3.subagentsOf(thread).find((t) => t.id === `task-${theirs}` && t.status === "running"));
+  assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, holding.task.id))).task.state, "cancelled");
+  assert.equal(s.t3.subagentsOf(thread).find((t) => t.id === `task-${theirs}`)!.status, "running", "their child goes on");
+  assert.equal(s.t3.subagentsOf(thread).find((t) => t.id === `task-run:${thread}:1`)!.status, "cancelled", "Top's child was stopped");
+
+  const other = await start(s, { prompt: "delegate the other work" });
+  const otherThread = `top-${other.session.id}`;
+  await until("it to hold", async () => (await log(s, other.task.id)).some((t) => /still has delegated work/.test(t)));
+  assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, other.task.id))).task.state, "cancelled");
+  s.t3.faults.threadReadFailures = 1_000;
+  s.t3.wake(otherThread, "unlinked-1", "an unlinked wake", { createdBy: "agent" });
+  await until("the wake to end", () => s.t3.runsOf(otherThread).find((r) => r.userMessageId === "unlinked-1" && r.status === "completed"));
+  const next = await start(s, { prompt: "plain next", session: other.session.id });
+  assert.equal((await ended(s, next.task.id)).result, "done: plain next");
+  s.t3.faults.threadReadFailures = 0;
+  await settle(6_000);
+  assert.equal((await continuations(s, other.session.id)).length, 0, "it came after the cancelled task, not the one after it");
+});
+
+test("T3 Code's own /compact from an older server is never reported", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  const compact = s.t3.wake(thread, "compact-1", "/compact", { createdBy: "agent", creationSource: "server" });
+  await until("it to end", () => s.t3.runsOf(thread).find((r) => r.id === compact && r.status === "completed"));
+  await settle(800);
+  assert.equal((await continuations(s, first.session.id)).length, 0);
+});

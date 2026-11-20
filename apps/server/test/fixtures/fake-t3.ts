@@ -253,6 +253,11 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
               setTimeout(() => finish(thread, String(run.id), "", payload.type === "run.interrupt" ? "interrupted" : "cancelled"), 5);
             break;
           }
+          case "subagent.stop": {
+            const task = thread.subagents.get(String(payload.subagentId));
+            if (task && ["pending", "running", "waiting"].includes(String(task.status))) setSubagent(thread, String(task.id), { status: "cancelled" });
+            break;
+          }
           case "thread.stop": {
             // Stop ends the thread's runs and, by default, every task under it. With none running, it's recorded on the latest.
             // Recorded on the run going now, else on the latest.

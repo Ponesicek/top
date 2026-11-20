@@ -600,11 +600,17 @@ async function openThread(
    * delegated task still working or whose result hasn't woken its owner yet, or background work the agent waits on.
    * Thread-wide, so a task an earlier run delegated counts too. A count, for the log; 0 when it has settled.
    */
-  const delegatedWork = () => {
+  const delegatedWork = (scope?: ReadonlySet<string>) => {
     const working = [...runs.values()].filter(
-      (r) => !monitorRuns.has(String(r.id)) && r.status !== "rolled_back" && !ended(r) && !(r.status === "queued" && r.queueHeld === true),
+      (r) =>
+        (!scope || scope.has(String(r.id))) &&
+        !monitorRuns.has(String(r.id)) &&
+        r.status !== "rolled_back" &&
+        !ended(r) &&
+        !(r.status === "queued" && r.queueHeld === true),
     ).length;
     const tasks = [...subagents.values()].filter((t) => {
+      if (scope && !scope.has(String(t.runId))) return false;
       const delivery = str(record(t.completionDelivery).state);
       return ACTIVE_WORK.has(String(t.status)) || (t.status !== "idle" && (delivery === "pending" || delivery === "claimed"));
     }).length;
@@ -622,18 +628,17 @@ async function openThread(
     if (turn.cut) return;
     turn.cut = "sending";
     const ours = new Set(turnRuns(turn).map((r) => String(r.id)));
-    const going = (r: Rec) => !ended(r) && r.status !== "queued" && !monitorRuns.has(String(r.id));
-    const theirs = [...runs.values()].filter((r) => going(r) && !ours.has(String(r.id)));
-    if (theirs.length) {
-      // Someone else's run is going in the thread: stopping the thread would stop theirs too. Stop only Top's runs; the
-      // work they delegated goes on in T3 Code.
-      for (const r of [...runs.values()].filter((r) => going(r) && ours.has(String(r.id))))
+    const going = (r: Rec) => !ended(r) && !monitorRuns.has(String(r.id));
+    const working = (t: Rec) => ACTIVE_WORK.has(String(t.status));
+    // Stopping the thread stops everything in it and holds its queue: only when nothing there is anyone else's.
+    const others =
+      [...runs.values()].some((r) => going(r) && !ours.has(String(r.id))) || [...subagents.values()].some((t) => working(t) && !ours.has(String(t.runId)));
+    if (others) {
+      for (const r of [...runs.values()].filter((r) => going(r) && r.status !== "queued" && ours.has(String(r.id))))
         await command({ type: "run.interrupt", commandId: `top:stop:${String(r.id)}`, threadId, runId: String(r.id) });
-      emit({
-        type: "log",
-        kind: "status",
-        text: "Someone else's run is going in the thread, so Top stopped only its own runs there; work they delegated may go on in T3 Code.",
-      });
+      for (const t of [...subagents.values()].filter((t) => working(t) && ours.has(String(t.runId))))
+        await command({ type: "subagent.stop", commandId: `top:stop-task:${String(t.id)}`, threadId, runId: String(t.runId), subagentId: String(t.id) });
+      emit({ type: "log", kind: "status", text: "Someone else's work is going in the thread, so Top stopped only its own runs and tasks there." });
     } else await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." });
     turn.cut = "confirmed";
     evaluate();
@@ -709,7 +714,8 @@ async function openThread(
     } else if (str(own.startedAt) === undefined) {
       // Removed from T3 Code's queue before it ran: its own end, whatever else the thread does.
     } else if (own.status !== "rolled_back") {
-      const { working, delegated } = delegatedWork();
+      // A run Top adopted waits only on its own work; a turn of a task, on the whole thread's, as T3 Code settles it.
+      const { working, delegated } = delegatedWork(turn.adopted ? new Set(ours.map((r) => String(r.id))) : undefined);
       if (working || delegated) {
         if (!turn.holding && delegated) {
           turn.holding = true;
@@ -735,8 +741,13 @@ async function openThread(
     // Stop in T3 Code while it held (or while Top was away): T3 Code records the stop after the answer's run ended, on
     // whichever run it targets, and cancels the work.
     const answeredAt = Date.parse(str(outcome.completedAt) ?? "");
+    // Only a stop on this turn's runs, or on a monitor's run going then: someone stopping their own run isn't this turn's.
+    const stoppable = new Set([...ours.map((r) => String(r.id)), ...monitorRuns]);
     const stoppedThere =
-      !turn.cut && [...items.values()].some((i) => i.type === "run_interrupt_request" && Date.parse(str(i.updatedAt) ?? str(i.startedAt) ?? "") >= answeredAt);
+      !turn.cut &&
+      [...items.values()].some(
+        (i) => i.type === "run_interrupt_request" && stoppable.has(String(i.runId)) && Date.parse(str(i.updatedAt) ?? str(i.startedAt) ?? "") >= answeredAt,
+      );
     const status = turn.cut || stoppedThere ? "interrupted" : String(outcome.status);
     const answers = its.filter((i) => i.type === "assistant_message" && i.streaming !== true && str(i.text)?.trim());
     const result = str(answers.at(-1)?.text);
@@ -1087,6 +1098,8 @@ async function openThread(
       unsubscribe?.();
       socket?.close();
     },
-    covered: () => (current ? (current.covered ?? coverage(current)) : { runs: [], earlier: [] }),
+    // What a turn reported is only what it had when it ended: a turn cut off before that (T3 Code out of reach, a cancel
+    // it never saw through) reported none of its runs, so they stay to be reported.
+    covered: () => (current ? (current.covered ?? { runs: [], earlier: coverage(current).earlier }) : { runs: [], earlier: [] }),
   };
 }

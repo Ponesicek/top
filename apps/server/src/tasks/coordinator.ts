@@ -574,18 +574,27 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 // The runs this turn reported are accounted for before the next one replaces it.
                 const accounts = yield* coveredAccounts(live);
                 if (accounts.length) yield* q.accountRuns(live.session.id, live.bot, accounts);
-                // A slot first, should it have given its own back while it held; a message stays pending until then.
-                const queued = !live.cancelling && (yield* q.pendingMessages(live.id)).some((m) => m.mode === "queue");
-                if (queued && !(yield* takeSlot(live))) return yield* finish(live, "cancelled");
-                const next = yield* live.lock.withPermits(1)(
-                  Effect.gen(function* () {
-                    if (!live.cancelling)
-                      for (const candidate of (yield* q.pendingMessages(live.id)).filter((m) => m.mode === "queue"))
-                        if (yield* q.setMessageState(candidate.id, "sent")) return candidate;
-                    live.closing = true;
-                    return undefined;
-                  }),
-                );
+                // A queued message runs on a slot: one it gave back while it held is taken again first, outside the lock,
+                // and the message stays pending until then.
+                let next: TaskMessageRow | undefined;
+                for (;;) {
+                  const picked = yield* live.lock.withPermits(1)(
+                    Effect.gen(function* () {
+                      if (!live.cancelling) {
+                        const pending = (yield* q.pendingMessages(live.id)).filter((m) => m.mode === "queue");
+                        if (pending.length && !live.slot && !inCloud(live.adapter)) return "slot" as const;
+                        for (const candidate of pending) if (yield* q.setMessageState(candidate.id, "sent")) return candidate;
+                      }
+                      live.closing = true;
+                      return undefined;
+                    }),
+                  );
+                  if (picked !== "slot") {
+                    next = picked;
+                    break;
+                  }
+                  if (!(yield* takeSlot(live))) return yield* finish(live, "cancelled");
+                }
                 if (!next) return yield* finish(live, "completed", { result: live.result ?? "" });
                 yield* log(live, "sent", `queued message ${next.id} started a new turn`);
                 if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "running");
@@ -1349,7 +1358,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     });
 
   /** The watched threads that changed: the sessions they belong to get a look, unless their thread is archived there. */
-  const threadsChanged = (adapter: HarnessAdapter, threads: readonly WatchedThread[], environment: string) =>
+  const threadsChanged = (adapter: HarnessAdapter, threads: readonly WatchedThread[], environment: string, everything = false) =>
     Effect.gen(function* () {
       const byThread = new Map<string, SessionRow[]>();
       for (const session of yield* q.sessionsWithThreads(adapter.id)) {
@@ -1363,7 +1372,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           // Only what changed since Top last looked: a latest or active run it hasn't accounted for.
           const accounted = yield* q.runsOf(session.id);
           const fresh = [thread.latestRunId, thread.activeRunId].some((run) => run && !accounted.has(run));
-          if (fresh || (thread.latestRunId === undefined && thread.activeRunId === undefined)) yield* Effect.forkIn(look(session.id), scope);
+          // When Top starts, every session gets one look: a crash may have come between a task's end and the look after it.
+          if (everything || fresh || (thread.latestRunId === undefined && thread.activeRunId === undefined)) yield* Effect.forkIn(look(session.id), scope);
         }
       }
     });
@@ -1373,10 +1383,12 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if (!adapter.watch || watches.has(adapter.id)) continue;
       const services = yield* Effect.context<never>();
       const run = Effect.runForkWith(services);
+      let first = true;
       watches.set(
         adapter.id,
         adapter.watch((threads, environment) => {
-          run(threadsChanged(adapter, threads, environment).pipe(Effect.ignoreCause({ log: true })));
+          run(threadsChanged(adapter, threads, environment, first).pipe(Effect.ignoreCause({ log: true })));
+          first = false;
         }),
       );
     }

@@ -40,6 +40,9 @@ const byPerson = (m: Rec) =>
  * idle. A pull request watch's news (a review, an approval, a close) is real work.
  */
 export const isMonitorProgress = (m: Rec | undefined) => {
+  // T3 Code's own `/compact` (`idleCompactionOf`): marked as such, or, from servers before that, sent by its server.
+  const compact = str(m?.text)?.trim().toLowerCase() === "/compact" && !(Array.isArray(m?.attachments) && m.attachments.length);
+  if (compact && (m?.idleCompaction !== undefined || (m?.createdBy === "agent" && m?.creationSource === "server"))) return true;
   if (m?.idleCompaction !== undefined) return true;
   const notification = record(m?.notification);
   const source = record(notification.source);
@@ -140,7 +143,7 @@ export function owners(records: ThreadRecords, accounted: ReadonlyMap<string, Ac
     const continues = str(run.restartContinuationOfRunId) ?? str(run.manualContinuationOfRunId) ?? str(run.usageLimitContinuationOfRunId);
     if (continues) return ownerOf(continues, path);
     const message = records.messages.get(messageId);
-    if (!message) return othersBefore(run) ? { kind: "unknown" } : { kind: "top" };
+    if (!message) return othersBefore(run) ? { kind: "unknown" } : { kind: "top", ...lastTopBefore(run) };
     const parent = str(record(message.delegatedCompletion).parentRunId);
     if (parent) return ownerOf(parent, path);
     if (isMonitorProgress(message)) return { kind: "monitor" };
@@ -152,8 +155,15 @@ export function owners(records: ThreadRecords, accounted: ReadonlyMap<string, Ac
     const fromTasks = tasks.map((id) => str(records.subagents.get(id)?.runId)).filter((id): id is string => id !== undefined);
     if (fromTasks.length) return combine(fromTasks.map((id) => ownerOf(id, path)));
     if (byPerson(message)) return { kind: "human" };
-    // A wake that names nothing it came from: Top's only if nobody else had written in the thread before it.
-    return othersBefore(run) ? { kind: "unknown" } : { kind: "top" };
+    // A wake that names nothing it came from: Top's only if nobody else had written in the thread before it, and then
+    // the Top turn that ran last before it stands for it (by T3 Code's own order, whatever Top has done since).
+    return othersBefore(run) ? { kind: "unknown" } : { kind: "top", ...lastTopBefore(run) };
+  };
+  const lastTopBefore = (run: Rec) => {
+    const before = [...records.runs.values()]
+      .filter((r) => String(r.userMessageId ?? "").startsWith("top:") && Number(r.ordinal) < Number(run.ordinal))
+      .sort((a, b) => Number(b.ordinal) - Number(a.ordinal))[0];
+    return before ? { key: String(before.userMessageId).slice(4) } : {};
   };
 
   return ownerOf;
