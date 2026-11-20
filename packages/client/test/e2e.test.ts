@@ -126,9 +126,10 @@ const untilSummary = (top: TopClient, id: number, predicate: (b: BotSummary) => 
 const entries = (s: ConversationSnapshot) => s.items.flatMap((i) => (i.kind === "entry" ? [i.entry] : []));
 const ofKind = <K extends Entry["kind"]>(s: ConversationSnapshot, kind: K) => entries(s).filter((e): e is Extract<Entry, { kind: K }> => e.kind === kind);
 
-async function connect(daemon: Daemon, botIndex: number) {
+async function connect(daemon: Daemon, botIndex: number, opened?: TopClient[]) {
   const top = new TopClient({ url: daemon.url });
   cleanup.push(() => top.close());
+  opened?.push(top);
   await until(top.subscribe, top.getSnapshot, (s) => s.ready, "the roster");
   const id = top.getSnapshot().bots[botIndex]!.id;
   const bot = top.conversation(id);
@@ -484,9 +485,8 @@ test("bots reordered on one client are in that order on every client, and stay s
   const opened: TopClient[] = [];
   try {
     await daemon.start();
-    const a = await connect(daemon, 0);
-    const b = await connect(daemon, 0);
-    opened.push(a.top, b.top);
+    const a = await connect(daemon, 0, opened);
+    const b = await connect(daemon, 0, opened);
     const ids = a.top.getSnapshot().bots.map((bot) => bot.id);
     assert.ok(ids.length >= 3, "the fake bots");
     const order = [ids[2]!, ids[0]!, ...ids.slice(3), ids[1]!];
