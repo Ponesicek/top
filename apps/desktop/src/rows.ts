@@ -362,7 +362,7 @@ export function displayRows(rows: readonly Row[], showTools = true): DisplayRow[
       run.push(row.entry);
       continue;
     }
-    if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length && !row.pagesRead) continue;
+    if (row.kind === "assistant" && !row.text && !row.error && !row.searches.length && !row.citations.length && !row.pagesRead) continue;
     flush();
     if (row.kind === "working" || author(row) !== "bot") flushFiles();
     out.push(row);

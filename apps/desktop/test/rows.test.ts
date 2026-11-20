@@ -291,6 +291,13 @@ describe("citation markers OpenAI left raw", () => {
     expect(row).not.toHaveProperty("pagesRead");
   });
 
+  it("still shows an answer that was only a marker, with the sources OpenAI sent for it", () => {
+    const sources = [{ url: `${RELEASES}?utm_source=openai`, title: "Releases · earendil-works/pi" }];
+    const marked = entry({ kind: "assistant", text: "\ue200cite\ue202turn1view0\ue201", citations: sources });
+    const rows = displayRows(committedRows([asked(), marked]), false);
+    expect(rows.at(-1)).toMatchObject({ kind: "assistant", text: "", citations: sources });
+  });
+
   it("still shows an answer that was only a marker, with the pages read", () => {
     const rows = displayRows(committedRows([asked(), researched(opened(RELEASES)), entry({ kind: "assistant", text: "citeturn1view0" })]), false);
     expect(rows.at(-1)).toMatchObject({ kind: "assistant", text: "", pagesRead: [{ url: RELEASES, title: "releases" }] });
