@@ -492,10 +492,12 @@ test("the app hears a task's questions come and go, and nothing else of it, even
   ctl.emit()({ type: "log", kind: "message", text: "working on it" });
   ctl.emit()({ type: "request", request: { id: "q1", title: "Which?", questions: [{ id: "a", question: "Which?", options: [] }] } });
   await until("the question to reach the app", async () => (await take()).length === 1);
+  assert.equal((await s.h.run(s.tasks.waiting)).length, 1, "a client connecting now starts from what the others were sent");
   await new Promise((r) => setTimeout(r, 400));
   const cancelling = s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
   await until("the withdrawn question to leave the app before the stuck stop gives up", async () => (await take()).length === 2, 1_000);
   assert.deepEqual(heard, [1, 0]);
+  assert.deepEqual(await s.h.run(s.tasks.waiting), []);
   assert.equal((await cancelling).task.state, "cancelled");
   await s.h.run(Scope.close(scope, Exit.void));
 });

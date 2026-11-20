@@ -117,6 +117,7 @@ export type Tasks = {
   ) => Effect.Effect<{ readonly snapshot: Snapshot; readonly timedOut: boolean }, TaskError>;
   readonly cancel: (bot: number | undefined, id: string) => Effect.Effect<{ readonly task: TaskRow; readonly cancelled: boolean }, TaskError>;
   readonly sessions: (bot: number) => Effect.Effect<readonly SessionRow[]>;
+  /** The tasks waiting for an answer, as clients were last told. */
   readonly waiting: Effect.Effect<readonly WaitingTask[]>;
   readonly stopAll: (bot: number) => Effect.Effect<void>;
   readonly recover: Effect.Effect<number>;
@@ -195,7 +196,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
   const lives = new Map<string, Live>();
   let buffer: NewEvent[] = [];
   const dirty = yield* Queue.sliding<void>(1);
-  let published = "[]";
+  // What clients were last sent: a connecting client starts from it, so every later broadcast is a change to what it has.
+  let published: readonly WaitingTask[] = [];
+  let publishedJson = "[]";
   const now = Clock.currentTimeMillis;
 
   const label = (harness: string) => adapters.get(harness)?.label ?? harness;
@@ -230,7 +233,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const inputView = (row: TaskInputRow): TaskInputView => ({ id: row.id, title: row.title, questions: [...row.questions] });
 
-  const waiting: Effect.Effect<readonly WaitingTask[]> = Effect.gen(function* () {
+  const waitingNow: Effect.Effect<readonly WaitingTask[]> = Effect.gen(function* () {
     const byTask = new Map<string, TaskInputView[]>();
     for (const input of yield* q.pendingInputs) byTask.set(input.task, [...(byTask.get(input.task) ?? []), inputView(input)]);
     const result: WaitingTask[] = [];
@@ -1139,10 +1142,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       Effect.gen(function* () {
         yield* Queue.take(dirty);
         yield* Effect.sleep(Duration.millis(PUBLISH_MS));
-        const current = yield* waiting;
+        const current = yield* waitingNow;
         const json = JSON.stringify(current);
-        if (json !== published) {
-          published = json;
+        if (json !== publishedJson) {
+          published = current;
+          publishedJson = json;
           yield* events.publish(current);
         }
       }),
@@ -1160,7 +1164,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     wait,
     cancel,
     sessions: (bot) => q.sessionsOf(bot, 20),
-    waiting,
+    waiting: Effect.sync(() => published),
     stopAll,
     recover,
   };
