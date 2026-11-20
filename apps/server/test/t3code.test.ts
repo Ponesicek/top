@@ -725,8 +725,11 @@ test("a stop that comes as the run ends on its own still stops its delegated wor
   const first = await start(s, { prompt: "plain first" });
   assert.equal((await ended(s, first.task.id)).result, "done: plain first");
   const reordered = `top-${first.session.id}`;
-  // Queued in T3 Code with its queue held, before Top's message: a lower number that runs later.
-  const heldRun = s.t3.hold(reordered, "held-1", "the held question");
+  // A wake for Top's earlier run, queued with its queue held before Top's message: a lower number that runs later.
+  const heldRun = s.t3.hold(reordered, "held-1", "the held question", {
+    createdBy: "agent",
+    delegatedCompletion: { parentRunId: `run:${reordered}:1`, generation: 1, taskIds: [] },
+  });
   const second = await start(s, { prompt: "delegate the rest", session: first.session.id });
   await held(s, second.task.id);
   s.t3.childDone(reordered, `task-run:${reordered}:3`, "forever: the woken owner");
@@ -790,11 +793,11 @@ test("a newer message someone moves ahead of the task's queued one in T3 Code is
   const first = await start(s, { prompt: "plain first" });
   assert.equal((await ended(s, first.task.id)).result, "done: plain first");
   const thread = `top-${first.session.id}`;
-  s.t3.wake(thread, "someone", "forever: someone's work");
+  s.t3.wake(thread, "someone", "forever: someone's work", { createdBy: "user", creationSource: "web" });
   const busy = await runIn(s, thread);
   const queued = await start(s, { prompt: "after that", session: first.session.id });
   await until("the task's run to queue", () => s.t3.runsOf(thread).some((r) => r.userMessageId === `top:${queued.task.id}` && r.status === "queued"));
-  const newer = s.t3.wake(thread, "newer", "a question of someone's");
+  const newer = s.t3.wake(thread, "newer", "a question of someone's", { createdBy: "user", creationSource: "web" });
   s.t3.promote(thread, newer);
   s.t3.finish(thread, String(busy.id), "someone's answer");
   await until("the newer run to ask", () => s.t3.runsOf(thread).find((r) => r.id === newer && r.status === "waiting"));
@@ -811,7 +814,7 @@ test("a task whose queued message is removed in T3 Code ends there, not with the
   const first = await start(s, { prompt: "plain first" });
   assert.equal((await ended(s, first.task.id)).result, "done: plain first");
   const thread = `top-${first.session.id}`;
-  s.t3.wake(thread, "someone", "forever: someone's work");
+  s.t3.wake(thread, "someone", "forever: someone's work", { createdBy: "user", creationSource: "web" });
   const busy = await runIn(s, thread);
   const queued = await start(s, { prompt: "after that", session: first.session.id });
   const mine = await until("the task's run to queue", () =>

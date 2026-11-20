@@ -16,6 +16,7 @@ type Thread = {
   subagents: Map<string, Rec>;
   /** Provider threads, for their pending background tasks. */
   providerThreads: Map<string, Rec>;
+  archivedAt?: string | null;
 };
 
 export type FakeT3 = Awaited<ReturnType<typeof fakeT3>>;
@@ -45,6 +46,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     /** A server or proxy that quotes the refused code back. */
     echoPairing: false,
     respondDelayMs: 0,
+    /** The shell stream sends each change twice. */
+    shellDuplicate: false,
+    /** The shell stream can't replay from a cursor: a resume gets a whole snapshot. */
+    shellForget: false,
   };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
@@ -55,10 +60,27 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     last = Math.max(last + 1, Date.now());
     return new Date(last).toISOString();
   };
+  /** The shell of every thread, as T3 Code's sidebar reads it: kept in step with the thread's runs. */
+  const shellOf = (thread: Thread) => {
+    const all = [...thread.runs.values()].sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+    const live = all.find((r) => ["starting", "running", "waiting"].includes(String(r.status)));
+    return { id: thread.id, latestRunId: all.at(-1)?.id ?? null, activeRunId: live?.id ?? null, archivedAt: thread.archivedAt ?? null, deletedAt: null };
+  };
+  const shellEvents: { sequence: number; item: Rec }[] = [];
+  const shellSubscribers = new Set<(item: Rec) => void>();
+  const shellChanged = (thread: Thread) => {
+    const item = { kind: "thread.updated", sequence: ++sequence, location: thread.archivedAt ? "archive" : "active", thread: shellOf(thread) };
+    shellEvents.push({ sequence: item.sequence, item });
+    for (const send of shellSubscribers) {
+      send(item);
+      if (faults.shellDuplicate) send(item);
+    }
+  };
   const emit = (thread: Thread, event: Rec) => {
     const entry = { sequence: ++sequence, event };
     thread.events.push(entry);
     for (const send of subscribers.get(thread.id) ?? []) send({ kind: "event", ...entry });
+    if (event.type === "run.created" || event.type === "run.updated") shellChanged(thread);
   };
   const item = (thread: Thread, runId: string, fields: Rec) => {
     const value: Rec = { threadId: thread.id, runId, ordinal: thread.items.size, streaming: false, updatedAt: clock(), ...fields };
@@ -94,7 +116,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const childDone = (thread: Thread, id: string, reply: string) => {
     setSubagent(thread, id, { status: "completed", result: reply, completionDelivery: { state: "pending", observedByRunId: null } });
     setTimeout(() => {
-      const runId = addRun(thread, `delegated:${id}`, reply, "agent");
+      const parentRunId = String(thread.subagents.get(id)?.runId);
+      const runId = addRun(thread, `delegated:${id}`, reply, "agent", { delegatedCompletion: { parentRunId, generation: 1, taskIds: [id] } });
       setSubagent(thread, id, { completionDelivery: { state: "delivered", observedByRunId: runId } });
     }, 15);
   };
@@ -141,7 +164,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     const next = [...thread.runs.values()].find((r) => r.status === "queued" && r.queueHeld !== true);
     if (next) play(thread, String(next.id), String(next.text));
   };
-  const addRun = (thread: Thread, messageId: string, text: string, createdBy = "user", extra: Rec = {}) => {
+  const addRun = (thread: Thread, messageId: string, text: string, createdBy = "user", extra: Rec = {}, runFields: Rec = {}) => {
     const ordinal = thread.runs.size + 1;
     const runId = `run:${thread.id}:${ordinal}`;
     const busy = active(thread);
@@ -150,13 +173,15 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       threadId: thread.id,
       ordinal,
       userMessageId: messageId,
+      requestedAt: clock(),
       status: busy ? "queued" : "starting",
       startedAt: null,
       completedAt: null,
       text,
+      ...runFields,
     };
     thread.runs.set(runId, run);
-    const message = { id: messageId, role: "user", text, runId, createdBy, ...extra };
+    const message = { id: messageId, role: "user", text, runId, createdBy, createdAt: clock(), ...extra };
     thread.messages.push(message);
     emit(thread, { type: "message.updated", payload: message });
     emit(thread, { type: "run.created", payload: run });
@@ -265,7 +290,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       case "orchestration.getThreadProjection": {
         const thread = threads.get(String(payload.threadId));
         if (!thread) throw new Error("Thread not found.");
-        return { runs: [...thread.runs.values()] };
+        return snapshot(thread).projection;
       }
       default:
         throw new Error(`fake T3 doesn't serve ${tag}`);
@@ -306,6 +331,26 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       const payload = (message.payload ?? {}) as Rec;
       requests.push({ tag, payload });
       if (faults.silent || faults.silentTypes.has(String(payload.type))) return;
+      if (tag === "orchestration.subscribeShell") {
+        const out = (item: Rec) => send({ _tag: "Chunk", requestId: id, values: [item] });
+        const after = payload.afterSequence;
+        // A cursor it can replay from gets what came after it; otherwise (or when told to forget) a whole snapshot.
+        if (typeof after === "number" && !faults.shellForget) for (const entry of shellEvents.filter((e) => e.sequence > after)) out(entry.item);
+        else
+          out({
+            kind: "snapshot",
+            snapshot: {
+              snapshotSequence: sequence,
+              threads: [...threads.values()].filter((t) => !t.archivedAt).map(shellOf),
+              archivedThreads: [...threads.values()].filter((t) => t.archivedAt).map(shellOf),
+              projects: [],
+            },
+          });
+        if (payload.requestCompletionMarker === true) out({ kind: "synchronized" });
+        shellSubscribers.add(out);
+        unsubscribes.push(() => shellSubscribers.delete(out));
+        return;
+      }
       if (tag === "orchestration.subscribeThread") {
         const thread = threads.get(String(payload.threadId));
         if (!thread)
@@ -449,9 +494,9 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     /** A delegated task ends, and T3 Code wakes its owner with a run that plays out from `reply`. */
     childDone: (threadId: string, id: string, reply: string) => childDone(threads.get(threadId)!, id, reply),
     /** A message the user queued in T3 Code with its queue held: it waits, without a number after later runs'. */
-    hold: (threadId: string, messageId: string, text: string) => {
+    hold: (threadId: string, messageId: string, text: string, message: Rec = {}) => {
       const thread = threads.get(threadId)!;
-      const runId = addRun(thread, messageId, text);
+      const runId = addRun(thread, messageId, text, "user", message);
       const run = { ...thread.runs.get(runId)!, status: "queued", queueHeld: true };
       thread.runs.set(runId, run);
       emit(thread, { type: "run.updated", payload: run });
@@ -474,6 +519,27 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       thread.runs.set(runId, run);
       for (const [id, r] of rest) thread.runs.set(id, r);
     },
+    /** Archives the thread in T3 Code, or brings it back. */
+    archive: (threadId: string, archived: boolean) => {
+      const thread = threads.get(threadId)!;
+      thread.archivedAt = archived ? clock() : null;
+      shellChanged(thread);
+    },
+    /** A provider's own child ends: T3 Code records it with no completion delivery, and wakes nobody yet. */
+    nativeChildDone: (threadId: string, runId: string, id: string) => {
+      const thread = threads.get(threadId)!;
+      setSubagent(thread, id, {
+        id,
+        threadId,
+        runId,
+        origin: "provider_native",
+        childThreadId: `native-${id}`,
+        status: "completed",
+        result: null,
+        completedAt: clock(),
+      });
+    },
+    shellRequests: () => requests.filter((r) => r.tag === "orchestration.subscribeShell"),
     /** Like Stop in T3 Code itself. */
     stop: (threadId: string) => handle("orchestration.dispatchCommand", { type: "thread.stop", commandId: `there:${Math.random()}`, threadId }),
     /** The provider thread's pending background tasks, as T3 Code tracks them. */
@@ -484,7 +550,12 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       emit(thread, { type: "provider-thread.updated", payload: value });
     },
     /** Starts a run in the thread as T3 Code itself would, like a monitor's update (its message's `notification`). */
-    wake: (threadId: string, messageId: string, text: string, message: Rec = {}) => addRun(threads.get(threadId)!, messageId, text, "agent", message),
+    wake: (threadId: string, messageId: string, text: string, message: Rec = {}, run: Rec = {}) =>
+      addRun(threads.get(threadId)!, messageId, text, "agent", message, run),
+    /** Moves T3 Code's clock on, as if that much time passed before what happens next. */
+    advance: (ms: number) => {
+      last = Math.max(last, Date.now()) + ms;
+    },
     dropSockets: () => {
       for (const ws of sockets) ws.terminate();
     },

@@ -306,6 +306,19 @@ export async function threadKnown(origin: string, token: string, threadId: strin
   throw new T3Unreachable(`T3 Code at ${origin} didn't say whether it has thread ${threadId} (HTTP ${response.status}).`);
 }
 
+/**
+ * A thread's whole saved record: every run and the message that started it, with its links (unlike the socket's
+ * projection, which keeps only the latest runs). Read-only.
+ */
+export async function readThread(origin: string, token: string, threadId: string): Promise<Record<string, unknown>> {
+  const response = await http(origin, `/api/orchestration/threads/${encodeURIComponent(threadId)}`, {
+    headers: { ...bearer(token), "x-t3-orchestration-protocol": String(T3_PROTOCOL) },
+  });
+  if (response.status === 401) throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential; ${pairAgain(origin)}.`);
+  if (!response.ok) throw new T3Unreachable(`T3 Code at ${origin} didn't send thread ${threadId} (HTTP ${response.status}).`);
+  return record(record(await json(response)).projection);
+}
+
 /** A short-lived ticket for one socket, so the credential never goes into a socket URL. */
 async function rpcTicket(origin: string, token: string): Promise<string> {
   const response = await http(origin, "/api/auth/websocket-ticket/rpc", { method: "POST", headers: bearer(token) });

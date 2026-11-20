@@ -81,7 +81,23 @@ CREATE TABLE task_messages (
   at INTEGER NOT NULL
 )`;
 
-export const TASK_PURGE_ORDER = ["task_events", "task_messages", "task_inputs", "tasks", "harness_sessions"] as const;
+/**
+ * The runs of a session's harness thread Top has accounted for, each once: reported by `task` (which took it or adopted it),
+ * or why none did (`kind`: a person's turn, a monitor's progress, a wake Top can't link to its work, one from before Top
+ * kept this, or one a cancelled task's work caused). What isn't here yet is what Top still has to look at.
+ */
+export const HARNESS_RUNS_TABLE = `
+CREATE TABLE IF NOT EXISTS harness_runs (
+  session TEXT NOT NULL REFERENCES harness_sessions(id),
+  run TEXT NOT NULL,
+  bot INTEGER NOT NULL,
+  task TEXT REFERENCES tasks(id),
+  kind TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (session, run)
+)`;
+
+export const TASK_PURGE_ORDER = ["task_events", "task_messages", "task_inputs", "harness_runs", "tasks", "harness_sessions"] as const;
 
 export const SessionRow = Schema.Struct({
   id: Text,
@@ -113,6 +129,9 @@ export const TaskRow = Schema.Struct({
   startedAt: NullableNumber,
   endedAt: NullableNumber,
   notified: NullableText,
+  /** A task Top started on its own to report what the harness did after `continues` ended, following run `adopt`. */
+  continues: Schema.optional(NullableText),
+  adopt: Schema.optional(NullableText),
 }).pipe(Schema.encodeKeys({ createdAt: "created_at", startedAt: "started_at", endedAt: "ended_at" }));
 export type TaskRow = typeof TaskRow.Type;
 
@@ -184,6 +203,7 @@ export type NewSession = Omit<SessionRow, "createdAt" | "usedAt" | "externalId">
 export type NewTask = Pick<TaskRow, "id" | "bot" | "key" | "session" | "title" | "prompt" | "images">;
 export type NewEvent = { readonly task: string; readonly bot: number; readonly at: number; readonly kind: TaskEventKind; readonly text: string };
 export type TaskEnd = { readonly result?: string | undefined; readonly error?: string | undefined };
+export type RunAccount = { readonly run: string; readonly task: string | null; readonly kind: string };
 
 export type TaskQueries = ReturnType<typeof makeTaskQueries>;
 
@@ -201,6 +221,28 @@ export function makeTaskQueries(
   const task = (id: string) => Effect.map(first(sql`SELECT * FROM tasks WHERE id = ${id}`), (row) => row && taskOf(row));
   const session = (id: string) => Effect.map(first(sql`SELECT * FROM harness_sessions WHERE id = ${id}`), (row) => row && sessionOf(row));
   const input = (id: number) => Effect.map(first(sql`SELECT * FROM task_inputs WHERE id = ${id}`), (row) => row && inputOf(row));
+  const setState = (id: string, from: readonly TaskState[], to: TaskState, end: TaskEnd = {}) =>
+    Effect.gen(function* () {
+      const at = yield* now;
+      const ended = taskEnded(to);
+      const list = sql.in(from);
+      const row = yield* first(sql`
+        UPDATE tasks SET state = ${to},
+          started_at = CASE WHEN ${to} = 'starting' AND started_at IS NULL THEN ${at} ELSE started_at END,
+          ended_at = CASE WHEN ${ended ? 1 : 0} = 1 THEN ${at} ELSE ended_at END,
+          result = COALESCE(${end.result ?? null}, result),
+          error = COALESCE(${end.error ?? null}, error)
+        WHERE id = ${id} AND state IN ${list}
+        RETURNING *`);
+      return row ? taskOf(row) : undefined;
+    });
+  const accountRuns = (session: string, bot: number, runs: readonly RunAccount[]) =>
+    Effect.gen(function* () {
+      const at = yield* now;
+      for (const r of runs)
+        yield* q(sql`INSERT INTO harness_runs (session, run, bot, task, kind, at) VALUES (${session}, ${r.run}, ${bot}, ${r.task}, ${r.kind}, ${at})
+          ON CONFLICT (session, run) DO NOTHING`);
+    });
 
   return {
     createSession: (row: NewSession) =>
@@ -251,21 +293,54 @@ export function makeTaskQueries(
         (row) => (row ? String(row.id) : undefined),
       ),
 
-    setState: (id: string, from: readonly TaskState[], to: TaskState, end: TaskEnd = {}) =>
-      Effect.gen(function* () {
-        const at = yield* now;
-        const ended = taskEnded(to);
-        const list = sql.in(from);
-        const row = yield* first(sql`
-          UPDATE tasks SET state = ${to},
-            started_at = CASE WHEN ${to} = 'starting' AND started_at IS NULL THEN ${at} ELSE started_at END,
-            ended_at = CASE WHEN ${ended ? 1 : 0} = 1 THEN ${at} ELSE ended_at END,
-            result = COALESCE(${end.result ?? null}, result),
-            error = COALESCE(${end.error ?? null}, error)
-          WHERE id = ${id} AND state IN ${list}
-          RETURNING *`);
-        return row ? taskOf(row) : undefined;
-      }),
+    setState,
+    /** Ends a task and accounts for the runs it reported, at once: a crash leaves both or neither. */
+    endTask: (
+      id: string,
+      from: readonly TaskState[],
+      to: TaskState,
+      end: TaskEnd,
+      accounts: { readonly session: string; readonly bot: number; readonly runs: readonly RunAccount[] },
+    ) =>
+      transaction(
+        Effect.gen(function* () {
+          const row = yield* setState(id, from, to, end);
+          if (row) yield* accountRuns(accounts.session, accounts.bot, accounts.runs);
+          return row;
+        }),
+      ),
+    runsOf: (session: string) =>
+      Effect.map(
+        rows(sql`SELECT run, task, kind FROM harness_runs WHERE session = ${session}`),
+        (r) => new Map(r.map((row) => [String(row.run), { task: row.task === null ? null : String(row.task), kind: String(row.kind) }])),
+      ),
+    accountRuns: (session: string, bot: number, runs: readonly RunAccount[]) => transaction(accountRuns(session, bot, runs)),
+    /**
+     * A task that reports a run the harness started on its own, and that run's account, at once; nothing when the run is
+     * accounted for already (a replay, or another look got there first), so each run gets at most one task.
+     */
+    createContinuation: (row: NewTask & { readonly continues: string | null; readonly adopt: string }, others: readonly RunAccount[]) =>
+      transaction(
+        Effect.gen(function* () {
+          const taken = yield* first(sql`SELECT 1 AS one FROM harness_runs WHERE session = ${row.session} AND run = ${row.adopt}`);
+          if (taken) return undefined;
+          yield* accountRuns(row.session, row.bot, others);
+          const at = yield* now;
+          const inserted = yield* first(sql`
+            INSERT INTO tasks (id, bot, key, session, title, prompt, images, state, created_at, continues, adopt)
+            VALUES (${row.id}, ${row.bot}, ${row.key}, ${row.session}, ${row.title}, ${row.prompt}, '[]', 'queued', ${at}, ${row.continues}, ${row.adopt})
+            ON CONFLICT (key) DO NOTHING RETURNING id`);
+          if (!inserted) return undefined;
+          yield* accountRuns(row.session, row.bot, [{ run: row.adopt, task: row.id, kind: "adopted" }]);
+          return (yield* task(row.id))!;
+        }),
+      ),
+    sessionsWithThreads: (harness: string) =>
+      Effect.map(rows(sql`SELECT * FROM harness_sessions WHERE harness = ${harness} AND external_id IS NOT NULL`), (r) => r.map(sessionOf)),
+    sessionsByExternal: (harness: string, externalId: string) =>
+      Effect.map(rows(sql`SELECT * FROM harness_sessions WHERE harness = ${harness} AND external_id = ${externalId}`), (r) => r.map(sessionOf)),
+    latestTaskOf: (session: string) =>
+      Effect.map(first(sql`SELECT * FROM tasks WHERE session = ${session} ORDER BY created_at DESC, id DESC LIMIT 1`), (row) => row && taskOf(row)),
     setUsage: (id: string, usage: Readonly<Record<string, unknown>>) =>
       Effect.asVoid(q(sql`UPDATE tasks SET usage = ${JSON.stringify(usage)} WHERE id = ${id}`)),
 

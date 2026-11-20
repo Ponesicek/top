@@ -3,12 +3,24 @@ import { existsSync } from "node:fs";
 import type { TaskQuestion } from "@top/protocol";
 import Type from "typebox";
 import { duration } from "../time.ts";
-import { type HarnessAdapter, type HarnessAnswer, type HarnessEvent, HarnessUnavailable, type LogKind, type OpenSpec, type Turn } from "./harness.ts";
+import {
+  type HarnessAdapter,
+  type HarnessAnswer,
+  type HarnessEvent,
+  HarnessUnavailable,
+  type LogKind,
+  type OpenSpec,
+  type ReviewedRun,
+  type SessionWatch,
+  type Turn,
+  type WatchedThread,
+} from "./harness.ts";
 import {
   checkSession,
   listProjects,
   RpcSocket,
   readT3Config,
+  readThread,
   type T3Config,
   T3NotSent,
   type T3Project,
@@ -17,6 +29,7 @@ import {
   threadKnown,
   verifyEnvironment,
 } from "./t3api.ts";
+import { type Accounted, isMonitorProgress, owners } from "./t3owner.ts";
 
 export const T3CODE = "t3code";
 
@@ -207,6 +220,113 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
         settleMs: config.settleMs ?? SETTLE_MS,
       });
     },
+    watch: (changed) => watchShell(config.file, changed, config.replyMs ?? REPLY_MS),
+  };
+}
+
+const runsInOrder = (runs: Iterable<Rec>) => {
+  const startOf = (r: Rec) => (str(r.startedAt) ? Date.parse(str(r.startedAt)!) : Number.POSITIVE_INFINITY);
+  return [...runs].sort((a, b) => startOf(a) - startOf(b) || Number(a.ordinal) - Number(b.ordinal));
+};
+const mapOf = (list: unknown, keep: (r: Rec) => boolean = () => true) =>
+  new Map((Array.isArray(list) ? list.map(record) : []).filter(keep).map((r) => [String(r.id), r]));
+
+/**
+ * One subscription to T3 Code's shell, for the whole environment Top is paired with: every thread's latest and active run,
+ * so a run T3 Code starts on its own in a Top thread is seen whenever it comes. Read-only. It resumes from where it left
+ * off after a drop and takes a fresh snapshot when T3 Code can't replay; it keeps trying while Top runs and fails nothing.
+ */
+function watchShell(file: string, changed: (threads: readonly WatchedThread[], environment: string) => void, replyMs: number): SessionWatch {
+  let closed = false;
+  let socket: RpcSocket | undefined;
+  let after: number | undefined;
+  let environment = "";
+  let wake: (() => void) | undefined;
+  const pause = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+  const shell = (t: Rec, archived: boolean): WatchedThread => ({
+    externalId: str(t.id)!,
+    archived: archived || t.archivedAt != null || t.deletedAt != null,
+    latestRunId: t.latestRunId === null ? null : str(t.latestRunId),
+    activeRunId: t.activeRunId === null ? null : str(t.activeRunId),
+  });
+  const shells = (list: unknown, archived: boolean): WatchedThread[] =>
+    (Array.isArray(list) ? list.map(record) : []).filter((t) => str(t.id)).map((t) => shell(t, archived));
+  void (async () => {
+    let delay = 500;
+    while (!closed) {
+      try {
+        const cfg = await readT3Config(file);
+        if (!cfg) throw new T3Unreachable("not connected");
+        await verifyEnvironment(cfg);
+        environment = cfg.environmentId;
+        const opened = await RpcSocket.open(cfg.url, cfg.token, () => {});
+        if (closed) {
+          opened.close();
+          break;
+        }
+        socket = opened;
+        await new Promise<void>((resolve) => {
+          let heard = false;
+          const timer = setTimeout(() => {
+            if (!heard) opened.close();
+          }, replyMs);
+          opened.subscribe(
+            "orchestration.subscribeShell",
+            { requestCompletionMarker: true, ...(after !== undefined ? { afterSequence: after } : {}) },
+            (raw) => {
+              const value = record(raw);
+              if (!heard) {
+                heard = true;
+                clearTimeout(timer);
+                delay = 500;
+              }
+              if (value.kind === "snapshot") {
+                const snapshot = record(value.snapshot);
+                if (typeof snapshot.snapshotSequence === "number") after = snapshot.snapshotSequence;
+                changed([...shells(snapshot.threads, false), ...shells(snapshot.archivedThreads, true)], environment);
+                return;
+              }
+              if (typeof value.sequence === "number") after = Math.max(after ?? 0, value.sequence);
+              if (value.kind === "thread.updated") {
+                const thread = record(value.thread);
+                if (str(thread.id)) changed([shell(thread, value.location === "archive")], environment);
+              }
+            },
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+          );
+        });
+      } catch {}
+      socket?.close();
+      socket = undefined;
+      if (closed) break;
+      await pause(delay);
+      delay = Math.min(delay * 2, 15_000);
+    }
+  })();
+  return {
+    review: async (externalId, accounted: ReadonlyMap<string, Accounted>): Promise<readonly ReviewedRun[]> => {
+      const cfg = await readT3Config(file);
+      if (!cfg) throw new T3Unreachable("T3 Code isn't connected.");
+      const projection = await readThread(cfg.url, cfg.token, externalId);
+      const runs = mapOf(projection.runs);
+      const ownerOf = owners({ runs, messages: mapOf(projection.messages, (m) => m.role === "user"), subagents: mapOf(projection.subagents) }, accounted);
+      return runsInOrder(runs.values()).map((r) => ({ run: String(r.id), ended: TERMINAL_RUN.has(String(r.status)), owner: ownerOf(String(r.id)) }));
+    },
+    close: () => {
+      closed = true;
+      socket?.close();
+      wake?.();
+    },
   };
 }
 
@@ -221,6 +341,8 @@ type Current = {
   readonly followOnly: boolean;
   /** Stopped from Top while it held: it ends as stopped, not as its run's earlier answer, once T3 Code took the stop. */
   cut: "sending" | "confirmed" | undefined;
+  /** Top's work in the thread that was going while this turn was, though it started first: a wake racing the turn's message. */
+  readonly joined: Set<string>;
   readonly asked: Set<string>;
   readonly settled: Set<string>;
   readonly answered: Set<string>;
@@ -253,11 +375,13 @@ async function openThread(
   const subagents = new Map<string, Rec>();
   const providerThreads = new Map<string, Rec>();
   const monitorRuns = new Set<string>();
+  // The thread's user-role messages, for whose work each run is: Top's, a person's, or what caused it.
+  const messages = new Map<string, Rec>();
   const noteMessage = (m: Rec) => {
     if (m.role !== "user") return;
     sentMessages.add(String(m.id));
-    const notification = record(m.notification);
-    if (record(notification.source).kind === "monitor" && notification.outcome === "updated" && str(m.runId)) monitorRuns.add(str(m.runId)!);
+    messages.set(String(m.id), m);
+    if (isMonitorProgress(m) && str(m.runId)) monitorRuns.add(str(m.runId)!);
   };
   let current: Current | undefined;
   let sending: Promise<unknown> | undefined;
@@ -407,13 +531,19 @@ async function openThread(
       .filter((r) => r === own || (str(own.startedAt) !== undefined && startOf(r) >= startOf(own)))
       .sort((a, b) => startOf(a) - startOf(b) || Number(a.ordinal) - Number(b.ordinal));
   /**
-   * The turn's own run and the runs after it, such as the ones T3 Code wakes it with when delegated work reports back.
+   * The turn's own run and Top's runs after it, such as the ones T3 Code wakes it with when delegated work reports back.
    * By when they ran, not their numbers: T3 Code may run a held, lower-numbered one later, or a newer one first. Not a
-   * monitor's progress runs: their questions and answers aren't the task's.
+   * monitor's progress runs, nor a person's turns in T3 Code and what they cause: their questions and answers aren't the
+   * task's. Top's work that was already going when the turn began joins it too, so nothing of Top's runs unfollowed.
    */
   const turnRuns = (turn: Current): Rec[] => {
     const own = turn.runId ? runs.get(turn.runId) : undefined;
-    return own ? since(own).filter((r) => r === own || !monitorRuns.has(String(r.id))) : [];
+    if (!own) return [];
+    const ownerOf = owners({ runs, messages, subagents });
+    const top = (r: Rec) => !monitorRuns.has(String(r.id)) && ownerOf(String(r.id)).kind === "top";
+    for (const r of runs.values()) if (r !== own && str(r.startedAt) && !ended(r) && top(r)) turn.joined.add(String(r.id));
+    const scope = new Set([own, ...since(own).filter(top), ...[...turn.joined].map((id) => runs.get(id)).filter((r): r is Rec => r !== undefined)]);
+    return runsInOrder(scope);
   };
   const ended = (run: Rec) => TERMINAL_RUN.has(String(run.status));
   const ranAfter = (a: Rec, b: Rec) => {
@@ -526,6 +656,7 @@ async function openThread(
       if (working || delegated) {
         if (!turn.holding && delegated) {
           turn.holding = true;
+          emit({ type: "held" });
           emit({
             type: "log",
             kind: "status",
@@ -536,10 +667,8 @@ async function openThread(
       }
       // Settled: the answer is the run that ended last, often one T3 Code woke the owner with.
       // A run that never started, like a queued one cancelled, has no answer.
-      // Any run in the thread: T3 Code may run a queued one with a lower number after this turn's.
-      outcome = [...runs.values()]
-        .filter((r) => ended(r) && r.status !== "rolled_back" && !monitorRuns.has(String(r.id)) && r.startedAt != null)
-        .reduce((a, b) => (ranAfter(b, a) ? b : a), own);
+      // The turn's runs by when they ran: T3 Code may run a queued one with a lower number after this turn's.
+      outcome = ours.filter((r) => ended(r) && r.status !== "rolled_back" && r.startedAt != null).reduce((a, b) => (ranAfter(b, a) ? b : a), own);
     }
     turn.done = true;
     const its = [...items.values()].filter((i) => i.runId === outcome.id).sort((a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
@@ -569,6 +698,7 @@ async function openThread(
       if (typeof item.snapshotSequence === "number") lastSequence = item.snapshotSequence;
       runs.clear();
       items.clear();
+      messages.clear();
       subagents.clear();
       providerThreads.clear();
       const list = (value: unknown) => (Array.isArray(value) ? value.map(record) : []);
@@ -731,6 +861,7 @@ async function openThread(
         runId: undefined,
         done: false,
         holding: false,
+        joined: new Set(),
         followOnly: turn.followOnly === true,
         cut: undefined,
         asked: new Set(),
@@ -803,6 +934,13 @@ async function openThread(
         }
         return true;
       };
+      if (turn.adopt) {
+        // A run T3 Code started on its own: follow it as this turn, sending nothing.
+        mine.runId = turn.adopt;
+        await followed();
+        evaluate();
+        return;
+      }
       sending = send();
       if (!(await sending)) {
         mine.done = true;
@@ -885,6 +1023,17 @@ async function openThread(
       closed = true;
       unsubscribe?.();
       socket?.close();
+    },
+    covered: () => {
+      const turn = current;
+      const own = turn?.runId ? runs.get(turn.runId) : undefined;
+      if (!turn || !own) return { runs: [], earlier: [] };
+      const reported = turnRuns(turn).filter(ended);
+      const start = str(own.startedAt) ? Date.parse(str(own.startedAt)!) : Number.POSITIVE_INFINITY;
+      const earlier = [...runs.values()].filter(
+        (r) => r !== own && ended(r) && !turn.joined.has(String(r.id)) && Date.parse(str(r.completedAt) ?? "") <= start,
+      );
+      return { runs: reported.map((r) => String(r.id)), earlier: earlier.map((r) => String(r.id)) };
     },
   };
 }

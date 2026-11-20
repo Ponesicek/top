@@ -36,7 +36,7 @@ import {
   transcriptMessage,
   UserView,
 } from "./messages.ts";
-import { makeTaskQueries, TASK_PURGE_ORDER, TASK_TABLES, type TaskQueries } from "./tasks/store.ts";
+import { HARNESS_RUNS_TABLE, makeTaskQueries, TASK_PURGE_ORDER, TASK_TABLES, type TaskQueries } from "./tasks/store.ts";
 
 const Int = Schema.Int;
 const Text = Schema.String;
@@ -344,6 +344,12 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
   }),
   // The order the bots are listed in, once someone reorders them; until then (NULL) it's the order they were made in.
   "9_bot_position": addColumn("bots", "position", "INTEGER"),
+  "10_harness_runs": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql.unsafe(HARNESS_RUNS_TABLE);
+    yield* addColumn("tasks", "continues", "TEXT");
+    yield* addColumn("tasks", "adopt", "TEXT");
+  }),
 };
 
 const refuseNewerData = Effect.gen(function* () {
