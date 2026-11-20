@@ -246,13 +246,13 @@ function Connected({
               Pair again
             </Button>
           )}
-          <Button variant="outline" size="xs" className="px-2.5" disabled={checking || busy} onClick={onCheck}>
+          <Button variant="outline" size="xs" className="px-2.5 narrow:min-h-11" disabled={checking || busy} onClick={onCheck}>
             Check
           </Button>
           <Button
             variant={confirm ? "destructive" : "ghost-destructive"}
             size="xs"
-            className="px-2.5"
+            className="px-2.5 narrow:min-h-11"
             disabled={busy}
             onClick={() => (confirm ? void disconnect() : setConfirm(true))}
             onBlur={() => setConfirm(false)}
@@ -270,7 +270,7 @@ function Connected({
         <Button
           variant="link"
           size="link"
-          className="ml-3.75 max-w-[calc(100%-0.9375rem)] self-start text-left whitespace-normal text-muted-foreground"
+          className="ml-3.75 max-w-[calc(100%-0.9375rem)] self-start text-left whitespace-normal text-muted-foreground narrow:min-h-11"
           aria-expanded={open}
           aria-controls={open ? detailsId : undefined}
           onClick={() => setOpen((o) => !o)}
