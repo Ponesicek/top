@@ -125,15 +125,18 @@ export function useSidebarReorder({
       const dx = e.clientX - g.startX;
       const dy = e.clientY - g.startY;
       if (!g.active) {
-        if (g.touch) {
-          if (!g.armed && Math.hypot(dx, dy) > TOUCH_SLOP) end(false);
-          else if (g.armed && Math.hypot(dx, dy) > ARMED_SLOP) activate(g);
-        } else if (Math.hypot(dx, dy) > MOUSE_SLOP) activate(g);
-        return;
+        const far = Math.hypot(dx, dy);
+        if (g.touch && !g.armed) {
+          if (far > TOUCH_SLOP) end(false);
+          return;
+        }
+        if (far <= (g.touch ? ARMED_SLOP : MOUSE_SLOP)) return;
+        activate(g);
+        // The move that starts the drag counts too, from the order as it was.
       }
       e.preventDefault();
       const nav = navRef.current;
-      const current = latest.current.preview;
+      const current = latest.current.preview ?? { group: g.group, ids: latest.current.groups[g.group] };
       if (!nav || !current) return;
       // Slots by where the bots sit in the layout, not where a slide shows them right now.
       const box = nav.getBoundingClientRect();
