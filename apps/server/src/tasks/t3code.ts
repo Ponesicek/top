@@ -400,13 +400,16 @@ async function openThread(
     }
   };
 
-  /** The turn's own run and every run after it in the thread, such as the ones T3 Code wakes it with when delegated work reports back. */
+  /**
+   * The turn's own run and every run after it in the thread, such as the ones T3 Code wakes it with when delegated work
+   * reports back. Not a monitor's progress runs: their questions and answers aren't the task's.
+   */
   const turnRuns = (turn: Current): Rec[] => {
     const own = turn.runId ? runs.get(turn.runId) : undefined;
     if (!own) return [];
     const from = Number(own.ordinal);
     return [...runs.values()]
-      .filter((r) => r === own || (Number.isFinite(from) && Number(r.ordinal) > from))
+      .filter((r) => r === own || (Number.isFinite(from) && Number(r.ordinal) > from && !monitorRuns.has(String(r.id))))
       .sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
   };
   const ended = (run: Rec) => TERMINAL_RUN.has(String(run.status));
@@ -432,6 +435,18 @@ async function openThread(
       .flatMap((t) => (Array.isArray(t.pendingBackgroundTasks) ? t.pendingBackgroundTasks.map(record) : []))
       .filter((t) => t.awaited === true || t.kind === "subagent" || t.kind === "background_task").length;
     return { working, delegated: tasks + background };
+  };
+
+  /**
+   * Stops the thread, which stops its delegated work and any run it woke, as Stop in T3 Code does; the turn then ends as
+   * stopped. The same command after a restart is one stop, so one T3 Code already took counts as taken.
+   */
+  const cutThread = async (turn: Current) => {
+    if (turn.cut) return;
+    turn.cut = "sending";
+    await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." });
+    turn.cut = "confirmed";
+    evaluate();
   };
 
   const evaluate = () => {
@@ -492,6 +507,11 @@ async function openThread(
     // Its stop isn't confirmed yet; if it never is, the task's cancel times out instead.
     if (turn.cut === "sending") return;
     if (turn.stopped) {
+      // Its run ended on its own before the stop reached it, with delegated work still going: stop that too.
+      if (!turn.cut && own.status === "completed" && delegatedWork().delegated) {
+        cutThread(turn).catch((error: unknown) => emit({ type: "log", kind: "error", text: `T3 Code didn't take the stop: ${message(error)}` }));
+        return;
+      }
       // Stopped from Top: over once nothing it stopped still runs, whatever the delegated work does.
       if (ours.some((r) => !ended(r) && r.status !== "queued")) return;
     } else if (turn.followOnly) {
@@ -511,13 +531,14 @@ async function openThread(
       }
       // Settled: the answer is the run that ended last, often one T3 Code woke the owner with.
       // A run that never started, like a queued one cancelled, has no answer.
-      outcome = ours
+      // Any run in the thread: T3 Code may run a queued one with a lower number after this turn's.
+      outcome = [...runs.values()]
         .filter((r) => ended(r) && r.status !== "rolled_back" && !monitorRuns.has(String(r.id)) && r.startedAt != null)
         .reduce((a, b) => (ranAfter(b, a) ? b : a), own);
     }
     turn.done = true;
     const status = turn.cut ? "interrupted" : String(outcome.status);
-    const its = mine.filter((i) => i.runId === outcome.id);
+    const its = [...items.values()].filter((i) => i.runId === outcome.id).sort((a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
     const answers = its.filter((i) => i.type === "assistant_message" && i.streaming !== true && str(i.text)?.trim());
     const result = str(answers.at(-1)?.text);
     const error = str(its.filter((i) => i.type === "error").at(-1)?.message);
@@ -784,7 +805,7 @@ async function openThread(
     steer: async (text: string) => {
       const turn = current;
       // Its own run, or one T3 Code woke it with when delegated work reported back.
-      const run = turn && !turn.done ? turnRuns(turn).find((r) => ACTIVE_RUN.has(String(r.status)) && !monitorRuns.has(String(r.id))) : undefined;
+      const run = turn && !turn.done ? turnRuns(turn).find((r) => ACTIVE_RUN.has(String(r.status))) : undefined;
       if (!turn || turn.done || !run) {
         if (turn?.holding)
           throw new Error(
@@ -822,13 +843,8 @@ async function openThread(
       try {
         const own = runs.get(runId);
         if (own && ended(own)) {
-          // Its run is over: the turn waits on delegated work, or a cancel from before a restart found it ended. Stop the
-          // thread, which stops that work and any run it woke, as Stop in T3 Code does.
-          // The same command after a restart is one stop, so one T3 Code already took counts as taken.
-          turn.cut = "sending";
-          await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." });
-          turn.cut = "confirmed";
-          evaluate();
+          // Its run is over: the turn waits on delegated work, or a cancel from before a restart found it ended.
+          await cutThread(turn);
         } else if (own?.status !== "queued") await stop("run.interrupt");
         else
           await stop("queued-run.cancel").catch(async (error: unknown) => {

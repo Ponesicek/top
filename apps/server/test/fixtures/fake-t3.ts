@@ -71,7 +71,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     emit(thread, { type: "run.updated", payload: run });
     if (faults.duplicateEnds && ["completed", "failed", "interrupted"].includes(status)) emit(thread, { type: "run.updated", payload: run });
   };
-  const active = (thread: Thread) => [...thread.runs.values()].find((r) => ["queued", "running", "waiting"].includes(String(r.status)));
+  // A held queue waits until it's let go, and holds nothing up meanwhile.
+  const active = (thread: Thread) => [...thread.runs.values()].find((r) => ["queued", "running", "waiting"].includes(String(r.status)) && r.queueHeld !== true);
 
   const setSubagent = (thread: Thread, id: string, fields: Rec) => {
     const value = { ...thread.subagents.get(id), ...fields };
@@ -131,7 +132,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const finish = (thread: Thread, runId: string, text: string, status = "completed") => {
     if (text) item(thread, runId, { id: `am-${runId}-${thread.items.size}`, type: "assistant_message", status: "completed", text });
     setRun(thread, runId, status);
-    const next = [...thread.runs.values()].find((r) => r.status === "queued");
+    const next = [...thread.runs.values()].find((r) => r.status === "queued" && r.queueHeld !== true);
     if (next) play(thread, String(next.id), String(next.text));
   };
   const addRun = (thread: Thread, messageId: string, text: string, createdBy = "user", extra: Rec = {}) => {
@@ -153,7 +154,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     thread.messages.push(message);
     emit(thread, { type: "message.updated", payload: message });
     emit(thread, { type: "run.created", payload: run });
-    if (!busy) setTimeout(() => play(thread, runId, text), 5);
+    if (!busy) setTimeout(() => thread.runs.get(runId)!.queueHeld !== true && play(thread, runId, text), 5);
     return runId;
   };
 
@@ -437,6 +438,23 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     delegate: (threadId: string, runId: string, id: string) => delegate(threads.get(threadId)!, runId, id),
     /** A delegated task ends, and T3 Code wakes its owner with a run that plays out from `reply`. */
     childDone: (threadId: string, id: string, reply: string) => childDone(threads.get(threadId)!, id, reply),
+    /** A message the user queued in T3 Code with its queue held: it waits, without a number after later runs'. */
+    hold: (threadId: string, messageId: string, text: string) => {
+      const thread = threads.get(threadId)!;
+      const runId = addRun(thread, messageId, text);
+      const run = { ...thread.runs.get(runId)!, status: "queued", queueHeld: true };
+      thread.runs.set(runId, run);
+      emit(thread, { type: "run.updated", payload: run });
+      return runId;
+    },
+    /** Lets a held run go: it runs next, after whatever runs now. */
+    release: (threadId: string, runId: string) => {
+      const thread = threads.get(threadId)!;
+      const run: Rec = { ...thread.runs.get(runId)!, queueHeld: false };
+      thread.runs.set(runId, run);
+      emit(thread, { type: "run.updated", payload: run });
+      if (![...thread.runs.values()].some((r) => ["starting", "running", "waiting"].includes(String(r.status)))) play(thread, runId, String(run.text));
+    },
     /** Like Stop in T3 Code itself. */
     stop: (threadId: string) => handle("orchestration.dispatchCommand", { type: "thread.stop", commandId: `there:${Math.random()}`, threadId }),
     /** The provider thread's pending background tasks, as T3 Code tracks them. */

@@ -570,12 +570,18 @@ test("background work holds the task, a monitor's progress update doesn't become
   const steer = await s.h.run(Effect.result(s.tasks.send(s.h.bot, running.task.id, "steer-monitor", "steer", "use tabs")));
   assert.equal(steer._tag, "Failure", "a monitor's progress run isn't the task's to steer");
   s.t3.finish(thread, String(monitorRun.id), "nothing new yet");
+  // A monitor's run that asks: not the task's question.
+  s.t3.wake(thread, "monitor-2", "a question from the monitor", { notification: { source: { kind: "monitor" }, outcome: "updated" } });
+  await until("the monitor's question", () => s.t3.runsOf(thread).find((r) => r.userMessageId === "monitor-2" && r.status === "waiting"));
+  await settle();
+  assert.equal((await task(s, running.task.id)).state, "running", "the monitor's question isn't asked of Top");
   await settle();
   assert.equal((await task(s, running.task.id)).state, "running", "the background work still holds it");
   s.t3.background(thread, []);
   const done = await ended(s, running.task.id);
   assert.equal(done.state, "completed", done.error ?? "");
   assert.equal(done.result, "started it in the background", "the monitor's acknowledgement isn't the task's answer");
+  s.t3.answerThere(thread, "answered there");
 
   // A command or monitor nobody awaits, like a dev server, holds nothing.
   const served = await start(s, { prompt: "run forever", session: running.session.id });
@@ -692,6 +698,43 @@ test("a run T3 Code wakes the task with takes its steering, an unconfirmed stop 
   const after = await ended(second, carried.task.id);
   assert.equal(after.state, "cancelled");
   assert.equal(after.result, null);
+});
+
+test("a stop that comes as the run ends on its own still stops its delegated work, and the answer is the run that ended last, whatever its number", async () => {
+  const s = await setup();
+  const racing = await start(s, { prompt: "run forever" });
+  const thread = `top-${racing.session.id}`;
+  const run = await runIn(s, thread);
+  s.t3.delegate(thread, String(run.id), "racing-child");
+  s.t3.faults.silentTypes.add("run.interrupt");
+  const cancelling = s.h.run(s.tasks.cancel(s.h.bot, racing.task.id));
+  await until("the stop to be sent", () => s.t3.requests.some((r) => r.payload.type === "run.interrupt"));
+  s.t3.finish(thread, String(run.id), "an interim answer");
+  const cancelled = await cancelling;
+  s.t3.faults.silentTypes.clear();
+  const done = await ended(s, racing.task.id);
+  assert.equal(done.state, "cancelled", done.result ?? "");
+  assert.equal(done.result, null, "the interim answer isn't the task's");
+  assert.ok(cancelled);
+  assert.ok(
+    s.t3.requests.some((r) => r.payload.type === "thread.stop" && r.payload.threadId === thread),
+    "the delegated work was stopped too",
+  );
+  assert.equal(s.t3.subagentsOf(thread)[0]!.status, "cancelled");
+
+  const first = await start(s, { prompt: "plain first" });
+  assert.equal((await ended(s, first.task.id)).result, "done: plain first");
+  const reordered = `top-${first.session.id}`;
+  // Queued in T3 Code with its queue held, before Top's message: a lower number that runs later.
+  const heldRun = s.t3.hold(reordered, "held-1", "the held message");
+  const second = await start(s, { prompt: "delegate the rest", session: first.session.id });
+  await held(s, second.task.id);
+  s.t3.childDone(reordered, `task-run:${reordered}:3`, "forever: the woken owner");
+  const woken = await until("the woken run", () => s.t3.runsOf(reordered).find((r) => r.ordinal === 4 && r.status === "running"));
+  s.t3.release(reordered, heldRun);
+  s.t3.finish(reordered, String(woken.id), "the woken answer");
+  const done2 = await ended(s, second.task.id);
+  assert.equal(done2.result, "done: the held message", "the run that ended last answers, though its number is lower");
 });
 
 test("T3 Code's command output and prompts reach Top whole, so its secret-hiding sees a secret before anything is clipped", () => {
