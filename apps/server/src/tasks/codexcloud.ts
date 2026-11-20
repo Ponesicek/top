@@ -1,7 +1,7 @@
 import Type from "typebox";
 import { duration } from "../time.ts";
-import { inPrivateDir, limiter, type Ran, refuse, runCli, said, stripAnsi } from "./cloud.ts";
-import { type Availability, findCli, type HarnessAdapter, type HarnessEvent, harnessEnv, type OpenSpec, type Turn } from "./harness.ts";
+import { inPrivateDir, limiter, type Ran, refuse, runCli, SKIPPED, said, stripAnsi } from "./cloud.ts";
+import { type Availability, findCli, type HarnessAdapter, type HarnessEvent, harnessEnv, type OpenSpec, redact, type Turn } from "./harness.ts";
 
 /**
  * Codex cloud, through the official `codex cloud` CLI and its ChatGPT sign-in. What it prints is read from the CLI's source at
@@ -182,6 +182,8 @@ export function codexCloudAdapter(config: CodexCloudConfig = {}): HarnessAdapter
           unsaved.add(saved);
           emit({ type: "session", externalId, saved });
         });
+      /** A CLI call in its turn, unless this session closed while it waited: then nothing is started. One already running finishes. */
+      const call = (work: () => Promise<Ran>) => calls(() => (closed ? Promise.resolve(SKIPPED) : work()));
       const sleep = (ms: number) =>
         new Promise<void>((resolve) => {
           wake = resolve;
@@ -190,7 +192,8 @@ export function codexCloudAdapter(config: CodexCloudConfig = {}): HarnessAdapter
 
       const finished = async (id: string, status: Status) => {
         const url = codexTaskUrl(id);
-        const diff = await calls(() => cloud(path, ["diff", id]));
+        const diff = await call(() => cloud(path, ["diff", id]));
+        if (diff.skipped) return;
         const files = diff.code === 0 ? diffFiles(diff.stdout) : [];
         if (files.length && !closed) emit({ type: "log", kind: "file_change", text: files.slice(0, 200).join("\n") });
         if (diff.code !== 0) log(`couldn't read its diff: ${said(diff.stderr || diff.stdout, 300) || `exit ${diff.code}`}`);
@@ -214,7 +217,7 @@ export function codexCloudAdapter(config: CodexCloudConfig = {}): HarnessAdapter
         let wait = firstPollMs;
         let last = "";
         while (!closed) {
-          const ran: Ran = await calls(() => cloud(path, ["status", id]));
+          const ran: Ran = await call(() => cloud(path, ["status", id]));
           if (closed) return;
           // `status` exits 1 for everything but READY: what it printed says how it went, not its exit code.
           const status = parseCodexStatus(ran.stdout);
@@ -245,17 +248,20 @@ export function codexCloudAdapter(config: CodexCloudConfig = {}): HarnessAdapter
         }
         log(`sending it to Codex cloud (environment ${environment}, branch ${branch}${attempts > 1 ? `, ${attempts} attempts` : ""})`);
         // Its own process group, and not stopped when Top closes: a send halfway through finishes rather than leaving it unknown.
-        const ran = await calls(() =>
+        const ran = await call(() =>
           cloud(path, ["exec", "--env", environment, "--branch", branch, "--attempts", String(attempts), "-"], {
             input: turn.text,
             timeoutMs: submitTimeoutMs,
             detached: true,
           }),
         );
+        // Closed before its turn: nothing was sent. Only the marker is left, and after a restart it says "may or may not", never "sent".
+        if (ran.skipped) return;
+        // An id that `redact` would change is never kept: it would be saved, shown and followed as something else.
         const found = stripAnsi(ran.stdout)
           .split("\n")
           .map((line) => TASK_URL.exec(line.trim())?.[1])
-          .find(Boolean);
+          .find((id) => id !== undefined && redact(id) === id);
         if (found) {
           try {
             await save(found);

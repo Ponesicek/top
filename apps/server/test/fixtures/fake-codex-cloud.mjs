@@ -2,7 +2,7 @@
 // A stand-in for `codex` (0.171.0) as far as `codex cloud` and `codex login status` go, printing what the real CLI prints
 // (codex-rs/cloud-tasks/src/lib.rs, codex-rs/cli/src/login.rs at rust-v0.171.0). It never touches the network.
 // FAKE_CC_DIR: a folder for its log (calls.jsonl) and state. FAKE_CC_LOGIN: chatgpt (default) | apikey | none.
-// FAKE_CC_EXEC: ok (default) | notfound | http500 | hang | evil. FAKE_CC_STATES: comma-separated states `status` goes through.
+// FAKE_CC_EXEC: ok (default) | notfound | http500 | hang | evil | secretid. FAKE_CC_STATES: comma-separated states `status` goes through.
 // FAKE_CC_TITLE: the task's title. FAKE_CC_OLD: a CLI without `--attempts`.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -92,6 +92,7 @@ if (args[1] === "exec") {
   // Long enough to outlast any send timeout under test, short enough that no test leaves it behind.
   if (mode === "hang") setTimeout(() => process.exit(1), 6_000);
   else if (mode === "evil") console.log("https://chatgpt.com.evil.example/codex/tasks/task_e_evil");
+  else if (mode === "secretid") console.log("https://chatgpt.com/codex/tasks/sk-abcdefghijklmnopqrstuvwx");
   else console.log(`https://chatgpt.com/codex/tasks/task_e_${counter("exec-count")}`);
 } else if (args[1] === "status") {
   errorLog();

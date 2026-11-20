@@ -34,7 +34,11 @@ export type Ran = {
   readonly timedOut: boolean;
   /** It couldn't be started at all, so it did nothing. */
   readonly spawnError?: string | undefined;
+  /** Never started: its harness session had closed by the time its turn came. */
+  readonly skipped?: true | undefined;
 };
+
+export const SKIPPED: Ran = { code: null, stdout: "", stderr: "", timedOut: false, skipped: true };
 
 export type RunOptions = {
   readonly cwd: string;

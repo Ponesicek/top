@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import Type from "typebox";
 import { duration } from "../time.ts";
-import { inPrivateDir, limiter, type Ran, refuse, runCli, said, stripAnsi } from "./cloud.ts";
-import { type Availability, findCli, type HarnessAdapter, type HarnessEvent, harnessEnv, type OpenSpec, type Turn } from "./harness.ts";
+import { inPrivateDir, limiter, type Ran, refuse, runCli, SKIPPED, said, stripAnsi } from "./cloud.ts";
+import { type Availability, findCli, type HarnessAdapter, type HarnessEvent, harnessEnv, type OpenSpec, redact, type Turn } from "./harness.ts";
 
 /**
  * Claude Code cloud, through the official `claude --cloud` and its claude.ai sign-in (code.claude.com/docs/en/claude-code-on-the-web.md):
@@ -17,8 +17,9 @@ import { type Availability, findCli, type HarnessAdapter, type HarnessEvent, har
 export const CLAUDE_CLOUD = "claude-cloud";
 
 const SESSION_ID = /^(?:session|cse)_[A-Za-z0-9]{1,200}$/;
-/** Session links are taken only on claude.ai/code; the query (`?from=cli…`) is dropped. */
-const SESSION_URL = /https:\/\/claude\.ai\/code\/((?:session|cse)_[A-Za-z0-9]{1,200})(?=[?#\s]|$)/;
+/** A link starts a line or follows a space, so one inside another link (its query or fragment) is never taken. */
+const LINK = /(?:^|\s)(https:\/\/claude\.ai\/code\/\S+)/gm;
+const SESSION_PATH = /^\/code\/((?:session|cse)_[A-Za-z0-9]{1,200})$/;
 const SESSION_LINE = /^Session ID: ((?:session|cse)_[A-Za-z0-9]{1,200})\s*$/m;
 export const claudeSessionUrl = (id: string) => `https://claude.ai/code/${id}`;
 /** `claude --cloud` takes the task on its command line, which is bounded; longer goes in the repository. */
@@ -61,15 +62,51 @@ const REFUSED = [
 
 const SIGN_IN = "run `claude auth login` and sign in with your claude.ai account";
 
+/** Variables that point git (and the `claude` that reads the repository) at another repository than the clone. */
+const REPO_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_NAMESPACE",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
 function cloudEnv(): Record<string, string | undefined> {
   const env = harnessEnv(process.env);
   delete env.CCR_FORCE_BUNDLE;
+  for (const name of REPO_VARS) delete env[name];
   return env;
 }
 
+/** A session's id from an official claude.ai/code link: the origin and path checked as a URL, the query dropped. */
+export function sessionOfLink(text: string): string | undefined {
+  for (const match of stripAnsi(text).matchAll(LINK)) {
+    let url: URL;
+    try {
+      url = new URL(match[1]!);
+    } catch {
+      continue;
+    }
+    const id = url.origin === "https://claude.ai" ? SESSION_PATH.exec(url.pathname)?.[1] : undefined;
+    if (id) return id;
+  }
+  return undefined;
+}
+
+/** An id that `redact` would change is never kept: it would be saved and shown as something else. */
 function idIn(output: string): string | undefined {
-  const text = stripAnsi(output);
-  return SESSION_URL.exec(text)?.[1] ?? SESSION_LINE.exec(text)?.[1];
+  const id = sessionOfLink(output) ?? SESSION_LINE.exec(stripAnsi(output))?.[1];
+  return id && redact(id) === id ? id : undefined;
+}
+
+/** With `--cloud`, a prompt that is only a session id or link attaches to that session instead of starting one. */
+function looksLikeSession(prompt: string): boolean {
+  const text = prompt.trim();
+  return !/\s/.test(text) && (SESSION_ID.test(text) || text.includes("claude.ai/code"));
 }
 
 function jsonIn(stdout: string): Record<string, unknown> | undefined {
@@ -155,6 +192,8 @@ export function claudeCloudAdapter(config: ClaudeCloudConfig = {}): HarnessAdapt
       const log = (text: string) => {
         if (!closed) emit({ type: "log", kind: "status", text });
       };
+      /** A CLI call in its turn, unless this session closed while it waited: then nothing is started. One already running finishes. */
+      const call = (work: () => Promise<Ran>) => calls(() => (closed ? Promise.resolve(SKIPPED) : work()));
 
       /** A new session: a clone of the one branch, `claude --cloud` in it, then the clone is removed. */
       const start = async (turn: Turn) => {
@@ -162,6 +201,12 @@ export function claudeCloudAdapter(config: ClaudeCloudConfig = {}): HarnessAdapt
           return end({
             status: "failed",
             error: `It wasn't sent: \`claude --cloud\` takes the task on its command line, at most ${MAX_CLOUD_PROMPT_BYTES / 1000} kB. Put long material in the repository and point at it.`,
+          });
+        if (looksLikeSession(turn.text))
+          return end({
+            status: "failed",
+            error:
+              "It wasn't sent: a prompt that is only a session id or claude.ai/code link would attach to that session rather than start one. Say what to do in words, or continue the session with `session`.",
           });
         const gitPath = await git();
         // What it ended as is said once the clone is gone.
@@ -179,10 +224,18 @@ export function claudeCloudAdapter(config: ClaudeCloudConfig = {}): HarnessAdapt
                 status: "failed",
                 error: `It wasn't sent: Top couldn't clone github.com/${repo} at ${branch}: ${said(clone.stderr, 400) || clone.spawnError || (clone.timedOut ? "it timed out" : `exit ${clone.code}`)}`,
               });
+          // `--branch` takes a tag too: only a checkout of the branch itself starts the session.
+          const head = await runCli(gitPath, ["-C", checkout, "symbolic-ref", "--short", "HEAD"], {
+            cwd: dir,
+            env: { ...cloudEnv(), GIT_TERMINAL_PROMPT: "0" },
+            timeoutMs: 30_000,
+          });
+          if (head.code !== 0 || head.stdout.trim() !== branch)
+            return () => end({ status: "failed", error: `It wasn't sent: ${branch} isn't a branch of github.com/${repo}.` });
           if (closed) return () => {};
           log("starting a Claude Code cloud session");
           let seen: string | undefined;
-          const ran = await calls(() =>
+          const ran = await call(() =>
             runCli(path, ["--cloud", turn.text, "--name", spec.title], {
               cwd: checkout,
               env: cloudEnv(),
@@ -199,6 +252,7 @@ export function claudeCloudAdapter(config: ClaudeCloudConfig = {}): HarnessAdapt
               },
             }),
           );
+          if (ran.skipped) return () => {};
           return () => handedOff(ran, seen ?? idIn(`${ran.stdout}\n${ran.stderr}`));
         });
         outcome();
@@ -214,9 +268,12 @@ export function claudeCloudAdapter(config: ClaudeCloudConfig = {}): HarnessAdapt
             : ran.code !== 0
               ? ` (\`claude --cloud\` ended with exit ${ran.code} after starting it: ${said(ran.stderr, 300)})`
               : "";
+          const moved = branchNote
+            ? `\nThe session did NOT start from ${branch}: Claude Code says "${said(branchNote, 300)}". It works on that instead, not on ${branch}.`
+            : "";
           return end({
             status: "handed_off",
-            result: `Sent to Claude Code cloud: ${claudeSessionUrl(id)}. Top can't see its progress or result there.${branchNote ? `\n${said(branchNote, 300)}` : ""}${tail}`,
+            result: `Sent to Claude Code cloud: ${claudeSessionUrl(id)}. Top can't see its progress or result there.${moved}${tail}`,
           });
         }
         const why = said(ran.stderr || ran.stdout, 600) || ran.spawnError || (ran.timedOut ? "it didn't finish in time" : `exit ${ran.code}`);
@@ -231,18 +288,18 @@ export function claudeCloudAdapter(config: ClaudeCloudConfig = {}): HarnessAdapt
       /** A follow-up: one message queued into the session, nothing more. */
       const send = async (session: string, turn: Turn) => {
         if (!SESSION_ID.test(session)) return end({ status: "failed", error: `It wasn't sent: ${session} isn't a Claude Code cloud session id.` });
-        const ran = await calls(() =>
+        const ran = await call(() =>
           inPrivateDir("claude-cloud", (cwd) =>
             runCli(path, ["-p", "--cloud", session, "--output-format", "json"], { cwd, env: cloudEnv(), input: turn.text, timeoutMs: sendTimeoutMs }),
           ),
         );
+        if (ran.skipped) return;
         const reply = jsonIn(ran.stdout);
         const url = claudeSessionUrl(session);
         if (reply?.ok === true) {
-          const link = typeof reply.url === "string" && SESSION_URL.exec(reply.url)?.[1] === session ? claudeSessionUrl(session) : url;
           return end({
             status: "handed_off",
-            result: `Queued a message into Claude Code cloud session ${link}. It's a queued message, not a live steer: Top can't see whether or when the session acts on it, or its result.`,
+            result: `Queued a message into Claude Code cloud session ${url}. It's a queued message, not a live steer: Top can't see whether or when the session acts on it, or its result.`,
           });
         }
         if (reply?.ok === false)

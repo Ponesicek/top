@@ -880,3 +880,24 @@ test("Codex cloud through Top: the marker is saved before the send, and a restar
     delete process.env.FAKE_CC_STATES;
   }
 });
+
+test("S7 task_cancel on a handed-off task says the work may still be going on in the cloud, not that it ended", async () => {
+  const s = await setup({ extra: [fakeHarness({ stepMs: 30, where: "cloud" })] });
+  const handed = await cloudStart(s, { prompt: "fix it" });
+  assert.equal((await ended(s, handed.snapshot.task.id)).state, "handed_off");
+  await s.h.run(s.h.daemon.submit(s.h.bot, "c", `call collar__task_cancel {"id": "${handed.snapshot.task.id}"}`, "followUp", null));
+  const entry = await until("the tool result", async () =>
+    (await s.h.entries()).find((e) => e.kind === "tool" && e.message.toolName === "collar__task_cancel"),
+  );
+  const result = JSON.parse(textOfContent((entry as Extract<StoredEntry, { kind: "tool" }>).message.content)) as {
+    state: string;
+    cancelled: boolean;
+    note: string;
+  };
+  assert.deepEqual(result, {
+    id: handed.snapshot.task.id,
+    state: "handed_off",
+    cancelled: false,
+    note: "It was handed off to its vendor's cloud, where the work may still be going on: Top can't stop it there.",
+  });
+});

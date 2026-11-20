@@ -129,7 +129,7 @@ export const tasksGroup: CollarGroup = (daemon) => {
             ]
           : []),
         ...offered
-          .filter((a) => a.locate)
+          .filter((a) => a.locate && !inCloud(a))
           .map((a) => `"${a.id}" runs on another computer: its \`cwd\` is a folder there, one of its projects, and is checked there.`),
         "A task is one piece of work in a session. To continue a session later (it keeps the conversation), start a new task with `session`; `fork: true` branches it instead.",
       ].join("\n"),
@@ -359,9 +359,12 @@ export const tasksGroup: CollarGroup = (daemon) => {
                 ? { note: task.error }
                 : {}
               : {
-                  note: taskEnded(task.state)
-                    ? `It had already ${task.state === "completed" ? "completed" : `ended (${task.state})`}.`
-                    : "It's still stopping; you'll get a message when it ends.",
+                  note:
+                    task.state === "handed_off"
+                      ? "It was handed off to its vendor's cloud, where the work may still be going on: Top can't stop it there."
+                      : taskEnded(task.state)
+                        ? `It had already ${task.state === "completed" ? "completed" : `ended (${task.state})`}.`
+                        : "It's still stopping; you'll get a message when it ends.",
                 }),
           }),
         ),

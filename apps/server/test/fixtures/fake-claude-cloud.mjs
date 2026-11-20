@@ -2,7 +2,7 @@
 // A stand-in for `claude` (2.1.329) as far as `--cloud` and `auth status` go, printing what the docs say the real CLI prints
 // (code.claude.com/docs/en/claude-code-on-the-web.md). It never touches the network.
 // FAKE_CL_DIR: a folder for its log (calls.jsonl). FAKE_CL_AUTH: claude.ai (default) | api_key | none.
-// FAKE_CL_START: ok (default) | branch | evil | refused | hang | late. FAKE_CL_SEND: ok (default) | archived | secret | silent.
+// FAKE_CL_START: ok (default) | branch | evil | nested | refused | hang | late. FAKE_CL_SEND: ok (default) | archived | secret | silent | hang.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,7 +13,7 @@ const log = (entry) =>
   dir &&
   appendFileSync(
     join(dir, "calls.jsonl"),
-    `${JSON.stringify({ args, cwd: process.cwd(), bundle: process.env.CCR_FORCE_BUNDLE ?? null, cloned: existsSync(join(process.cwd(), "CLONED")), ...entry })}\n`,
+    `${JSON.stringify({ args, cwd: process.cwd(), bundle: process.env.CCR_FORCE_BUNDLE ?? null, repoVars: ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"].filter((name) => name in process.env), cloned: existsSync(join(process.cwd(), "CLONED")), ...entry })}\n`,
   );
 
 if (args[0] === "--version") {
@@ -58,23 +58,26 @@ if (args.includes("-p")) {
   } else if (mode === "secret") {
     console.log(JSON.stringify({ ok: false, session_id: session, error: "failed to send: Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123" }));
     process.exit(1);
-  } else process.exit(1);
-  process.exit(0);
-}
-
-log({ description: args[at + 1] });
-const mode = process.env.FAKE_CL_START ?? "ok";
-const id = "session_01FAKEFAKEFAKE";
-if (mode === "refused") {
-  console.error("Error: Cloud sessions are disabled by your organization's policy. Contact your organization admin to enable them.");
-  process.exit(1);
-}
-// Long enough to outlast any start timeout under test, short enough that no test leaves it behind.
-if (mode === "hang") setTimeout(() => process.exit(1), 6_000);
-else if (mode === "evil") console.log("View: https://claude.ai.evil.example/code/session_01EVIL");
-else {
-  if (mode === "branch") console.log("Branch feature/x is not on GitHub; the session starts from main instead.");
-  console.log(`Created cloud session.\nSession ID: ${id}\nView: https://claude.ai/code/${id}?from=cli&m=0`);
-  // Still at work after printing the id (an upload, say): Top lets it finish.
-  if (mode === "late") setTimeout(() => process.exit(0), 300);
+  } else if (mode === "hang") setTimeout(() => process.exit(1), 6_000);
+  else process.exit(1);
+  if (mode !== "hang") process.exit(0);
+} else {
+  log({ description: args[at + 1] });
+  const mode = process.env.FAKE_CL_START ?? "ok";
+  const id = "session_01FAKEFAKEFAKE";
+  if (mode === "refused") {
+    console.error("Error: Cloud sessions are disabled by your organization's policy. Contact your organization admin to enable them.");
+    process.exit(1);
+  }
+  // Long enough to outlast any start timeout under test, short enough that no test leaves it behind.
+  if (mode === "hang") setTimeout(() => process.exit(1), 6_000);
+  else if (mode === "evil") console.log("View: https://claude.ai.evil.example/code/session_01EVIL");
+  else if (mode === "nested")
+    console.log("View: https://evil.example/?next=https://claude.ai/code/session_01NESTED\nSee https://evil.example/#https://claude.ai/code/session_01NESTED");
+  else {
+    if (mode === "branch") console.log("Branch feature/x is not on GitHub; the session starts from main instead.");
+    console.log(`Created cloud session.\nSession ID: ${id}\nView: https://claude.ai/code/${id}?from=cli&m=0`);
+    // Still at work after printing the id (an upload, say): Top lets it finish.
+    if (mode === "late") setTimeout(() => process.exit(0), 300);
+  }
 }

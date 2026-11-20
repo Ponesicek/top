@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join, relative as relativePath } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, test } from "vitest";
-import { harnessLines } from "../src/collar/tasks.ts";
+import type { CollarDaemon } from "../src/collar/index.ts";
+import { harnessLines, tasksGroup } from "../src/collar/tasks.ts";
 import { claudeAdapter, type QueryFn } from "../src/tasks/claude.ts";
 import { CLAUDE_CLOUD, claudeCloudAdapter } from "../src/tasks/claudecloud.ts";
 import { codexAdapter } from "../src/tasks/codex.ts";
 import { CODEX_CLOUD, codexCloudAdapter } from "../src/tasks/codexcloud.ts";
+import type { Tasks } from "../src/tasks/coordinator.ts";
 import { CAPABILITY_NOTES, findCli, type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "../src/tasks/harness.ts";
 import { t3codeAdapter } from "../src/tasks/t3code.ts";
 import { until } from "./harness.ts";
@@ -720,9 +722,6 @@ test("Claude Code cloud: a refusal fails plainly; no session id, or one off clau
   assert.deepEqual(evil.ids, []);
   const slow = await outcome("hang", { startTimeoutMs: 300 });
   assert.match(slow.ended.error!, /^Claude Code cloud may or may not have started a session for it \(`claude --cloud` didn't finish within/);
-  const moved = await outcome("branch");
-  assert.equal(moved.ended.status, "handed_off");
-  assert.match(moved.ended.result!, /\nBranch feature\/x is not on GitHub; the session starts from main instead\.$/);
 });
 
 test("Claude Code cloud: nothing is sent when the clone fails or the prompt is too long for its command line", async () => {
@@ -777,4 +776,139 @@ test("Claude Code cloud: a follow-up queues one message into the session and is 
   );
   await assert.rejects(session.interrupt(), /can't stop a session/);
   assert.equal(adapter.id, CLAUDE_CLOUD);
+});
+
+// ── Review round 1 ──
+
+const REPO_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_NAMESPACE",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
+test("S2 Claude Code cloud: git and claude never see variables that point them at another repository", async () => {
+  const { dir, gitDir, adapter } = claudeCloud();
+  try {
+    for (const name of REPO_VARS) process.env[name] = "/home/someone/private-repo/.git";
+    const c = cloudCollect();
+    await (await adapter.open(repoSpec(), c.emit)).run({ key: "k", text: "fix it", images: [] });
+    assert.equal((await until("the hand-off", () => c.of("turn_ended")[0])).status, "handed_off");
+    const d = cloudCollect();
+    await (await adapter.open(repoSpec({ resume: "session_01FAKEFAKEFAKE" }), d.emit)).run({ key: "k2", text: "more", images: [] });
+    await until("the follow-up", () => d.of("turn_ended")[0]);
+    const seen = [...calls(gitDir), ...calls(dir).filter((call) => call.args.includes("--cloud"))] as unknown as { repoVars: string[] }[];
+    assert.equal(seen.length, 4, "clone, branch check, start and follow-up");
+    for (const call of seen) assert.deepEqual(call.repoVars, []);
+  } finally {
+    for (const name of REPO_VARS) delete process.env[name];
+  }
+});
+
+test("S8 Claude Code cloud: a tag isn't a branch, and a session that didn't start from the branch says so plainly", async () => {
+  const { dir, gitDir, adapter } = claudeCloud();
+  process.env.FAKE_GIT_TAG = "1";
+  const c = cloudCollect();
+  await (await adapter.open(repoSpec({ options: { repo: "acme/app", branch: "v1.0" } }), c.emit)).run({ key: "k", text: "go", images: [] });
+  assert.deepEqual(await until("the refusal", () => c.of("turn_ended")[0]), {
+    type: "turn_ended",
+    status: "failed",
+    error: "It wasn't sent: v1.0 isn't a branch of github.com/acme/app.",
+  });
+  assert.deepEqual((calls(gitDir)[1] as unknown as { args: string[] }).args.slice(2), ["symbolic-ref", "--short", "HEAD"]);
+  assert.equal(calls(dir).filter((call) => call.args.includes("--cloud")).length, 0, "claude never ran");
+  delete process.env.FAKE_GIT_TAG;
+  process.env.FAKE_CL_START = "branch";
+  const d = cloudCollect();
+  await (await adapter.open(repoSpec(), d.emit)).run({ key: "k2", text: "go", images: [] });
+  const moved = await until("the hand-off", () => d.of("turn_ended")[0]);
+  assert.equal(moved.status, "handed_off");
+  assert.match(
+    moved.result!,
+    /\nThe session did NOT start from main: Claude Code says "Branch feature\/x is not on GitHub; the session starts from main instead\."\. It works on that instead, not on main\.$/,
+  );
+});
+
+test("S3 Claude Code cloud: a prompt that is only a session id or link is refused before anything runs", async () => {
+  const { dir, gitDir, adapter } = claudeCloud();
+  for (const text of ["  session_01ABCDEF  ", "cse_01ABC", "https://claude.ai/code/session_01ABC", "see:https://claude.ai/code/x"]) {
+    const c = cloudCollect();
+    await (await adapter.open(repoSpec(), c.emit)).run({ key: "k", text, images: [] });
+    assert.match(
+      (await until("the refusal", () => c.of("turn_ended")[0])).error!,
+      /^It wasn't sent: a prompt that is only a session id or claude\.ai\/code link/,
+    );
+  }
+  assert.equal(calls(gitDir).length + calls(dir).length, 0, "nothing was cloned or run");
+  const c = cloudCollect();
+  await (await adapter.open(repoSpec(), c.emit)).run({ key: "k", text: "look at session_01ABC's notes", images: [] });
+  assert.equal((await until("the hand-off", () => c.of("turn_ended")[0])).status, "handed_off", "words around one are a task");
+});
+
+test("S4 Claude Code cloud: an official-looking link inside another link is never taken as the session", async () => {
+  const { adapter } = claudeCloud();
+  process.env.FAKE_CL_START = "nested";
+  const c = cloudCollect();
+  await (await adapter.open(repoSpec(), c.emit)).run({ key: "k", text: "go", images: [] });
+  const ended = await until("the start to end", () => c.of("turn_ended")[0]);
+  assert.equal(ended.status, "failed");
+  assert.match(ended.error!, /^Claude Code cloud may or may not have started a session for it/);
+  assert.deepEqual(c.of("session"), []);
+});
+
+test("S5 Codex cloud: a task id that redaction would change is treated as no id", async () => {
+  codexCloud();
+  process.env.FAKE_CC_EXEC = "secretid";
+  const c = cloudCollect();
+  await (await codexCloud().adapter.open(cloudSpec({ environment: "env_fake", branch: "main" }), c.emit)).run({ key: "k", text: "go", images: [] });
+  const ended = await until("the send to end", () => c.of("turn_ended")[0]);
+  assert.match(ended.error!, /^It may or may not have reached Codex cloud/);
+  assert.deepEqual(
+    c.of("session").map((e) => e.externalId),
+    ["pending:k"],
+  );
+});
+
+test("S6 a cloud call waiting its turn is never started once its session has closed", async () => {
+  // Codex cloud: two sends hold both of the adapter's slots; a third waits, and its session closes meanwhile.
+  const { dir, adapter } = codexCloud({ submitTimeoutMs: 400 });
+  process.env.FAKE_CC_EXEC = "hang";
+  const busy = [cloudCollect(), cloudCollect()];
+  for (const [i, c] of busy.entries())
+    await (await adapter.open(cloudSpec({ environment: "env_fake", branch: "main" }), c.emit)).run({ key: `b${i}`, text: "go", images: [] });
+  const waiting = cloudCollect();
+  const third = await adapter.open(cloudSpec({ environment: "env_fake", branch: "main" }), waiting.emit);
+  await third.run({ key: "w", text: "go", images: [] });
+  await until("the marker", () => waiting.of("session")[0]);
+  await third.close();
+  for (const c of busy) await until("a busy send to end", () => c.of("turn_ended")[0]);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(calls(dir).filter((call) => call.args[1] === "exec").length, 2, "the third was never sent");
+  assert.deepEqual(waiting.of("turn_ended"), [], "and it claims nothing: only its marker is left");
+
+  // Claude Code cloud: the same for a follow-up.
+  const cl = claudeCloud({ sendTimeoutMs: 400 });
+  process.env.FAKE_CL_SEND = "hang";
+  const sends = [cloudCollect(), cloudCollect()];
+  for (const [i, c] of sends.entries())
+    await (await cl.adapter.open(repoSpec({ resume: "session_01FAKEFAKEFAKE" }), c.emit)).run({ key: `s${i}`, text: "more", images: [] });
+  const later = await cl.adapter.open(repoSpec({ resume: "session_01FAKEFAKEFAKE" }), cloudCollect().emit);
+  await later.run({ key: "l", text: "more", images: [] });
+  await later.close();
+  for (const c of sends) await until("a busy follow-up to end", () => c.of("turn_ended")[0]);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(calls(cl.dir).filter((call) => call.args.includes("-p")).length, 2, "the third was never sent");
+});
+
+test("S10 task_start says a cloud harness runs in the cloud, never that its `cwd` is a folder on another computer", () => {
+  const cloud = { ...claudeCloudAdapter({ command: "/nonexistent" }), locate: async () => ({ cwd: "x" }) };
+  const tools = tasksGroup({ tasks: { adapters: [cloud] } as unknown as Tasks } as unknown as CollarDaemon);
+  const description = tools.find((t) => t.name === "task_start")!.description;
+  assert.doesNotMatch(description, /"claude-cloud" runs on another computer/);
+  assert.match(description, /Runs in its vendor's cloud/);
 });
