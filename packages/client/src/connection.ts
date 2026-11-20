@@ -1,10 +1,10 @@
 import {
+  AskError,
   AttachmentError,
   BotError,
   BusyError,
   type ClientFrame,
   McpServerError,
-  PermissionError,
   PROTOCOL_VERSION,
   parseServerFrame,
   RequestResult,
@@ -55,7 +55,7 @@ export type RequestFailure =
   | BusyError
   | AttachmentError
   | McpServerError
-  | PermissionError
+  | AskError
   | SkillError
   | TaskError;
 
@@ -64,7 +64,7 @@ const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   BusyError: (message) => new BusyError({ message }),
   AttachmentError: (message) => new AttachmentError({ message }),
   McpServerError: (message) => new McpServerError({ message }),
-  PermissionError: (message) => new PermissionError({ message }),
+  AskError: (message) => new AskError({ message }),
   SkillError: (message) => new SkillError({ message }),
   TaskError: (message) => new TaskError({ message }),
 };

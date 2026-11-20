@@ -17,7 +17,7 @@ const SHORT: Record<BotSummary["status"], string> = { idle: "", thinking: "Think
 export function statusLabel(bot: BotSummary): string {
   switch (bot.status) {
     case "idle":
-      return bot.approvals ? "Waiting for your approval" : "Idle";
+      return bot.asks ? "Waiting for your answer" : "Idle";
     case "thinking":
       return bot.searching ? "Searching the web" : "Thinking";
     case "tool":
@@ -92,7 +92,7 @@ type ItemProps = {
 
 const shortcutFor = (index: number) => (index < 9 ? ` (Ctrl+${index + 1})` : "");
 
-function ApprovalMark({ className }: { className?: string }) {
+function AskMark({ className }: { className?: string }) {
   return (
     <span className={cn("absolute -top-0.5 -right-0.5 grid size-3.75 place-items-center rounded-full bg-(--avatar-ring)", className)} aria-hidden>
       <i className="size-1.75 rounded-full bg-warning ring-2 ring-warning-surface" />
@@ -102,7 +102,7 @@ function ApprovalMark({ className }: { className?: string }) {
 
 const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSelect, onDelete }: ItemProps) {
   const busy = bot.status !== "idle";
-  const asking = !busy && !!bot.approvals;
+  const asking = !busy && !!bot.asks;
   const fresh = unread && !busy && !asking;
   const mark = (busy && bot.status !== "failed") || fresh;
   const status = fresh ? "Idle · new messages" : statusLabel(bot);
@@ -127,7 +127,7 @@ const PinnedTile = memo(function PinnedTile({ bot, selected, unread, index, onSe
               <StatusDot status={bot.status} fresh={fresh} />
             </span>
           ) : (
-            asking && <ApprovalMark />
+            asking && <AskMark />
           )}
         </span>
         <span
@@ -160,12 +160,12 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
             : "[--avatar-ring:var(--color-sidebar)]",
         )}
         onClick={() => onSelect(bot.id)}
-        title={`${bot.name}${shortcut}${bot.approvals ? " · Waiting for your approval" : ""}${bot.description ? `\n${bot.description}` : ""}`}
+        title={`${bot.name}${shortcut}${bot.asks ? " · Waiting for your answer" : ""}${bot.description ? `\n${bot.description}` : ""}`}
         aria-current={selected || undefined}
       >
         <span className="relative flex">
           <Avatar name={bot.name} avatar={bot.avatar} status={bot.status} />
-          {!!bot.approvals && <ApprovalMark className="hidden narrow:grid" />}
+          {!!bot.asks && <AskMark className="hidden narrow:grid" />}
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-px narrow:hidden">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -185,13 +185,13 @@ const BotItem = memo(function BotItem({ bot, selected, unread, index, onSelect, 
                 {bot.queued} queued
               </Badge>
             )}
-            {!!bot.approvals && (
+            {!!bot.asks && (
               <Badge
                 variant="warning"
                 className="group-hover/bot:invisible group-has-[[data-delete]:focus-visible]/bot:invisible"
-                title={`${bot.approvals} permission request${bot.approvals === 1 ? "" : "s"} waiting for your answer`}
+                title={`${bot.asks} request${bot.asks === 1 ? "" : "s"} waiting for your answer`}
               >
-                Needs approval
+                Needs you
               </Badge>
             )}
             {!!bot.background && (

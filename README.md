@@ -60,7 +60,7 @@ Everything Top keeps is in its home, `~/.top` (`TOP_HOME=DIR` or `--home DIR` mo
 
 ```
 ~/.top/
-├── server/        the daemon's: top.sqlite (bots, conversations, MCP servers and their sign-ins), attachments/, auth.json, chatgpt-host.json
+├── server/        the daemon's: top.sqlite (bots, conversations, MCP servers and their sign-ins), attachments/, secrets/, auth.json, chatgpt-host.json
 ├── skills/        the shared skill library (see Skills)
 ├── bots/<name>/   each bot's working folder: SOUL.md, AGENTS.md, USER.md, MEMORY.md (see Identity and memory); files/ is what the Files panel shows, .agents/skills/ its own skills
 ├── daemon/        the installed daemon (`top install`, see Releases and updates)
@@ -86,7 +86,8 @@ pnpm server:fake     # fake bots that answer only when you message them
 The fake model calls tools when asked: "deploy web 3s", "email the team", "check status", "write a report", "crash",
 or any MCP tool by its full name: `call github_work__search {"query": "top"}`. "Search the web for …" plays OpenAI's
 web search (see Web search) once it's switched on for the bot; "… fails" and "… refused" play a failed search and OpenAI
-refusing it.
+refusing it. "Ask permission to …", "ask me which", "ask me to pick", "ask me what" and "ask me for a token" play the
+cards in Questions and secrets.
 Their home is `apps/server/.data/fake`, laid out like `~/.top` (a reset clears their folders too). Daemon flags: `--model`, `--thinking`, `--allow-origin`, `--port`, `--host`,
 `--home`, `--reset`, `--no-compress`, `--tailscale`, `--tailscale-allow`, `--tailscale-port`; fake only: `--load`, `--tools` (load includes tool calls),
 `--seed N`, `--tps N`.
@@ -230,7 +231,7 @@ headers or environment variables for keys. Their values stay on the daemon: the 
 
 Skills are [AgentSkills](https://agentskills.io) folders: `<name>/SKILL.md` (frontmatter with a `name`
 and a `description`, then instructions), with any scripts, references and assets beside it. Top reads
-them where they are and never installs, copies or updates one. Settings → **Skills** lists what it
+them where they are and never copies, changes or updates one. Settings → **Skills** lists what it
 found and which bots have which; a new bot has none, however many are installed.
 
 - **Where.** Shared skills are in Top's home, `~/.top/skills` (fake bots: in their home). Every bot a
@@ -242,13 +243,26 @@ found and which bots have which; a new bot has none, however many are installed.
   that isn't a skill name, a frontmatter `name` that isn't the folder's, no description, bad YAML, a
   dangling link). A broken skill can't be switched on and never stops the others loading. Folders may
   be links to skills kept elsewhere.
+- **Adding a folder of them.** **Add from folder** takes a folder on the daemon's computer: a
+  collection of skill folders (a cloned repository's `skills/`, say) or one skill's folder. It shows
+  what it found first, then links each new, usable skill into the shared library (`~/.top/skills/<name>`
+  → the skill's folder), so the files stay where they are, unchanged, and pulling the repository
+  updates them. It never replaces anything: a name the library already has stays as it is, and a
+  broken skill is left out, each with the reason. Nothing in the folder is run. It can switch the
+  skills on for the bots you pick, except where a bot has its own skill by that name. Adding the same
+  folder again links only what's new.
+- **Collections.** Shared skills linked in from one folder show as one row, with a chip per bot that
+  switches all of them on or off (`3 of 57` when some are), and **One by one** to list them.
 - **What the bot gets.** The skills switched on for it are listed in its instructions (name,
   description, where SKILL.md is), read again before it starts on a new message, so a change shows from
   its next task. It reads a skill's SKILL.md with its tools when a task matches. Paths in a skill are
   relative to its folder, and the bot is told so: it runs a skill's scripts by their full path or from
-  the skill's folder.
-- **Asking for one.** Start a message with `/<name>` (type `/` to pick from the bot's skills): the
-  skill's SKILL.md, as it is then, goes with the message, and the message shows which skill it used.
+  the skill's folder. A skill whose frontmatter sets `disable-model-invocation` (to anything but
+  `false`) isn't listed: the bot gets it only when you ask for it, and Settings marks it **Only when
+  asked**.
+- **Asking for one.** Start a message with `/<name>` (type `/` to pick from the bot's skills, those only
+  for asking included): the skill's SKILL.md, as it is then, goes with the message, and the message
+  shows which skill it used.
 - **Rescan** reads the folders again after you add or edit a skill; opening Settings does too.
 
 ### Web search
@@ -270,9 +284,41 @@ bot from its next message. No search key or other provider is involved, and noth
 - **Pages are evidence, not instructions.** A bot that may search is told not to follow directions found on the web.
   Earlier searches go back to OpenAI with the conversation (each request carries it whole), as OpenAI sent them.
 
+### Questions and secrets
+
+A bot asks you things on cards in its conversation, with three Collar tools. It never waits on one: it carries on or
+ends its turn, and your answer comes to it as a message, even when it's idle. The card shows wherever you open the
+bot, the first answer from any device wins, and a waiting card outlives a restart. Stop withdraws a bot's waiting
+cards (no answer reaches it); deleting the bot removes them.
+
+- **Permission** (`ask_permission`): Allow or Deny. Nothing enforces it; the bot is told to respect it.
+- **Question** (`ask_question`): a question, with up to 6 options to pick (one, or several when the bot allows it)
+  and a field to write your own answer (unless the bot left it out), or Skip. An answer is information, never a
+  permission: it can't settle a permission card, and the bot is told to ask with `ask_permission` for that.
+- **Secret** (`request_secret`): one password, token or key (one line, at least 4 characters), with what it's for
+  and, if the bot gives one, a link to the page where you make it. Save sends it to the daemon, which writes it to a
+  file of its own in `server/secrets/` (owner-only, `0600` in a `0700` folder) and tells the bot only the path. The
+  bot is told to hand it to the command that needs it from the file, standard input or an environment variable the
+  program reads itself, never as a command argument, which other users of the computer can read. The value never goes into the
+  conversation, the database, the logs or the bot's context. Top replaces it with `[secret hidden by Top]` in
+  everything a tool returns (its output, details, progress and errors; a command's output is cleaned as it streams,
+  before pi shows it, keeps it or writes the full output of a long command to a temp file),
+  as is and URL- or JSON-encoded, so a command that prints it doesn't hand it to the model. That holds while the file
+  lives and, for values of 8 characters or more, until the daemon restarts, since a command may have copied it
+  somewhere. It's protection against accidents, not against a bot set on getting it: part of the value, or the value
+  transformed (base64, reversed), isn't recognised.
+  The file is deleted an hour after you saved it, when the bot is deleted, or at the next start once that hour has
+  passed; after that the bot asks again. Stop withdraws a waiting card but leaves a saved file to its hour. Decline
+  tells the bot to go on without it and not to ask another way. The file keeps it from other users on the computer,
+  not from the bot's own commands or other bots: they all run as you, with full access (see Run it).
+
+Cards from other MCP servers don't reach Top. T3 Code's `request_secret`, for one, opens its card in a T3 Code thread
+and only works for an agent running in one, and its secret references only work in T3 Code's own tools. Top doesn't
+offer MCP elicitation either, so a server can't put up a form of its own; a bot uses these tools instead.
+
 **Collar** is Top's own set of tools for managing the app. Every bot always has it, it isn't
 listed among the servers, and no server may be named "Collar". Its tools are named like a server's
-(`collar__<tool>`) but run inside the daemon: wake-ups, background jobs, permission requests and
+(`collar__<tool>`) but run inside the daemon: wake-ups, background jobs, the cards in Questions and secrets, and
 coding tasks.
 
 ### Coding tasks
@@ -325,7 +371,9 @@ daemon must run as a normal user.
 message) and the user (on a card in the conversation, or at its end when the card where the task
 started isn't loaded), and whoever answers first wins. Codex's default mode doesn't ask questions,
 and Top doesn't turn that on. The app follows every running task and the newest 40; an older task's
-card shows only its title (`task_read` has its outcome).
+card shows only its title (`task_read` has its outcome). A harness's question lives on the task (`task_respond`, the
+task's card), apart from the bot's own Permission, Question and Secret cards; a task never asks for a
+secret or an approval.
 
 **Credentials.** Harnesses use their own sign-in: the model-provider keys the daemon's bots use
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, the AWS keys for Bedrock and the rest of pi's list) aren't

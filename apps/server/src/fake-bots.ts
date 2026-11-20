@@ -8,6 +8,9 @@ import * as Schema from "effect/Schema";
 import { COLLAR } from "./collar/names.ts";
 
 const ASK_PERMISSION = `${COLLAR}__ask_permission`;
+const ASK_QUESTION = `${COLLAR}__ask_question`;
+const REQUEST_SECRET = `${COLLAR}__request_secret`;
+const ASKING: readonly string[] = [ASK_PERMISSION, ASK_QUESTION, REQUEST_SECRET];
 
 export const FAKE_PROVIDER = "faux";
 export const FAKE_MODEL = "top-fake";
@@ -104,6 +107,32 @@ export function toolFor(prompt: string): ReturnType<typeof call> | undefined {
   }
   const asking = /\bask (?:for )?permission(?: to)?\s+(.+)/is.exec(prompt);
   if (asking) return call(ASK_PERMISSION, { action: asking[1]!.trim(), reason: "You asked me to check with you first." });
+  if (/\bask (?:me )?for (?:a |an |the )?(?:secret|token|password|api key)\b/i.test(prompt))
+    return call(REQUEST_SECRET, {
+      label: "Deploy token for staging",
+      reason: "To push the build to staging.",
+      placeholder: "tok_…",
+      url: "https://example.com/settings/tokens",
+    });
+  if (/\bask me to pick\b/i.test(prompt))
+    return call(ASK_QUESTION, {
+      question: "Which checks should I run before the release?",
+      options: [{ label: "Lint" }, { label: "Tests", description: "About four minutes" }, { label: "Typecheck" }],
+      multiple: true,
+      other: false,
+    });
+  if (/\bask me which\b/i.test(prompt))
+    return call(ASK_QUESTION, {
+      question: "Which environment should I deploy to?",
+      detail: "Both are on the same build.",
+      options: [
+        { label: "Staging", description: "Safe to break" },
+        { label: "Production", description: "Live traffic" },
+      ],
+    });
+  if (/\bask me what\b/i.test(prompt)) return call(ASK_QUESTION, { question: "What should the release be called?" });
+  const secretFile = /^\[Secret\] The user saved .+? in the file (.+?)\. You never see/.exec(prompt);
+  if (secretFile) return call("use_secret", { path: secretFile[1]! });
   const text = prompt.toLowerCase();
   const secs = /(\d+(?:\.\d+)?)\s*s\b/.exec(text)?.[1];
   const seconds: Record<string, number> = secs === undefined ? {} : { seconds: Number(secs) };
@@ -215,12 +244,19 @@ export function respond(context: Context, options?: SimpleStreamOptions) {
   const results = trailingToolResults(context);
   if (results.length) {
     const lines = results.map((r) => `- **${"toolName" in r ? r.toolName : "tool"}**: ${contentText(r)}`).join("\n");
-    if (results.every((r) => "toolName" in r && r.toolName === ASK_PERMISSION && !r.isError))
-      return fauxAssistantMessage("I've asked you. I'll wait for your answer before I do it.");
+    if (results.every((r) => "toolName" in r && ASKING.includes(r.toolName) && !r.isError))
+      return fauxAssistantMessage("I've asked you. I'll wait for your answer.");
     return fauxAssistantMessage(`Done. Here is what happened:\n\n${lines}\n\n${sentence()}`);
   }
   const prompt = lastUserText(context);
-  if (/^\[Permission\]/.test(prompt)) return fauxAssistantMessage(`Got your answer. ${prompt.replace(/^\[Permission\] /, "")}`);
+  if (/^\[(Permission|Answer)\]/.test(prompt))
+    return fauxAssistantMessage(
+      `Got your answer. ${prompt
+        .replace(/^\[\w+\] /, "")
+        .split("\n")
+        .join(" ")}`,
+    );
+  if (/^\[Secret\] The user declined/.test(prompt)) return fauxAssistantMessage("Understood. I'll go on without it.");
   if (/^\[(Wake-up|Background job)/.test(prompt)) return fauxAssistantMessage(`Noted: ${prompt.split("\n")[0]}`);
   const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider overloaded (test)" });
   if (/\bfail always\b/i.test(prompt)) return failure();
@@ -231,7 +267,7 @@ export function respond(context: Context, options?: SimpleStreamOptions) {
   if (/\bsearch the web\b/i.test(prompt)) return searchTheWeb(prompt, options);
   const tool = toolFor(prompt);
   if (tool) {
-    const said = tool.name === ASK_PERMISSION ? "I'll check with you first." : `On it: ${tool.name.replace("_", " ")}.`;
+    const said = ASKING.includes(tool.name) ? "I'll check with you first." : `On it: ${tool.name.replace("_", " ")}.`;
     return fauxAssistantMessage([fauxText(said), tool], { stopReason: "toolUse" });
   }
   return fauxAssistantMessage(fakeAnswer(prompt));
