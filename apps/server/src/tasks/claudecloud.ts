@@ -16,8 +16,8 @@ import { type Availability, findCli, type HarnessAdapter, type HarnessEvent, har
  */
 export const CLAUDE_CLOUD = "claude-cloud";
 
-const SESSION_ID = /^(?:session|cse)_[A-Za-z0-9]{1,200}$/;
-const SESSION_PATH = /^\/code\/((?:session|cse)_[A-Za-z0-9]{1,200})$/;
+const SESSION_ID = /^(?:session|cse)_[A-Za-z0-9_]{1,200}$/;
+const SESSION_PATH = /^\/code\/((?:session|cse)_[A-Za-z0-9_]{1,200})$/;
 export const claudeSessionUrl = (id: string) => `https://claude.ai/code/${id}`;
 
 /**

@@ -677,6 +677,10 @@ test("Claude Code cloud: `cloud_session` is a session id or an official claude.a
   for (const given of [SESSION, `  ${SESSION} `, `https://claude.ai/code/${SESSION}`, `https://claude.ai/code/${SESSION}?from=cli&m=0`])
     assert.deepEqual(await locate(given), { cwd: `claude.ai/code/${SESSION}`, options: { cloud_session: SESSION } }, given);
   assert.deepEqual((await locate("cse_01ABC")).options, { cloud_session: "cse_01ABC" });
+  // Ids may have underscores after their prefix (Claude Code 2.1.329 takes `^(?:session|cse)_[A-Za-z0-9_]+$`).
+  assert.deepEqual(await locate("session_01Ab_C"), { cwd: "claude.ai/code/session_01Ab_C", options: { cloud_session: "session_01Ab_C" } });
+  assert.deepEqual(await locate("https://claude.ai/code/cse_01Ab_C"), { cwd: "claude.ai/code/cse_01Ab_C", options: { cloud_session: "cse_01Ab_C" } });
+  assert.deepEqual((await locate("session_staging_01XYZ")).options, { cloud_session: "session_staging_01XYZ" });
   for (const bad of [
     "",
     "fix the login bug",
