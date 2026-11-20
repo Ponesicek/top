@@ -593,6 +593,16 @@ test("Settings pairs with a code or link, checks the connection and forgets it; 
   assert.equal(listed.projects?.[0]?.path, "/srv/echo");
   assert.ok(!JSON.stringify(listed).includes(echoing.token()) && !JSON.stringify(await linked(echoFile, (link) => link.view)).includes(echoing.token()));
 
+  // Nor one T3 Code puts in its own label: the saved connection never holds it.
+  const labelled = await fakeT3();
+  servers.push(labelled);
+  const labelCode = labelled.pairingCode();
+  labelled.setLabel(`box ${labelCode}`);
+  const labelFile = join(mkdtempSync(join(tmpdir(), "top-t3-label-")), "t3code.json");
+  await linked(labelFile, (link) => link.connect(labelled.origin, labelCode, false));
+  assert.equal((await readT3Config(labelFile))?.label, "box [hidden]");
+  assert.ok(!JSON.stringify(await linked(labelFile, (link) => link.view)).includes(labelCode));
+
   t3.revoke();
   const revoked = await linked(file, (link) => link.view);
   assert.equal(revoked.url, t3.origin);

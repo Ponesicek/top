@@ -12,6 +12,7 @@ export type FakeT3 = Awaited<ReturnType<typeof fakeT3>>;
 export async function fakeT3(options: { environmentId?: string; protocol?: number; projects?: { id: string; workspaceRoot: string }[] } = {}) {
   let token = "good-token";
   let environmentId = options.environmentId ?? "env-1";
+  let label = "fake";
   const tickets = new Set<string>();
   const codes = new Set<string>();
   const exchanges: { scope: string; label: string }[] = [];
@@ -278,7 +279,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     if (url.pathname === "/.well-known/t3/environment")
       return json(res, 200, {
         environmentId,
-        label: "fake",
+        label,
         serverVersion: "0.0.0-fake",
         orchestrationProtocolVersion: options.protocol ?? 2,
         capabilities: {},
@@ -367,6 +368,9 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     },
     rotate: (next: string) => {
       token = next;
+    },
+    setLabel: (text: string) => {
+      label = text;
     },
     setEnvironment: (id: string) => {
       environmentId = id;

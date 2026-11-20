@@ -246,7 +246,8 @@ export async function pair(
     url: origin,
     token,
     environmentId: descriptor.environmentId,
-    label: descriptor.label,
+    // Saved, and shown later: never with the code in it, should T3 Code's own label carry it.
+    label: [pasted.trim(), code].reduce((label, secret) => (secret.length >= 4 ? label.split(secret).join("[hidden]") : label), descriptor.label),
     serverVersion: descriptor.serverVersion,
     connectedAt: new Date().toISOString(),
   };
