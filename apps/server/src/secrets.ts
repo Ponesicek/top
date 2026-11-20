@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import { lstat } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { AskError } from "@top/protocol";
@@ -20,10 +19,6 @@ export const MIN_SECRET = 4;
 const KEEP_HIDING = 8;
 const MAX_KEPT = 200;
 const NAME = /^b(\d+)-[0-9a-f]{32}$/;
-const MAX_SCRUBBED_BYTES = 64 * 1024 * 1024;
-const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const PI_LOG = `${escaped(join(tmpdir(), "pi-"))}[\\w-]+\\.log`;
-const PI_LOG_PATH = new RegExp(`^${PI_LOG}$`);
 const ASK_TOOLS = new Set([`${COLLAR}__ask_permission`, `${COLLAR}__ask_question`, `${COLLAR}__request_secret`]);
 const TASK_START = `${COLLAR}__task_start`;
 type JsonObject = { readonly [key: string]: JsonValue };
@@ -42,9 +37,62 @@ export class Secrets extends Context.Service<
     readonly discard: (path: string) => Effect.Effect<void>;
     readonly removeBot: (bot: number) => Effect.Effect<void>;
     readonly redact: (text: string) => string;
+    readonly outputHider: () => OutputHider;
     readonly guard: (tool: TopTool) => TopTool;
   }
 >()("top/Secrets") {}
+
+export type OutputHider = {
+  /** Hides the saved values in a command's output, holding back a few bytes that may start one. */
+  readonly write: (chunk: Buffer) => Buffer;
+  /** The bytes held back, once the command has ended. */
+  readonly end: () => Buffer;
+};
+
+const MARKER = Buffer.from(HIDDEN);
+
+/** Hides `values()` in a stream of output chunks, also when a value is split between chunks. */
+export function outputHider(values: () => readonly string[]): OutputHider {
+  let carry = Buffer.alloc(0);
+  const hide = (buf: Buffer, final: boolean): Buffer => {
+    const needles = values().map((v) => Buffer.from(v));
+    if (!needles.length) return buf;
+    const out: Buffer[] = [];
+    let pos = 0;
+    for (;;) {
+      let at = -1;
+      let length = 0;
+      for (const needle of needles) {
+        const found = buf.indexOf(needle, pos);
+        if (found >= 0 && (at < 0 || found < at || (found === at && needle.length > length))) {
+          at = found;
+          length = needle.length;
+        }
+      }
+      if (at < 0) break;
+      out.push(buf.subarray(pos, at), MARKER);
+      pos = at + length;
+    }
+    let keep = buf.length;
+    if (!final) {
+      const longest = Math.max(...needles.map((n) => n.length));
+      for (let start = Math.max(pos, buf.length - longest + 1); start < buf.length; start++) {
+        const tail = buf.subarray(start);
+        if (needles.some((n) => n.length > tail.length && n.subarray(0, tail.length).equals(tail))) {
+          keep = start;
+          break;
+        }
+      }
+    }
+    out.push(buf.subarray(pos, keep));
+    carry = Buffer.from(buf.subarray(keep));
+    return Buffer.concat(out);
+  };
+  return {
+    write: (chunk) => hide(carry.length ? Buffer.concat([carry, chunk]) : chunk, false),
+    end: () => hide(carry, true),
+  };
+}
 
 function forms(value: string): string[] {
   const all = new Set([value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]);
@@ -149,31 +197,8 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
           ...(result.structuredContent === undefined ? {} : { structuredContent: deep(result.structuredContent) }),
         };
       };
-      const ownLog = (details: JsonValue | undefined) =>
-        isObject(details) && typeof details.fullOutputPath === "string" && PI_LOG_PATH.test(details.fullOutputPath) ? [details.fullOutputPath] : [];
-      const scrubLog = (path: string) =>
-        Effect.gen(function* () {
-          const info = yield* Effect.tryPromise(() => lstat(path));
-          if (!info.isFile()) return;
-          if (Number(info.size) > MAX_SCRUBBED_BYTES) return yield* fs.remove(path);
-          const text = yield* fs.readFileString(path);
-          const clean = redact(text);
-          if (clean !== text) yield* fs.writeFileString(path, clean);
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.andThen(
-              Effect.logWarning("couldn't hide secrets in a tool's full output, so it's deleted", Cause.squash(cause)),
-              fs.remove(path, { force: true }).pipe(Effect.ignore),
-            ),
-          ),
-        );
-      const scrubLogs = (paths: readonly string[]) => (hidden.length ? Effect.forEach(paths, scrubLog, { discard: true }) : Effect.void);
-      const finish = (tool: string, own: string | undefined) => (result: ToolResult) =>
-        Effect.as(scrubLogs([...new Set([...ownLog(result.details), ...(own ? [own] : [])])]), clean(result, tool));
-      const cleanError = (error: unknown, own: string | undefined) => {
-        const message = error instanceof Error ? error.message : String(error);
-        return Effect.as(scrubLogs(own ? [own] : []), new ToolError({ message: redact(message) }));
-      };
+      const finish = (tool: string) => (result: ToolResult) => Effect.succeed(clean(result, tool));
+      const cleanError = (error: unknown) => new ToolError({ message: redact(error instanceof Error ? error.message : String(error)) });
 
       return Secrets.of({
         dir,
@@ -204,27 +229,20 @@ export const layer = (serverDir: string, options: { readonly ttlMs?: number } = 
             { discard: true },
           ),
         redact,
+        outputHider: () => outputHider(() => hidden),
         guard: (tool) => ({
           ...tool,
-          run: (args, ctx) => {
-            let own: string | undefined;
-            const onUpdate = (partial: ToolResult) => {
-              own = ownLog(partial.details)[0] ?? own;
-              ctx.onUpdate?.(clean(partial, tool.name));
-            };
-            return tool.run(args, { ...ctx, onUpdate }).pipe(
-              Effect.flatMap((result) => finish(tool.name, own)(result)),
-              Effect.catch((error) => Effect.flatMap(cleanError(error, own), Effect.fail)),
-              Effect.catchDefect((defect) => Effect.flatMap(cleanError(defect, own), Effect.fail)),
-            );
-          },
+          run: (args, ctx) =>
+            tool.run(args, ctx.onUpdate ? { ...ctx, onUpdate: (partial) => ctx.onUpdate?.(clean(partial, tool.name)) } : ctx).pipe(
+              Effect.flatMap(finish(tool.name)),
+              Effect.mapError(cleanError),
+              Effect.catchDefect((defect) => Effect.fail(cleanError(defect))),
+            ),
           ...(tool.recover
             ? {
                 recover: (args, ctx) =>
                   tool.recover!(args, ctx).pipe(
-                    Effect.flatMap(
-                      (result): Effect.Effect<ToolResult | false | undefined> => (result ? finish(tool.name, undefined)(result) : Effect.succeed(result)),
-                    ),
+                    Effect.flatMap((result): Effect.Effect<ToolResult | false | undefined> => (result ? finish(tool.name)(result) : Effect.succeed(result))),
                   ),
               }
             : {}),

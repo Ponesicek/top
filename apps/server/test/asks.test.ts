@@ -7,10 +7,11 @@ import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { test } from "vitest";
 import { textOf as textOfContent } from "../src/messages.ts";
-import { HIDDEN } from "../src/secrets.ts";
+import { HIDDEN, type OutputHider, outputHider } from "../src/secrets.ts";
 import type { StoredEntry } from "../src/store.ts";
-import { defineTool, ToolError, type ToolResult, text } from "../src/tools.ts";
+import { defineTool, ToolError, type ToolResult, type TopTool, text } from "../src/tools.ts";
 import { toWire } from "../src/wire.ts";
+import { computerTools } from "../src/workspace.ts";
 import { type Harness, harness, idle, until } from "./harness.ts";
 
 const textOf = (entry: StoredEntry) =>
@@ -451,92 +452,71 @@ test("an expired file left by a daemon that stopped is removed when the next one
   assert.equal(h.secrets.redact("tok_still_live_66"), HIDDEN);
 });
 
-test("a command's full output that pi keeps in a temp file is cleaned too", async () => {
+test("saved secrets are hidden in a command's output as it streams, also when one is split between chunks", () => {
+  let values: string[] = ["tok_split_9911"];
+  const hider = outputHider(() => values);
+  const out = [hider.write(Buffer.from("a tok_sp")), hider.write(Buffer.from("lit_99")), hider.write(Buffer.from("11 b tok_")), hider.end()];
+  assert.equal(Buffer.concat(out).toString(), `a ${HIDDEN} b tok_`, "a held-back prefix that never completes comes out at the end");
+  assert.equal(out[0]!.toString(), "a ", "only the bytes that may start a secret are held back");
+  values = ["päss_wört", "wört"];
+  const multi = outputHider(() => values);
+  const bytes = Buffer.from("x päss_wört y wört");
+  const parts = [multi.write(bytes.subarray(0, 5)), multi.write(bytes.subarray(5, 9)), multi.write(bytes.subarray(9)), multi.end()];
+  assert.equal(Buffer.concat(parts).toString(), `x ${HIDDEN} y ${HIDDEN}`, "split inside a multi-byte character, and the longer value wins");
+  const none = outputHider(() => []);
+  const chunk = Buffer.from("plain");
+  assert.equal(none.write(chunk), chunk);
+});
+
+test("a real command's output, kept or written to pi's temp file, never holds a saved secret, even when it times out", { timeout: 60_000 }, async () => {
   const h = await harness();
-  const value = "tok_full_output_8080";
+  const value = "tok_real_bash_5521";
   await h.run(h.secrets.save(h.bot, value));
-  const full = join(tmpdir(), `pi-bash-test${process.pid}.log`);
-  const elsewhere = join(h.dir, "pi-bash-elsewhere.log");
-  const link = join(tmpdir(), `pi-bash-link${process.pid}.log`);
-  const mentioned = join(tmpdir(), `pi-bash-other${process.pid}.log`);
-  writeFileSync(full, `line 1\n${value}\nline 3`);
-  writeFileSync(elsewhere, value);
+  const bashOf = (hider?: () => OutputHider) => h.secrets.guard(computerTools(h.dir, hider).find((t) => t.name === "bash")!);
+  const bash = bashOf(h.secrets.outputHider);
+  const logOf = (message: string) => /Full output: (\S+\.log)\]/.exec(message)?.[1];
+  const logs: string[] = [];
+  const old = join(tmpdir(), `pi-bash-old${process.pid}.log`);
   try {
-    const tool = (path: string) =>
-      h.secrets.guard(
-        defineTool({
-          name: "bash",
-          label: "Bash",
-          description: "",
-          parameters: Type.Object({}),
-          run: () => Effect.succeed({ ...text("line 3\n[Full output: earlier lines cut]"), details: { fullOutputPath: path } }),
-        }),
-      );
-    await h.run(tool(full).run({}, { key: "k", bot: h.bot }));
-    assert.equal(readFileSync(full, "utf8"), `line 1\n${HIDDEN}\nline 3`);
-    await h.run(tool(elsewhere).run({}, { key: "k", bot: h.bot }));
-    assert.equal(readFileSync(elsewhere, "utf8"), value, "only pi's own temp logs are rewritten");
-    const target = join(h.dir, "linked-target.txt");
-    writeFileSync(target, value);
-    symlinkSync(target, link);
-    await h.run(tool(link).run({}, { key: "k", bot: h.bot }));
-    assert.equal(readFileSync(target, "utf8"), value, "a link named like pi's log never rewrites its target");
-    writeFileSync(mentioned, value);
-    const mentions = h.secrets.guard(
-      defineTool({
-        name: "bash",
-        label: "Bash",
-        description: "",
-        parameters: Type.Object({}),
-        run: () => Effect.succeed(text(`cat old.txt\n[Output truncated. Full output: ${mentioned}]`)),
-      }),
+    const many = await h.run(
+      Effect.flip(bash.run({ command: `for i in $(seq 1 4000); do echo "line $i ${value}"; done; sleep 5`, timeout: 1 }, { key: "a", bot: h.bot })),
     );
-    await h.run(mentions.run({}, { key: "k", bot: h.bot }));
-    assert.equal(readFileSync(mentioned, "utf8"), value, "a footer the output only echoes isn't this run's own log, so it's left alone");
+    const manyLog = logOf(many.message);
+    assert.ok(manyLog, "pi kept the full output");
+    logs.push(manyLog);
+    assert.ok(!many.message.includes(value) && !readFileSync(manyLog, "utf8").includes(value));
+    assert.ok(readFileSync(manyLog, "utf8").includes(HIDDEN));
 
-    writeFileSync(full, `${value}\nstill running`);
-    const timedOut = h.secrets.guard(
-      defineTool({
-        name: "bash",
-        label: "Bash",
-        description: "",
-        parameters: Type.Object({}),
-        run: (_args, ctx) => {
-          ctx.onUpdate?.({ ...text("…"), details: { fullOutputPath: full } });
-          return Effect.fail(new ToolError({ message: `${value}\n\n[Full output: ${full}]\n\nCommand timed out after 1 seconds` }));
-        },
-      }),
-    );
-    const failed = await h.run(Effect.flip(timedOut.run({}, { key: "k", bot: h.bot })));
-    assert.ok(!failed.message.includes(value));
-    assert.equal(readFileSync(full, "utf8"), `${HIDDEN}\nstill running`, "a command that timed out or was stopped too");
+    // 51,199 bytes whose last byte starts a character that never finishes: pi passes its 50 KB limit only when
+    // it flushes that byte at the timeout, after its last progress update, and writes a log it never reports.
+    const payload = Buffer.concat([Buffer.from(`${value}\n`), Buffer.alloc(51_199 - value.length - 2, "x"), Buffer.from([0x0a, 0xe2])]);
+    writeFileSync(join(h.dir, "payload.bin"), payload);
+    const flushed = async (tool: TopTool) => {
+      const error = await h.run(Effect.flip(tool.run({ command: "cat payload.bin; sleep 5", timeout: 1 }, { key: "u", bot: h.bot })));
+      const log = logOf(error.message);
+      assert.ok(log, "the flush at the timeout made pi keep the full output");
+      logs.push(log);
+      return readFileSync(log, "utf8");
+    };
+    assert.ok((await flushed(bashOf())).includes(value), "without the hider, pi's log holds the secret");
+    const hidden = await flushed(bash);
+    assert.ok(!hidden.includes(value) && hidden.startsWith(HIDDEN), "with it, the log never sees the secret");
 
-    writeFileSync(mentioned, value);
-    writeFileSync(full, value);
-    const echoedThenFailed = (progress: string | undefined, status: string) =>
-      h.secrets.guard(
-        defineTool({
-          name: "bash",
-          label: "Bash",
-          description: "",
-          parameters: Type.Object({}),
-          run: (_args, ctx) => {
-            if (progress) ctx.onUpdate?.({ ...text("…"), details: { fullOutputPath: progress } });
-            return Effect.fail(new ToolError({ message: `cat old.txt\n\n[Full output: ${mentioned}]\n\n${status}` }));
-          },
-        }),
-      );
-    for (const status of ["Command timed out after 1 seconds", "Command aborted", "Command terminated without an exit code"]) {
-      await h.run(Effect.flip(echoedThenFailed(undefined, status).run({}, { key: "k", bot: h.bot })));
-      assert.equal(readFileSync(mentioned, "utf8"), value, `an old footer that ends a short output isn't the command's own log (${status})`);
-    }
-    await h.run(Effect.flip(echoedThenFailed(full, "Command timed out after 1 seconds").run({}, { key: "k", bot: h.bot })));
-    assert.equal(readFileSync(full, "utf8"), HIDDEN, "the log the command reported while running is its own");
-    assert.equal(readFileSync(mentioned, "utf8"), value);
+    writeFileSync(old, `old ${value}`);
+    await h.run(Effect.flip(bash.run({ command: `echo "[Full output: ${old}]"; sleep 5`, timeout: 1 }, { key: "f", bot: h.bot })));
+    assert.equal(readFileSync(old, "utf8"), `old ${value}`, "a footer a command prints never makes Top touch that file");
+
+    const later = "tok_saved_later_7731";
+    const repeat = bashOf(h.secrets.outputHider).run({ command: `for i in $(seq 1 3000); do echo "${later} $i"; done` }, { key: "r", bot: h.bot });
+    const first = await h.run(repeat);
+    const firstLog = (first.details as { fullOutputPath?: string }).fullOutputPath!;
+    logs.push(firstLog);
+    const before = readFileSync(firstLog, "utf8");
+    await h.run(h.secrets.save(h.bot, later));
+    await h.run(repeat);
+    assert.equal(readFileSync(firstLog, "utf8"), before, "running the same call again, as a repeating job does, never rewrites the first run's log");
   } finally {
-    rmSync(full, { force: true });
-    rmSync(link, { force: true });
-    rmSync(mentioned, { force: true });
+    for (const log of [...logs, old]) rmSync(log, { force: true });
   }
 });
 

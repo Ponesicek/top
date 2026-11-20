@@ -134,10 +134,11 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
       Daemon.BotKit,
       Effect.gen(function* () {
         const store = yield* Store.Store;
+        const secrets = yield* Secrets.Secrets;
         const folderOf = (bot: Store.BotRow) => ensureFolder(botFolder(home.bots, bot.name)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
         return Daemon.BotKit.of({
           models,
-          tools: (bot) => Effect.map(folderOf(bot), computerTools),
+          tools: (bot) => Effect.map(folderOf(bot), (folder) => computerTools(folder, secrets.outputHider)),
           thinking: args.thinking,
           sections: (bot) =>
             Effect.gen(function* () {
@@ -219,7 +220,7 @@ const program = (args: Args) =>
       if (!real) yield* Effect.orDie(fs.remove(home.bots, { recursive: true, force: true }));
     }
     yield* Effect.orDie(fs.makeDirectory(home.server, { recursive: true, mode: 0o700 }));
-    const kit: Layer.Layer<Daemon.BotKit, Config.ConfigError, FileSystem.FileSystem | Store.Store | Events.Events> = Option.isSome(args.model)
+    const kit: Layer.Layer<Daemon.BotKit, Config.ConfigError, FileSystem.FileSystem | Store.Store | Events.Events | Secrets.Secrets> = Option.isSome(args.model)
       ? yield* realBots(args, args.model.value, home)
       : fakeBots(args, home);
 
