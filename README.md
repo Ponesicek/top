@@ -372,8 +372,8 @@ message) and the user (on a card in the conversation, or at its end when the car
 started isn't loaded), and whoever answers first wins. Codex's default mode doesn't ask questions,
 and Top doesn't turn that on. The app follows every running task and the newest 40; an older task's
 card shows only its title (`task_read` has its outcome). A harness's question lives on the task (`task_respond`, the
-task's card), apart from the bot's own Permission, Question and Secret cards; a task never asks for a
-secret or an approval.
+task's card), apart from the bot's own Permission, Question and Secret cards; a task's card never asks
+for a secret or an approval (T3 Code's own secret requests stay in T3 Code).
 
 **Credentials.** Harnesses use their own sign-in: the model-provider keys the daemon's bots use
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, the AWS keys for Bedrock and the rest of pi's list) aren't

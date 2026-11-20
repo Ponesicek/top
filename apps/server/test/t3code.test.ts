@@ -11,7 +11,7 @@ import type { StoredEntry } from "../src/store.ts";
 import { credentialOf } from "../src/t3cli.ts";
 import type { StartRequest, Tasks } from "../src/tasks/coordinator.ts";
 import { plainHttpExposed, readT3Config, t3Origin, writeT3Config } from "../src/tasks/t3api.ts";
-import { T3CODE, t3Answers, t3codeAdapter } from "../src/tasks/t3code.ts";
+import { itemLog, T3CODE, t3Answers, t3codeAdapter } from "../src/tasks/t3code.ts";
 import { type FakeT3, fakeT3 } from "./fixtures/fake-t3.ts";
 import { type Harness, harness, until } from "./harness.ts";
 
@@ -191,24 +191,26 @@ test("questions reach the bot and the user, and the answer goes back as the opti
     t3Answers(
       {
         questions: [
-          { id: "a", options: [{ label: "Red", value: "red" }] },
+          { id: "Which colour, given the key sk-live-1234567890abcdef?", options: [{ label: "Red", value: "red" }] },
           { id: "b", multiSelect: true, options: [{ label: "X" }] },
         ],
       },
-      { a: ["Red"], b: ["X", "own words"] },
+      { q1: ["Red"], q2: ["X", "own words"] },
     ),
-    { a: "red", b: ["X", "own words"] },
+    { "Which colour, given the key sk-live-1234567890abcdef?": "red", b: ["X", "own words"] },
+    "Top's numbered answers go back under T3 Code's own question ids",
   );
   const s = await setup();
   const asking = await start(s, { prompt: "a question" });
   await inState(s, asking.task.id, "waiting_for_input");
   const snapshot = await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id));
   const input = snapshot.inputs[0]!;
+  assert.equal(input.questions[0]!.id, "q1", "Top's own question id, never the provider's text");
   assert.deepEqual(
     input.questions[0]!.options.map((o) => o.label),
     ["Red", "Blue"],
   );
-  await s.h.run(s.tasks.respond("user", undefined, asking.task.id, input.id, { answers: { color: ["Red"] } }));
+  await s.h.run(s.tasks.respond("user", undefined, asking.task.id, input.id, { answers: { q1: ["Red"] } }));
   const done = await ended(s, asking.task.id);
   assert.equal(done.result, 'answer: {"color":"red"}');
 });
@@ -347,7 +349,7 @@ test("Top restarting while T3 Code works follows the task again, sends nothing t
   assert.equal(second.t3.runsOf(thread).length, 1);
 
   const input = (await second.h.run(second.tasks.snapshot(second.h.bot, asking.task.id))).inputs[0]!;
-  await second.h.run(second.tasks.respond("user", undefined, asking.task.id, input.id, { answers: { color: ["Blue"] } }));
+  await second.h.run(second.tasks.respond("user", undefined, asking.task.id, input.id, { answers: { q1: ["Blue"] } }));
   assert.equal((await ended(second, asking.task.id)).result, 'answer: {"color":"Blue"}');
 });
 
@@ -359,7 +361,7 @@ test("an answer saved just before Top restarted is delivered after it, and the t
   await first.h.close();
   // As if Top crashed right after saving the answer, before sending it.
   const store = await harness({ dir: first.dir, context: true });
-  await store.run(store.store.tasks.answerInput(input.id, { answers: { color: ["Red"] } }, "user"));
+  await store.run(store.store.tasks.answerInput(input.id, { answers: { q1: ["Red"] } }, "user"));
   await store.close();
 
   const second = await setup({ dir: first.dir, t3: first.t3 });
@@ -373,7 +375,7 @@ test("an answer T3 Code refuses opens the request again, and a new answer goes t
   const asking = await start(s, { prompt: "a question" });
   await inState(s, asking.task.id, "waiting_for_input");
   const input = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
-  const refused = await s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["blue"] } })));
+  const refused = await s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { q1: ["blue"] } })));
   assert.equal(refused._tag, "Failure");
   assert.match(
     (refused as { failure: { message: string } }).failure.message,
@@ -382,7 +384,7 @@ test("an answer T3 Code refuses opens the request again, and a new answer goes t
   await inState(s, asking.task.id, "waiting_for_input");
   const again = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
   assert.equal(again.id, input.id, "the same request waits again");
-  await s.h.run(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Red"] } }));
+  await s.h.run(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { q1: ["Red"] } }));
   assert.equal((await ended(s, asking.task.id)).result, 'answer: {"color":"red"}');
   const ids = s.t3.requests.filter((r) => r.payload.type === "runtime-request.respond").map((r) => r.payload.commandId);
   assert.equal(new Set(ids).size, 2, "a new answer is a new command, not the refused one replayed");
@@ -394,7 +396,7 @@ test("an answer given in T3 Code while Top's is on its way wins, and Top's late 
   await inState(s, asking.task.id, "waiting_for_input");
   const input = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
   s.t3.faults.respondDelayMs = 300;
-  const answering = s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Red"] } })));
+  const answering = s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { q1: ["Red"] } })));
   await new Promise((resolve) => setTimeout(resolve, 50));
   // Answered over there; the run carries on, so Top's refusal lands while the turn is still going.
   const thread = `top-${asking.session.id}`;
@@ -413,7 +415,7 @@ test("an answer T3 Code never confirms while it still waits opens the request ag
   await inState(s, asking.task.id, "waiting_for_input");
   const input = (await s.h.run(s.tasks.snapshot(s.h.bot, asking.task.id))).inputs[0]!;
   s.t3.faults.silentTypes.add("runtime-request.respond");
-  const unconfirmed = await s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Red"] } })));
+  const unconfirmed = await s.h.run(Effect.result(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { q1: ["Red"] } })));
   assert.equal(unconfirmed._tag, "Failure");
   assert.match(
     (unconfirmed as { failure: { message: string } }).failure.message,
@@ -421,7 +423,7 @@ test("an answer T3 Code never confirms while it still waits opens the request ag
   );
   await inState(s, asking.task.id, "waiting_for_input");
   s.t3.faults.silentTypes.clear();
-  await s.h.run(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { color: ["Blue"] } }));
+  await s.h.run(s.tasks.respond("bot", s.h.bot, asking.task.id, input.id, { answers: { q1: ["Blue"] } }));
   assert.equal((await ended(s, asking.task.id)).result, 'answer: {"color":"Blue"}');
 });
 
@@ -502,6 +504,13 @@ test("a cancel Top started before it restarted is carried out after it: the run 
   assert.equal(never.state, "cancelled");
   assert.equal(second.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length, launches, "the unsent turn was never launched");
   assert.equal(second.t3.runsOf(`top-${unsent.session.id}`).length, 0);
+});
+
+test("T3 Code's command output and prompts reach Top whole, so its secret-hiding sees a secret before anything is clipped", () => {
+  const secret = "s3cr3t-value-that-straddles-a-cut";
+  const output = `${"x".repeat(590)}${secret}${"y".repeat(500)}`;
+  const log = itemLog({ type: "command_execution", status: "completed", input: "env", output, exitCode: 0 });
+  assert.ok(log?.text.includes(secret), "nothing cut inside the secret before the coordinator scrubs and clips");
 });
 
 test("addresses are explicit, and plain HTTP is accepted only where it stays private", () => {

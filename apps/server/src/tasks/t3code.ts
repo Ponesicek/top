@@ -60,13 +60,16 @@ function projectList(projects: readonly T3Project[]): string {
   return `Its projects: ${shown.join(", ")}${projects.length > shown.length ? `, and ${projects.length - shown.length} more` : ""}.`;
 }
 
+/**
+ * Top numbers the questions itself (q1, q2, …, in T3 Code's order, so a restart numbers them the same): T3 Code's ids are
+ * provider text, often the question itself, and would reach the bot unscrubbed. `t3Answers` maps them back.
+ */
 function questionsOf(item: Rec): TaskQuestion[] {
-  return (Array.isArray(item.questions) ? item.questions : []).map((raw) => {
+  return (Array.isArray(item.questions) ? item.questions : []).map((raw, i) => {
     const q = record(raw);
-    const id = str(q.id) ?? "answer";
     return {
-      id,
-      question: str(q.question) ?? id,
+      id: `q${i + 1}`,
+      question: str(q.question) ?? str(q.header) ?? "Question",
       ...(str(q.header) ? { header: str(q.header)! } : {}),
       options: (Array.isArray(q.options) ? q.options : []).map(record).map((o) => ({
         label: str(o.label) ?? "",
@@ -80,12 +83,13 @@ function questionsOf(item: Rec): TaskQuestion[] {
 /** T3 Code takes an option's `value` where it has one, else its label or the user's own words; a list for multiple choice. */
 export function t3Answers(item: Rec, given: Readonly<Record<string, readonly string[]>>): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
-  for (const raw of Array.isArray(item.questions) ? item.questions : []) {
+  for (const [i, raw] of (Array.isArray(item.questions) ? item.questions : []).entries()) {
     const q = record(raw);
     const id = str(q.id);
-    if (!id || !given[id]) continue;
+    const answers = given[`q${i + 1}`];
+    if (!id || !answers) continue;
     const options = (Array.isArray(q.options) ? q.options : []).map(record);
-    const values = given[id].map((answer) => {
+    const values = answers.map((answer) => {
       const option = options.find((o) => str(o.label)?.trim() === answer.trim());
       return option ? (str(option.value) ?? str(option.label)!) : answer;
     });
@@ -94,7 +98,7 @@ export function t3Answers(item: Rec, given: Readonly<Record<string, readonly str
   return out;
 }
 
-function itemLog(item: Rec): { kind: LogKind; text: string } | undefined {
+export function itemLog(item: Rec): { kind: LogKind; text: string } | undefined {
   const status = str(item.status);
   const failed = status && status !== "completed" ? ` [${status}]` : "";
   switch (item.type) {
@@ -105,7 +109,8 @@ function itemLog(item: Rec): { kind: LogKind; text: string } | undefined {
     case "command_execution": {
       const exit = typeof item.exitCode === "number" ? ` (exit ${item.exitCode})` : "";
       const output = str(item.output)?.trim();
-      return { kind: "command", text: `$ ${str(item.input) ?? ""}${exit}${failed}${output ? `\n${clip(output, 600)}` : ""}` };
+      // Whole: Top hides saved secrets before it clips, and a clip here could cut one in half first.
+      return { kind: "command", text: `$ ${str(item.input) ?? ""}${exit}${failed}${output ? `\n${output}` : ""}` };
     }
     case "file_change": {
       const counts = typeof item.additions === "number" || typeof item.deletions === "number" ? ` (+${item.additions ?? 0} -${item.deletions ?? 0})` : "";
@@ -401,7 +406,7 @@ async function openThread(
         emit({
           type: "log",
           kind: "error",
-          text: `T3 Code asked for approval (${str(item.requestKind) ?? "permission"}${str(item.prompt) ? `: ${clip(str(item.prompt)!, 200)}` : ""}) although Top starts its threads in full access; Top declined it.`,
+          text: `T3 Code asked for approval (${str(item.requestKind) ?? "permission"}${str(item.prompt) ? `: ${str(item.prompt)}` : ""}) although Top starts its threads in full access; Top declined it.`,
         });
         command({ type: "runtime-request.respond", commandId: `top:decline:${requestId}`, threadId, requestId, decision: "decline" }).catch((error: unknown) =>
           emit({ type: "log", kind: "error", text: `T3 Code didn't take the decline: ${message(error)}` }),

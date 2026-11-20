@@ -362,7 +362,7 @@ export class RpcSocket {
       }
       case "Defect":
       case "ClientProtocolError":
-        this.shut(new T3Unreachable(`T3 Code reported a protocol error: ${JSON.stringify(message.defect ?? message.error ?? "").slice(0, 300)}`));
+        this.shut(new T3Unreachable(`T3 Code reported a protocol error: ${JSON.stringify(message.defect ?? message.error ?? "")}`));
         try {
           this.ws.close();
         } catch {}
