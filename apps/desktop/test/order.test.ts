@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { move, nearest, withRestOrder } from "../src/order.ts";
+import { dragTo, move, nearest, withRestOrder } from "../src/order.ts";
 
 test("moving an item keeps everything else in order", () => {
   expect(move([1, 2, 3, 4], 0, 2)).toEqual([2, 3, 1, 4]);
@@ -26,4 +26,16 @@ test("a dragged bot goes to the slot whose centre is closest, in a list or a gri
   expect(nearest({ x: 200, y: 50 }, grid)).toBe(2);
   expect(nearest({ x: 50, y: 140 }, grid)).toBe(3);
   expect(nearest({ x: 0, y: 0 }, [])).toBe(-1);
+});
+
+test("dragging over the same slot again before the screen catches up keeps the bot there", () => {
+  // Drawn: A, B, C. A is dragged over slot 1 (where B is drawn), then the pointer moves within slot 1 again.
+  const once = dragTo(["A", "B", "C"], "A", 1);
+  expect(once).toEqual(["B", "A", "C"]);
+  const again = dragTo(once, "A", 1);
+  expect(again).toBe(once);
+  expect(dragTo(once, "A", 2)).toEqual(["B", "C", "A"]);
+  expect(dragTo(once, "A", 0)).toEqual(["A", "B", "C"]);
+  expect(dragTo(once, "Z", 0)).toBe(once);
+  expect(dragTo(once, "A", -1)).toBe(once);
 });

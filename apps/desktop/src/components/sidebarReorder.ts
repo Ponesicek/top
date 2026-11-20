@@ -1,6 +1,6 @@
 import type { BotId } from "@top/client";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { move, nearest } from "../order.ts";
+import { dragTo, move, nearest } from "../order.ts";
 
 export type Group = "pinned" | "rest";
 
@@ -143,19 +143,17 @@ export function useSidebarReorder({
       if (!nav || !current) return;
       // Slots by where the bots sit in the layout, not where a slide shows them right now.
       const box = nav.getBoundingClientRect();
-      const items = [...nav.querySelectorAll<HTMLElement>(`[data-reorder="${g.group}"]`)].filter((el) => places.current.has(el.dataset.bot!));
+      const items = [...nav.querySelectorAll<HTMLElement>(`[data-reorder="${g.group}"]`)];
+      if (items.length !== current.length || items.some((el) => !places.current.has(el.dataset.bot!))) return;
       const centers = items.map((el) => {
         const p = places.current.get(el.dataset.bot!)!;
         return { x: box.left - nav.scrollLeft + p.x + p.w / 2, y: box.top - nav.scrollTop + p.y + p.h / 2 };
       });
-      const target = nearest({ x: e.clientX, y: e.clientY }, centers);
-      const over = target < 0 ? undefined : Number(items[target]!.dataset.bot);
-      if (over === undefined || over === g.id) return;
-      const from = current.indexOf(g.id);
-      const to = current.indexOf(over);
-      if (from < 0 || to < 0) return;
-      g.order = move(current, from, to);
-      setPreview({ group: g.group, ids: g.order });
+      // The slot under the pointer, by position: what's drawn there may be a move behind.
+      const next = dragTo(current, g.id, nearest({ x: e.clientX, y: e.clientY }, centers));
+      if (next === current) return;
+      g.order = next;
+      setPreview({ group: g.group, ids: next });
     };
     const onUp = (e: PointerEvent) => {
       if (gesture.current?.pointerId === e.pointerId) end(e.type === "pointerup");

@@ -8,6 +8,16 @@ export function move<T>(list: readonly T[], from: number, to: number): T[] {
 }
 
 /**
+ * The order with `id` dragged to slot `slot` (a position on screen, not the bot shown there, which may be stale until
+ * the screen catches up). The same order when it's already there.
+ */
+export function dragTo<T>(order: readonly T[], id: T, slot: number): readonly T[] {
+  const from = order.indexOf(id);
+  if (from < 0 || slot < 0 || slot >= order.length || from === slot) return order;
+  return move(order, from, slot);
+}
+
+/**
  * The daemon's whole order after the unpinned bots are put in `rest`'s order: pinned bots, which this device lists
  * above the rest, keep their place in the daemon's order, so other devices see only the change made here.
  */
