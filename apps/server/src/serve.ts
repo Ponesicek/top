@@ -135,7 +135,18 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   if (chatgpt) yield* send({ t: "account", account: yield* chatgpt.view });
   if (updates) yield* send({ t: "update", update: yield* updates.view });
   yield* send({ t: "asks", asks: yield* daemon.asks.waiting });
-  if (daemon.tasks) yield* send({ t: "waitingTasks", tasks: [...(yield* daemon.tasks.waiting)] });
+  // Every change sends what's waiting now, not the event's own list: an event from before the first send is replayed
+  // after it, and would put back a question that was answered meanwhile.
+  let sentWaiting = "";
+  const sendWaiting = daemon.tasks
+    ? Effect.flatMap(daemon.tasks.waiting, (now) => {
+        const json = JSON.stringify(now);
+        if (json === sentWaiting) return Effect.void;
+        sentWaiting = json;
+        return send({ t: "waitingTasks", tasks: [...now] });
+      })
+    : Effect.void;
+  yield* sendWaiting;
 
   const onEvent = (event: DaemonEvent): Effect.Effect<void> => {
     switch (event._tag) {
@@ -168,7 +179,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       case "Asks":
         return Effect.flatMap(daemon.asks.waiting, (asks) => send({ t: "asks", asks }));
       case "WaitingTasks":
-        return send({ t: "waitingTasks", tasks: [...event.tasks] });
+        return sendWaiting;
     }
   };
   yield* Effect.forkScoped(

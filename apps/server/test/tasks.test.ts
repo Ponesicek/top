@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROTOCOL_VERSION } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import { test } from "vitest";
+import { WebSocket } from "ws";
 import { textOf as textOfContent } from "../src/messages.ts";
 import { HIDDEN } from "../src/secrets.ts";
 import type { StoredEntry } from "../src/store.ts";
@@ -20,7 +22,16 @@ import { type Harness, harness, until } from "./harness.ts";
 type Setup = { h: Harness; fake: FakeHarness; tasks: Tasks; folder: (bot?: number) => string };
 
 async function setup(
-  options: { harness?: FakeHarnessConfig; fake?: FakeHarness; bots?: string[]; maxTasks?: number; dir?: string; start?: boolean; cancelGraceMs?: number } = {},
+  options: {
+    harness?: FakeHarnessConfig;
+    fake?: FakeHarness;
+    bots?: string[];
+    maxTasks?: number;
+    dir?: string;
+    start?: boolean;
+    cancelGraceMs?: number;
+    serve?: boolean;
+  } = {},
 ): Promise<Setup> {
   const fake = options.fake ?? fakeHarness({ stepMs: 30, ...options.harness });
   const names = options.bots ?? ["Atlas"];
@@ -34,6 +45,7 @@ async function setup(
     maxTasks: options.maxTasks,
     taskCancelGraceMs: options.cancelGraceMs ?? 300,
     gatherMs: 20,
+    ...(options.serve ? { serve: {} } : {}),
   });
   if (options.start !== false) await h.run(h.daemon.start);
   const folder = (bot = h.bot) => botFolder(join(dir, "bots"), names[h.bots.indexOf(bot)]!);
@@ -500,6 +512,25 @@ test("the app hears a task's questions come and go, and nothing else of it, even
   assert.deepEqual(await s.h.run(s.tasks.waiting), []);
   assert.equal((await cancelling).task.state, "cancelled");
   await s.h.run(Scope.close(scope, Exit.void));
+});
+
+test("a connecting app is never sent an older list of questions than it has: an event from before its first frame is replayed after it", async () => {
+  const s = await setup({ serve: true });
+  const frames: { t: string; tasks?: { id: string }[] }[] = [];
+  const socket = new WebSocket(`ws://127.0.0.1:${s.h.port}`, { origin: "file://" });
+  socket.on("message", (data) => frames.push(JSON.parse(String(data))));
+  await new Promise((resolve) => socket.on("open", resolve));
+  socket.send(JSON.stringify({ t: "hello", clientId: "replay", protocol: PROTOCOL_VERSION }));
+  const waitingFrames = () => frames.filter((f) => f.t === "waitingTasks").map((f) => f.tasks!.map((t) => t.id));
+  await until("the first list", () => waitingFrames().length === 1);
+  // What a replayed event looks like: a question that was already answered by the time the app connected.
+  const answered = { id: "task_0123456789", bot: s.h.bot, title: "Old", inputs: [{ id: 1, title: "Which?", questions: [] }] };
+  await s.h.run(s.h.events.publish({ _tag: "WaitingTasks", tasks: [answered] }));
+  const { snapshot } = await start(s, { prompt: "a question" });
+  await until("the live question", () => waitingFrames().some((ids) => ids.includes(snapshot.task.id)));
+  assert.deepEqual(waitingFrames(), [[], [snapshot.task.id]], "the stale list was never sent");
+  await s.h.run(s.tasks.cancel(s.h.bot, snapshot.task.id));
+  socket.close();
 });
 
 test("a task that ended without its message (a crash in between) is announced at the next start", async () => {
