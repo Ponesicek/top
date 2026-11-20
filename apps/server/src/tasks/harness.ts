@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import type { TaskQuestion } from "@top/protocol";
 import type { TObject } from "typebox";
 
@@ -112,15 +112,17 @@ const executable = async (path: string) => {
 };
 
 /**
- * Finds a harness's CLI. A path is used as given; a bare name is looked up on PATH and then in ~/.local/bin,
+ * Finds a harness's CLI. A path is used as given (made absolute); a bare name is looked up on PATH and then in ~/.local/bin,
  * where Claude Code's and Codex's installers put them. A service's PATH (systemd's, launchd's) leaves that
  * folder out even when the user's terminal has it.
  */
 export async function findCli(command: string, label: string, envVar: string, install: string): Promise<string> {
   if (command.includes("/")) {
-    if (await executable(command)) return command;
+    // Absolute, so a relative override still names the same file when a task runs in another folder.
+    const path = resolve(command);
+    if (await executable(path)) return path;
     throw new HarnessUnavailable(
-      `${label} isn't at \`${command}\`: there's no program there on the daemon's computer. Point ${envVar} at it, or unset ${envVar}.`,
+      `${label} isn't at \`${command}\`: there's no executable file there on the daemon's computer. Point ${envVar} at it, or unset ${envVar}.`,
     );
   }
   const local = join(homedir(), ".local", "bin");

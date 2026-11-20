@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative as relativePath } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, test } from "vitest";
 import { claudeAdapter, type QueryFn } from "../src/tasks/claude.ts";
 import { codexAdapter } from "../src/tasks/codex.ts";
-import { type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "../src/tasks/harness.ts";
+import { findCli, type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "../src/tasks/harness.ts";
 import { until } from "./harness.ts";
 
 const FAKE_CODEX = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
@@ -129,13 +129,13 @@ test("Claude Code and Codex installed in ~/.local/bin are found when the daemon'
   process.env.PATH = "/usr/bin:/bin";
   process.env.HOME = home;
   try {
-    assert.deepEqual(await claudeAdapter().check(), { ok: true, version: "2.1.329 (Claude Code)" });
+    assert.deepEqual(await claudeAdapter({ command: "claude" }).check(), { ok: true, version: "2.1.329 (Claude Code)" });
     const fake = fakeClaude(async () => [result("ok")]);
-    const session = await claudeAdapter({ query: fake.query }).open(spec(), () => {});
+    const session = await claudeAdapter({ command: "claude", query: fake.query }).open(spec(), () => {});
     await session.close();
     assert.equal(fake.runs[0]!.options.pathToClaudeCodeExecutable, join(bin, "claude"));
 
-    const codex = codexAdapter();
+    const codex = codexAdapter({ command: "codex" });
     assert.equal((await codex.check()).ok, true);
     const c = collect();
     const thread = await codex.open(spec(), c.emit);
@@ -145,11 +145,14 @@ test("Claude Code and Codex installed in ~/.local/bin are found when the daemon'
     // A folder of the same name isn't a program, and an override that points at nothing says so.
     mkdirSync(join(home, "dir", "claude"), { recursive: true });
     process.env.PATH = join(home, "dir");
-    assert.deepEqual(await claudeAdapter().check(), { ok: true, version: "2.1.329 (Claude Code)" });
+    assert.deepEqual(await claudeAdapter({ command: "claude" }).check(), { ok: true, version: "2.1.329 (Claude Code)" });
     const notExecutable = join(home, "claude.txt");
     writeFileSync(notExecutable, "");
     const wrong = await claudeAdapter({ command: notExecutable }).check();
     assert.match(!wrong.ok ? wrong.error : "", /Claude Code isn't at .*claude\.txt.*TOP_CLAUDE_PATH/);
+    // A relative override names the file next to the daemon, not one in the task's folder.
+    const relative = await findCli(relativePath(process.cwd(), join(bin, "codex")), "Codex", "TOP_CODEX_PATH", "Install it");
+    assert.equal(relative, join(bin, "codex"));
   } finally {
     process.env.PATH = saved.PATH;
     process.env.HOME = saved.HOME;
