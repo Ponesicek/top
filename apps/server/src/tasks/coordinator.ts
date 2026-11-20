@@ -524,6 +524,16 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         case "answered": {
           const { input, answer, reply } = signal;
           live.inputs.delete(input.id);
+          if (input.external && !live.external.has(input.external)) {
+            // The harness settled the request before this answer reached it: nothing to send.
+            yield* log(
+              live,
+              "answer",
+              `request ${input.id}: answered by the ${input.answeredBy ?? "user"} after ${label(live.session.harness)} had settled it`,
+            );
+            if (reply) yield* Deferred.succeed(reply.reply, `${label(live.session.harness)} had already settled request ${input.id}; the answer wasn't sent.`);
+            return;
+          }
           if (input.external) {
             live.external.delete(input.external);
             yield* deliver(live, input, input.external, answer, reply);
@@ -606,12 +616,15 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           if (!live.turnActive || !live.harness) return yield* finish(live, "cancelled");
           const harness = live.harness;
           yield* log(live, "status", "cancelling: stopping the turn");
+          // The grace for confirming the stop starts once it was sent (a remote harness may first have to find the turn),
+          // within a bound, so a stop that hangs still ends the task.
           yield* Effect.forkIn(
-            Effect.promise(() => harness.interrupt().catch(() => {})),
-            scope,
-          );
-          yield* Effect.forkIn(
-            Effect.sleep(Duration.millis(cancelGraceMs)).pipe(Effect.andThen(Effect.sync(() => Queue.offerUnsafe(live.signals, { type: "cancel_timeout" })))),
+            Effect.promise(() => harness.interrupt().catch(() => {})).pipe(
+              Effect.timeout(Duration.millis(cancelGraceMs * 2)),
+              Effect.ignore,
+              Effect.andThen(Effect.sleep(Duration.millis(cancelGraceMs))),
+              Effect.andThen(Effect.sync(() => Queue.offerUnsafe(live.signals, { type: "cancel_timeout" }))),
+            ),
             scope,
           );
           return;
@@ -1072,7 +1085,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           yield* Deferred.succeed(live.cancelRequested, undefined);
         }),
       );
-      yield* Deferred.await(live.done).pipe(Effect.timeout(Duration.millis(cancelGraceMs + 20_000)), Effect.ignore);
+      yield* Deferred.await(live.done).pipe(Effect.timeout(Duration.millis(cancelGraceMs * 3 + 20_000)), Effect.ignore);
       const after = (yield* q.task(row.id))!;
       return { task: after, cancelled: after.state === "cancelled" };
     });

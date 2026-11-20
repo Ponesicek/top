@@ -145,7 +145,8 @@ test("a socket that keeps opening and dropping gives up when the reconnect windo
     },
     20_000,
   );
-  assert.match(done.error ?? "", /Lost T3 Code at http:\/\/127\.0\.0\.1:\d+ for 3s .*may still be running there/);
+  // Whichever window ends first, the connection's or the request's: both give up the same way.
+  assert.match(done.error ?? "", /(Lost T3 Code at http:\/\/127\.0\.0\.1:\d+|T3 Code didn't answer \S+) for 3s .*may still be running there/);
   assert.equal(s.t3.requests.filter((r) => r.tag === "orchestration.launchThread").length, 0);
 });
 

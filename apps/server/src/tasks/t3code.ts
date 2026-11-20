@@ -307,11 +307,20 @@ async function openThread(
     const since = Date.now();
     // One window for the whole request, across reconnecting, backing off and waiting for the reply.
     const left = () => options.reconnectForMs - (Date.now() - since);
+    const expired = () =>
+      new Error(`T3 Code didn't answer ${tag} for ${duration(options.reconnectForMs)} (${why}). Its thread ${threadId} may still be running there.`);
     for (let tries = 1; ; tries++) {
-      const s = await connect();
+      if (left() <= 0) throw expired();
+      // A reconnect someone else started counts against this request's window too.
+      let waited: NodeJS.Timeout | undefined;
+      const s = await Promise.race([
+        connect(),
+        new Promise<never>((_, reject) => {
+          waited = setTimeout(() => reject(expired()), left());
+        }),
+      ]).finally(() => clearTimeout(waited));
       if (!sent && stopped?.()) throw new StoppedBeforeSend();
-      if (left() <= 0)
-        throw new Error(`T3 Code didn't answer ${tag} for ${duration(options.reconnectForMs)} (${why}). Its thread ${threadId} may still be running there.`);
+      if (left() <= 0) throw expired();
       try {
         const asked = s.request(tag, payload);
         let timer: NodeJS.Timeout | undefined;
@@ -633,7 +642,11 @@ async function openThread(
           if (turn.followOnly) {
             // Not there yet: give a send that was on its way when Top stopped time to land, then look again.
             await settle();
-            return sentMessages.has(messageId) || [...runs.values()].some((r) => r.userMessageId === messageId);
+            // Asked of T3 Code afresh, not the stream's cache, which a drop meanwhile could leave behind.
+            const projection = record(await request("orchestration.getThreadProjection", { threadId }));
+            const landed = (Array.isArray(projection.runs) ? projection.runs : []).map(record).find((r) => r.userMessageId === messageId);
+            if (landed) runs.set(String(landed.id), landed);
+            return landed !== undefined;
           }
           const sent = command(
             {

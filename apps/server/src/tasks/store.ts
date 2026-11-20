@@ -294,7 +294,10 @@ export function makeTaskQueries(
         return { events: found.slice(0, limit), more: found.length > limit };
       }),
     lastEventSeq: (id: string) => Effect.map(first(sql`SELECT MAX(seq) AS seq FROM task_events WHERE task = ${id}`), (row) => Number(row?.seq ?? 0)),
-    firstEventSeq: (id: string) => Effect.map(first(sql`SELECT MIN(seq) AS seq FROM task_events WHERE task = ${id}`), (row) => Number(row?.seq ?? 0)),
+    firstEventSeq: (id: string) =>
+      Effect.map(first(sql`SELECT MIN(seq) AS seq FROM task_events WHERE task = ${id} AND NOT (kind = 'state' AND text = 'cancelling')`), (row) =>
+        Number(row?.seq ?? 0),
+      ),
     pruneEvents: (id: string, keep: number) =>
       Effect.asVoid(
         q(
