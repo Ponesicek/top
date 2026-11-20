@@ -300,12 +300,14 @@ export function makeTaskQueries(
       from: readonly TaskState[],
       to: TaskState,
       end: TaskEnd,
-      accounts: { readonly session: string; readonly bot: number; readonly runs: readonly RunAccount[] },
+      accounts: { readonly session: string; readonly bot: number; readonly runs: readonly RunAccount[]; readonly release?: string },
     ) =>
       transaction(
         Effect.gen(function* () {
           const row = yield* setState(id, from, to, end);
           if (row) yield* accountRuns(accounts.session, accounts.bot, accounts.runs);
+          if (row && accounts.release)
+            yield* q(sql`DELETE FROM harness_runs WHERE session = ${accounts.session} AND run = ${accounts.release} AND task = ${id}`);
           return row;
         }),
       ),
@@ -326,9 +328,12 @@ export function makeTaskQueries(
           if (taken) return undefined;
           yield* accountRuns(row.session, row.bot, others);
           const at = yield* now;
+          // A run given back by a continuation that failed gets another, under a key of its own.
+          const before = Number((yield* first(sql`SELECT COUNT(*) AS n FROM tasks WHERE session = ${row.session} AND adopt = ${row.adopt}`))?.n ?? 0);
+          const key = before ? `${row.key}:${before + 1}` : row.key;
           const inserted = yield* first(sql`
             INSERT INTO tasks (id, bot, key, session, title, prompt, images, state, created_at, started_at, continues, adopt)
-            VALUES (${row.id}, ${row.bot}, ${row.key}, ${row.session}, ${row.title}, ${row.prompt}, '[]', 'starting', ${at}, ${at}, ${row.continues}, ${row.adopt})
+            VALUES (${row.id}, ${row.bot}, ${key}, ${row.session}, ${row.title}, ${row.prompt}, '[]', 'starting', ${at}, ${at}, ${row.continues}, ${row.adopt})
             ON CONFLICT (key) DO NOTHING RETURNING id`);
           if (!inserted) return undefined;
           yield* accountRuns(row.session, row.bot, [{ run: row.adopt, task: row.id, kind: "adopted" }]);

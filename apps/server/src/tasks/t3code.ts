@@ -29,7 +29,7 @@ import {
   threadKnown,
   verifyEnvironment,
 } from "./t3api.ts";
-import { type Accounted, isMonitorProgress, owners } from "./t3owner.ts";
+import { type Accounted, causes, descendsFrom, isMonitorProgress, owners } from "./t3owner.ts";
 
 export const T3CODE = "t3code";
 
@@ -333,11 +333,8 @@ function watchShell(file: string, changed: (threads: readonly WatchedThread[], e
     review: async (externalId, accounted: ReadonlyMap<string, Accounted>, from: string | undefined): Promise<readonly ReviewedRun[]> => {
       const cfg = await readT3Config(file);
       if (!cfg) throw new T3Unreachable("T3 Code isn't connected.");
-      if (from !== undefined && cfg.environmentId !== from) {
-        // Top was paired with another T3 Code since this change: start the watch over there.
-        socket?.close();
-        throw new T3Unreachable("Top is paired with another T3 Code now.");
-      }
+      // A session of a T3 Code Top isn't paired with now: nothing to read here (the watch moves on its own).
+      if (from !== undefined && cfg.environmentId !== from) return [];
       const projection = await readThread(cfg.url, cfg.token, externalId);
       const runs = mapOf(projection.runs);
       const ownerOf = owners({ runs, messages: mapOf(projection.messages, (m) => m.role === "user"), subagents: mapOf(projection.subagents) }, accounted);
@@ -565,12 +562,18 @@ async function openThread(
   const turnRuns = (turn: Current): Rec[] => {
     const own = turn.runId ? runs.get(turn.runId) : undefined;
     if (!own) return [];
-    const ownerOf = owners({ runs, messages, subagents });
-    const top = (r: Rec) => !monitorRuns.has(String(r.id)) && !turn.known.has(String(r.id)) && ownerOf(String(r.id)).kind === "top";
+    const records = { runs, messages, subagents };
+    const ownerOf = owners(records);
+    // A run Top adopted gathers only what came from it: another wake waiting in the session is a continuation of its own.
+    const cause = causes(records);
+    const related = (r: Rec) => !turn.adopted || descendsFrom(cause, String(r.id), String(own.id));
+    const top = (r: Rec) => !monitorRuns.has(String(r.id)) && !turn.known.has(String(r.id)) && ownerOf(String(r.id)).kind === "top" && related(r);
     for (const r of runs.values()) if (r !== own && str(r.startedAt) && !ended(r) && top(r)) turn.joined.add(String(r.id));
     // A run Top adopted that someone has since written into in T3 Code is theirs now: Top reports none of it.
     const mine = turn.adopted && ownerOf(String(own.id)).kind !== "top" ? [] : [own];
-    const scope = new Set([...mine, ...since(own).filter(top), ...[...turn.joined].map((id) => runs.get(id)).filter((r): r is Rec => r !== undefined)]);
+    // Joined runs too, should someone have written into one since.
+    const joined = [...turn.joined].map((id) => runs.get(id)).filter((r): r is Rec => r !== undefined && top(r));
+    const scope = new Set([...mine, ...since(own).filter(top), ...joined]);
     return runsInOrder(scope);
   };
   const ended = (run: Rec) => TERMINAL_RUN.has(String(run.status));
@@ -618,7 +621,20 @@ async function openThread(
   const cutThread = async (turn: Current) => {
     if (turn.cut) return;
     turn.cut = "sending";
-    await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." });
+    const ours = new Set(turnRuns(turn).map((r) => String(r.id)));
+    const going = (r: Rec) => !ended(r) && r.status !== "queued" && !monitorRuns.has(String(r.id));
+    const theirs = [...runs.values()].filter((r) => going(r) && !ours.has(String(r.id)));
+    if (theirs.length) {
+      // Someone else's run is going in the thread: stopping the thread would stop theirs too. Stop only Top's runs; the
+      // work they delegated goes on in T3 Code.
+      for (const r of [...runs.values()].filter((r) => going(r) && ours.has(String(r.id))))
+        await command({ type: "run.interrupt", commandId: `top:stop:${String(r.id)}`, threadId, runId: String(r.id) });
+      emit({
+        type: "log",
+        kind: "status",
+        text: "Someone else's run is going in the thread, so Top stopped only its own runs there; work they delegated may go on in T3 Code.",
+      });
+    } else await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." });
     turn.cut = "confirmed";
     evaluate();
   };

@@ -35,12 +35,59 @@ export type ThreadRecords = {
 const byPerson = (m: Rec) =>
   m.role === "user" && !String(m.id).startsWith("top:") && (m.createdBy === "user" || m.creationSource === "mcp" || str(m.senderThreadId) !== undefined);
 
-/** Only a monitor's progress line. A pull request watch's news (a review, an approval, a close) is real work. */
+/**
+ * A run that answers nothing: a monitor's progress line, or a compaction T3 Code ran on its own while the thread was
+ * idle. A pull request watch's news (a review, an approval, a close) is real work.
+ */
 export const isMonitorProgress = (m: Rec | undefined) => {
+  if (m?.idleCompaction !== undefined) return true;
   const notification = record(m?.notification);
   const source = record(notification.source);
   return source.kind === "monitor" && notification.outcome === "updated" && source.pullRequest === undefined && source.otherPullRequests === undefined;
 };
+
+const childRuns = (records: ThreadRecords) => {
+  const byChild = new Map<string, string>();
+  for (const task of records.subagents.values()) {
+    const child = str(task.childThreadId);
+    if (child && str(task.runId)) byChild.set(child, str(task.runId)!);
+  }
+  return byChild;
+};
+
+/** The runs T3 Code says a run came from: the run it continues, the run whose delegated work woke it, a child's run. */
+export function causes(records: ThreadRecords) {
+  const runByChild = childRuns(records);
+  return (runId: string): string[] => {
+    const run = records.runs.get(runId);
+    if (!run) return [];
+    const continues = str(run.restartContinuationOfRunId) ?? str(run.manualContinuationOfRunId) ?? str(run.usageLimitContinuationOfRunId);
+    if (continues) return [continues];
+    const message = records.messages.get(String(run.userMessageId ?? ""));
+    if (!message) return [];
+    const parent = str(record(message.delegatedCompletion).parentRunId);
+    if (parent) return [parent];
+    const source = record(record(message.notification).source);
+    const child = str(source.childThreadId);
+    if (child && runByChild.has(child)) return [runByChild.get(child)!];
+    const tasks = Array.isArray(source.taskIds) ? source.taskIds.map(String) : [];
+    return tasks.map((id) => str(records.subagents.get(id)?.runId)).filter((id): id is string => id !== undefined);
+  };
+}
+
+/** Whether a run came from `from` through T3 Code's links, however many wakes later. */
+export function descendsFrom(cause: (runId: string) => string[], runId: string, from: string): boolean {
+  const seen = new Set<string>();
+  const todo = [runId];
+  while (todo.length) {
+    const next = todo.pop()!;
+    if (next === from) return true;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    todo.push(...cause(next));
+  }
+  return false;
+}
 
 export function owners(records: ThreadRecords, accounted: ReadonlyMap<string, Accounted> = new Map()) {
   const known = new Map<string, Owner>();
@@ -61,11 +108,7 @@ export function owners(records: ThreadRecords, accounted: ReadonlyMap<string, Ac
     const run = str(m.runId);
     if (run && byPerson(m) && records.runs.get(run)?.userMessageId !== m.id) steeredByOthers.add(run);
   }
-  const runByChild = new Map<string, string>();
-  for (const task of records.subagents.values()) {
-    const child = str(task.childThreadId);
-    if (child && str(task.runId)) runByChild.set(child, str(task.runId)!);
-  }
+  const runByChild = childRuns(records);
 
   const ownerOf = (runId: string, path: Set<string> = new Set()): Owner => {
     const cached = known.get(runId);

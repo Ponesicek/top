@@ -342,6 +342,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         // The runs it reported, so no later task reports them again; on a session Top accounts for the first time, also
         // the runs that had ended before it, which nobody will.
         const accounts = yield* coveredAccounts(live);
+        // A continuation that failed before it reported its run (T3 Code out of reach for too long) gives the run back,
+        // so the watch adopts it again once T3 Code is back.
+        const adopted = live.row.adopt;
+        const release = adopted && state === "failed" && !accounts.some((a) => a.run === adopted) ? adopted : undefined;
         const row = yield* q.endTask(
           live.id,
           ACTIVE_STATES,
@@ -350,7 +354,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
             ...(error !== undefined ? { error: clip(error, 4_000) } : {}),
           },
-          { session: live.session.id, bot: live.bot, runs: accounts },
+          { session: live.session.id, bot: live.bot, runs: accounts, ...(release ? { release } : {}) },
         );
         if (live.usage) yield* q.setUsage(live.id, live.usage);
         if (row) live.row = row;
@@ -570,6 +574,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 // The runs this turn reported are accounted for before the next one replaces it.
                 const accounts = yield* coveredAccounts(live);
                 if (accounts.length) yield* q.accountRuns(live.session.id, live.bot, accounts);
+                // A slot first, should it have given its own back while it held; a message stays pending until then.
+                const queued = !live.cancelling && (yield* q.pendingMessages(live.id)).some((m) => m.mode === "queue");
+                if (queued && !(yield* takeSlot(live))) return yield* finish(live, "cancelled");
                 const next = yield* live.lock.withPermits(1)(
                   Effect.gen(function* () {
                     if (!live.cancelling)
@@ -582,7 +589,6 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 if (!next) return yield* finish(live, "completed", { result: live.result ?? "" });
                 yield* log(live, "sent", `queued message ${next.id} started a new turn`);
                 if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "running");
-                if (!(yield* takeSlot(live))) return yield* finish(live, "cancelled");
                 yield* runTurn(live, queuedTurn(live, next));
                 return;
               }
@@ -683,9 +689,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         }
         case "queued":
           yield* log(live, "sent", `queued message ${signal.message.id}: ${firstLine(signal.message.text)}`);
-          if (!live.turnActive && live.harness && !live.cancelling && live.row.state === "running" && (yield* q.setMessageState(signal.message.id, "sent"))) {
+          if (!live.turnActive && live.harness && !live.cancelling && live.row.state === "running") {
             if (!(yield* takeSlot(live))) return yield* finish(live, "cancelled");
-            yield* runTurn(live, queuedTurn(live, signal.message));
+            if (!live.cancelling && (yield* q.setMessageState(signal.message.id, "sent"))) yield* runTurn(live, queuedTurn(live, signal.message));
           }
           return;
         case "cancel": {
@@ -1273,7 +1279,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             const owner = r.owner;
             if (owner.kind === "top") {
               const root = owner.task ?? owner.key?.split(":m")[0];
-              const rootRow = root ? yield* q.task(root) : undefined;
+              // A wake with no link has no root: the session's latest task stands for it, cancelled or not.
+              const rootRow = root ? yield* q.task(root) : yield* q.latestTaskOf(sessionId);
               if (rootRow?.state === "cancelled") {
                 accounts.push({ run: r.run, task: null, kind: "cancelled" });
                 continue;

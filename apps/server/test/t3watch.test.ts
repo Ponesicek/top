@@ -500,17 +500,26 @@ test("a project-details snapshot on resume moves no cursor, and a thread Top cou
 test("paired with another T3 Code, the watch moves there and reads nothing of the old one with the new credential; paired back, it catches up", async () => {
   const s = await setup();
   const { first, thread } = await interimThenChild(s, "c1");
+  // A look that can't read the thread is still due when Top is paired elsewhere.
+  s.t3.faults.threadReadFailures = 1_000;
+  s.t3.nativeChildDone(thread, `run:${thread}:1`, "c0");
+  s.t3.wake(thread, "wake-0", "read only after", nativeWake("c0"));
+  await until("a read to fail", () => s.t3.hits.some((h) => h.path === `/api/orchestration/threads/${encodeURIComponent(thread)}`));
   const other = await fakeT3({ environmentId: "env-2" });
   servers.push(other);
   await writeT3Config(s.file, { url: other.origin, token: other.token(), environmentId: "env-2", label: "other", serverVersion: "", connectedAt: "" });
   await until("the watch to move", () => other.shellRequests().length > 0, 15_000);
   s.t3.wake(thread, "wake-1", "while paired elsewhere", nativeWake("c1"));
   await settle(800);
+  // A look still due for the old one doesn't keep tearing down the watch of the new one.
+  await settle(6_000);
+  assert.equal(other.shellRequests().length, 1, "the watch of the other T3 Code stayed up");
   assert.equal(other.hits.filter((h) => h.path.startsWith("/api/orchestration/threads/")).length, 0, "the other T3 Code was never asked for this thread");
   assert.equal((await continuations(s, first.session.id)).length, 0);
+  s.t3.faults.threadReadFailures = 0;
   await pair(s.file, s.t3);
-  const c = await continuation(s, first.session.id, 1, 15_000);
-  assert.equal(c.result, "done: while paired elsewhere");
+  await continuation(s, first.session.id, 2, 20_000);
+  assert.deepEqual((await continuations(s, first.session.id)).map((c) => c.result).sort(), ["done: read only after", "done: while paired elsewhere"]);
 });
 
 test("a task that gave its slot back while it held takes one again before its queued message runs", async () => {
@@ -541,4 +550,103 @@ test("a pull request watch's news is reported; it isn't a monitor's progress", a
   });
   const c = await continuation(s, first.session.id);
   assert.equal(c.result, "done: a review came in");
+});
+
+test("two wakes that end while Top is away get a continuation each, and a compaction T3 Code ran meanwhile gets none", async () => {
+  const s = await setup();
+  const { first, thread, run } = await interimThenChild(s, "c1");
+  s.t3.nativeChildDone(thread, String(run.id), "c2");
+  await settle(300);
+  s.t3.faults.dropOnOpen = true;
+  s.t3.dropSockets();
+  const one = s.t3.wake(thread, "wake-1", "the first child's report", nativeWake("c1"));
+  await until("the first wake to end", () => s.t3.runsOf(thread).find((r) => r.id === one && r.status === "completed"));
+  const two = s.t3.wake(thread, "wake-2", "the second child's report", nativeWake("c2"));
+  await until("the second wake to end", () => s.t3.runsOf(thread).find((r) => r.id === two && r.status === "completed"));
+  const compaction = s.t3.wake(thread, "compact-1", "", { createdBy: "system", creationSource: "server", idleCompaction: "beforeCacheExpires" });
+  await until("the compaction to end", () => s.t3.runsOf(thread).find((r) => r.id === compaction && r.status === "completed"));
+  s.t3.faults.dropOnOpen = false;
+  await continuation(s, first.session.id, 2, 10_000);
+  await settle(800);
+  const all = await continuations(s, first.session.id);
+  assert.deepEqual(all.map((c) => c.result).sort(), ["done: the first child's report", "done: the second child's report"]);
+});
+
+test("a continuation T3 Code went out of reach for gives its run back, and the run is reported once T3 Code is back", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  const wake = s.t3.wake(thread, "wake-1", "forever: the wake", nativeWake("c1"));
+  const c = await until("a continuation", async () => (await continuations(s, first.session.id))[0]);
+  await until("it to follow the run", async () => (await task(s, c.id)).state === "running");
+  s.t3.faults.dropOnOpen = true;
+  s.t3.dropSockets();
+  const lost = await until(
+    "it to give up",
+    async () => {
+      const t = await task(s, c.id);
+      return t.state === "failed" && t;
+    },
+    20_000,
+  );
+  assert.match(lost.error ?? "", /Lost T3 Code/);
+  s.t3.finish(thread, wake, "the answer after the outage");
+  s.t3.faults.dropOnOpen = false;
+  const again = await continuation(s, first.session.id, 2, 30_000);
+  assert.equal(again.adopt, wake);
+  assert.equal(again.result, "the answer after the outage");
+});
+
+test("a run that joined a bot's task and someone then wrote into stays theirs", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  s.t3.archive(thread, true);
+  const wake = s.t3.wake(thread, "wake-1", "forever: the wake", nativeWake("c1"));
+  await until("the wake to run", () => s.t3.runsOf(thread).find((r) => r.id === wake && r.status === "running"));
+  const next = await start(s, { prompt: "plain next", session: first.session.id });
+  await until("its message to queue", () => s.t3.runsOf(thread).some((r) => r.userMessageId === `top:${next.task.id}`));
+  await settle(300);
+  s.t3.steerThere(thread, wake, "their steer");
+  await settle(200);
+  s.t3.finish(thread, wake, "an answer after their steer");
+  const done = await ended(s, next.task.id);
+  assert.equal(done.result, "done: plain next");
+  assert.doesNotMatch((await log(s, next.task.id)).join("\n"), /after their steer/);
+});
+
+test("cancelling a held task while someone's run is going stops only Top's work; a wake after a cancel with nothing linking it isn't reported", async () => {
+  const s = await setup();
+  const holding = await start(s, { prompt: "delegate the long work" });
+  const thread = `top-${holding.session.id}`;
+  await until("it to hold", async () => (await log(s, holding.task.id)).some((t) => /still has delegated work/.test(t)));
+  const theirs = s.t3.wake(thread, "theirs", "forever: someone's work", person);
+  await until("their run", () => s.t3.runsOf(thread).find((r) => r.id === theirs && r.status === "running"));
+  const cancelled = await s.h.run(s.tasks.cancel(s.h.bot, holding.task.id));
+  assert.equal(cancelled.task.state, "cancelled");
+  assert.equal(s.t3.runsOf(thread).find((r) => r.id === theirs)!.status, "running", "their run goes on");
+  assert.ok(!s.t3.requests.some((r) => r.payload.type === "thread.stop" && r.payload.threadId === thread));
+  s.t3.finish(thread, theirs, "their answer");
+
+  const other = await start(s, { prompt: "delegate the other work" });
+  const otherThread = `top-${other.session.id}`;
+  await until("it to hold", async () => (await log(s, other.task.id)).some((t) => /still has delegated work/.test(t)));
+  assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, other.task.id))).task.state, "cancelled");
+  s.t3.wake(otherThread, "unlinked-1", "an unlinked wake", { createdBy: "agent" });
+  await until("the wake to end", () => s.t3.runsOf(otherThread).find((r) => r.userMessageId === "unlinked-1" && r.status === "completed"));
+  await settle(800);
+  assert.equal((await continuations(s, other.session.id)).length, 0);
+});
+
+test("a queued message waiting for a slot stays unsent when the task is cancelled meanwhile", async () => {
+  const s = await setup({ maxTasks: 1 });
+  const a = await start(s, { prompt: "delegate the long work" });
+  const aThread = `top-${a.session.id}`;
+  await until("its slot to be freed", async () => (await log(s, a.task.id)).some((t) => /execution slot is free/.test(t)));
+  const b = await start(s, { prompt: "run forever" });
+  await runIn(s, `top-${b.session.id}`);
+  await s.h.run(s.tasks.send(s.h.bot, a.task.id, "queued-wait", "queue", "after the child"));
+  s.t3.childDone(aThread, `task-run:${aThread}:1`, "the child's report");
+  await until("the woken run to end", () => s.t3.runsOf(aThread).find((r) => r.ordinal === 2 && r.status === "completed"));
+  await settle(300);
+  assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, a.task.id))).task.state, "cancelled");
+  assert.equal((await s.h.run(s.h.store.tasks.messageByKey("queued-wait")))!.state, "dropped");
 });
