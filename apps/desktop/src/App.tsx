@@ -80,6 +80,10 @@ export function App() {
   }, []);
   const [creating, setCreating] = useState(false);
   const ready = useClient((snapshot) => snapshot.ready);
+  const offline = useClient((snapshot) => snapshot.connection !== "open");
+  useEffect(() => {
+    document.documentElement.toggleAttribute("data-offline", offline);
+  }, [offline]);
 
   const setHud = useCallback((update: (on: boolean) => boolean) => {
     setHudState((h) => {

@@ -679,3 +679,312 @@
     color: var(--color-foreground);
   }
 }
+
+@property --avatar-calm {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --avatar-ponder {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --avatar-busy {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --avatar-strain {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --avatar-awake {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+@layer components {
+  .avatar[data-state] {
+    transition:
+      --avatar-calm 0.45s ease-out,
+      --avatar-ponder 0.45s ease-out,
+      --avatar-busy 0.45s ease-out,
+      --avatar-strain 0.45s ease-out,
+      --avatar-awake 0.45s ease-out;
+  }
+  .avatar[data-state="calm"] {
+    --avatar-calm: 1;
+    --avatar-awake: 1;
+  }
+  .avatar[data-state="pondering"] {
+    --avatar-ponder: 1;
+    --avatar-awake: 1;
+  }
+  .avatar[data-state="busy"] {
+    --avatar-busy: 1;
+    --avatar-awake: 1;
+  }
+  .avatar[data-state="strained"] {
+    --avatar-strain: 1;
+  }
+
+  .avatar-body {
+    transform-origin: 50% 78%;
+  }
+  .avatar-lids {
+    transform-origin: var(--avatar-gaze, 50% 50%);
+  }
+  .avatar[data-state] :is(.avatar-body, .avatar-eyes, .avatar-lids) {
+    transition: transform 0.45s cubic-bezier(0.3, 0.7, 0.3, 1);
+    animation-composition: add;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    animation-play-state: paused;
+  }
+
+  .avatar[data-state] .avatar-body {
+    animation-name: avatar-breathe, avatar-tilt, avatar-rock, avatar-hop, avatar-shudder;
+    animation-duration: 4.6s, 14s, 3.6s, 1.7s, 2.4s;
+    animation-delay:
+      calc(var(--avatar-phase, 0) * -4.6s),
+      calc(var(--avatar-phase, 0) * -14s),
+      0s,
+      0s,
+      0s;
+  }
+  .avatar[data-state] .avatar-eyes {
+    animation-name: avatar-glance, avatar-wonder, avatar-scan;
+    animation-duration: 9.5s, 3.6s, 1.7s;
+    animation-delay:
+      calc((1 - var(--avatar-phase, 0)) * -9.5s),
+      0s,
+      0s;
+  }
+  .avatar[data-state] .avatar-lids {
+    animation-name: avatar-blink, avatar-wince;
+    animation-duration: calc(5.6s + var(--avatar-phase, 0) * 2.4s), 2.4s;
+    animation-delay:
+      calc(var(--avatar-phase, 0) * -8s),
+      0s;
+  }
+
+  .avatar[data-state="calm"] .avatar-body {
+    animation-play-state: running, running, paused, paused, paused;
+  }
+  .avatar[data-state="calm"] .avatar-eyes {
+    animation-play-state: running, paused, paused;
+  }
+  .avatar[data-state="pondering"] .avatar-body {
+    animation-play-state: paused, paused, running, paused, paused;
+  }
+  .avatar[data-state="pondering"] .avatar-eyes {
+    transform: translateY(-4%);
+    animation-play-state: paused, running, paused;
+  }
+  .avatar[data-state="busy"] .avatar-body {
+    animation-play-state: paused, paused, paused, running, paused;
+  }
+  .avatar[data-state="busy"] .avatar-eyes {
+    transform: translateY(3.5%);
+    animation-play-state: paused, paused, running;
+  }
+  .avatar[data-state="strained"] .avatar-body {
+    animation-play-state: paused, paused, paused, paused, running;
+  }
+  .avatar:is([data-state="calm"], [data-state="pondering"], [data-state="busy"]) .avatar-lids {
+    animation-play-state: running, paused;
+  }
+  .avatar[data-state="strained"] .avatar-lids {
+    transform: scale(1.12, 0.5);
+    animation-play-state: paused, running;
+  }
+  .avatar[data-state="down"] .avatar-body {
+    transform: rotate(calc(var(--avatar-lean, 1) * 9deg));
+  }
+  .avatar[data-state="down"] .avatar-eyes {
+    transform: translateY(4%);
+  }
+  .avatar[data-state="down"] .avatar-lids,
+  :root[data-offline] .avatar[data-state] .avatar-lids {
+    transform: scale(1.25, 0.2);
+  }
+
+  :root[data-offline] .avatar[data-state] {
+    --avatar-calm: 0;
+    --avatar-ponder: 0;
+    --avatar-busy: 0;
+    --avatar-strain: 0;
+    --avatar-awake: 0;
+  }
+  :root[data-offline] .avatar[data-state] .avatar-body {
+    transform: none;
+  }
+  :root[data-offline] .avatar[data-state] .avatar-eyes {
+    transform: translateY(2%);
+  }
+  :root[data-offline] .avatar[data-state] :is(.avatar-body, .avatar-eyes, .avatar-lids) {
+    animation-play-state: paused;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .avatar[data-state],
+    .avatar[data-state] :is(.avatar-body, .avatar-eyes, .avatar-lids) {
+      animation: none;
+      transition: none;
+    }
+  }
+
+  @keyframes avatar-breathe {
+    0%,
+    100% {
+      scale: 1 1;
+    }
+    50% {
+      scale: calc(1 - var(--avatar-calm) * 0.015) calc(1 + var(--avatar-calm) * 0.03);
+    }
+  }
+  @keyframes avatar-tilt {
+    0%,
+    58%,
+    100% {
+      rotate: 0deg;
+    }
+    66%,
+    86% {
+      rotate: calc(var(--avatar-calm) * var(--avatar-lean, 1) * 7deg);
+    }
+  }
+  @keyframes avatar-glance {
+    0%,
+    26%,
+    74%,
+    100% {
+      translate: 0% 0%;
+    }
+    31%,
+    45% {
+      translate: calc(var(--avatar-calm) * -4.5%) calc(var(--avatar-calm) * 0.5%);
+    }
+    51%,
+    68% {
+      translate: calc(var(--avatar-calm) * 4%) calc(var(--avatar-calm) * -1.5%);
+    }
+  }
+  @keyframes avatar-blink {
+    0%,
+    44%,
+    48%,
+    90%,
+    93.5%,
+    97%,
+    100% {
+      scale: 1 1;
+    }
+    46%,
+    91.75%,
+    95.25% {
+      scale: calc(1 + var(--avatar-awake) * 0.1) calc(1 - var(--avatar-awake) * 0.9);
+    }
+  }
+  @keyframes avatar-rock {
+    0%,
+    100% {
+      rotate: 0deg;
+    }
+    22%,
+    40% {
+      rotate: calc(var(--avatar-ponder) * -5deg);
+    }
+    64%,
+    84% {
+      rotate: calc(var(--avatar-ponder) * 5deg);
+    }
+  }
+  @keyframes avatar-wonder {
+    0%,
+    100% {
+      translate: 0% 0%;
+    }
+    20%,
+    42% {
+      translate: calc(var(--avatar-ponder) * -5%) 0%;
+    }
+    62%,
+    86% {
+      translate: calc(var(--avatar-ponder) * 5%) 0%;
+    }
+  }
+  @keyframes avatar-hop {
+    0%,
+    24%,
+    48%,
+    100% {
+      translate: 0% 0%;
+      scale: 1 1;
+    }
+    6%,
+    30% {
+      translate: 0% 0%;
+      scale: calc(1 + var(--avatar-busy) * 0.05) calc(1 - var(--avatar-busy) * 0.06);
+    }
+    14%,
+    38% {
+      translate: 0% calc(var(--avatar-busy) * -5%);
+      scale: calc(1 - var(--avatar-busy) * 0.02) calc(1 + var(--avatar-busy) * 0.03);
+    }
+  }
+  @keyframes avatar-scan {
+    0%,
+    100% {
+      translate: 0% 0%;
+    }
+    12% {
+      translate: calc(var(--avatar-busy) * -5%) 0%;
+    }
+    50% {
+      translate: calc(var(--avatar-busy) * 5%) 0%;
+    }
+    58%,
+    64% {
+      translate: calc(var(--avatar-busy) * -5%) calc(var(--avatar-busy) * 1.5%);
+    }
+    92% {
+      translate: calc(var(--avatar-busy) * 4%) calc(var(--avatar-busy) * 1.5%);
+    }
+  }
+  @keyframes avatar-shudder {
+    0%,
+    58%,
+    90%,
+    100% {
+      translate: 0% 0%;
+      rotate: 0deg;
+    }
+    63%,
+    73%,
+    83% {
+      translate: calc(var(--avatar-strain) * -2.5%) 0%;
+      rotate: calc(var(--avatar-strain) * -2deg);
+    }
+    68%,
+    78% {
+      translate: calc(var(--avatar-strain) * 2.5%) 0%;
+      rotate: calc(var(--avatar-strain) * 2deg);
+    }
+  }
+  @keyframes avatar-wince {
+    0%,
+    56%,
+    94%,
+    100% {
+      scale: 1 1;
+    }
+    64%,
+    84% {
+      scale: calc(1 + var(--avatar-strain) * 0.05) calc(1 - var(--avatar-strain) * 0.45);
+    }
+  }
+}

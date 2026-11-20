@@ -123,7 +123,7 @@ function WorkingRow({ cont }: { cont: boolean }) {
   const searching = bot?.status === "thinking" && bot.searching === true;
   return (
     <div className={cn("flex gap-3 pb-1", cont ? "pt-1.5" : "pt-2.25")}>
-      {cont ? <span className="w-7 flex-none" /> : <BotAvatar size="sm" className="-mt-0.5" />}
+      {cont ? <span className="w-7 flex-none" /> : <BotAvatar status={bot?.status} size="sm" className="-mt-0.5" />}
       <div className="min-w-0 flex-1">
         <div className={cn("inline-flex items-center gap-2.25 text-small leading-6 font-medium text-secondary-foreground", !cont && "mt-0.5")}>
           <StepIcon className={tool || searching ? "bg-tool-surface text-tool" : "bg-warning-surface text-warning"}>
