@@ -50,6 +50,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     shellDuplicate: false,
     /** The shell stream can't replay from a cursor: a resume gets a whole snapshot. */
     shellForget: false,
+    /** The next resume gets only a project-details snapshot, then the socket drops. */
+    shellEnrichThenDrop: false,
+    /** This many reads of a thread over HTTP fail before they work again. */
+    threadReadFailures: 0,
   };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
@@ -334,6 +338,17 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       if (tag === "orchestration.subscribeShell") {
         const out = (item: Rec) => send({ _tag: "Chunk", requestId: id, values: [item] });
         const after = payload.afterSequence;
+        if (typeof after === "number" && faults.shellEnrichThenDrop) {
+          // Project details first, at the high-water mark, then the socket drops before the missed changes come.
+          faults.shellEnrichThenDrop = false;
+          out({
+            kind: "snapshot",
+            snapshot: { snapshotSequence: sequence, threads: [], archivedThreads: [], projects: [] },
+            resolvedRepositoryIdentityRoots: [],
+          });
+          setTimeout(() => ws.terminate(), 20);
+          return;
+        }
         // A cursor it can replay from gets what came after it; otherwise (or when told to forget) a whole snapshot.
         if (typeof after === "number" && !faults.shellForget) for (const entry of shellEvents.filter((e) => e.sequence > after)) out(entry.item);
         else
@@ -449,6 +464,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     const threadRoute = /^\/api\/orchestration\/threads\/([^/]+)$/.exec(url.pathname);
     if (threadRoute) {
       if (!authorized(req)) return json(res, 401, { code: "auth_invalid" });
+      if (faults.threadReadFailures > 0) {
+        faults.threadReadFailures--;
+        return json(res, 503, { code: "unavailable" });
+      }
       const thread = threads.get(decodeURIComponent(threadRoute[1]!));
       return thread ? json(res, 200, snapshot(thread)) : json(res, 404, { code: "not_found", reason: "thread_not_found" });
     }
@@ -540,6 +559,13 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       });
     },
     shellRequests: () => requests.filter((r) => r.tag === "orchestration.subscribeShell"),
+    /** Someone writes into a running run in T3 Code (a steer), as a message of theirs on that run. */
+    steerThere: (threadId: string, runId: string, text: string) => {
+      const thread = threads.get(threadId)!;
+      const message = { id: `steer-there-${thread.messages.length}`, role: "user", text, runId, createdBy: "user", creationSource: "web", createdAt: clock() };
+      thread.messages.push(message);
+      emit(thread, { type: "message.updated", payload: message });
+    },
     /** Like Stop in T3 Code itself. */
     stop: (threadId: string) => handle("orchestration.dispatchCommand", { type: "thread.stop", commandId: `there:${Math.random()}`, threadId }),
     /** The provider thread's pending background tasks, as T3 Code tracks them. */

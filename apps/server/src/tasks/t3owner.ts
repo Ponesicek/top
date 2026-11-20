@@ -35,9 +35,11 @@ export type ThreadRecords = {
 const byPerson = (m: Rec) =>
   m.role === "user" && !String(m.id).startsWith("top:") && (m.createdBy === "user" || m.creationSource === "mcp" || str(m.senderThreadId) !== undefined);
 
+/** Only a monitor's progress line. A pull request watch's news (a review, an approval, a close) is real work. */
 export const isMonitorProgress = (m: Rec | undefined) => {
   const notification = record(m?.notification);
-  return record(notification.source).kind === "monitor" && notification.outcome === "updated";
+  const source = record(notification.source);
+  return source.kind === "monitor" && notification.outcome === "updated" && source.pullRequest === undefined && source.otherPullRequests === undefined;
 };
 
 export function owners(records: ThreadRecords, accounted: ReadonlyMap<string, Accounted> = new Map()) {
@@ -53,6 +55,12 @@ export function owners(records: ThreadRecords, accounted: ReadonlyMap<string, Ac
     const at = Date.parse(str(run.requestedAt) ?? str(run.startedAt) ?? "");
     return firstOther !== Number.POSITIVE_INFINITY && (!Number.isFinite(at) || firstOther <= at);
   };
+  // Runs someone else wrote into after they started (a steer in T3 Code): what they answer is no longer only Top's work.
+  const steeredByOthers = new Set<string>();
+  for (const m of records.messages.values()) {
+    const run = str(m.runId);
+    if (run && byPerson(m) && records.runs.get(run)?.userMessageId !== m.id) steeredByOthers.add(run);
+  }
   const runByChild = new Map<string, string>();
   for (const task of records.subagents.values()) {
     const child = str(task.childThreadId);
@@ -78,12 +86,13 @@ export function owners(records: ThreadRecords, accounted: ReadonlyMap<string, Ac
 
   const resolve = (runId: string, path: Set<string>): Owner => {
     const taken = accounted.get(runId);
-    if (taken?.task) return { kind: "top", task: taken.task };
+    if (taken?.task && !steeredByOthers.has(runId)) return { kind: "top", task: taken.task };
     if (taken?.kind === "human") return { kind: "human" };
     const run = records.runs.get(runId);
     if (!run) return { kind: "unknown" };
     const messageId = String(run.userMessageId ?? "");
     if (messageId.startsWith("top:")) return { kind: "top", key: messageId.slice(4) };
+    if (steeredByOthers.has(runId)) return { kind: "human" };
     // A run T3 Code restarted or continued is the work it continues.
     const continues = str(run.restartContinuationOfRunId) ?? str(run.manualContinuationOfRunId) ?? str(run.usageLimitContinuationOfRunId);
     if (continues) return ownerOf(continues, path);

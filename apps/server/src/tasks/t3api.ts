@@ -315,6 +315,8 @@ export async function readThread(origin: string, token: string, threadId: string
     headers: { ...bearer(token), "x-t3-orchestration-protocol": String(T3_PROTOCOL) },
   });
   if (response.status === 401) throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential; ${pairAgain(origin)}.`);
+  // A thread T3 Code doesn't have (deleted there) has no runs to look at.
+  if (response.status === 404 && record(await json(response)).reason === "thread_not_found") return {};
   if (!response.ok) throw new T3Unreachable(`T3 Code at ${origin} didn't send thread ${threadId} (HTTP ${response.status}).`);
   return record(record(await json(response)).projection);
 }

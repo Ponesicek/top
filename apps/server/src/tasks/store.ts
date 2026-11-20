@@ -327,8 +327,8 @@ export function makeTaskQueries(
           yield* accountRuns(row.session, row.bot, others);
           const at = yield* now;
           const inserted = yield* first(sql`
-            INSERT INTO tasks (id, bot, key, session, title, prompt, images, state, created_at, continues, adopt)
-            VALUES (${row.id}, ${row.bot}, ${row.key}, ${row.session}, ${row.title}, ${row.prompt}, '[]', 'queued', ${at}, ${row.continues}, ${row.adopt})
+            INSERT INTO tasks (id, bot, key, session, title, prompt, images, state, created_at, started_at, continues, adopt)
+            VALUES (${row.id}, ${row.bot}, ${row.key}, ${row.session}, ${row.title}, ${row.prompt}, '[]', 'starting', ${at}, ${at}, ${row.continues}, ${row.adopt})
             ON CONFLICT (key) DO NOTHING RETURNING id`);
           if (!inserted) return undefined;
           yield* accountRuns(row.session, row.bot, [{ run: row.adopt, task: row.id, kind: "adopted" }]);
@@ -337,8 +337,6 @@ export function makeTaskQueries(
       ),
     sessionsWithThreads: (harness: string) =>
       Effect.map(rows(sql`SELECT * FROM harness_sessions WHERE harness = ${harness} AND external_id IS NOT NULL`), (r) => r.map(sessionOf)),
-    sessionsByExternal: (harness: string, externalId: string) =>
-      Effect.map(rows(sql`SELECT * FROM harness_sessions WHERE harness = ${harness} AND external_id = ${externalId}`), (r) => r.map(sessionOf)),
     latestTaskOf: (session: string) =>
       Effect.map(first(sql`SELECT * FROM tasks WHERE session = ${session} ORDER BY created_at DESC, id DESC LIMIT 1`), (row) => row && taskOf(row)),
     setUsage: (id: string, usage: Readonly<Record<string, unknown>>) =>

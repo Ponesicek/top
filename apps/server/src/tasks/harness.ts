@@ -45,6 +45,7 @@ export const CAPABILITY_NOTES: Record<keyof Capabilities, string> = {
  * `key` is unique to this turn in Top and the same when a restart sends it again, so a durable harness can take it once.
  * `followOnly`: a cancel came before Top restarted, so follow the turn if the harness already has it, but never send it.
  * `adopt`: a run the harness started on its own in the session (see `watch`): follow it as this turn, sending nothing.
+ * `known`: runs in the session other tasks already reported, which this turn never reports again.
  */
 export type Turn = {
   readonly key: string;
@@ -52,6 +53,7 @@ export type Turn = {
   readonly images: readonly string[];
   readonly followOnly?: boolean;
   readonly adopt?: string | undefined;
+  readonly known?: readonly string[] | undefined;
 };
 
 export type HarnessRequest = {
@@ -132,7 +134,8 @@ export type WatchedThread = {
 
 export interface SessionWatch {
   /** Every run in the session's thread, with whose work each is, given how Top accounted for some already. */
-  readonly review: (externalId: string, accounted: ReadonlyMap<string, Accounted>) => Promise<readonly ReviewedRun[]>;
+  /** `environment`: the one the session belongs to; a review against another is refused. */
+  readonly review: (externalId: string, accounted: ReadonlyMap<string, Accounted>, environment: string | undefined) => Promise<readonly ReviewedRun[]>;
   readonly close: () => void;
 }
 

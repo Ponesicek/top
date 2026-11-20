@@ -68,8 +68,8 @@ const told = async (s: Setup, id: string) => {
   const inbox = (await s.h.run(s.h.store.inbox(s.h.bot))).filter((r) => r.source === "task").map((r) => r.text);
   return [...entries.map((e) => textOf(e.message.content)), ...inbox].filter((text) => text.includes(`[Task ${id}`));
 };
-const continuation = async (s: Setup, session: string, n = 1) => {
-  await until(`${n} continuation(s) in ${session}`, async () => (await continuations(s, session)).length >= n);
+const continuation = async (s: Setup, session: string, n = 1, timeoutMs = 5_000) => {
+  await until(`${n} continuation(s) in ${session}`, async () => (await continuations(s, session)).length >= n, timeoutMs);
   const found = (await continuations(s, session))[n - 1]!;
   return ended(s, found.id);
 };
@@ -403,4 +403,142 @@ test("whose work a run is follows T3 Code's own links, and an unlinked wake is T
   assert.deepEqual(ownerOf("r9"), { kind: "top", task: "task_c" }, "a provider's child reports to the run that started it");
   assert.deepEqual(ownerOf("r10"), { kind: "monitor" });
   assert.deepEqual(ownerOf("r11"), { kind: "unknown" }, "a chain that loops proves nothing");
+});
+
+test("the runs a turn reported are the ones it had when it ended: a later run of the session isn't its", async () => {
+  const t3 = await fakeT3();
+  servers.push(t3);
+  const dir = mkdtempSync(join(tmpdir(), "top-t3watch-"));
+  const file = join(dir, "t3code.json");
+  await pair(file, t3);
+  const adapter = t3codeAdapter({ file, reconnectForMs: 3_000, replyMs: 1_000, settleMs: 200 });
+  const events: { type: string }[] = [];
+  const session = await adapter.open({ session: "ses_cov", title: "t", cwd: "/srv/app", model: undefined, options: {}, resume: undefined, fork: false }, (e) =>
+    events.push(e),
+  );
+  await session.run({ key: "task_cov", text: "plain covered", images: [] });
+  await until("the turn to end", () => events.some((e) => e.type === "turn_ended"));
+  const thread = "top-ses_cov";
+  const later = t3.wake(thread, "later", "a later wake", { createdBy: "agent" });
+  await until("the later run to end", () => t3.runsOf(thread).find((r) => r.id === later && r.status === "completed"));
+  await settle(200);
+  assert.deepEqual(session.covered!().runs, [`run:${thread}:1`]);
+  await session.close();
+});
+
+test("a task's queued message doesn't leave its first turn's run for the watch to report again", async () => {
+  const s = await setup();
+  const first = await start(s, { prompt: "plain first" });
+  assert.equal((await ended(s, first.task.id)).result, "done: plain first");
+  const thread = `top-${first.session.id}`;
+  const t = await start(s, { prompt: "run forever", session: first.session.id });
+  const run = await until("its run", () => s.t3.runsOf(thread).find((r) => r.userMessageId === `top:${t.task.id}` && r.status === "running"));
+  await s.h.run(s.tasks.send(s.h.bot, t.task.id, "queued-1", "queue", "then this"));
+  s.t3.finish(thread, String(run.id), "the first turn's answer");
+  assert.equal((await ended(s, t.task.id)).result, "done: then this");
+  await settle(800);
+  assert.equal((await continuations(s, first.session.id)).length, 0);
+});
+
+test("a wake that ended before a bot's task took the session is reported with its own answer, not that task's", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  // Archived, so the watch doesn't look before the bot's task starts.
+  s.t3.archive(thread, true);
+  const wake = s.t3.wake(thread, "wake-1", "the wake's own answer", nativeWake("c1"));
+  await until("the wake to end", () => s.t3.runsOf(thread).find((r) => r.id === wake && r.status === "completed"));
+  const next = await start(s, { prompt: "plain second", session: first.session.id });
+  assert.equal((await ended(s, next.task.id)).result, "done: plain second");
+  const c = await continuation(s, first.session.id);
+  assert.equal(c.adopt, wake);
+  assert.equal(c.result, "done: the wake's own answer", "the second task's answer isn't reported again");
+});
+
+test("a run someone writes into in T3 Code isn't reported: not once it's Top's, and not when they did before Top looked", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  const wake = s.t3.wake(thread, "wake-1", "forever: the wake", nativeWake("c1"));
+  const c = await until("a continuation", async () => (await continuations(s, first.session.id))[0]);
+  await until("it to follow the run", async () => (await task(s, c.id)).state === "running");
+  s.t3.steerThere(thread, wake, "a person's steer");
+  await settle(200);
+  s.t3.finish(thread, wake, "an answer after their steer");
+  const done = await ended(s, c.id);
+  assert.doesNotMatch([done.result ?? "", ...(await log(s, c.id))].join("\n"), /after their steer/);
+
+  s.t3.archive(thread, true);
+  s.t3.nativeChildDone(thread, String(c.adopt), "c2");
+  const second = s.t3.wake(thread, "wake-2", "forever: another wake", nativeWake("c2"));
+  await until("its run", () => s.t3.runsOf(thread).find((r) => r.id === second && r.status === "running"));
+  s.t3.steerThere(thread, second, "their steer first");
+  s.t3.finish(thread, second, "theirs from the start");
+  s.t3.archive(thread, false);
+  await settle(800);
+  assert.equal((await continuations(s, first.session.id)).length, 1, "a run they wrote into isn't Top's to report");
+});
+
+test("a project-details snapshot on resume moves no cursor, and a thread Top couldn't read is read again later", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  await settle(300);
+  s.t3.faults.dropOnOpen = true;
+  s.t3.dropSockets();
+  const wake = s.t3.wake(thread, "wake-1", "missed while away", nativeWake("c1"));
+  await until("the wake to end", () => s.t3.runsOf(thread).find((r) => r.id === wake && r.status === "completed"));
+  s.t3.faults.shellEnrichThenDrop = true;
+  s.t3.faults.dropOnOpen = false;
+  const c = await continuation(s, first.session.id);
+  assert.equal(c.result, "done: missed while away");
+
+  s.t3.faults.threadReadFailures = 2;
+  s.t3.nativeChildDone(thread, String(c.adopt), "c2");
+  s.t3.wake(thread, "wake-2", "after reads that failed", nativeWake("c2"));
+  const c2 = await continuation(s, first.session.id, 2, 20_000);
+  assert.equal(c2.result, "done: after reads that failed");
+});
+
+test("paired with another T3 Code, the watch moves there and reads nothing of the old one with the new credential; paired back, it catches up", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  const other = await fakeT3({ environmentId: "env-2" });
+  servers.push(other);
+  await writeT3Config(s.file, { url: other.origin, token: other.token(), environmentId: "env-2", label: "other", serverVersion: "", connectedAt: "" });
+  await until("the watch to move", () => other.shellRequests().length > 0, 15_000);
+  s.t3.wake(thread, "wake-1", "while paired elsewhere", nativeWake("c1"));
+  await settle(800);
+  assert.equal(other.hits.filter((h) => h.path.startsWith("/api/orchestration/threads/")).length, 0, "the other T3 Code was never asked for this thread");
+  assert.equal((await continuations(s, first.session.id)).length, 0);
+  await pair(s.file, s.t3);
+  const c = await continuation(s, first.session.id, 1, 15_000);
+  assert.equal(c.result, "done: while paired elsewhere");
+});
+
+test("a task that gave its slot back while it held takes one again before its queued message runs", async () => {
+  const s = await setup({ maxTasks: 1 });
+  const a = await start(s, { prompt: "delegate the long work" });
+  const aThread = `top-${a.session.id}`;
+  await until("its slot to be freed", async () => (await log(s, a.task.id)).some((t) => /execution slot is free/.test(t)));
+  const b = await start(s, { prompt: "run forever" });
+  const bRun = await runIn(s, `top-${b.session.id}`);
+  await s.h.run(s.tasks.send(s.h.bot, a.task.id, "queued-a", "queue", "after the child"));
+  s.t3.childDone(aThread, `task-run:${aThread}:1`, "the child's report");
+  await until("the woken run to end", () => s.t3.runsOf(aThread).find((r) => r.ordinal === 2 && r.status === "completed"));
+  await settle(500);
+  const dispatched = () =>
+    s.t3.requests.some((r) => r.payload.type === "message.dispatch" && r.payload.threadId === aThread && r.payload.text === "after the child");
+  assert.equal(dispatched(), false, "it waits for the slot the other task holds");
+  s.t3.finish(`top-${b.session.id}`, String(bRun.id), "b's answer");
+  assert.equal((await ended(s, a.task.id)).result, "done: after the child");
+  assert.ok(dispatched());
+});
+
+test("a pull request watch's news is reported; it isn't a monitor's progress", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  s.t3.wake(thread, "pr-1", "a review came in", {
+    createdBy: "agent",
+    notification: { source: { kind: "monitor", pullRequest: { number: 7 } }, outcome: "updated", summary: "#7: review" },
+  });
+  const c = await continuation(s, first.session.id);
+  assert.equal(c.result, "done: a review came in");
 });

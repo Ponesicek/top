@@ -341,12 +341,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         const error = said && dropped ? `${said}\n(${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : said;
         // The runs it reported, so no later task reports them again; on a session Top accounts for the first time, also
         // the runs that had ended before it, which nobody will.
-        const covered = live.harness?.covered?.();
-        const accounts: RunAccount[] = [];
-        if (covered) {
-          if ((yield* q.runsOf(live.session.id)).size === 0) for (const run of covered.earlier) accounts.push({ run, task: null, kind: "baseline" });
-          for (const run of covered.runs) accounts.push({ run, task: live.id, kind: "reported" });
-        }
+        const accounts = yield* coveredAccounts(live);
         const row = yield* q.endTask(
           live.id,
           ACTIVE_STATES,
@@ -371,6 +366,33 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         if (watches.has(live.adapter.id)) yield* Effect.forkIn(look(live.session.id), scope);
       }),
     );
+
+  /** The runs a turn of the task reported, as accounts; for a session Top accounts for the first time, also the earlier ones. */
+  const coveredAccounts = (live: Live) =>
+    Effect.gen(function* () {
+      const covered = live.harness?.covered?.();
+      const accounts: RunAccount[] = [];
+      if (!covered) return accounts;
+      if ((yield* q.runsOf(live.session.id)).size === 0) for (const run of covered.earlier) accounts.push({ run, task: null, kind: "baseline" });
+      for (const run of covered.runs) accounts.push({ run, task: live.id, kind: "reported" });
+      return accounts;
+    });
+
+  /** A slot again for a task that gave its own back while it held, before it runs anything more here; a cancel wins the wait. */
+  const takeSlot = (live: Live) =>
+    Effect.gen(function* () {
+      if (live.slot || inCloud(live.adapter)) return true;
+      const got = yield* Effect.raceFirst(
+        Effect.uninterruptibleMask((restore) =>
+          Effect.as(
+            Effect.tap(restore(slots.take(1)), () => Effect.sync(() => (live.slot = true))),
+            true,
+          ),
+        ),
+        Effect.as(Deferred.await(live.cancelRequested), false),
+      );
+      return got;
+    });
 
   const freeSlot = (live: Live) =>
     Effect.suspend(() => {
@@ -545,6 +567,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               if (live.inputs.size) yield* cancelInputs(live);
               if (event.status === "completed") {
                 live.result = event.result ?? live.result;
+                // The runs this turn reported are accounted for before the next one replaces it.
+                const accounts = yield* coveredAccounts(live);
+                if (accounts.length) yield* q.accountRuns(live.session.id, live.bot, accounts);
                 const next = yield* live.lock.withPermits(1)(
                   Effect.gen(function* () {
                     if (!live.cancelling)
@@ -557,6 +582,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 if (!next) return yield* finish(live, "completed", { result: live.result ?? "" });
                 yield* log(live, "sent", `queued message ${next.id} started a new turn`);
                 if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "running");
+                if (!(yield* takeSlot(live))) return yield* finish(live, "cancelled");
                 yield* runTurn(live, queuedTurn(live, next));
                 return;
               }
@@ -657,8 +683,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         }
         case "queued":
           yield* log(live, "sent", `queued message ${signal.message.id}: ${firstLine(signal.message.text)}`);
-          if (!live.turnActive && live.harness && !live.cancelling && live.row.state === "running" && (yield* q.setMessageState(signal.message.id, "sent")))
+          if (!live.turnActive && live.harness && !live.cancelling && live.row.state === "running" && (yield* q.setMessageState(signal.message.id, "sent"))) {
+            if (!(yield* takeSlot(live))) return yield* finish(live, "cancelled");
             yield* runTurn(live, queuedTurn(live, signal.message));
+          }
           return;
         case "cancel": {
           if (live.stopping) return;
@@ -773,11 +801,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if (live.cancelling && !live.resumed) return yield* finish(live, "cancelled");
       // A durable harness that Top follows again after a restart gets the turn it was on, with the same key, so it takes it once.
       const sent = live.resumed ? yield* q.lastSentQueued(live.id) : undefined;
-      if (live.resumed) yield* log(live, "status", `following it again after Top restarted`);
+      if (live.resumed && !live.row.adopt) yield* log(live, "status", `following it again after Top restarted`);
       const turn: Turn = sent
         ? queuedTurn(live, sent)
         : live.row.adopt
-          ? { key: live.id, text: "", images: [], adopt: live.row.adopt }
+          ? { key: live.id, text: "", images: [], adopt: live.row.adopt, known: [...(yield* q.runsOf(live.session.id)).keys()] }
           : { key: live.id, text: live.row.prompt, images: live.row.images };
       // A cancel started before Top restarted, or since: stop the turn if the harness has it, and never send it.
       const stopping = live.resumed && (live.cancelOnResume || live.cancelling);
@@ -1211,8 +1239,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if ([...lives.values()].some((l) => l.session.id === sessionId)) return;
       // With what Top accounted for, so a chain through a run a task took leads to that task.
       const known = yield* q.runsOf(sessionId);
-      const reviewed = yield* Effect.option(Effect.tryPromise(() => watch.review(session.externalId!, known)));
-      if (reviewed._tag === "None") return;
+      const environment = typeof session.options.environment === "string" ? session.options.environment : undefined;
+      const reviewed = yield* Effect.option(Effect.tryPromise(() => watch.review(session.externalId!, known, environment)));
+      // Couldn't read it: the change that brought Top here won't come again, so it looks again later.
+      if (reviewed._tag === "None") return "retry" as const;
       // Under the lock `task_start` takes, spawning included: a bot's task and a continuation never both take the session.
       yield* starting.withPermits(1)(
         Effect.gen(function* () {
@@ -1266,7 +1296,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 accounts,
               );
               if (!row) return;
-              const live = yield* spawnLive(row, session, adapter);
+              // Followed like a task Top picks up after a restart: through T3 Code's reconnect window, not on one look.
+              const live = yield* spawnLive(row, session, adapter, true);
               yield* log(live, "state", "queued");
               yield* log(
                 live,
@@ -1285,8 +1316,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       );
     });
 
-  /** One look at a session at a time; a change during it gets one more look after. */
-  const look = (sessionId: string): Effect.Effect<void> =>
+  /**
+   * One look at a session at a time; a change during it gets one more look after. A look that couldn't read the thread
+   * tries again later, backing off to every few minutes, until one gets through.
+   */
+  const look = (sessionId: string, delay = 2_000): Effect.Effect<void> =>
     Effect.suspend(() => {
       if (looking.has(sessionId)) {
         looking.set(sessionId, true);
@@ -1294,12 +1328,14 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       }
       looking.set(sessionId, false);
       return lookOnce(sessionId).pipe(
-        Effect.ignoreCause({ log: true }),
-        Effect.ensuring(
+        Effect.catchCause((cause) => Effect.as(Effect.logWarning(`Top couldn't look at session ${sessionId}`, cause), "retry" as const)),
+        Effect.flatMap((outcome) =>
           Effect.suspend(() => {
             const again = looking.get(sessionId) === true;
             looking.delete(sessionId);
-            return again ? look(sessionId) : Effect.void;
+            if (again) return look(sessionId);
+            if (outcome !== "retry" || !watches.size) return Effect.void;
+            return Effect.asVoid(Effect.forkIn(Effect.andThen(Effect.sleep(Duration.millis(delay)), look(sessionId, Math.min(delay * 2, 300_000))), scope));
           }),
         ),
       );
