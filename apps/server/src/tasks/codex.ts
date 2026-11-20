@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import Type from "typebox";
-import { clip, type HarnessAdapter, type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "./harness.ts";
+import { clip, findCli, type HarnessAdapter, type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "./harness.ts";
 import { RpcError, StdioRpc } from "./rpc.ts";
 
 export const CODEX = "codex";
@@ -92,7 +92,7 @@ export type CodexConfig = { readonly command?: string | undefined; readonly clie
 
 export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
   const command = config.command ?? process.env.TOP_CODEX_PATH ?? "codex";
-  const missing = `Codex isn't installed on the daemon's computer (no \`${command}\` found). Install the Codex CLI, sign in with \`codex login\`, and try again; TOP_CODEX_PATH can point at it.`;
+  const locate = () => findCli(command, "Codex", "TOP_CODEX_PATH", "Install the Codex CLI, sign in with `codex login`");
 
   return {
     id: CODEX,
@@ -111,16 +111,22 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
       durable: false,
     },
     options: codexOptions,
-    check: () =>
-      new Promise((resolve) => {
-        execFile(command, ["--version"], { timeout: 10_000, env: harnessEnv(process.env) }, (error, stdout) => {
-          if (error)
-            resolve({ ok: false, error: (error as NodeJS.ErrnoException).code === "ENOENT" ? missing : `\`${command} --version\` failed: ${error.message}` });
+    check: async () => {
+      let path: string;
+      try {
+        path = await locate();
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+      return new Promise((resolve) => {
+        execFile(path, ["--version"], { timeout: 10_000, env: harnessEnv(process.env) }, (error, stdout) => {
+          if (error) resolve({ ok: false, error: `\`${command} --version\` failed: ${error.message}` });
           else resolve({ ok: true, version: stdout.trim() });
         });
-      }),
+      });
+    },
     open: async (spec: OpenSpec, emit) => {
-      const child = spawn(command, ["app-server"], { cwd: spec.cwd, env: harnessEnv(process.env), stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(await locate(), ["app-server"], { cwd: spec.cwd, env: harnessEnv(process.env), stdio: ["pipe", "pipe", "pipe"] });
       let threadId: string | undefined;
       let turnId: string | undefined;
       let active = false;
@@ -211,7 +217,6 @@ export function codexAdapter(config: CodexConfig = {}): HarnessAdapter {
         await rpc.close(500);
         if (error instanceof HarnessUnavailable) throw error;
         const message = error instanceof Error ? error.message : String(error);
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT" || /ENOENT/.test(message)) throw new HarnessUnavailable(missing);
         throw new Error(`Codex didn't start: ${redact(message)}`);
       };
 

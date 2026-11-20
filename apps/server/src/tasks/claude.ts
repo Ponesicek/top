@@ -1,23 +1,11 @@
 import { type ExecFileException, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
-import { delimiter, extname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
 import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { TaskQuestion } from "@top/protocol";
 import Type from "typebox";
-import {
-  clip,
-  type HarnessAdapter,
-  type HarnessAnswer,
-  type HarnessEvent,
-  HarnessUnavailable,
-  harnessEnv,
-  type OpenSpec,
-  redact,
-  type Turn,
-  tail,
-} from "./harness.ts";
+import { clip, findCli, type HarnessAdapter, type HarnessAnswer, type HarnessEvent, harnessEnv, type OpenSpec, redact, type Turn, tail } from "./harness.ts";
 
 export const CLAUDE_CODE = "claude_code";
 
@@ -107,18 +95,6 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-async function onPath(name: string): Promise<string | undefined> {
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    const candidate = join(dir, name);
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {}
-  }
-  return undefined;
-}
-
 const versionAtLeast = (version: string, min: readonly number[]) => {
   const parts = /(\d+)\.(\d+)\.(\d+)/.exec(version)?.slice(1).map(Number);
   if (!parts) return true;
@@ -140,15 +116,13 @@ export type ClaudeConfig = {
 
 export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
   const command = config.command ?? process.env.TOP_CLAUDE_PATH ?? "claude";
-  const missing = `Claude Code isn't installed on the daemon's computer (no \`${command}\` found). Install Claude Code, sign in by running \`claude\` once, and try again; TOP_CLAUDE_PATH can point at it.`;
   const authFailedText = "Claude Code couldn't authenticate on the daemon's computer. Check that `claude` works there on its own, and sign in by running it.";
   const signIn = "Claude Code isn't signed in on the daemon's computer. Run `claude` there and sign in, then try again.";
   let resolved: string | undefined;
   const loadQuery = async (): Promise<QueryFn> => config.query ?? ((await import("@anthropic-ai/claude-agent-sdk")).query as unknown as QueryFn);
 
   const locate = async () => {
-    if (!resolved) resolved = command.includes("/") ? command : await onPath(command);
-    if (!resolved) throw new HarnessUnavailable(missing);
+    resolved ??= await findCli(command, "Claude Code", "TOP_CLAUDE_PATH", "Install Claude Code, sign in by running `claude` once");
     return resolved;
   };
 
@@ -177,7 +151,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
       const version = await run(path, ["--version"]);
-      if (!version.ok) return { ok: false, error: version.error.code === "ENOENT" ? missing : `\`${command} --version\` failed: ${version.error.message}` };
+      if (!version.ok) return { ok: false, error: `\`${command} --version\` failed: ${version.error.message}` };
       const text = version.stdout.trim();
       if (process.getuid?.() === 0)
         return {
