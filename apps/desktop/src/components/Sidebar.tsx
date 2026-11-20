@@ -8,7 +8,7 @@ import { pin, reorderPins, serverUrl, sidebarGroups, top, unpin, useClient, useP
 import { Avatar } from "./Avatar.tsx";
 import { DeleteBotDialog } from "./BotDialogs.tsx";
 import { StatusDot } from "./StatusDot.tsx";
-import { type Group, useSidebarReorder } from "./sidebarReorder.ts";
+import { type Group, menuOpened, reordering, useSidebarReorder } from "./sidebarReorder.ts";
 import { UpdateButton } from "./UpdateButton.tsx";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
@@ -62,8 +62,16 @@ function BotMenu({
   className?: string;
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <ContextMenu.Root>
+    <ContextMenu.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (next && reordering()) return;
+        if (next) menuOpened();
+        setOpen(next);
+      }}
+    >
       <ContextMenu.Trigger className={className} data-reorder={reorder.group} data-bot={bot.id}>
         {children}
       </ContextMenu.Trigger>

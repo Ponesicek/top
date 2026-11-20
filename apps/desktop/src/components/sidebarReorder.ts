@@ -7,6 +7,15 @@ export type Group = "pinned" | "rest";
 const TOUCH_HOLD_MS = 280;
 const TOUCH_SLOP = 8;
 const MOUSE_SLOP = 5;
+/** After the hold, this much movement starts a drag. Holding still on instead opens the bot's menu (at 500 ms). */
+const ARMED_SLOP = 3;
+
+// A drag and a bot's long-press menu never both happen: the menu stays shut during a drag, and a menu that opens first
+// ends the press before it becomes one.
+let dragging = false;
+let menuShown: (() => void) | undefined;
+export const reordering = () => dragging;
+export const menuOpened = () => menuShown?.();
 
 type Gesture = {
   readonly id: BotId;
@@ -16,6 +25,8 @@ type Gesture = {
   readonly startX: number;
   readonly startY: number;
   active: boolean;
+  /** A finger held still long enough: moving now drags. */
+  armed?: boolean;
   timer?: ReturnType<typeof setTimeout>;
 };
 
@@ -73,6 +84,7 @@ export function useSidebarReorder({
     (commit: boolean) => {
       const g = gesture.current;
       gesture.current = undefined;
+      dragging = false;
       if (!g) return;
       clearTimeout(g.timer);
       document.documentElement.classList.remove("reordering");
@@ -98,6 +110,7 @@ export function useSidebarReorder({
 
   const activate = useCallback((g: Gesture) => {
     g.active = true;
+    dragging = true;
     document.documentElement.classList.add("reordering");
     getSelection()?.removeAllRanges();
     navRef.current?.querySelector(`[data-bot="${g.id}"]`)?.setAttribute("data-dragging", "");
@@ -113,7 +126,8 @@ export function useSidebarReorder({
       const dy = e.clientY - g.startY;
       if (!g.active) {
         if (g.touch) {
-          if (Math.hypot(dx, dy) > TOUCH_SLOP) end(false);
+          if (!g.armed && Math.hypot(dx, dy) > TOUCH_SLOP) end(false);
+          else if (g.armed && Math.hypot(dx, dy) > ARMED_SLOP) activate(g);
         } else if (Math.hypot(dx, dy) > MOUSE_SLOP) activate(g);
         return;
       }
@@ -146,13 +160,17 @@ export function useSidebarReorder({
       }
     };
     const onTouchMove = (e: TouchEvent) => {
-      if (gesture.current?.active && e.cancelable) e.preventDefault();
+      const g = gesture.current;
+      if ((g?.active || g?.armed) && e.cancelable) e.preventDefault();
     };
     const onContextMenu = (e: Event) => {
       if (gesture.current?.active) {
         e.preventDefault();
         e.stopPropagation();
       }
+    };
+    menuShown = () => {
+      if (!gesture.current?.active) end(false);
     };
     addEventListener("pointermove", onMove, { passive: false });
     addEventListener("pointerup", onUp);
@@ -167,31 +185,32 @@ export function useSidebarReorder({
       removeEventListener("keydown", onKey, { capture: true });
       removeEventListener("touchmove", onTouchMove);
       removeEventListener("contextmenu", onContextMenu, { capture: true });
+      menuShown = undefined;
       end(false);
     };
   }, [activate, end]);
 
-  const onPointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      if (gesture.current || (e.pointerType === "mouse" && e.button !== 0) || e.ctrlKey || e.metaKey) return;
-      const target = e.target as HTMLElement;
-      if (target.closest("[data-delete]")) return;
-      const item = target.closest<HTMLElement>("[data-reorder]");
-      if (!item) return;
-      const g: Gesture = {
-        id: Number(item.dataset.bot),
-        group: item.dataset.reorder as Group,
-        pointerId: e.pointerId,
-        touch: e.pointerType !== "mouse",
-        startX: e.clientX,
-        startY: e.clientY,
-        active: false,
-      };
-      if (g.touch) g.timer = setTimeout(() => gesture.current === g && activate(g), TOUCH_HOLD_MS);
-      gesture.current = g;
-    },
-    [activate],
-  );
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if (gesture.current || (e.pointerType === "mouse" && e.button !== 0) || e.ctrlKey || e.metaKey) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("[data-delete]")) return;
+    const item = target.closest<HTMLElement>("[data-reorder]");
+    if (!item) return;
+    const g: Gesture = {
+      id: Number(item.dataset.bot),
+      group: item.dataset.reorder as Group,
+      pointerId: e.pointerId,
+      touch: e.pointerType !== "mouse",
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+    };
+    if (g.touch)
+      g.timer = setTimeout(() => {
+        g.armed = true;
+      }, TOUCH_HOLD_MS);
+    gesture.current = g;
+  }, []);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
