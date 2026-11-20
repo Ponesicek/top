@@ -34,6 +34,8 @@ import * as Scope from "effect/Scope";
 import { type Connection, type ConnectionStatus, makeConnection, type RequestFrame } from "./connection.ts";
 import { type ClientRuntime, ConversationSync } from "./conversation.ts";
 
+const T3CODE_CONNECT_MS = 70_000;
+
 const parseAttachment = Schema.decodeOption(Schema.fromJsonString(Attachment));
 
 export type {
@@ -374,7 +376,9 @@ export class TopClient {
 
   /** Pairs the daemon with the T3 Code at `address`, trading `code` (a pairing code or link) for Top's own session. */
   t3codeConnect(address: string, code: string, plainHttp: boolean): Promise<T3CodeView> {
-    return this.#request({ t: "t3codeConnect", address, code, ...(plainHttp ? { plainHttp } : {}) });
+    // The daemon bounds each step (finding T3 Code, trading the code, checking the session, listing what it has), and always
+    // finishes once the code is spent, which can outlast the usual 15 s.
+    return this.#request({ t: "t3codeConnect", address, code, ...(plainHttp ? { plainHttp } : {}) }, T3CODE_CONNECT_MS);
   }
 
   /** Forgets the saved session; it lives on in T3 Code until it expires or is revoked there. */
@@ -382,8 +386,8 @@ export class TopClient {
     return this.#command({ t: "t3codeDisconnect" });
   }
 
-  #request<F extends RequestFrame>(frame: F): Promise<ResultOf<F["t"]>> {
-    return this.#run.promise(this.#connection.request(frame));
+  #request<F extends RequestFrame>(frame: F, timeoutMs?: number): Promise<ResultOf<F["t"]>> {
+    return this.#run.promise(this.#connection.request(frame, timeoutMs));
   }
 
   #command(frame: RequestFrame): Promise<void> {

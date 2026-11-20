@@ -16,11 +16,12 @@ const failed = (error: unknown) => new T3CodeError({ message: message(error) });
 /** Text from T3 Code (or a proxy in front of it) could echo a secret back; none of them leaves the daemon. */
 const hide = (text: string, secrets: readonly string[]) => secrets.filter((s) => s.length >= 4).reduce((out, s) => out.split(s).join("[hidden]"), text);
 const hidden =
-  (secrets: () => readonly string[]) =>
+  (secrets: readonly string[]) =>
   <E extends { readonly message: string }>(effect: Effect.Effect<T3CodeView, E>) =>
     effect.pipe(
-      Effect.map((view) => (view.error ? { ...view, error: hide(view.error, secrets()) } : view)),
-      Effect.mapError((error) => new T3CodeError({ message: hide(error.message, secrets()) })),
+      // Every string in it came from T3 Code or the user; the secrets are plain URL-safe text, so JSON leaves them as they are.
+      Effect.map((view): T3CodeView => JSON.parse(hide(JSON.stringify(view), secrets))),
+      Effect.mapError((error) => new T3CodeError({ message: hide(error.message, secrets) })),
     );
 
 export class T3Link extends Context.Service<
@@ -70,7 +71,7 @@ export const layer = (file: string): Layer.Layer<T3Link> =>
 
       const view = Effect.gen(function* () {
         const config = yield* Effect.tryPromise({ try: () => readT3Config(file), catch: failed });
-        return config ? yield* checked(config).pipe(hidden(() => [config.token])) : {};
+        return config ? yield* checked(config).pipe(hidden([config.token])) : {};
       }).pipe(Effect.catch((error) => Effect.succeed<T3CodeView>({ error: `Top couldn't read its T3 Code connection (${file}): ${error.message}` })));
 
       const connect = (address: string, code: string, plainHttp: boolean) => {
@@ -84,11 +85,13 @@ export const layer = (file: string): Layer.Layer<T3Link> =>
               // before a disconnect can run.
               const paired = yield* Effect.uninterruptible(Effect.tryPromise({ try: () => pair(file, found.origin, found.descriptor, code), catch: failed }));
               secrets.push(paired.config.token);
-              yield* Effect.log(`paired with T3 Code ${found.descriptor.serverVersion} at ${paired.config.url} (${paired.config.label}) from Settings`);
+              yield* Effect.log(
+                hide(`paired with T3 Code ${found.descriptor.serverVersion} at ${paired.config.url} (${paired.config.label}) from Settings`, secrets),
+              );
               return yield* checked(paired.config);
             }),
           )
-          .pipe(hidden(() => secrets));
+          .pipe(hidden(secrets));
       };
 
       const disconnect = changing.withPermits(1)(

@@ -585,6 +585,14 @@ test("Settings pairs with a code or link, checks the connection and forgets it; 
   assert.equal(t3.exchanges.length, 3, "the plain-HTTP code never left Top");
   assert.equal((await readT3Config(file))?.url, t3.origin, "the connection Top had stays");
 
+  // A T3 Code that puts Top's credential in what it lists (a project named after it) still never shows it.
+  const echoing = await fakeT3({ projects: [{ id: t3.token(), workspaceRoot: "/srv/echo" }] });
+  servers.push(echoing);
+  const echoFile = join(mkdtempSync(join(tmpdir(), "top-t3-echo-")), "t3code.json");
+  const listed = await linked(echoFile, (link) => link.connect(echoing.origin, echoing.pairingCode(), false));
+  assert.equal(listed.projects?.[0]?.path, "/srv/echo");
+  assert.ok(!JSON.stringify(listed).includes(echoing.token()) && !JSON.stringify(await linked(echoFile, (link) => link.view)).includes(echoing.token()));
+
   t3.revoke();
   const revoked = await linked(file, (link) => link.view);
   assert.equal(revoked.url, t3.origin);
