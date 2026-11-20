@@ -5,7 +5,8 @@ import { openFile } from "../files.ts";
 import { copyCode } from "../lib/copyCode.ts";
 import { perf } from "../perf.ts";
 import { findPassage, onJump } from "../quotes.ts";
-import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows, taskQuestionRows } from "../rows.ts";
+import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows, taskQuestionRows, withTail } from "../rows.ts";
+import { INPUT_MS, onPinToEnd, stillPinned } from "../scrollPin.ts";
 import { useClient, useConversation } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
 import { Empty, EmptyCard } from "./Empty.tsx";
@@ -16,7 +17,6 @@ import { AskCard } from "./transcript/AskCard.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
 import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider } from "./transcript/parts.tsx";
 
-const BOTTOM_SLACK = 48;
 const scrollMemory = new Map<string, { offset: number; atBottom: boolean }>();
 
 function estimate(row: DisplayRow | undefined): number {
@@ -44,7 +44,7 @@ function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: bo
   if (prev && prev.committed === committed && prev.showTools === showTools && prev.tail.length === tail.length && prev.tail.every((r, i) => r === tail[i])) {
     return prev.rows;
   }
-  const rows = displayRows(tail.length ? committed.concat(tail) : committed, showTools);
+  const rows = displayRows(withTail(committed, tail), showTools);
   last.current = { committed, tail, showTools, rows };
   return rows;
 }
@@ -82,10 +82,12 @@ export const Transcript = memo(function Transcript({ sync, showTools = false }: 
   }, [virtualizer]);
 
   const lastTop = useRef(0);
+  // When the person last scrolled by hand (wheel, keys, touch), and whether they're dragging the scrollbar.
+  const input = useRef({ at: Number.NEGATIVE_INFINITY, dragging: false });
   const onScroll = useCallback(() => {
     const el = scrollRef.current!;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_SLACK;
-    atBottom.current = near || (atBottom.current && el.scrollTop >= lastTop.current);
+    const byPerson = input.current.dragging || performance.now() - input.current.at < INPUT_MS;
+    atBottom.current = stillPinned(atBottom.current, { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight }, lastTop.current, byPerson);
     lastTop.current = el.scrollTop;
     scrollMemory.set(String(sync.id), { offset: el.scrollTop, atBottom: atBottom.current });
     captureAnchor();
@@ -100,10 +102,48 @@ export const Transcript = memo(function Transcript({ sync, showTools = false }: 
       lastTop.current = el.scrollTop;
     };
     pin();
+    // The content growing, and the conversation's own box shrinking (a taller message box), both keep the end in view.
     const observer = new ResizeObserver(pin);
     observer.observe(inner);
-    return () => observer.disconnect();
-  }, []);
+    observer.observe(el);
+    const touched = () => {
+      input.current.at = performance.now();
+    };
+    const keys = (e: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) touched();
+    };
+    const grab = (e: PointerEvent) => {
+      // A press on the scroll box itself, not on a row, is on its scrollbar.
+      if (e.target === el) input.current.dragging = true;
+    };
+    const release = () => {
+      if (!input.current.dragging) return;
+      input.current.dragging = false;
+      touched();
+    };
+    el.addEventListener("wheel", touched, { passive: true });
+    el.addEventListener("touchmove", touched, { passive: true });
+    el.addEventListener("keydown", keys);
+    el.addEventListener("pointerdown", grab);
+    addEventListener("pointerup", release);
+    addEventListener("pointercancel", release);
+    const off = onPinToEnd(sync.id, () => {
+      input.current = { at: Number.NEGATIVE_INFINITY, dragging: false };
+      atBottom.current = true;
+      pin();
+      requestAnimationFrame(pin);
+    });
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("wheel", touched);
+      el.removeEventListener("touchmove", touched);
+      el.removeEventListener("keydown", keys);
+      el.removeEventListener("pointerdown", grab);
+      removeEventListener("pointerup", release);
+      removeEventListener("pointercancel", release);
+      off();
+    };
+  }, [sync.id]);
 
   const firstKey = rows[0]?.key;
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs only when rows are inserted above, i.e. the first row changes

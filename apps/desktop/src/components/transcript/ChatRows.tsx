@@ -1,3 +1,4 @@
+import { Check, Clock, CornerDownRight, Hourglass } from "lucide-react";
 import { memo, useMemo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { renderSegments } from "../../markdown.ts";
@@ -46,16 +47,37 @@ function Tail({ side }: { side: "in" | "out" }) {
   );
 }
 
-function Stamp({ at }: { at: number | undefined }) {
+function Stamp({ at, children }: { at: number | undefined; children?: React.ReactNode }) {
   if (!at) return null;
   return (
-    <time
-      className="absolute right-2.25 bottom-1.25 text-[11px] leading-none text-muted-foreground tabular-nums"
-      dateTime={new Date(at).toISOString()}
-      title={new Date(at).toLocaleString()}
-    >
-      {time(at)}
-    </time>
+    <span className="absolute right-2.25 bottom-1.25 inline-flex items-center gap-0.75 text-[11px] leading-none text-muted-foreground tabular-nums">
+      <time dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()}>
+        {time(at)}
+      </time>
+      {children}
+    </span>
+  );
+}
+
+type SendState = "sending" | "accepted" | "queued" | "steer";
+const SEND_STATE: Record<SendState, { label: string; Icon: typeof Check }> = {
+  sending: { label: "Sending…", Icon: Clock },
+  accepted: { label: "Sent", Icon: Check },
+  queued: { label: "Queued", Icon: Hourglass },
+  steer: { label: "Steering", Icon: CornerDownRight },
+};
+
+/**
+ * Where a message you sent is, as a mark beside its time, in a slot every one of your bubbles keeps: the bubble stays
+ * the same size from sending to saved, so nothing below it moves.
+ */
+function SendMark({ state }: { state: SendState | undefined }) {
+  const mark = state && SEND_STATE[state];
+  if (!mark) return <span className="inline-block size-3" aria-hidden />;
+  return (
+    <span className="inline-grid size-3 place-items-center" role="img" aria-label={mark.label} title={mark.label}>
+      <mark.Icon size={11} strokeWidth={2.4} aria-hidden />
+    </span>
   );
 }
 
@@ -68,6 +90,7 @@ function DayChip({ at }: { at: number }) {
 }
 
 const UserBubble = memo(function UserBubble({ row, first }: { row: Extract<DisplayRow, { kind: "user" }>; first: boolean }) {
+  const inBubble = !!row.text && row.state !== "failed";
   return (
     <div className={cn("flex flex-col items-end pr-2", first ? "pt-2.5" : "pt-0.5")}>
       {row.attachments && (
@@ -91,12 +114,15 @@ const UserBubble = memo(function UserBubble({ row, first }: { row: Extract<Displ
             <UserText text={row.text} skill={row.skill} />
             <span className="stamp-space" aria-hidden>
               {time(row.at)}
+              <span className="inline-block w-3.75" />
             </span>
           </div>
-          <Stamp at={row.at} />
+          <Stamp at={row.at}>
+            <SendMark state={row.state === "failed" ? undefined : row.state} />
+          </Stamp>
         </div>
       )}
-      <UserState row={row} className="mt-1" />
+      {!inBubble && <UserState row={row} className="mt-1" />}
     </div>
   );
 });

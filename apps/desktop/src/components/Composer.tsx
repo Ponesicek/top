@@ -6,6 +6,7 @@ import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { clearQuotes, onQuoteAdded, type Quote, quotesOf } from "../quotes.ts";
 import { isWorking } from "../rows.ts";
+import { pinToEnd } from "../scrollPin.ts";
 import { top, useClient } from "../top.ts";
 import { AttachmentStrip } from "./AttachmentStrip.tsx";
 import { focusEnd, insertChip, isEmpty, makeChip, readSegments, type Segment, toMessage, writeSegments } from "./composerEditor.ts";
@@ -200,6 +201,7 @@ export const Composer = memo(function Composer({ sync, name }: { sync: Conversat
       if ("wait" in attached) return say(attached.wait);
       if (!message && !attached.ready.length) return;
       sync.send(message, running ? (steer ? "steer" : "followUp") : "followUp", attached.ready);
+      pinToEnd(sync.id);
       field.replaceChildren();
       drafts.delete(key);
       clearQuotes(key);

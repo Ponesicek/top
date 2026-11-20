@@ -81,7 +81,8 @@ function rowForEntry(entry: Exclude<Entry, AnswerEntry>): Row {
         ? { kind: "wake", key }
         : {
             kind: "user",
-            key,
+            // Keyed like the message was while it was being sent or queued, so its row stays the same one.
+            key: entry.requestId ? `m${entry.requestId}` : key,
             text: entry.text,
             at: entry.at,
             ...(entry.attachments ? { attachments: entry.attachments } : {}),
@@ -261,6 +262,22 @@ export function tailRows(snapshot: ConversationSnapshot, working: boolean): Row[
     );
   }
   return rows;
+}
+
+/**
+ * The committed rows, then the tail (working, queued, being sent). A message the daemon has saved and this client still
+ * has as sent or queued, for the moment between the two updates, shows once: as the saved one.
+ */
+export function withTail(committed: Row[], tail: readonly Row[]): Row[] {
+  if (!tail.length) return committed;
+  const sending = new Set(tail.flatMap((r) => (r.kind === "user" ? [r.key] : [])));
+  if (!sending.size) return committed.concat(tail);
+  const saved = new Set<string>();
+  for (let i = committed.length - 1; i >= Math.max(0, committed.length - 200) && saved.size < sending.size; i--) {
+    const row = committed[i]!;
+    if (row.kind === "user" && sending.has(row.key)) saved.add(row.key);
+  }
+  return saved.size ? committed.concat(tail.filter((r) => !saved.has(r.key))) : committed.concat(tail);
 }
 
 export type ToolGroupRow = { readonly kind: "toolgroup"; readonly key: string; readonly entries: readonly ToolEntry[]; readonly at: number };
