@@ -514,7 +514,7 @@ test("the app hears a task's questions come and go, and nothing else of it, even
   await s.h.run(Scope.close(scope, Exit.void));
 });
 
-test("a connecting app is never sent an older list of questions than it has: an event from before its first frame is replayed after it", async () => {
+test("an app is sent the questions waiting now, never a stale list carried by an event, such as one replayed from before it connected", async () => {
   const s = await setup({ serve: true });
   const frames: { t: string; tasks?: { id: string }[] }[] = [];
   const socket = new WebSocket(`ws://127.0.0.1:${s.h.port}`, { origin: "file://" });
