@@ -536,6 +536,8 @@ test("the credential file is written for its owner only", async () => {
   await writeT3Config(file, { url: "https://x.ts.net", token: "t", environmentId: "e", label: "x", serverVersion: "1", connectedAt: "now" });
   assert.equal(statSync(file).mode & 0o777, 0o600);
   assert.equal((await readT3Config(file))?.token, "t");
+  writeFileSync(file, '{"url": "https://x.ts.net", "token": "s3cr3t-token-value" oops');
+  await assert.rejects(readT3Config(file), (error: Error) => /isn't valid JSON/.test(error.message) && !error.message.includes("s3cr3t"));
   writeFileSync(file, "{}");
   await assert.rejects(readT3Config(file), /missing its address or credential/);
 });
@@ -572,11 +574,15 @@ test("Settings pairs with a code or link, checks the connection and forgets it; 
 
   // A spent code changes nothing; nor does plain HTTP to another computer, refused before anything is sent.
   assert.match(await linkFailure(file, (link) => link.connect(t3.origin, "PAIRSPENT", false)), /didn't take that code/);
+  t3.faults.echoPairing = true;
+  const echoed = await linkFailure(file, (link) => link.connect(t3.origin, "PAIRSPENT", false));
+  assert.ok(!echoed.includes("PAIRSPENT") && echoed.includes("[hidden]"), `a code T3 Code quotes back doesn't reach the app: ${echoed}`);
+  t3.faults.echoPairing = false;
   assert.match(
     await linkFailure(file, (link) => link.connect("http://192.168.1.4:3773", t3.pairingCode(), false)),
     /plain HTTP to another computer.*switch on "Allow plain HTTP"/,
   );
-  assert.equal(t3.exchanges.length, 2, "the plain-HTTP code never left Top");
+  assert.equal(t3.exchanges.length, 3, "the plain-HTTP code never left Top");
   assert.equal((await readT3Config(file))?.url, t3.origin, "the connection Top had stays");
 
   t3.revoke();

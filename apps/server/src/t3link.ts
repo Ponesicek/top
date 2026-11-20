@@ -6,12 +6,22 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
-import { checkSession, overview, pair, preflight, readT3Config, removeT3Config, type T3Config, verifyEnvironment } from "./tasks/t3api.ts";
+import { checkSession, credentialOf, overview, pair, preflight, readT3Config, removeT3Config, type T3Config, verifyEnvironment } from "./tasks/t3api.ts";
 
 const CHECK_MS = 10_000;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const failed = (error: unknown) => new T3CodeError({ message: message(error) });
+
+/** Text from T3 Code (or a proxy in front of it) could echo a secret back; none of them leaves the daemon. */
+const hide = (text: string, secrets: readonly string[]) => secrets.filter((s) => s.length >= 4).reduce((out, s) => out.split(s).join("[hidden]"), text);
+const hidden =
+  (secrets: () => readonly string[]) =>
+  <E extends { readonly message: string }>(effect: Effect.Effect<T3CodeView, E>) =>
+    effect.pipe(
+      Effect.map((view) => (view.error ? { ...view, error: hide(view.error, secrets()) } : view)),
+      Effect.mapError((error) => new T3CodeError({ message: hide(error.message, secrets()) })),
+    );
 
 export class T3Link extends Context.Service<
   T3Link,
@@ -60,20 +70,26 @@ export const layer = (file: string): Layer.Layer<T3Link> =>
 
       const view = Effect.gen(function* () {
         const config = yield* Effect.tryPromise({ try: () => readT3Config(file), catch: failed });
-        return config ? yield* checked(config) : {};
+        return config ? yield* checked(config).pipe(hidden(() => [config.token])) : {};
       }).pipe(Effect.catch((error) => Effect.succeed<T3CodeView>({ error: `Top couldn't read its T3 Code connection (${file}): ${error.message}` })));
 
-      const connect = (address: string, code: string, plainHttp: boolean) =>
-        changing.withPermits(1)(
-          Effect.gen(function* () {
-            // Nothing secret has gone anywhere yet, so a T3 Code that doesn't answer is given up on here.
-            const found = yield* within(() => preflight(address, plainHttp, 'switch on "Allow plain HTTP"'), lateFrom(address.trim()));
-            // From here the code is spent: always seen through, so a session T3 Code made is saved.
-            const paired = yield* Effect.tryPromise({ try: () => pair(file, found.origin, found.descriptor, code), catch: failed });
-            yield* Effect.log(`paired with T3 Code ${found.descriptor.serverVersion} at ${paired.config.url} (${paired.config.label}) from Settings`);
-            return yield* checked(paired.config);
-          }),
-        );
+      const connect = (address: string, code: string, plainHttp: boolean) => {
+        const secrets = [code.trim(), credentialOf(code)];
+        return changing
+          .withPermits(1)(
+            Effect.gen(function* () {
+              // Nothing secret has gone anywhere yet, so a T3 Code that doesn't answer is given up on here.
+              const found = yield* within(() => preflight(address, plainHttp, 'switch on "Allow plain HTTP"'), lateFrom(address.trim()));
+              // From here the code is spent: always seen through, even if the app goes away, so a session T3 Code made is saved
+              // before a disconnect can run.
+              const paired = yield* Effect.uninterruptible(Effect.tryPromise({ try: () => pair(file, found.origin, found.descriptor, code), catch: failed }));
+              secrets.push(paired.config.token);
+              yield* Effect.log(`paired with T3 Code ${found.descriptor.serverVersion} at ${paired.config.url} (${paired.config.label}) from Settings`);
+              return yield* checked(paired.config);
+            }),
+          )
+          .pipe(hidden(() => secrets));
+      };
 
       const disconnect = changing.withPermits(1)(
         Effect.gen(function* () {

@@ -68,7 +68,14 @@ export async function readT3Config(file: string): Promise<T3Config | undefined> 
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
-  const raw = record(JSON.parse(text));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Never JSON.parse's own message: it quotes the file, credential and all.
+    throw new Error(`${file} isn't valid JSON; connect again in Top's Settings → T3 Code.`);
+  }
+  const raw = record(parsed);
   const url = str(raw.url);
   const token = str(raw.token);
   if (!url || !token) throw new Error(`${file} is missing its address or credential; connect again in Top's Settings → T3 Code.`);

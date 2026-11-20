@@ -30,6 +30,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     silent: false,
     silentTypes: new Set<string>(),
     refuseAnswer: undefined as string | undefined,
+    /** A server or proxy that quotes the refused code back. */
+    echoPairing: false,
     respondDelayMs: 0,
   };
   const hits: { path: string; authorized: boolean }[] = [];
@@ -291,7 +293,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         exchanges.push({ scope: form.get("scope") ?? "", label: form.get("client_label") ?? "" });
         const code = form.get("subject_token") ?? "";
         // A code works once.
-        if (!codes.delete(code)) return json(res, 400, { error: "invalid_grant", reason: "invalid_bootstrap_credential" });
+        if (!codes.delete(code))
+          return json(res, 400, { error: "invalid_grant", reason: faults.echoPairing ? `unknown code ${code}` : "invalid_bootstrap_credential" });
         json(res, 200, { access_token: token, token_type: "Bearer" });
       });
       return;
