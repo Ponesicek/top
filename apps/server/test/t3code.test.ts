@@ -68,15 +68,16 @@ const told = async (s: Setup, id: string) => {
 
 test("a task runs in a T3 Code project and carries on in the same thread; what T3 Code can't do is refused", async () => {
   const s = await setup();
-  const first = await start(s, { prompt: "fix the login bug", model: "haiku" });
+  const first = await start(s, { prompt: "fix the login bug\nin the web app", title: "Login bug", model: "haiku" });
   assert.equal(first.session.cwd, "/srv/app");
   const done = await ended(s, first.task.id);
   assert.equal(done.state, "completed", done.error ?? "");
-  assert.equal(done.result, "done: fix the login bug");
+  assert.equal(done.result, "done: fix the login bug\nin the web app");
   const thread = `top-${first.session.id}`;
   const launch = s.t3.requests.find((r) => r.tag === "orchestration.launchThread")!.payload;
   assert.deepEqual(launch.modelSelection, { instanceId: "claudeAgent", model: "claude-haiku-5-5" }, "a model alias picks its provider");
   assert.equal(launch.runtimeMode, "full-access");
+  assert.equal(launch.title, "Login bug", "the thread is named as the task, the name the conversation's card shows");
   assert.equal((await s.h.run(s.h.store.tasks.session(first.session.id)))!.externalId, thread);
 
   const second = await start(s, { prompt: "and the signup bug", session: first.session.id });

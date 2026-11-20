@@ -13,6 +13,7 @@ const FAKE_CODEX = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
 
 const spec = (over: Partial<OpenSpec> = {}): OpenSpec => ({
   session: "ses_test",
+  title: "Test task",
   cwd: mkdtempSync(join(tmpdir(), "top-harness-")),
   model: undefined,
   options: {},

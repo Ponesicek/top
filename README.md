@@ -368,7 +368,8 @@ folder's CLAUDE.md as it does when you run it; it won't run with its checks off 
 daemon must run as a normal user.
 
 **In the conversation.** Where a bot starts a new session (or branches one), the conversation keeps
-a card that says an agent was spawned, with the harness, folder and model it started with. It never
+a card with the task's title (its first line when the bot gives none), the harness, folder and model it
+started with: the title is also the name of the thread T3 Code starts for it. It never
 changes after: no state, no progress, no controls; the bot tells the user what came of it. Carrying a
 session on adds no second card.
 

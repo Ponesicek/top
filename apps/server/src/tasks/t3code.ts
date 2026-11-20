@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import type { TaskQuestion } from "@top/protocol";
 import Type from "typebox";
 import { duration } from "../time.ts";
-import { clip, type HarnessAdapter, type HarnessAnswer, type HarnessEvent, HarnessUnavailable, type LogKind, type OpenSpec, type Turn } from "./harness.ts";
+import { type HarnessAdapter, type HarnessAnswer, type HarnessEvent, HarnessUnavailable, type LogKind, type OpenSpec, type Turn } from "./harness.ts";
 import {
   checkSession,
   listProjects,
@@ -629,7 +629,7 @@ async function openThread(
               commandId: messageId,
               threadId,
               projectId: project.id,
-              title: clip(turn.text.trim().split("\n")[0]?.trim() || "Task from Top", 80),
+              title: spec.title.trim() || "Task from Top",
               modelSelection: selection,
               runtimeMode: "full-access",
               interactionMode: "default",
