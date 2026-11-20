@@ -519,6 +519,8 @@ async function openThread(
       if (ours.some((r) => !ended(r) && r.status !== "queued")) return;
     } else if (turn.followOnly) {
       return;
+    } else if (str(own.startedAt) === undefined) {
+      // Removed from T3 Code's queue before it ran: its own end, whatever else the thread does.
     } else if (own.status !== "rolled_back") {
       const { working, delegated } = delegatedWork();
       if (working || delegated) {
@@ -541,16 +543,11 @@ async function openThread(
     }
     turn.done = true;
     const its = [...items.values()].filter((i) => i.runId === outcome.id).sort((a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
-    // Stop in T3 Code while it held (or while Top was away): T3 Code records the stop after the answer's run ended, on that
-    // run or one still going then, like a monitor's, and cancels the work.
+    // Stop in T3 Code while it held (or while Top was away): T3 Code records the stop after the answer's run ended, on
+    // whichever run it targets, and cancels the work.
     const answeredAt = Date.parse(str(outcome.completedAt) ?? "");
     const stoppedThere =
-      !turn.cut &&
-      since(own).some((r) =>
-        [...items.values()].some(
-          (i) => i.runId === r.id && i.type === "run_interrupt_request" && Date.parse(str(i.updatedAt) ?? str(i.startedAt) ?? "") >= answeredAt,
-        ),
-      );
+      !turn.cut && [...items.values()].some((i) => i.type === "run_interrupt_request" && Date.parse(str(i.updatedAt) ?? str(i.startedAt) ?? "") >= answeredAt);
     const status = turn.cut || stoppedThere ? "interrupted" : String(outcome.status);
     const answers = its.filter((i) => i.type === "assistant_message" && i.streaming !== true && str(i.text)?.trim());
     const result = str(answers.at(-1)?.text);

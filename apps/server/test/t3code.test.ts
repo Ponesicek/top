@@ -806,6 +806,24 @@ test("a newer message someone moves ahead of the task's queued one in T3 Code is
   assert.equal((await s.h.run(s.tasks.snapshot(s.h.bot, queued.task.id))).inputs.length, 0);
 });
 
+test("a task whose queued message is removed in T3 Code ends there, not with the run it waited behind", async () => {
+  const s = await setup();
+  const first = await start(s, { prompt: "plain first" });
+  assert.equal((await ended(s, first.task.id)).result, "done: plain first");
+  const thread = `top-${first.session.id}`;
+  s.t3.wake(thread, "someone", "forever: someone's work");
+  const busy = await runIn(s, thread);
+  const queued = await start(s, { prompt: "after that", session: first.session.id });
+  const mine = await until("the task's run to queue", () =>
+    s.t3.runsOf(thread).find((r) => r.userMessageId === `top:${queued.task.id}` && r.status === "queued"),
+  );
+  s.t3.finish(thread, String(mine.id), "", "cancelled");
+  const done = await ended(s, queued.task.id);
+  assert.equal(done.state, "failed");
+  assert.equal(done.result, null);
+  assert.equal(s.t3.runsOf(thread).find((r) => r.id === busy.id)!.status, "running", "it didn't wait for the other run");
+});
+
 test("T3 Code's command output and prompts reach Top whole, so its secret-hiding sees a secret before anything is clipped", () => {
   const secret = "s3cr3t-value-that-straddles-a-cut";
   const output = `${"x".repeat(590)}${secret}${"y".repeat(500)}`;
