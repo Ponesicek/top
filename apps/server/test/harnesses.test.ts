@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative as relativePath } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, test } from "vitest";
 import { claudeAdapter, type QueryFn } from "../src/tasks/claude.ts";
 import { codexAdapter } from "../src/tasks/codex.ts";
-import { type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "../src/tasks/harness.ts";
+import { findCli, type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "../src/tasks/harness.ts";
 import { until } from "./harness.ts";
 
 const FAKE_CODEX = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
@@ -108,10 +108,55 @@ test("Codex: not signed in, or not installed, says what to do", async () => {
     codex.open(spec(), () => {}),
     (error: unknown) => error instanceof HarnessUnavailable && /Run `codex login`/.test(error.message),
   );
-  const missing = codexAdapter({ command: "/nonexistent/codex" });
-  const checked = await missing.check();
-  assert.equal(checked.ok, false);
-  assert.match(!checked.ok ? checked.error : "", /Codex isn't installed on the daemon's computer.*TOP_CODEX_PATH/);
+  const missing = await codexAdapter({ command: "definitely-not-codex-xyz" }).check();
+  assert.match(!missing.ok ? missing.error : "", /Codex isn't installed on the daemon's computer.*TOP_CODEX_PATH/);
+  const wrong = await codexAdapter({ command: "/nonexistent/codex" }).check();
+  assert.match(!wrong.ok ? wrong.error : "", /Codex isn't at `\/nonexistent\/codex`.*TOP_CODEX_PATH/);
+});
+
+test("Claude Code and Codex installed in ~/.local/bin are found when the daemon's PATH leaves that folder out", async () => {
+  const saved = { PATH: process.env.PATH, HOME: process.env.HOME };
+  const home = mkdtempSync(join(tmpdir(), "top-home-"));
+  const bin = join(home, ".local", "bin");
+  mkdirSync(bin, { recursive: true });
+  const script = (name: string, body: string) => {
+    writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(bin, name), 0o755);
+  };
+  script("claude", `case "$1" in --version) echo "2.1.329 (Claude Code)";; auth) echo '{"loggedIn":true}';; esac`);
+  script("codex", `exec "${process.execPath}" "${FAKE_CODEX}" "$@"`);
+  // What systemd gives a user service: no ~/.local/bin.
+  process.env.PATH = "/usr/bin:/bin";
+  process.env.HOME = home;
+  try {
+    assert.deepEqual(await claudeAdapter({ command: "claude" }).check(), { ok: true, version: "2.1.329 (Claude Code)" });
+    const fake = fakeClaude(async () => [result("ok")]);
+    const session = await claudeAdapter({ command: "claude", query: fake.query }).open(spec(), () => {});
+    await session.close();
+    assert.equal(fake.runs[0]!.options.pathToClaudeCodeExecutable, join(bin, "claude"));
+
+    const codex = codexAdapter({ command: "codex" });
+    assert.equal((await codex.check()).ok, true);
+    const c = collect();
+    const thread = await codex.open(spec(), c.emit);
+    assert.equal(c.of("session").length, 1);
+    await thread.close();
+
+    // A folder of the same name isn't a program, and an override that points at nothing says so.
+    mkdirSync(join(home, "dir", "claude"), { recursive: true });
+    process.env.PATH = join(home, "dir");
+    assert.deepEqual(await claudeAdapter({ command: "claude" }).check(), { ok: true, version: "2.1.329 (Claude Code)" });
+    const notExecutable = join(home, "claude.txt");
+    writeFileSync(notExecutable, "");
+    const wrong = await claudeAdapter({ command: notExecutable }).check();
+    assert.match(!wrong.ok ? wrong.error : "", /Claude Code isn't at .*claude\.txt.*TOP_CLAUDE_PATH/);
+    // A relative override names the file next to the daemon, not one in the task's folder.
+    const relative = relativePath(process.cwd(), join(bin, "codex"));
+    assert.equal(await findCli(relative, "Codex", "TOP_CODEX_PATH", "Install it"), `${process.cwd()}/${relative}`);
+  } finally {
+    process.env.PATH = saved.PATH;
+    process.env.HOME = saved.HOME;
+  }
 });
 
 type FakeQuery = { messages: SDKUserMessage[]; options: Options; interrupted: number };
