@@ -14,6 +14,8 @@ export class AskError extends Schema.TaggedError<AskError>()("AskError", { messa
 
 export class TaskError extends Schema.TaggedError<TaskError>()("TaskError", { message: Schema.String }) {}
 
+export class T3CodeError extends Schema.TaggedError<T3CodeError>()("T3CodeError", { message: Schema.String }) {}
+
 export class UnknownBotError extends Schema.TaggedError<UnknownBotError>()("UnknownBotError", { bot: Schema.Int }) {
   override get message(): string {
     return `Unknown bot ${this.bot}`;
@@ -26,4 +28,14 @@ export class UnknownEntryError extends Schema.TaggedError<UnknownEntryError>()("
   }
 }
 
-export type DaemonRefusal = BotError | BusyError | AttachmentError | McpServerError | AskError | SkillError | TaskError | UnknownBotError | UnknownEntryError;
+export type DaemonRefusal =
+  | BotError
+  | BusyError
+  | AttachmentError
+  | McpServerError
+  | AskError
+  | SkillError
+  | TaskError
+  | T3CodeError
+  | UnknownBotError
+  | UnknownEntryError;

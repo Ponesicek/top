@@ -38,6 +38,7 @@ import { LOCAL_SKILLS } from "./skills.ts";
 import * as Sqlite from "./sqlite.ts";
 import * as Store from "./store.ts";
 import { t3Connect, t3Disconnect, t3Status } from "./t3cli.ts";
+import * as T3Link from "./t3link.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
 import { claudeAdapter } from "./tasks/claude.ts";
 import { codexAdapter } from "./tasks/codex.ts";
@@ -134,9 +135,8 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
     const found = models.getModel(providerId, model.slice(slash + 1));
     if (!found) return yield* new StartError({ message: `${providerId} has no model "${model.slice(slash + 1)}".` });
     yield* Effect.log(`model ${model} (${auth ? (auth.source ?? auth.type) : "not signed in"}), thinking ${args.thinking}`);
-    // T3 Code is offered once `top t3code connect` has paired with one; its credential is read again for each task.
+    // T3 Code is offered while Top is paired with one (Settings → T3 Code, or `top t3code connect`); its credential is read again for each task.
     const t3 = yield* Effect.promise(() => readT3Config(home.t3code).catch(() => undefined));
-    const t3code = t3 ? t3codeAdapter({ file: home.t3code }) : undefined;
     if (t3) yield* Effect.log(`T3 Code at ${t3.url} (${t3.label})`);
     const kit = Layer.effect(
       Daemon.BotKit,
@@ -173,7 +173,7 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
           webSearch: canSearchTheWeb(found),
-          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version }), ...(t3code ? [t3code] : [])],
+          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version }), t3codeAdapter({ file: home.t3code })],
           maxTasks: maxTasks(),
         });
       }),
@@ -205,7 +205,7 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         retryDelaysMs: yield* RetryDelaysMs,
         compactAtTokens: yield* CompactAtTokens,
         webSearch: true,
-        harnesses: [fakeHarness({ stepMs: 1_500 })],
+        harnesses: [fakeHarness({ stepMs: 1_500 }), t3codeAdapter({ file: home.t3code })],
         maxTasks: maxTasks(),
       });
     }),
@@ -253,6 +253,7 @@ const program = (args: Args) =>
           Mcp.layer({ oauthPort, redirectOrigin: tailnet?.origin, clientInfo: { name: "Top", version: BUILD.version } }),
           Attachments.layer(home.server),
           Secrets.layer(home.server),
+          T3Link.layer(home.t3code),
         ),
       ),
       Layer.provideMerge(Events.layer),

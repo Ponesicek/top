@@ -1,22 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import type { TaskQuestion } from "@top/protocol";
 import Type from "typebox";
 import { duration } from "../time.ts";
 import { clip, type HarnessAdapter, type HarnessAnswer, type HarnessEvent, HarnessUnavailable, type LogKind, type OpenSpec, type Turn } from "./harness.ts";
 import {
-  checkProtocol,
   checkSession,
-  describe,
   listProjects,
   RpcSocket,
   readT3Config,
-  T3AuthError,
   type T3Config,
   T3NotSent,
   type T3Project,
   T3Refused,
   T3Unreachable,
   threadKnown,
+  verifyEnvironment,
 } from "./t3api.ts";
 
 export const T3CODE = "t3code";
@@ -40,7 +39,7 @@ export const t3codeOptions = Type.Object(
 );
 
 const NOT_CONNECTED =
-  "T3 Code isn't connected to Top. On the daemon's computer run `top t3code connect <T3 Code's address>` with a pairing code from that T3 Code, then try again.";
+  "T3 Code isn't connected to Top. Connect it in Top's Settings → T3 Code (or with `top t3code connect <T3 Code's address>` on the daemon's computer), with a pairing code from that T3 Code, then try again.";
 const RECONNECT_FOR_MS = 10 * 60_000;
 const REPLY_MS = 60_000;
 const SETTLE_MS = 10_000;
@@ -148,17 +147,6 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
     if (!found) throw new HarnessUnavailable(NOT_CONNECTED);
     return found;
   };
-  /** Checks the address still answers as the environment Top paired with before any credential goes to it. */
-  const verify = async (cfg: T3Config) => {
-    const descriptor = await describe(cfg.url);
-    checkProtocol(cfg.url, descriptor);
-    if (descriptor.environmentId !== cfg.environmentId)
-      throw new T3AuthError(
-        `${cfg.url} answers as ${cfg.environmentId ? "a different T3 Code environment" : "a T3 Code environment Top didn't record"} (${descriptor.label}), so Top didn't send it the credential. If that's intended, pair again with \`top t3code connect ${cfg.url}\`.`,
-      );
-    return descriptor;
-  };
-
   return {
     id: T3CODE,
     label: "T3 Code",
@@ -176,10 +164,12 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
       durable: true,
     },
     options: t3codeOptions,
+    // Connecting or disconnecting (in Settings or with `top t3code`) reaches the bots from their next message, no restart needed.
+    offered: () => existsSync(config.file),
     check: async () => {
       try {
         const cfg = await load();
-        const descriptor = await verify(cfg);
+        const descriptor = await verifyEnvironment(cfg);
         await checkSession(cfg.url, cfg.token);
         return { ok: true, version: `${descriptor.serverVersion} on ${descriptor.label} (${cfg.url})` };
       } catch (error) {
@@ -188,7 +178,7 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
     },
     locate: async (cwd) => {
       const cfg = await load();
-      await verify(cfg);
+      await verifyEnvironment(cfg);
       const projects = await listProjects(cfg.url, cfg.token);
       // The session belongs to this environment: pairing Top with another one later never sends its turns there.
       const bound = (root: string) => ({ cwd: root, options: { environment: cfg.environmentId } });
@@ -209,7 +199,12 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
         throw new HarnessUnavailable(
           `This session belongs to the T3 Code environment it started on (${environment}), and Top is now paired with another one (${cfg.label}), so nothing was sent there. Pair Top with that one again to carry on.`,
         );
-      return openThread(cfg, spec, emit, { verify, reconnectForMs, replyMs: config.replyMs ?? REPLY_MS, settleMs: config.settleMs ?? SETTLE_MS });
+      return openThread(cfg, spec, emit, {
+        verify: verifyEnvironment,
+        reconnectForMs,
+        replyMs: config.replyMs ?? REPLY_MS,
+        settleMs: config.settleMs ?? SETTLE_MS,
+      });
     },
   };
 }

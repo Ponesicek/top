@@ -17,6 +17,7 @@ import {
   type SkillFolder,
   type SkillFolderAdded,
   type SkillsView,
+  type T3CodeView,
   type TaskAnswers,
   type TaskView,
   type UpdateView,
@@ -72,6 +73,8 @@ export type {
   SkillsView,
   SkillUse,
   SkillView,
+  T3CodeProvider,
+  T3CodeView,
   TaskAnswers,
   TaskInputView,
   TaskQuestion,
@@ -362,6 +365,21 @@ export class TopClient {
 
   cancelTask(task: string): Promise<void> {
     return this.#command({ t: "cancelTask", task });
+  }
+
+  /** Checks Top's T3 Code connection now (T3 Code is asked; nothing is polled). */
+  t3code(): Promise<T3CodeView> {
+    return this.#request({ t: "t3code" });
+  }
+
+  /** Pairs the daemon with the T3 Code at `address`, trading `code` (a pairing code or link) for Top's own session. */
+  t3codeConnect(address: string, code: string, plainHttp: boolean): Promise<T3CodeView> {
+    return this.#request({ t: "t3codeConnect", address, code, ...(plainHttp ? { plainHttp } : {}) });
+  }
+
+  /** Forgets the saved session; it lives on in T3 Code until it expires or is revoked there. */
+  t3codeDisconnect(): Promise<void> {
+    return this.#command({ t: "t3codeDisconnect" });
   }
 
   #request<F extends RequestFrame>(frame: F): Promise<ResultOf<F["t"]>> {

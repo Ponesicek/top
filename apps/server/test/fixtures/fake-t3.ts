@@ -13,6 +13,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   let token = "good-token";
   let environmentId = options.environmentId ?? "env-1";
   const tickets = new Set<string>();
+  const codes = new Set<string>();
+  const exchanges: { scope: string; label: string }[] = [];
   const threads = new Map<string, Thread>();
   const receipts = new Map<string, unknown>();
   const requests: { tag: string; payload: Rec }[] = [];
@@ -279,6 +281,21 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         orchestrationProtocolVersion: options.protocol ?? 2,
         capabilities: {},
       });
+    if (url.pathname === "/oauth/token" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        const form = new URLSearchParams(body);
+        exchanges.push({ scope: form.get("scope") ?? "", label: form.get("client_label") ?? "" });
+        const code = form.get("subject_token") ?? "";
+        // A code works once.
+        if (!codes.delete(code)) return json(res, 400, { error: "invalid_grant", reason: "invalid_bootstrap_credential" });
+        json(res, 200, { access_token: token, token_type: "Bearer" });
+      });
+      return;
+    }
     if (url.pathname === "/api/auth/session")
       return json(res, 200, authorized(req) ? { authenticated: true, scopes: ["orchestration:read", "orchestration:operate"] } : { authenticated: false });
     if (url.pathname === "/api/auth/websocket-ticket/rpc" && req.method === "POST") {
@@ -319,6 +336,13 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     requests,
     faults,
     hits,
+    exchanges,
+    /** A one-time pairing code, like `t3 auth pairing create` makes. */
+    pairingCode: () => {
+      const code = `PAIR${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+      codes.add(code);
+      return code;
+    },
     /** Like the user stopping or finishing a run in T3 Code itself. */
     finish: (threadId: string, runId: string, text: string, status = "completed") => finish(threads.get(threadId)!, runId, text, status),
     runsOf: (threadId: string) => [...(threads.get(threadId)?.runs.values() ?? [])],

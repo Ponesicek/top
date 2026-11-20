@@ -8,9 +8,10 @@ import * as Effect from "effect/Effect";
 import { afterAll, test } from "vitest";
 import { textOf } from "../src/messages.ts";
 import type { StoredEntry } from "../src/store.ts";
-import { credentialOf } from "../src/t3cli.ts";
+import * as T3Link from "../src/t3link.ts";
 import type { StartRequest, Tasks } from "../src/tasks/coordinator.ts";
-import { plainHttpExposed, readT3Config, t3Origin, writeT3Config } from "../src/tasks/t3api.ts";
+import { fakeHarness } from "../src/tasks/fake.ts";
+import { credentialOf, plainHttpExposed, readT3Config, t3Origin, writeT3Config } from "../src/tasks/t3api.ts";
 import { itemLog, T3CODE, t3Answers, t3codeAdapter } from "../src/tasks/t3code.ts";
 import { type FakeT3, fakeT3 } from "./fixtures/fake-t3.ts";
 import { type Harness, harness, until } from "./harness.ts";
@@ -537,4 +538,70 @@ test("the credential file is written for its owner only", async () => {
   assert.equal((await readT3Config(file))?.token, "t");
   writeFileSync(file, "{}");
   await assert.rejects(readT3Config(file), /missing its address or credential/);
+});
+
+const linked = <A, E>(file: string, use: (link: T3Link.T3Link["Service"]) => Effect.Effect<A, E>) =>
+  Effect.runPromise(Effect.flatMap(Effect.service(T3Link.T3Link), use).pipe(Effect.provide(T3Link.layer(file))));
+const linkFailure = async <A, E>(file: string, use: (link: T3Link.T3Link["Service"]) => Effect.Effect<A, E>) => {
+  const result = await linked(file, (link) => Effect.result(use(link)));
+  assert.equal(result._tag, "Failure", "it should be refused");
+  return (result as { failure: { message: string } }).failure.message;
+};
+
+test("Settings pairs with a code or link, checks the connection and forgets it; the credential never comes back", async () => {
+  const t3 = await fakeT3();
+  servers.push(t3);
+  const file = join(mkdtempSync(join(tmpdir(), "top-t3-link-")), "server", "t3code.json");
+  assert.deepEqual(await linked(file, (link) => link.view), {}, "not connected");
+
+  const connected = await linked(file, (link) => link.connect(` ${t3.origin}/ `, `${t3.origin}/pair#token=${t3.pairingCode()}`, false));
+  assert.equal(connected.url, t3.origin);
+  assert.equal(connected.label, "fake");
+  assert.equal(connected.error, undefined);
+  assert.deepEqual(
+    connected.projects?.map((p) => p.path),
+    ["/srv/app"],
+  );
+  assert.equal(connected.providers?.[0]?.id, "claudeAgent");
+  assert.equal(connected.providers?.[0]?.defaultModel, "claude-opus-5-5");
+  assert.deepEqual(t3.exchanges, [{ scope: "orchestration:read orchestration:operate", label: "Top" }], "Top asks for its own, narrowed session");
+  assert.equal((await readT3Config(file))?.token, t3.token());
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.ok(!JSON.stringify(connected).includes(t3.token()), "the view never carries the credential");
+  assert.deepEqual(await linked(file, (link) => link.view), connected, "checking again finds the same");
+
+  // A spent code changes nothing; nor does plain HTTP to another computer, refused before anything is sent.
+  assert.match(await linkFailure(file, (link) => link.connect(t3.origin, "PAIRSPENT", false)), /didn't take that code/);
+  assert.match(
+    await linkFailure(file, (link) => link.connect("http://192.168.1.4:3773", t3.pairingCode(), false)),
+    /plain HTTP to another computer.*switch on "Allow plain HTTP"/,
+  );
+  assert.equal(t3.exchanges.length, 2, "the plain-HTTP code never left Top");
+  assert.equal((await readT3Config(file))?.url, t3.origin, "the connection Top had stays");
+
+  t3.revoke();
+  const revoked = await linked(file, (link) => link.view);
+  assert.equal(revoked.url, t3.origin);
+  assert.match(revoked.error ?? "", /no longer accepts Top's credential.*Settings → T3 Code/);
+
+  await linked(file, (link) => link.disconnect);
+  assert.equal(await readT3Config(file), undefined);
+  assert.deepEqual(await linked(file, (link) => link.view), {});
+});
+
+test("task_start offers T3 Code from the next turn after Top pairs with it, and stops when it disconnects", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "top-t3-offer-"));
+  const file = join(dir, "t3code.json");
+  const h = await harness({ dir, harnesses: [fakeHarness(), t3codeAdapter({ file })] });
+  await h.run(h.daemon.start);
+  const offered = () => {
+    const tool = h.daemon.toolsOf(h.bot).find((t) => t.name === "collar__task_start")!;
+    const parameters = tool.parameters as unknown as { properties: { harness: { enum: string[] } } };
+    return { harnesses: parameters.properties.harness.enum, described: tool.description.includes('"t3code" (T3 Code)') };
+  };
+  assert.deepEqual(offered(), { harnesses: ["fake"], described: false }, "not offered before pairing");
+  await writeT3Config(file, { url: "http://127.0.0.1:1", token: "t", environmentId: "e", label: "x", serverVersion: "1", connectedAt: "now" });
+  assert.deepEqual(offered(), { harnesses: ["fake", "t3code"], described: true });
+  await linked(file, (link) => link.disconnect);
+  assert.deepEqual(offered(), { harnesses: ["fake"], described: false }, "gone again once Top forgets it");
 });

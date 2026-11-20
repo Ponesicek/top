@@ -12,6 +12,7 @@ import {
   type ResultOf,
   type ServerFrame,
   SkillError,
+  T3CodeError,
   TaskError,
 } from "@top/protocol";
 import * as Clock from "effect/Clock";
@@ -57,7 +58,8 @@ export type RequestFailure =
   | McpServerError
   | AskError
   | SkillError
-  | TaskError;
+  | TaskError
+  | T3CodeError;
 
 const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   BotError: (message) => new BotError({ message }),
@@ -67,6 +69,7 @@ const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   AskError: (message) => new AskError({ message }),
   SkillError: (message) => new SkillError({ message }),
   TaskError: (message) => new TaskError({ message }),
+  T3CodeError: (message) => new T3CodeError({ message }),
 };
 
 const numbered = (frame: RequestFrame, req: number): ClientFrame => ({ ...frame, req });

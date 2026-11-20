@@ -1,8 +1,8 @@
 import { type TaskError, taskEnded } from "@top/protocol";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
-import { DEFAULT_READ, MAX_READ, type ReadResult, type Snapshot, type Tasks } from "../tasks/coordinator.ts";
-import { CAPABILITY_NOTES, type Capabilities } from "../tasks/harness.ts";
+import { DEFAULT_READ, MAX_READ, type ReadResult, type Snapshot } from "../tasks/coordinator.ts";
+import { CAPABILITY_NOTES, type Capabilities, type HarnessAdapter } from "../tasks/harness.ts";
 import type { TaskInputRow } from "../tasks/store.ts";
 import { defineTool, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup } from "./index.ts";
@@ -63,8 +63,8 @@ const capabilityList = (capabilities: Capabilities) =>
     .map(([name]) => name)
     .join(", ");
 
-function harnessLines(tasks: Tasks): string {
-  return tasks.adapters
+function harnessLines(adapters: readonly HarnessAdapter[]): string {
+  return adapters
     .map((a) => {
       const options = Object.entries(a.options.properties)
         .map(([name, schema]) => `${name}${(schema as { description?: string }).description ? ` (${(schema as { description?: string }).description})` : ""}`)
@@ -86,7 +86,8 @@ const ids = { id: Type.String({ description: "The task's id, from collar__task_s
 export const tasksGroup: CollarGroup = (daemon) => {
   const tasks = daemon.tasks;
   if (!tasks?.adapters.length) return [];
-  const harnesses = tasks.adapters.map((a) => a.id);
+  const offered = daemon.harnesses ?? tasks.adapters;
+  const harnesses = offered.map((a) => a.id);
   const capabilityHelp = Object.entries(CAPABILITY_NOTES)
     .map(([name, note]) => `${name}: ${note}`)
     .join("; ");
@@ -99,12 +100,12 @@ export const tasksGroup: CollarGroup = (daemon) => {
         "Hand a coding task to a full coding agent harness on this computer, which works on it in the background with its own tools: read and edit files, run commands, test.",
         "It returns at once with a task id. When the task ends you get a message with its answer, even when you're idle, so don't poll: carry on, or end your turn.",
         "Harnesses here:",
-        harnessLines(tasks),
+        harnessLines(offered),
         `Capabilities: ${capabilityHelp}.`,
         "The harness runs with full access, as the user running Top: no sandbox and no approval prompts. Only start work you would do yourself, in the folder it belongs in.",
         "Questions it asks come to you as a message (answer with collar__task_respond) and to the user on a card.",
         "`cwd` defaults to your own folder.",
-        ...tasks.adapters
+        ...offered
           .filter((a) => a.locate)
           .map((a) => `"${a.id}" runs on another computer: its \`cwd\` is a folder there, one of its projects, and is checked there.`),
         "A task is one piece of work in a session. To continue a session later (it keeps the conversation), start a new task with `session`; `fork: true` branches it instead.",

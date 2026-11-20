@@ -298,7 +298,15 @@ const make = Effect.gen(function* () {
         { deliver: queued, publish: (views) => events.publish({ _tag: "Tasks", views }) },
       )
     : undefined;
-  const collar = collarTools({ store, jobs, wakes, asks, tasks, changed, toolsOf });
+  // `task_start` lists the harnesses offered now (T3 Code while it's connected), so Collar's tools are made again when that changes.
+  let collarNow: { readonly offered: string; readonly tools: readonly TopTool[] } | undefined;
+  const collar = () => {
+    const harnesses = tasks?.adapters.filter((a) => a.offered?.() ?? true);
+    const offered = harnesses?.map((a) => a.id).join(" ") ?? "";
+    if (collarNow?.offered !== offered)
+      collarNow = { offered, tools: collarTools({ store, jobs, wakes, asks, tasks, harnesses, changed, toolsOf }).map(secrets.guard) };
+    return collarNow.tools;
+  };
   const skills = kit.skills
     ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
     : undefined;
@@ -312,11 +320,11 @@ const make = Effect.gen(function* () {
           if (!isLive()) return Effect.void;
           return Effect.andThen(events.publish({ _tag: "Entry", entry }), entry.kind !== "system" ? touch(bot.id) : Effect.void);
         });
-      const own = [...(typeof kit.tools === "function" ? yield* kit.tools(bot) : kit.tools), ...collar].map(secrets.guard);
+      const own = (typeof kit.tools === "function" ? yield* kit.tools(bot) : kit.tools).map(secrets.guard);
       const servers = () => (mcp ? mcp.toolsFor(bot.id).map(secrets.guard) : []);
-      toolSources.set(bot.id, () => [...own, ...servers()]);
+      toolSources.set(bot.id, () => [...own, ...collar(), ...servers()]);
       const wrapped = own.map(jobs.wrap);
-      const tools = () => [...wrapped, ...servers().map(jobs.wrap)];
+      const tools = () => [...wrapped, ...[...collar(), ...servers()].map(jobs.wrap)];
       const fixed = kit.sections ? yield* kit.sections(bot) : undefined;
       const searchOn = Effect.map(store.bot(bot.id), (row) => row?.webSearch === true);
       const folder = kit.folder?.(bot);

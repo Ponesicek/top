@@ -11,6 +11,7 @@ import { Skills } from "./Skills.tsx";
 const SCALE_OPTIONS = SCALES.map((s) => ({ value: String(s), label: `${Math.round(s * 100)}%` }));
 
 import { Row, Section, Segmented } from "./SettingsSection.tsx";
+import { T3CodeSettings } from "./T3CodeSettings.tsx";
 import { UpdateSettings } from "./UpdateSettings.tsx";
 import { Switch } from "./ui/switch.tsx";
 import { WebSearch } from "./WebSearch.tsx";
@@ -88,6 +89,7 @@ export function Settings({
           <WebSearch />
           <McpServers />
           <Skills />
+          <T3CodeSettings />
           <DaemonSettings />
           <UpdateSettings />
           <Section title="Performance">
