@@ -1,7 +1,5 @@
 import type { BotId } from "@top/client";
 import { useCallback, useEffect, useState } from "react";
-import { type AvatarStyle, applyAvatarStyle, readAvatarStyle } from "./avatarStyle.ts";
-import { type ChatStyle, readChatStyle, readShowTools, saveChatStyle, saveShowTools } from "./chatStyle.ts";
 import { NewBotDialog } from "./components/BotDialogs.tsx";
 import { SignInGate } from "./components/ChatGPT.tsx";
 import { Composer } from "./components/Composer.tsx";
@@ -16,6 +14,7 @@ import { Transcript } from "./components/Transcript.tsx";
 import { UpdatePopup } from "./components/UpdatePopup.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
+import { readShowTools, saveShowTools } from "./display.ts";
 import { togglePanel, useBotFiles, usePanel } from "./files.ts";
 import { cn } from "./lib/utils.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
@@ -58,20 +57,10 @@ export function App() {
   });
   const [hud, setHudState] = useState(readPerfHud);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [chatStyle, setChatStyleState] = useState<ChatStyle>(readChatStyle);
-  const setChatStyle = useCallback((style: ChatStyle) => {
-    setChatStyleState(style);
-    saveChatStyle(style);
-  }, []);
   const [showTools, setShowToolsState] = useState(readShowTools);
   const setShowTools = useCallback((on: boolean) => {
     setShowToolsState(on);
     saveShowTools(on);
-  }, []);
-  const [avatarStyle, setAvatarStyleState] = useState<AvatarStyle>(readAvatarStyle);
-  const setAvatarStyle = useCallback((style: AvatarStyle) => {
-    setAvatarStyleState(style);
-    applyAvatarStyle(style);
   }, []);
   const [scale, setScaleState] = useState<Scale>(readScale);
   const setScale = useCallback((next: Scale) => {
@@ -167,12 +156,8 @@ export function App() {
             <Settings
               perfHud={hud}
               onPerfHudChange={setPerfHud}
-              chatStyle={chatStyle}
-              onChatStyleChange={setChatStyle}
               showTools={showTools}
               onShowToolsChange={setShowTools}
-              avatarStyle={avatarStyle}
-              onAvatarStyleChange={setAvatarStyle}
               scale={scale}
               onScaleChange={setScale}
             />
@@ -183,7 +168,7 @@ export function App() {
                 className="pointer-events-none relative z-2 h-0 after:absolute after:top-0 after:right-2.5 after:left-0 after:h-6 after:bg-linear-to-b after:from-background after:from-25% after:to-transparent"
                 aria-hidden
               />
-              <Transcript key={String(bot.id)} sync={sync} style={chatStyle} showTools={showTools} />
+              <Transcript key={String(bot.id)} sync={sync} showTools={showTools} />
               <Composer key={`c${bot.id}`} sync={sync} name={bot.name} />
             </>
           ) : ready ? (

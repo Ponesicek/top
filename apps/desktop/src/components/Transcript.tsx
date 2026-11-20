@@ -1,10 +1,8 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ConversationSnapshot, ConversationSync } from "@top/client";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import type { ChatStyle } from "../chatStyle.ts";
 import { openFile } from "../files.ts";
 import { copyCode } from "../lib/copyCode.ts";
-import { cn } from "../lib/utils.ts";
 import { perf } from "../perf.ts";
 import { findPassage, onJump } from "../quotes.ts";
 import { committedRows, type DisplayRow, displayRows, isWorking, type Row, tailRows, taskQuestionRows } from "../rows.ts";
@@ -16,9 +14,7 @@ import { highlight, QuoteMenu } from "./Quotes.tsx";
 import { AgentReceipt, TaskQuestionCard } from "./transcript/AgentCards.tsx";
 import { AskCard } from "./transcript/AskCard.tsx";
 import { renderChatRow } from "./transcript/ChatRows.tsx";
-import { renderDefaultRow } from "./transcript/DefaultRows.tsx";
-import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider, type RowRenderer } from "./transcript/parts.tsx";
-import { renderTeamRow } from "./transcript/TeamRows.tsx";
+import { AutoLoad, type BotIdentity, DIVIDER, IdentityProvider } from "./transcript/parts.tsx";
 
 const BOTTOM_SLACK = 48;
 const scrollMemory = new Map<string, { offset: number; atBottom: boolean }>();
@@ -35,11 +31,7 @@ function estimate(row: DisplayRow | undefined): number {
   return 48;
 }
 
-const STYLES: Record<ChatStyle, { render: RowRenderer; scroll?: string; inner: string; row: string; files: string }> = {
-  default: { render: renderDefaultRow, inner: "max-w-220", row: "px-8 narrow:px-4", files: "pl-10" },
-  team: { render: renderTeamRow, inner: "max-w-none", row: "px-0", files: "pr-4 pl-18" },
-  chat: { render: renderChatRow, inner: "max-w-240", row: "px-[5%] narrow:px-2", files: "pl-2" },
-};
+const FILES = "pl-2";
 
 function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: boolean, bot: number): DisplayRow[] {
   const committed = committedRows(snapshot.items);
@@ -57,16 +49,7 @@ function useRows(snapshot: ConversationSnapshot, working: boolean, showTools: bo
   return rows;
 }
 
-export const Transcript = memo(function Transcript({
-  sync,
-  style = "default",
-  showTools = false,
-}: {
-  sync: ConversationSync;
-  style?: ChatStyle;
-  showTools?: boolean;
-}) {
-  const look = STYLES[style];
+export const Transcript = memo(function Transcript({ sync, showTools = false }: { sync: ConversationSync; showTools?: boolean }) {
   const snapshot = useConversation(sync);
   const name = useClient((s) => s.bots.find((b) => b.id === sync.id)?.name ?? "");
   const avatar = useClient((s) => s.bots.find((b) => b.id === sync.id)?.avatar);
@@ -186,33 +169,17 @@ export const Transcript = memo(function Transcript({
 
   const loadEarlier = useCallback(() => sync.loadEarlier(), [sync]);
 
-  const hoveredTurn = useRef<string | null>(null);
-  const turnStyle = useRef<HTMLStyleElement>(null);
-  const markTurn = useCallback((turn: string | null) => {
-    if (turn === hoveredTurn.current || !turnStyle.current) return;
-    hoveredTurn.current = turn;
-    turnStyle.current.textContent = turn ? `.turn-time[data-turn-time="${CSS.escape(turn)}"]{opacity:1}` : "";
-  }, []);
-  const onMouseOver = useCallback(
-    (event: React.MouseEvent) => markTurn((event.target as HTMLElement).closest("[data-turn]")?.getAttribute("data-turn") ?? null),
-    [markTurn],
-  );
-  const onMouseLeave = useCallback(() => markTurn(null), [markTurn]);
-
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents lint/a11y/useKeyWithMouseEvents: delegation, see above
+    // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: delegation, see above
     <div
-      className={cn("transcript relative flex-1 overflow-y-auto bg-background [contain:strict] [overflow-anchor:none] [scrollbar-gutter:stable]", look.scroll)}
+      className="transcript relative flex-1 overflow-y-auto bg-background [contain:strict] [overflow-anchor:none] [scrollbar-gutter:stable]"
       ref={scrollRef}
       onScroll={onScroll}
       onClick={onClick}
-      onMouseOver={style === "default" ? onMouseOver : undefined}
-      onMouseLeave={style === "default" ? onMouseLeave : undefined}
     >
-      <style ref={turnStyle} />
       <QuoteMenu bot={String(sync.id)} container={scrollRef} />
       <IdentityProvider value={identity}>
-        <div ref={innerRef} className={cn("relative mx-auto w-full", look.inner)} style={{ height: virtualizer.getTotalSize() }}>
+        <div ref={innerRef} className={"relative mx-auto w-full max-w-240"} style={{ height: virtualizer.getTotalSize() }}>
           {items.map((item) => {
             const row = rows[item.index]!;
             return (
@@ -220,7 +187,7 @@ export const Transcript = memo(function Transcript({
                 key={item.key}
                 data-index={item.index}
                 ref={virtualizer.measureElement}
-                className={cn("row absolute left-0 w-full", look.row)}
+                className={"row absolute left-0 w-full px-[5%] narrow:px-2"}
                 style={{ top: item.start }}
               >
                 {row.kind === "earlier" ? (
@@ -230,15 +197,15 @@ export const Transcript = memo(function Transcript({
                 ) : row.kind === "wake" ? null : row.kind === "notice" ? (
                   <div className={DIVIDER}>{row.text}</div>
                 ) : row.kind === "files" ? (
-                  <FilesLine row={row} bot={sync.id} className={look.files} />
+                  <FilesLine row={row} bot={sync.id} className={FILES} />
                 ) : row.kind === "ask" ? (
-                  <AskCard row={row} className={look.files} />
+                  <AskCard row={row} className={FILES} />
                 ) : row.kind === "agent" ? (
-                  <AgentReceipt row={row} className={look.files} />
+                  <AgentReceipt row={row} className={FILES} />
                 ) : row.kind === "taskQuestion" ? (
-                  <TaskQuestionCard row={row} className={look.files} />
+                  <TaskQuestionCard row={row} className={FILES} />
                 ) : (
-                  look.render(rows, item.index)
+                  renderChatRow(rows, item.index)
                 )}
               </div>
             );
