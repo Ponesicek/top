@@ -601,6 +601,8 @@ test("Settings pairs with a code or link, checks the connection and forgets it; 
   const labelFile = join(mkdtempSync(join(tmpdir(), "top-t3-label-")), "t3code.json");
   await linked(labelFile, (link) => link.connect(labelled.origin, labelCode, false));
   assert.equal((await readT3Config(labelFile))?.label, "box [hidden]");
+  const health = await t3codeAdapter({ file: labelFile }).check();
+  assert.ok(health.ok && !health.version.includes(labelCode), "a task's log names T3 Code by the label Top saved");
   assert.ok(!JSON.stringify(await linked(labelFile, (link) => link.view)).includes(labelCode));
 
   t3.revoke();

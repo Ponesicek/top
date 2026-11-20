@@ -171,7 +171,7 @@ export function t3codeAdapter(config: T3CodeConfig): HarnessAdapter {
         const cfg = await load();
         const descriptor = await verifyEnvironment(cfg);
         await checkSession(cfg.url, cfg.token);
-        return { ok: true, version: `${descriptor.serverVersion} on ${descriptor.label} (${cfg.url})` };
+        return { ok: true, version: `${descriptor.serverVersion} on ${cfg.label} (${cfg.url})` };
       } catch (error) {
         return { ok: false, error: message(error) };
       }
