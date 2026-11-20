@@ -51,49 +51,59 @@ export type OutputHider = {
 
 const MARKER = Buffer.from(HIDDEN);
 
+type Span = { start: number; end: number; shown: boolean };
+
 /**
  * Hides `values()` in a stream of output chunks, also when a value is split between chunks or values
- * overlap. Each chunk is scanned once per value; overlapping matches are hidden as one.
+ * overlap. A value found once stays hidden even if it stops being saved before its chunk is out.
+ * Each chunk is scanned once per value, and at most the longest value's length less one byte is held.
  */
 export function outputHider(values: () => readonly string[]): OutputHider {
   let carry = Buffer.alloc(0);
+  // Spans in `carry` already decided: `shown` ones have had their marker written.
+  let decided: Span[] = [];
   const hide = (buf: Buffer, final: boolean): Buffer => {
     const needles = values().map((v) => Buffer.from(v));
-    carry = Buffer.alloc(0);
-    if (!needles.length) return buf;
-    // Hold back from the first place a value may continue in the next chunk.
+    const spans: Span[] = decided;
+    decided = [];
+    for (const needle of needles) {
+      for (let at = buf.indexOf(needle); at >= 0; at = buf.indexOf(needle, at + 1)) spans.push({ start: at, end: at + needle.length, shown: false });
+    }
+    // Hold back from the first place a value may go on in the next chunk.
     let hold = buf.length;
-    if (!final) {
+    if (!final && needles.length) {
       const longest = Math.max(...needles.map((n) => n.length));
       for (let start = Math.max(0, buf.length - longest + 1); start < buf.length && hold === buf.length; start++) {
         const tail = buf.subarray(start);
         if (needles.some((n) => n.length > tail.length && n.subarray(0, tail.length).equals(tail))) hold = start;
       }
     }
-    const spans: [number, number][] = [];
-    for (const needle of needles) {
-      for (let at = buf.indexOf(needle); at >= 0; at = buf.indexOf(needle, at + 1)) spans.push([at, at + needle.length]);
+    spans.sort((x, y) => x.start - y.start);
+    const merged: Span[] = [];
+    for (const span of spans) {
+      const last = merged.at(-1);
+      if (last && span.start < last.end) {
+        last.end = Math.max(last.end, span.end);
+        last.shown ||= span.shown;
+      } else merged.push({ ...span });
     }
-    spans.sort((x, y) => x[0] - y[0]);
     const out: Buffer[] = [];
     let pos = 0;
-    let i = 0;
-    while (i < spans.length) {
-      let [start, end] = spans[i]!;
-      for (i++; i < spans.length && spans[i]![0] <= end; i++) end = Math.max(end, spans[i]![1]);
-      if (end > hold) {
-        hold = Math.min(hold, start);
-        break;
-      }
-      out.push(buf.subarray(pos, start), MARKER);
-      pos = end;
+    let next = 0;
+    for (; next < merged.length && merged[next]!.start < hold; next++) {
+      const span = merged[next]!;
+      out.push(buf.subarray(pos, span.start));
+      if (!span.shown) out.push(MARKER);
+      pos = span.end;
     }
-    out.push(buf.subarray(pos, Math.max(pos, hold)));
-    carry = Buffer.from(buf.subarray(Math.max(pos, hold)));
+    if (pos < hold) out.push(buf.subarray(pos, hold));
+    carry = Buffer.from(buf.subarray(hold));
+    if (pos > hold) decided.push({ start: 0, end: pos - hold, shown: true });
+    for (const span of merged.slice(next)) decided.push({ start: span.start - hold, end: span.end - hold, shown: span.shown });
     return Buffer.concat(out);
   };
   return {
-    write: (chunk) => hide(carry.length ? Buffer.concat([carry, chunk]) : chunk, false),
+    write: (chunk) => (!carry.length && !values().length ? chunk : hide(carry.length ? Buffer.concat([carry, chunk]) : chunk, false)),
     end: () => hide(carry, true),
   };
 }

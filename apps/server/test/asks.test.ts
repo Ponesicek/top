@@ -481,11 +481,43 @@ test("saved secrets are hidden in a command's output as it streams, also when on
   values = ["abcd", "cdXY"];
   assert.equal(run(["1abcd", "XY2"]), `1${HIDDEN}2`, "overlapping values are hidden as one");
 
+  values = ["tok_shared", "tok_shared_PRIVATE_9931"];
+  const deferred = outputHider(() => values);
+  const before = deferred.write(Buffer.from("a tok_shared"));
+  values = [];
+  assert.equal(
+    Buffer.concat([before, deferred.write(Buffer.from(" b")), deferred.end()]).toString(),
+    `a ${HIDDEN} b`,
+    "a value found while it was saved stays hidden when it stops being saved before its chunk is out",
+  );
+
+  values = ["abcd", "efgh"];
+  assert.equal(run(["1abcdefgh2"]), run(["1abcd", "efgh2"]), "adjacent values come out the same however the output is split");
+
+  values = ["0000"];
+  const zeros = outputHider(() => values);
+  const outs = Array.from({ length: 16 }, () => zeros.write(Buffer.alloc(65_536, "0")));
+  assert.deepEqual(
+    outs.map((o) => o.toString()),
+    [HIDDEN, ...Array(15).fill("")],
+    "a long run of matches is hidden as it streams, not held back to the end",
+  );
+  assert.equal(Buffer.concat([...outs, zeros.end()]).toString(), HIDDEN, "and is hidden once");
+
   values = ["tok_gone_4411"];
   const expiring = outputHider(() => values);
   const held = expiring.write(Buffer.from("x tok_go"));
   values = [];
   assert.equal(Buffer.concat([held, expiring.write(Buffer.from("ne y")), expiring.write(Buffer.from(" z")), expiring.end()]).toString(), "x tok_gone y z");
+});
+
+test("a code a real command printed while it was saved stays hidden when it expires before the command ends", { timeout: 30_000 }, async () => {
+  const h = await harness({ secretTtlMs: 400 });
+  await h.run(h.secrets.save(h.bot, "0000"));
+  const bash = h.secrets.guard(computerTools(h.dir, h.secrets.outputHider).find((t) => t.name === "bash")!);
+  const result = await h.run(bash.run({ command: "printf 0000; sleep 0.8; printf '\\n'" }, { key: "x", bot: h.bot }));
+  const output = textOfContent(result.content);
+  assert.ok(!output.includes("0000") && output.includes(HIDDEN), output);
 });
 
 test("a real command's output, kept or written to pi's temp file, never holds a saved secret, even when it times out", { timeout: 60_000 }, async () => {
