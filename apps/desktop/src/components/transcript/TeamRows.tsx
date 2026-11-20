@@ -126,6 +126,7 @@ const BotMessage = memo(function BotMessage({ row, head }: { row: Extract<Displa
       {row.searches.length > 0 && <WebSearches row={row} className="py-0.5" />}
       {row.text && <Markdown html={html} answer={row.seq} />}
       {row.citations.length > 0 && <Sources citations={row.citations} className="mt-1.5" />}
+      {row.pagesRead && <Sources citations={row.pagesRead} label="Pages read" className="mt-1.5" />}
       {row.error && <AnswerError error={row.error} className="mt-1" />}
     </Shell>
   );
