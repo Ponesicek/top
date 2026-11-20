@@ -12,6 +12,7 @@ import { until } from "./harness.ts";
 const FAKE_CODEX = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
 
 const spec = (over: Partial<OpenSpec> = {}): OpenSpec => ({
+  session: "ses_test",
   cwd: mkdtempSync(join(tmpdir(), "top-harness-")),
   model: undefined,
   options: {},
@@ -49,7 +50,7 @@ test("Codex: a thread runs with full access and approvals off, and the turn's an
   const where = spec();
   const session = await codex.open(where, c.emit);
   assert.deepEqual(c.of("session"), [{ type: "session", externalId: "thr_fake", model: "gpt-fake" }]);
-  await session.run({ text: "say hi", images: [] });
+  await session.run({ key: "k", text: "say hi", images: [] });
   const ended = await until("the turn to end", () => c.of("turn_ended")[0]);
   assert.deepEqual(ended, { type: "turn_ended", status: "completed", result: "hello: say hi" });
   assert.ok(c.of("log").some((e) => e.kind === "file_change" && e.text === "~ a.ts"));
@@ -80,14 +81,14 @@ test("Codex: an approval or question it asks anyway is declined and logged, neve
   const resume = codexLog(log).find((m) => m.method === "thread/resume")!.params!;
   assert.deepEqual([resume.threadId, resume.approvalPolicy, resume.sandbox, resume.excludeTurns], ["thr_old", "never", "danger-full-access", true]);
 
-  await session.run({ text: "approve this", images: [] });
+  await session.run({ key: "k", text: "approve this", images: [] });
   assert.equal((await until("the turn to end", () => c.of("turn_ended")[0])).result, "decision: decline");
   assert.ok(c.of("log").some((e) => e.kind === "error" && /asked to run a command although Top runs it with approvals off; Top declined it/.test(e.text)));
-  await session.run({ text: "a question", images: [] });
+  await session.run({ key: "k", text: "a question", images: [] });
   assert.equal((await until("the second turn", () => c.of("turn_ended")[1])).result, "answer: {}");
   assert.deepEqual(c.of("request"), [], "nothing is put on a card");
 
-  await session.run({ text: "wait for me", images: ["/tmp/x.png"] });
+  await session.run({ key: "k", text: "wait for me", images: ["/tmp/x.png"] });
   await session.steer("go faster");
   const steer = await until("the steer", () => codexLog(log).find((m) => m.method === "turn/steer"));
   assert.equal((steer.params as { expectedTurnId: string }).expectedTurnId, "turn_3");
@@ -213,20 +214,20 @@ test("Claude Code: runs with permission checks off, declines an unexpected appro
   assert.match(String(options.sessionId), /^[0-9a-f-]{36}$/, "a new session has its id before anything runs");
   assert.deepEqual(c.of("session"), [], "no session is claimed before Claude Code confirms it");
 
-  await session.run({ text: "hello", images: [] });
+  await session.run({ key: "k", text: "hello", images: [] });
   await until("the session", () => c.of("session")[0]);
   assert.equal(c.of("session")[0]!.externalId, options.sessionId);
   assert.equal((await until("the turn", () => c.of("turn_ended")[0])).result, "hi: hello");
   assert.ok(c.of("log").some((e) => e.kind === "file_change" && e.text === "~ /w/a.ts"));
   assert.equal(c.of("usage").at(-1)!.usage.costUsd, 0.01);
 
-  await session.run({ text: "approve", images: [] });
+  await session.run({ key: "k", text: "approve", images: [] });
   await until("the second turn", () => c.of("turn_ended")[1]);
   assert.equal((decisions[0] as { behavior: string }).behavior, "deny");
   assert.ok(c.of("log").some((e) => e.kind === "error" && /asked to allow Bash although permission checks are off; Top declined it/.test(e.text)));
   assert.deepEqual(c.of("request"), [], "no approval card");
 
-  await session.run({ text: "ask me", images: [] });
+  await session.run({ key: "k", text: "ask me", images: [] });
   const question = await until("the question", () => c.of("request")[0]?.request);
   assert.deepEqual(question.questions, [
     { id: "q1", question: "Which colour?", header: "Colour", options: [{ label: "red" }, { label: "blue" }], multiple: true },
@@ -244,7 +245,7 @@ test("Claude Code: a resumed session keeps its id and a branch gets a new one; a
   const claude = claudeAdapter({ command: "/bin/true", query: fake.query });
   const c = collect();
   const resumed = await claude.open(spec({ resume: "old-id" }), c.emit);
-  await resumed.run({ text: "go on", images: [] });
+  await resumed.run({ key: "k", text: "go on", images: [] });
   await until("the turn", () => c.of("turn_ended")[0]);
   await resumed.close();
   assert.equal(fake.runs[0]!.options.resume, "old-id");
@@ -274,7 +275,7 @@ test("Claude Code: a steer that lands as the turn ends is answered before the tu
   const claude = claudeAdapter({ command: "/bin/true", query: fake.query });
   const c = collect();
   const session = await claude.open(spec(), c.emit);
-  await session.run({ text: "work", images: [] });
+  await session.run({ key: "k", text: "work", images: [] });
   await until("the first message", () => fake.runs[0]!.messages.length === 1);
   await session.steer("also do this");
   const ended = await until("the turn", () => c.of("turn_ended")[0]);
@@ -292,7 +293,7 @@ test("Claude Code: cancelling between a turn's answer and its steered follow-up 
   const claude = claudeAdapter({ command: "/bin/true", query: fake.query });
   const c = collect();
   const session = await claude.open(spec(), c.emit);
-  await session.run({ text: "work", images: [] });
+  await session.run({ key: "k", text: "work", images: [] });
   await session.steer("and this");
   await until("both messages", () => fake.runs[0]!.messages.length === 2);
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -314,7 +315,7 @@ test("Claude Code: a turn whose result can't account for every message still end
   const claude = claudeAdapter({ command: "/bin/true", query: fake.query });
   const c = collect();
   const session = await claude.open(spec(), c.emit);
-  await session.run({ text: "work", images: [] });
+  await session.run({ key: "k", text: "work", images: [] });
   await session.steer("and this");
   const ended = await until("the turn", () => c.of("turn_ended")[0]);
   assert.equal(ended.result, "both done");

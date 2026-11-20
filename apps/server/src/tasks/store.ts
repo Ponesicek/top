@@ -294,11 +294,15 @@ export function makeTaskQueries(
         return { events: found.slice(0, limit), more: found.length > limit };
       }),
     lastEventSeq: (id: string) => Effect.map(first(sql`SELECT MAX(seq) AS seq FROM task_events WHERE task = ${id}`), (row) => Number(row?.seq ?? 0)),
-    firstEventSeq: (id: string) => Effect.map(first(sql`SELECT MIN(seq) AS seq FROM task_events WHERE task = ${id}`), (row) => Number(row?.seq ?? 0)),
+    firstEventSeq: (id: string) =>
+      Effect.map(first(sql`SELECT MIN(seq) AS seq FROM task_events WHERE task = ${id} AND NOT (kind = 'state' AND text = 'cancelling')`), (row) =>
+        Number(row?.seq ?? 0),
+      ),
     pruneEvents: (id: string, keep: number) =>
       Effect.asVoid(
         q(
-          sql`DELETE FROM task_events WHERE task = ${id} AND seq < (SELECT seq FROM task_events WHERE task = ${id} ORDER BY seq DESC LIMIT 1 OFFSET ${keep - 1})`,
+          // The cancel marker stays: a restart reads it to carry the cancel on.
+          sql`DELETE FROM task_events WHERE task = ${id} AND NOT (kind = 'state' AND text = 'cancelling') AND seq < (SELECT seq FROM task_events WHERE task = ${id} ORDER BY seq DESC LIMIT 1 OFFSET ${keep - 1})`,
         ),
       ),
 
@@ -348,6 +352,25 @@ export function makeTaskQueries(
     messageByKey: (key: string) => Effect.map(first(sql`SELECT * FROM task_messages WHERE key = ${key}`), (row) => row && messageOf(row)),
     pendingMessages: (id: string) =>
       Effect.map(rows(sql`SELECT * FROM task_messages WHERE task = ${id} AND state = 'pending' ORDER BY id`), (r) => r.map(messageOf)),
+    /** A cancel Top had started on the task, saved before it was announced, so a restart carries it on. */
+    cancelRequested: (id: string) =>
+      Effect.map(
+        first(sql`SELECT 1 AS found FROM task_events WHERE task = ${id} AND kind = 'state' AND text = 'cancelling' LIMIT 1`),
+        (row) => row !== undefined,
+      ),
+    /** An answer the harness refused: the request waits again. */
+    reopenInput: (id: number) =>
+      Effect.flatMap(
+        first(
+          sql`UPDATE task_inputs SET state = 'pending', answer = NULL, answered_by = NULL, answered_at = NULL WHERE id = ${id} AND state = 'answered' RETURNING id`,
+        ),
+        (row) => (row ? input(id) : Effect.succeed(undefined)),
+      ),
+    lastSentQueued: (id: string) =>
+      Effect.map(
+        first(sql`SELECT * FROM task_messages WHERE task = ${id} AND mode = 'queue' AND state = 'sent' ORDER BY id DESC LIMIT 1`),
+        (row) => row && messageOf(row),
+      ),
     setMessageState: (id: number, state: "sent" | "dropped") =>
       Effect.map(first(sql`UPDATE task_messages SET state = ${state} WHERE id = ${id} AND state = 'pending' RETURNING id`), (row) => row !== undefined),
     dropMessages: (id: string) =>

@@ -15,7 +15,17 @@ import Value from "typebox/value";
 import type { InboxRow } from "../store.ts";
 import { duration } from "../time.ts";
 import { stopped } from "../tools.ts";
-import { clip, type HarnessAdapter, type HarnessAnswer, type HarnessEvent, type HarnessSession, HarnessUnavailable, redact, type Usage } from "./harness.ts";
+import {
+  clip,
+  type HarnessAdapter,
+  type HarnessAnswer,
+  type HarnessEvent,
+  type HarnessSession,
+  HarnessUnavailable,
+  redact,
+  type Turn,
+  type Usage,
+} from "./harness.ts";
 import {
   ACTIVE_STATES,
   type NewEvent,
@@ -114,11 +124,15 @@ export type Tasks = {
 
 type Signal =
   | { readonly type: "harness"; readonly event: HarnessEvent }
-  | { readonly type: "answered"; readonly input: TaskInputRow; readonly answer: HarnessAnswer }
+  | { readonly type: "answered"; readonly input: TaskInputRow; readonly answer: HarnessAnswer; readonly reply: AnswerWait | undefined }
+  | { readonly type: "delivered"; readonly input: TaskInputRow; readonly why: string | undefined }
   | { readonly type: "steer"; readonly message: TaskMessageRow; readonly reply: Deferred.Deferred<string | undefined> }
   | { readonly type: "queued"; readonly message: TaskMessageRow }
   | { readonly type: "cancel" }
   | { readonly type: "cancel_timeout" };
+
+/** Who waits to hear whether the harness took an answer: `task_respond` for a while, then nobody. */
+type AnswerWait = { readonly reply: Deferred.Deferred<string | undefined>; listening: boolean };
 
 type Live = {
   readonly id: string;
@@ -132,6 +146,8 @@ type Live = {
   readonly cancelRequested: Deferred.Deferred<void>;
   fiber: Fiber.Fiber<void> | undefined;
   phase: "pending" | "started";
+  readonly resumed: boolean;
+  readonly cancelOnResume: boolean;
   harness: HarnessSession | undefined;
   turnActive: boolean;
   cancelling: boolean;
@@ -145,6 +161,8 @@ type Live = {
   readonly inputs: Map<number, TaskInputRow>;
   readonly external: Map<string, number>;
   readonly steering: Set<Deferred.Deferred<string | undefined>>;
+  /** Answers sent and not yet confirmed, by input; a resolution in the harness or the turn's end settles them too. */
+  readonly answering: Map<number, { readonly external: string; readonly wait: AnswerWait | undefined }>;
   result: string | undefined;
   usage: Usage | undefined;
   events: number;
@@ -298,6 +316,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             const count = yield* q.dropMessages(live.id);
             for (const reply of live.steering) Deferred.doneUnsafe(reply, Effect.succeed(STEER_TOO_LATE));
             live.steering.clear();
+            settleAnswers(live, "The task ended before the harness confirmed the answer.");
             return count;
           }),
         );
@@ -325,12 +344,14 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     Queue.offerUnsafe(live.signals, { type: "harness", event });
   };
 
-  const runTurn = (live: Live, text: string, images: readonly string[]) =>
+  const queuedTurn = (live: Live, message: TaskMessageRow): Turn => ({ key: `${live.id}:m${message.id}`, text: message.text, images: [] });
+
+  const runTurn = (live: Live, turn: Turn) =>
     Effect.gen(function* () {
       const harness = live.harness!;
       live.turnActive = true;
       const ran = yield* Effect.raceFirst(
-        Effect.result(Effect.tryPromise(() => harness.run({ text, images }))),
+        Effect.result(Effect.tryPromise(() => harness.run(turn))),
         Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const),
       );
       if (ran === "cancelled") return true;
@@ -345,6 +366,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       return true;
     });
 
+  const settleAnswers = (live: Live, outcome: string | undefined) => {
+    for (const { wait } of live.answering.values()) if (wait) Deferred.doneUnsafe(wait.reply, Effect.succeed(outcome));
+    live.answering.clear();
+  };
+
   const cancelInputs = (live: Live) =>
     Effect.gen(function* () {
       for (const input of live.inputs.values()) if (input.external) live.harness?.answer(input.external, { kind: "cancelled" });
@@ -356,10 +382,34 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
   const afterInput = (live: Live) =>
     live.inputs.size === 0 && live.row.state === "waiting_for_input" ? setState(live, ["waiting_for_input"], "running") : Effect.succeed(true);
 
+  /** Sends an answer; whether the harness took it comes back as a `delivered` signal. */
+  const deliver = (live: Live, input: TaskInputRow, external: string, answer: HarnessAnswer, wait: AnswerWait | undefined) =>
+    Effect.gen(function* () {
+      live.answering.set(input.id, { external, wait });
+      const sent = live.harness?.answer(external, answer);
+      if (!sent) {
+        Queue.offerUnsafe(live.signals, { type: "delivered", input, why: undefined });
+        return;
+      }
+      yield* Effect.forkIn(
+        Effect.gen(function* () {
+          const done = yield* Effect.result(Effect.tryPromise(() => sent));
+          const cause = done._tag === "Failure" ? done.failure.cause : undefined;
+          Queue.offerUnsafe(live.signals, {
+            type: "delivered",
+            input,
+            why: done._tag === "Success" ? undefined : cause instanceof Error ? cause.message : String(cause),
+          });
+        }),
+        scope,
+      );
+    });
+
   const handle = (live: Live, signal: Signal): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (live.finished) {
         if (signal.type === "steer") yield* Deferred.succeed(signal.reply, "The task has ended.");
+        if (signal.type === "answered" && signal.reply) yield* Deferred.succeed(signal.reply.reply, "The task has ended.");
         return;
       }
       switch (signal.type) {
@@ -397,6 +447,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                   })),
               }));
               const { input } = yield* q.addInput({ task: live.id, bot: live.bot, external: request.id, title, questions });
+              // Followed again after a restart: an answer Top saved may not have reached the harness, which asks again.
+              if (live.resumed && input.state === "answered" && input.answer) {
+                yield* deliver(live, input, request.id, { kind: "question", answers: (input.answer as TaskAnswer).answers }, undefined);
+                return;
+              }
               if (input.state !== "pending") return;
               live.inputs.set(input.id, input);
               live.external.set(request.id, input.id);
@@ -421,7 +476,15 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             }
             case "resolved": {
               const id = live.external.get(event.id);
-              if (id === undefined) return;
+              if (id === undefined) {
+                // Settled in the harness while Top's answer to it was on its way: nothing to reopen if that answer is refused.
+                for (const [input, sending] of live.answering)
+                  if (sending.external === event.id) {
+                    live.answering.delete(input);
+                    if (sending.wait) yield* Deferred.succeed(sending.wait.reply, undefined);
+                  }
+                return;
+              }
               live.external.delete(event.id);
               live.inputs.delete(id);
               const withdrawn = yield* q.withdrawInput(id);
@@ -432,6 +495,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             }
             case "turn_ended": {
               live.turnActive = false;
+              settleAnswers(live, undefined);
               if (live.inputs.size) yield* cancelInputs(live);
               if (event.status === "completed") {
                 live.result = event.result ?? live.result;
@@ -447,7 +511,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 if (!next) return yield* finish(live, "completed", { result: live.result ?? "" });
                 yield* log(live, "sent", `queued message ${next.id} started a new turn`);
                 if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "running");
-                yield* runTurn(live, next.text, []);
+                yield* runTurn(live, queuedTurn(live, next));
                 return;
               }
               if (live.cancelling) return yield* finish(live, "cancelled");
@@ -466,14 +530,54 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           return;
         }
         case "answered": {
-          const { input, answer } = signal;
+          const { input, answer, reply } = signal;
           live.inputs.delete(input.id);
+          if (input.external && !live.external.has(input.external)) {
+            // The harness settled the request before this answer reached it: nothing to send.
+            yield* log(
+              live,
+              "answer",
+              `request ${input.id}: answered by the ${input.answeredBy ?? "user"} after ${label(live.session.harness)} had settled it`,
+            );
+            if (reply) yield* Deferred.succeed(reply.reply, `${label(live.session.harness)} had already settled request ${input.id}; the answer wasn't sent.`);
+            return;
+          }
           if (input.external) {
             live.external.delete(input.external);
-            live.harness?.answer(input.external, answer);
-          }
+            yield* deliver(live, input, input.external, answer, reply);
+          } else if (reply) yield* Deferred.succeed(reply.reply, undefined);
           yield* log(live, "answer", `request ${input.id}: answered by the ${input.answeredBy ?? "user"}`);
           if (yield* afterInput(live)) yield* changed(live);
+          return;
+        }
+        case "delivered": {
+          const { input, why } = signal;
+          const sending = live.answering.get(input.id);
+          // Already settled: resolved in the harness meanwhile, or the turn ended. Nothing to reopen.
+          if (!sending) return;
+          live.answering.delete(input.id);
+          if (why === undefined) {
+            if (sending.wait) yield* Deferred.succeed(sending.wait.reply, undefined);
+            return;
+          }
+          const said = `${label(live.session.harness)} didn't take the answer to request ${input.id}: ${clip(scrub(why), 400).replace(/\.$/, "")}`;
+          const reopened = yield* q.reopenInput(input.id);
+          if (reopened) {
+            live.inputs.set(reopened.id, reopened);
+            if (reopened.external) live.external.set(reopened.external, reopened.id);
+            yield* log(live, "answer", `${said}. It waits for an answer again.`);
+            if (live.row.state === "running") yield* setState(live, ["running"], "waiting_for_input");
+            else yield* changed(live);
+            // The bot answered, and its task_respond stopped waiting: it hears now.
+            if (input.answeredBy === "bot" && !sending.wait?.listening)
+              yield* notify(
+                live,
+                `reopened:${input.id}:${input.answeredAt ?? 0}`,
+                `[Task ${live.id}] ${said}. Request ${input.id} is waiting again: answer it with collar__task_respond.`,
+                false,
+              );
+          }
+          if (sending.wait) yield* Deferred.succeed(sending.wait.reply, `${said}. The request is waiting again: answer it again.`);
           return;
         }
         case "steer": {
@@ -510,7 +614,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         case "queued":
           yield* log(live, "sent", `queued message ${signal.message.id}: ${firstLine(signal.message.text)}`);
           if (!live.turnActive && live.harness && !live.cancelling && live.row.state === "running" && (yield* q.setMessageState(signal.message.id, "sent")))
-            yield* runTurn(live, signal.message.text, []);
+            yield* runTurn(live, queuedTurn(live, signal.message));
           return;
         case "cancel": {
           if (live.stopping) return;
@@ -520,18 +624,27 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           if (!live.turnActive || !live.harness) return yield* finish(live, "cancelled");
           const harness = live.harness;
           yield* log(live, "status", "cancelling: stopping the turn");
+          // The grace for confirming the stop starts once it was sent. A durable harness may first have to find the turn, and
+          // bounds that itself; a local one gets a bound here, so a stop that hangs still ends the task.
+          const sendingStop = Effect.promise(() => harness.interrupt().catch(() => {}));
           yield* Effect.forkIn(
-            Effect.promise(() => harness.interrupt().catch(() => {})),
-            scope,
-          );
-          yield* Effect.forkIn(
-            Effect.sleep(Duration.millis(cancelGraceMs)).pipe(Effect.andThen(Effect.sync(() => Queue.offerUnsafe(live.signals, { type: "cancel_timeout" })))),
+            (live.adapter.capabilities.durable ? sendingStop : sendingStop.pipe(Effect.timeout(Duration.millis(cancelGraceMs * 2)))).pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.sleep(Duration.millis(cancelGraceMs))),
+              Effect.andThen(Effect.sync(() => Queue.offerUnsafe(live.signals, { type: "cancel_timeout" }))),
+            ),
             scope,
           );
           return;
         }
         case "cancel_timeout":
-          return yield* finish(live, "cancelled");
+          return yield* finish(
+            live,
+            "cancelled",
+            live.adapter.capabilities.durable
+              ? { error: `${label(live.session.harness)} didn't confirm the stop within ${cancelGraceMs / 1000} s; it may still be running there.` }
+              : {},
+          );
       }
     });
 
@@ -555,29 +668,33 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           fork = true;
         }
       }
-      return { cwd: session.cwd, model: session.model ?? undefined, options: session.options, resume, fork };
+      return { session: session.id, cwd: session.cwd, model: session.model ?? undefined, options: session.options, resume, fork };
     });
 
   const runStarted = (live: Live) =>
     Effect.gen(function* () {
       const begun = yield* live.lock.withPermits(1)(
         Effect.gen(function* () {
-          if (live.cancelling) return false;
-          if (!(yield* setState(live, ["queued"], "starting"))) return false;
+          if (live.cancelling && !live.resumed) return false;
+          if (!live.resumed && !(yield* setState(live, ["queued"], "starting"))) return false;
           live.phase = "started";
           return true;
         }),
       );
       if (!begun) return;
       const adapter = live.adapter;
-      const available = yield* Effect.raceFirst(
-        Effect.promise(() => adapter.check().catch((error: unknown) => ({ ok: false as const, error: String(error) }))),
-        Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const),
-      );
+      // Followed again after a restart, a durable harness reconnects within its own window instead of failing on one look.
+      // A recovered task isn't stopped from here: even when cancelled, it goes on to stop the harness's turn below.
+      const available = live.resumed
+        ? { ok: true as const, version: "" }
+        : yield* Effect.raceFirst(
+            Effect.promise(() => adapter.check().catch((error: unknown) => ({ ok: false as const, error: String(error) }))),
+            Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const),
+          );
       if (available === "cancelled") return yield* finish(live, "cancelled");
       if (!available.ok) return yield* finish(live, "failed", { error: available.error });
-      yield* log(live, "status", `${adapter.label} ${available.version}`);
-      if (live.cancelling) return yield* finish(live, "cancelled");
+      if (available.version) yield* log(live, "status", `${adapter.label} ${available.version}`);
+      if (live.cancelling && !live.resumed) return yield* finish(live, "cancelled");
       const spec = yield* specOf(live);
       const opening = adapter.open(spec, emitTo(live));
       const open = Effect.tryPromise(() => opening).pipe(
@@ -591,7 +708,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         ),
         Effect.result,
       );
-      const opened = yield* Effect.raceFirst(open, Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const));
+      const opened = live.resumed ? yield* open : yield* Effect.raceFirst(open, Effect.as(Deferred.await(live.cancelRequested), "cancelled" as const));
       if (opened === "cancelled") return yield* finish(live, "cancelled");
       if (opened._tag === "Failure") {
         const cause = opened.failure.cause;
@@ -600,10 +717,23 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         return yield* finish(live, "failed", { error: message });
       }
       live.harness = opened.success;
-      if (live.cancelling) return yield* finish(live, "cancelled");
-      if (!(yield* setState(live, ["starting"], "running"))) return yield* finish(live, "cancelled");
-      if (live.cancelling) return yield* finish(live, "cancelled");
-      if (!(yield* runTurn(live, live.row.prompt, live.row.images))) return;
+      if (live.cancelling && !live.resumed) return yield* finish(live, "cancelled");
+      if ((!live.resumed || live.row.state === "starting") && !(yield* setState(live, ["starting"], "running"))) return yield* finish(live, "cancelled");
+      // Its answer was saved but the restart came before the task went back to work: the harness asks again if it still waits.
+      if (live.resumed && live.row.state === "waiting_for_input" && live.inputs.size === 0) yield* setState(live, ["waiting_for_input"], "running");
+      if (live.cancelling && !live.resumed) return yield* finish(live, "cancelled");
+      // A durable harness that Top follows again after a restart gets the turn it was on, with the same key, so it takes it once.
+      const sent = live.resumed ? yield* q.lastSentQueued(live.id) : undefined;
+      if (live.resumed) yield* log(live, "status", `following it again after Top restarted`);
+      const turn: Turn = sent ? queuedTurn(live, sent) : { key: live.id, text: live.row.prompt, images: live.row.images };
+      // A cancel started before Top restarted, or since: stop the turn if the harness has it, and never send it.
+      const stopping = live.resumed && (live.cancelOnResume || live.cancelling);
+      if (stopping) {
+        live.cancelling = true;
+        yield* log(live, "status", "cancelled: stopping it in the harness");
+      }
+      if (!(yield* runTurn(live, stopping ? { ...turn, followOnly: true } : turn))) return;
+      if (stopping) Queue.offerUnsafe(live.signals, { type: "cancel" });
       while (!live.finished) yield* handle(live, yield* Queue.take(live.signals));
     }).pipe(Effect.ensuring(closeHarness(live)));
 
@@ -625,7 +755,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       ),
     );
 
-  const spawnLive = (row: TaskRow, session: SessionRow, adapter: HarnessAdapter) =>
+  const spawnLive = (row: TaskRow, session: SessionRow, adapter: HarnessAdapter, resumed = false, cancelOnResume = false) =>
     Effect.gen(function* () {
       const live: Live = {
         id: row.id,
@@ -639,6 +769,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         cancelRequested: yield* Deferred.make<void>(),
         fiber: undefined,
         phase: "pending",
+        resumed,
+        cancelOnResume,
         harness: undefined,
         turnActive: false,
         cancelling: false,
@@ -652,10 +784,17 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         inputs: new Map(),
         external: new Map(),
         steering: new Set(),
+        answering: new Map(),
         result: undefined,
         usage: undefined,
         events: 0,
       };
+      if (resumed)
+        for (const input of yield* q.inputsOf(row.id))
+          if (input.state === "pending") {
+            live.inputs.set(input.id, input);
+            if (input.external) live.external.set(input.external, input.id);
+          }
       lives.set(row.id, live);
       live.fiber = yield* Effect.forkIn(actor(live), scope);
       return live;
@@ -700,6 +839,12 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       return { cwd: real };
     });
 
+  const locate = (adapter: HarnessAdapter & { locate: NonNullable<HarnessAdapter["locate"]> }, raw: string | undefined) =>
+    Effect.tryPromise({
+      try: () => adapter.locate(raw?.trim() || undefined),
+      catch: (error) => new TaskError({ message: error instanceof Error ? error.message : String(error) }),
+    });
+
   const start: Tasks["start"] = (request) =>
     starting.withPermits(1)(
       Effect.gen(function* () {
@@ -728,7 +873,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           if (request.harness !== undefined && request.harness !== source.harness)
             return yield* fail(`Session ${source.id} is ${adapter.label}'s; leave out \`harness\` or use "${source.harness}".`);
           if (request.cwd !== undefined) {
-            const { cwd } = yield* resolveCwd(request.cwd, request.bot);
+            const cwd = adapter.locate ? request.cwd.trim() : (yield* resolveCwd(request.cwd, request.bot)).cwd;
             if (cwd !== source.cwd) return yield* fail(`Session ${source.id} works in ${source.cwd}. Start a new session to work somewhere else.`);
           }
           if (request.fork) {
@@ -771,10 +916,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             return yield* fail(`There's no harness "${harness}". This daemon runs ${[...adapters.keys()].map((h) => `"${h}"`).join(", ") || "none"}.`);
           if (request.fork) return yield* fail("`fork` branches an existing session: give it with `session`.");
           const options = yield* checkOptions(adapter, request.options ?? {});
-          const folder = config.folder ? yield* config.folder(request.bot) : undefined;
+          const folder = adapter.locate || !config.folder ? undefined : yield* config.folder(request.bot);
           const raw = request.cwd ?? folder;
-          if (raw === undefined) return yield* fail("Say which folder it works in with `cwd`.");
-          const { cwd } = yield* resolveCwd(raw, request.bot);
+          if (raw === undefined && !adapter.locate) return yield* fail("Say which folder it works in with `cwd`.");
+          const located = adapter.locate ? yield* locate({ ...adapter, locate: adapter.locate }, raw) : yield* resolveCwd(raw!, request.bot);
+          const cwd = located.cwd;
           images = yield* imagesFor(adapter, cwd);
           session = yield* q.createSession({
             id: newId("ses"),
@@ -782,7 +928,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             harness: adapter.id,
             cwd,
             model: request.model?.trim() || null,
-            options,
+            options: "options" in located && located.options ? { ...options, ...located.options } : options,
             parent: null,
           });
         }
@@ -883,7 +1029,13 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const stored = { answers };
       const answered = yield* q.answerInput(inputId, stored, by);
       if (!answered) return yield* fail(`Request ${inputId} was already answered.`);
-      Queue.offerUnsafe(live.signals, { type: "answered", input: answered, answer: mapped });
+      // The bot hears whether the harness took its answer; the user's card shows it by coming back.
+      const wait: AnswerWait | undefined = by === "bot" ? { reply: yield* Deferred.make<string | undefined>(), listening: true } : undefined;
+      Queue.offerUnsafe(live.signals, { type: "answered", input: answered, answer: mapped, reply: wait });
+      if (!wait) return answered;
+      const outcome = yield* Deferred.await(wait.reply).pipe(Effect.timeoutOption(Duration.millis(STEER_TIMEOUT_MS)));
+      if (outcome._tag === "None") wait.listening = false;
+      else if (outcome.value !== undefined) return yield* fail(outcome.value);
       return answered;
     });
 
@@ -925,17 +1077,23 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           const pending = yield* live.lock.withPermits(1)(
             Effect.gen(function* () {
               live.cancelling = true;
-              if (live.phase !== "pending") return false;
+              // A recovered durable task may be running in the harness before its actor starts: the actor stops it there.
+              if (live.phase !== "pending" || live.resumed) return false;
               if (live.fiber) yield* Fiber.interrupt(live.fiber);
               return true;
             }),
           );
           if (pending) yield* finish(live, "cancelled");
-          else Queue.offerUnsafe(live.signals, { type: "cancel" });
+          else {
+            // Saved before it's acted on, so a durable harness's task is still stopped if Top restarts meanwhile.
+            if (!(yield* q.cancelRequested(live.id)))
+              yield* q.appendEvents([{ task: live.id, bot: live.bot, at: yield* now, kind: "state", text: "cancelling" }]);
+            Queue.offerUnsafe(live.signals, { type: "cancel" });
+          }
           yield* Deferred.succeed(live.cancelRequested, undefined);
         }),
       );
-      yield* Deferred.await(live.done).pipe(Effect.timeout(Duration.millis(cancelGraceMs + 20_000)), Effect.ignore);
+      yield* Deferred.await(live.done).pipe(Effect.timeout(Duration.millis(cancelGraceMs * 3 + 20_000)), Effect.ignore);
       const after = (yield* q.task(row.id))!;
       return { task: after, cancelled: after.state === "cancelled" };
     });
@@ -956,6 +1114,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const adapter = session ? adapters.get(session.harness) : undefined;
       if (session && adapter && row.startedAt === null) {
         yield* spawnLive(row, session, adapter);
+        continue;
+      }
+      if (session && adapter?.capabilities.durable) {
+        yield* spawnLive(row, session, adapter, true, yield* q.cancelRequested(row.id));
         continue;
       }
       cut++;

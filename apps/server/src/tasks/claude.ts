@@ -166,6 +166,7 @@ export function claudeAdapter(config: ClaudeConfig = {}): HarnessAdapter {
       usage: true,
       cancel: true,
       reconnect: true,
+      durable: false,
     },
     options: claudeOptions,
     check: async () => {
