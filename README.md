@@ -425,24 +425,30 @@ its apps use (orchestration protocol 2). Top doesn't use T3 Code's `/mcp` endpoi
 cloud relay. A task becomes a thread in a T3 Code project, run by one of T3 Code's providers; the
 work, the files and the provider sign-ins are all on T3 Code's computer.
 
-- **Connecting.** `top t3code connect <address>` on the daemon's computer. The address is explicit
-  (Top never guesses one) and is checked to answer as T3 Code before anything secret is sent. It then
-  asks for a pairing code, read without echo (or from stdin): make one on T3 Code's computer with
-  `t3 auth pairing create --scope orchestration:read --scope orchestration:operate --label Top`, or
-  take a pairing link from T3 Code's Settings → Sharing & access. Top trades the code for its own
+- **Connecting.** Settings → **T3 Code** → **Connect**, or `top t3code connect <address>` on the daemon's
+  computer. The address is explicit (Top never guesses one) and is checked to answer as T3 Code before
+  anything secret is sent. Then a pairing code: in T3 Code, Settings → Sharing & access makes a pairing
+  link (paste the link or its code), or on T3 Code's computer `t3 auth pairing create --scope
+  orchestration:read --scope orchestration:operate --label Top`. Settings takes it in a password field and
+  the CLI reads it without echo (or from stdin). Top trades the code for its own
   session, narrowed to those two scopes (reading threads and projects; starting, messaging,
   answering and stopping threads), and keeps it in `~/.top/server/t3code.json`, readable by you
-  only. The session lasts 30 days; pair again for a new one. Top remembers the environment it paired with and won't send the credential to an address
-  that now answers as another one. Restart the daemon to offer T3 Code to the bots;
-  `top t3code status` checks the connection and lists T3 Code's providers, models and projects;
-  `top t3code disconnect` forgets it (revoke the session in T3 Code's Sharing & access too).
+  only; it never goes back to the app, the logs or the bots. The session lasts 30 days; pair again for a new one. Top remembers the environment it paired with and won't send the credential to an address
+  that now answers as another one. No restart: the bots are offered T3 Code from their next message
+  after Top pairs, and no longer once it disconnects. Settings (or `top t3code status`) checks the
+  connection when it opens or when you press **Check**, never on a timer, and lists T3 Code's
+  providers, models and projects.
+- **Disconnecting isn't revoking.** **Disconnect** (`top t3code disconnect`) makes Top forget its
+  session: new tasks can't use T3 Code, and a task already running keeps the connection it has until it
+  ends (or Top restarts). The session itself stays valid in T3 Code until it expires; to end it now,
+  revoke it there, in Settings → Sharing & access (or `t3 auth session list` and `t3 auth session revoke <id>`).
 - **Ways to reach it.** `http://127.0.0.1:3773` on the same computer. Over Tailscale, the address of
   T3 Code's Tailscale Serve route (`https://machine.tailnet.ts.net`, from `t3 serve --tailscale-serve`
   or `t3 pair --tailscale` there), or its tailnet address when T3 Code listens on the tailnet (`t3 serve
   --lan` or the background service's local-network choice), plain HTTP that WireGuard encrypts. Over
   SSH, a forward (`ssh -L 3773:127.0.0.1:3773 host`) and `http://127.0.0.1:3773`. Tailscale is only
   the transport: T3 Code's pairing still decides what Top may do. Plain HTTP to anything but this
-  computer takes `--plain-http`, since Top can't tell a tailnet from another network by the address;
+  computer takes `--plain-http` (in Settings, **Allow plain HTTP**), since Top can't tell a tailnet from another network by the address;
   redirects are never followed. HTTPS uses the system's certificate authorities
   (`NODE_EXTRA_CA_CERTS` adds your own). Top changes nothing about Tailscale, T3 Code or either
   computer's network settings.

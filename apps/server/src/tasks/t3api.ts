@@ -34,6 +34,9 @@ export class T3NotSent extends T3Unreachable {}
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
 const str = (value: unknown) => (typeof value === "string" ? value : undefined);
 
+/** How to pair again, for a message about a credential T3 Code no longer takes. */
+export const pairAgain = (origin: string) => `pair again in Top's Settings → T3 Code, or with \`top t3code connect ${origin}\``;
+
 /** The address the user gave, as an origin. Never guessed: it has to be an http(s) URL. */
 export function t3Origin(input: string): string {
   let url: URL;
@@ -65,10 +68,17 @@ export async function readT3Config(file: string): Promise<T3Config | undefined> 
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
-  const raw = record(JSON.parse(text));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Never JSON.parse's own message: it quotes the file, credential and all.
+    throw new Error(`${file} isn't valid JSON; connect again in Top's Settings → T3 Code.`);
+  }
+  const raw = record(parsed);
   const url = str(raw.url);
   const token = str(raw.token);
-  if (!url || !token) throw new Error(`${file} is missing its address or credential; run \`top t3code connect\` again.`);
+  if (!url || !token) throw new Error(`${file} is missing its address or credential; connect again in Top's Settings → T3 Code.`);
   return {
     url,
     token,
@@ -142,8 +152,7 @@ export function checkProtocol(origin: string, descriptor: Descriptor): void {
 export async function checkSession(origin: string, token: string): Promise<{ readonly expiresAt: string | undefined }> {
   const response = await http(origin, "/api/auth/session", { headers: bearer(token) });
   const body = record(await json(response));
-  if (body.authenticated !== true)
-    throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential (expired or revoked). Pair again with \`top t3code connect ${origin}\`.`);
+  if (body.authenticated !== true) throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential (expired or revoked); ${pairAgain(origin)}.`);
   const granted = new Set([...(Array.isArray(body.permissions) ? body.permissions : []), ...(Array.isArray(body.scopes) ? body.scopes : [])].map(String));
   const missing = T3_SCOPES.filter((scope) => !granted.has(scope));
   if (missing.length)
@@ -180,8 +189,7 @@ export type T3Project = { readonly id: string; readonly title: string; readonly 
 
 export async function listProjects(origin: string, token: string): Promise<readonly T3Project[]> {
   const response = await http(origin, "/api/projects", { headers: bearer(token) });
-  if (response.status === 401)
-    throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential. Pair again with \`top t3code connect ${origin}\`.`);
+  if (response.status === 401) throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential; ${pairAgain(origin)}.`);
   const body = record(await json(response));
   if (!response.ok || !Array.isArray(body.projects)) throw new T3Refused(`T3 Code at ${origin} didn't list its projects (HTTP ${response.status}).`);
   return body.projects
@@ -189,6 +197,101 @@ export async function listProjects(origin: string, token: string): Promise<reado
     .filter((p) => p.archivedAt === null || p.archivedAt === undefined)
     .map((p) => ({ id: str(p.id) ?? "", title: str(p.title) ?? "", workspaceRoot: str(p.workspaceRoot) ?? "" }))
     .filter((p) => p.id && p.workspaceRoot);
+}
+
+/** A pasted pairing link carries its code in the fragment (`/pair#token=…`); a bare code or token is taken as is. */
+export function credentialOf(pasted: string): string {
+  const text = pasted.trim();
+  try {
+    const url = new URL(text);
+    const fromHash = new URLSearchParams(url.hash.slice(1)).get("token");
+    const found = fromHash ?? url.searchParams.get("token");
+    if (found) return found;
+  } catch {}
+  return text;
+}
+
+/**
+ * Checks the address answers as T3 Code, in Top's protocol, before anything secret goes to it.
+ * `allowPlain` says how to accept plain HTTP to another computer, where it's asked for.
+ */
+export async function preflight(
+  address: string,
+  plainHttp: boolean,
+  allowPlain: string,
+): Promise<{ readonly origin: string; readonly descriptor: Descriptor }> {
+  const origin = t3Origin(address);
+  if (plainHttpExposed(origin) && !plainHttp)
+    throw new T3Refused(
+      `${origin} is plain HTTP to another computer, so the pairing code and Top's credential travel unencrypted unless the network itself encrypts them (a tailnet does). Use its HTTPS address (for example Tailscale Serve's https://….ts.net), or ${allowPlain} to accept that.`,
+    );
+  const descriptor = await describe(origin);
+  checkProtocol(origin, descriptor);
+  return { origin, descriptor };
+}
+
+/** Trades a pairing code (or link) for Top's own session and saves it in `file`, in place of any earlier connection. */
+export async function pair(
+  file: string,
+  origin: string,
+  descriptor: Descriptor,
+  pasted: string,
+): Promise<{ readonly config: T3Config; readonly expiresAt: string | undefined }> {
+  const code = credentialOf(pasted);
+  if (!code) throw new T3Refused("No pairing code given; nothing changed.");
+  // Always traded for Top's own session, narrowed to what Top needs, whatever the code itself grants.
+  const token = await exchangePairingCode(origin, code, "Top");
+  const session = await checkSession(origin, token);
+  const config: T3Config = {
+    url: origin,
+    token,
+    environmentId: descriptor.environmentId,
+    // Saved, and shown later: never with the code in it, should T3 Code's own label carry it.
+    label: [pasted.trim(), code].reduce((label, secret) => (secret.length >= 4 ? label.split(secret).join("[hidden]") : label), descriptor.label),
+    serverVersion: descriptor.serverVersion,
+    connectedAt: new Date().toISOString(),
+  };
+  await writeT3Config(file, config);
+  return { config, expiresAt: session.expiresAt };
+}
+
+/** Checks the address still answers as the environment Top paired with, before any credential goes to it. */
+export async function verifyEnvironment(config: T3Config): Promise<Descriptor> {
+  const descriptor = await describe(config.url);
+  checkProtocol(config.url, descriptor);
+  if (descriptor.environmentId !== config.environmentId)
+    throw new T3AuthError(
+      `${config.url} answers as ${config.environmentId ? "a different T3 Code environment" : "a T3 Code environment Top didn't record"} (${descriptor.label}), so Top didn't send it the credential. If that's intended, ${pairAgain(config.url)}.`,
+    );
+  return descriptor;
+}
+
+export type T3Provider = { readonly id: string; readonly status: string; readonly models: readonly { readonly slug: string; readonly isDefault: boolean }[] };
+
+/** T3 Code's switched-on providers (a task's `options.provider`, with their `model`s) and its projects (a task's `cwd`). */
+export async function overview(config: T3Config): Promise<{ readonly providers: readonly T3Provider[]; readonly projects: readonly T3Project[] }> {
+  const socket = await RpcSocket.open(config.url, config.token, () => {});
+  let value: unknown;
+  try {
+    let timer: NodeJS.Timeout | undefined;
+    value = await Promise.race([
+      socket.request("server.getConfig", {}),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new T3Unreachable(`T3 Code at ${config.url} didn't list its providers in time.`)), TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  } finally {
+    socket.close();
+  }
+  const providers = (Array.isArray(record(value).providers) ? (record(value).providers as unknown[]) : [])
+    .map(record)
+    .filter((p) => p.enabled !== false)
+    .map((p) => ({
+      id: str(p.instanceId) ?? "",
+      status: str(p.status) ?? "unknown",
+      models: (Array.isArray(p.models) ? p.models : []).map(record).map((m) => ({ slug: str(m.slug) ?? "", isDefault: m.isDefault === true })),
+    }));
+  return { providers, projects: await listProjects(config.url, config.token) };
 }
 
 /** Whether T3 Code has this thread: only its explicit "thread_not_found" counts as no; anything else is an error. */
@@ -199,16 +302,14 @@ export async function threadKnown(origin: string, token: string, threadId: strin
   if (response.ok) return true;
   const body = record(await json(response));
   if (response.status === 404 && body.reason === "thread_not_found") return false;
-  if (response.status === 401)
-    throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential. Pair again with \`top t3code connect ${origin}\`.`);
+  if (response.status === 401) throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential; ${pairAgain(origin)}.`);
   throw new T3Unreachable(`T3 Code at ${origin} didn't say whether it has thread ${threadId} (HTTP ${response.status}).`);
 }
 
 /** A short-lived ticket for one socket, so the credential never goes into a socket URL. */
 async function rpcTicket(origin: string, token: string): Promise<string> {
   const response = await http(origin, "/api/auth/websocket-ticket/rpc", { method: "POST", headers: bearer(token) });
-  if (response.status === 401)
-    throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential. Pair again with \`top t3code connect ${origin}\`.`);
+  if (response.status === 401) throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential; ${pairAgain(origin)}.`);
   const ticket = str(record(await json(response)).ticket);
   if (!response.ok || !ticket) throw new T3Refused(`T3 Code at ${origin} didn't issue a socket ticket (HTTP ${response.status}).`);
   return ticket;

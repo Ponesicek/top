@@ -91,6 +91,8 @@ export interface HarnessAdapter {
   readonly capabilities: Capabilities;
   readonly options: TObject;
   readonly check: () => Promise<Availability>;
+  /** Whether `task_start` offers it to the bots now, asked before each of their turns (default: always). Its sessions carry on either way. */
+  readonly offered?: () => boolean;
   /**
    * For a harness on another computer: checks `cwd` there (Top doesn't look at its own disk) and returns the folder to use,
    * with options the new session keeps (which computer it belongs to), set by the harness and not by the bot.

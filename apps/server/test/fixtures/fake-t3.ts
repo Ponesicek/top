@@ -12,7 +12,10 @@ export type FakeT3 = Awaited<ReturnType<typeof fakeT3>>;
 export async function fakeT3(options: { environmentId?: string; protocol?: number; projects?: { id: string; workspaceRoot: string }[] } = {}) {
   let token = "good-token";
   let environmentId = options.environmentId ?? "env-1";
+  let label = "fake";
   const tickets = new Set<string>();
+  const codes = new Set<string>();
+  const exchanges: { scope: string; label: string }[] = [];
   const threads = new Map<string, Thread>();
   const receipts = new Map<string, unknown>();
   const requests: { tag: string; payload: Rec }[] = [];
@@ -28,6 +31,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     silent: false,
     silentTypes: new Set<string>(),
     refuseAnswer: undefined as string | undefined,
+    /** A server or proxy that quotes the refused code back. */
+    echoPairing: false,
     respondDelayMs: 0,
   };
   const hits: { path: string; authorized: boolean }[] = [];
@@ -274,11 +279,27 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     if (url.pathname === "/.well-known/t3/environment")
       return json(res, 200, {
         environmentId,
-        label: "fake",
+        label,
         serverVersion: "0.0.0-fake",
         orchestrationProtocolVersion: options.protocol ?? 2,
         capabilities: {},
       });
+    if (url.pathname === "/oauth/token" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        const form = new URLSearchParams(body);
+        exchanges.push({ scope: form.get("scope") ?? "", label: form.get("client_label") ?? "" });
+        const code = form.get("subject_token") ?? "";
+        // A code works once.
+        if (!codes.delete(code))
+          return json(res, 400, { error: "invalid_grant", reason: faults.echoPairing ? `unknown code ${code}` : "invalid_bootstrap_credential" });
+        json(res, 200, { access_token: token, token_type: "Bearer" });
+      });
+      return;
+    }
     if (url.pathname === "/api/auth/session")
       return json(res, 200, authorized(req) ? { authenticated: true, scopes: ["orchestration:read", "orchestration:operate"] } : { authenticated: false });
     if (url.pathname === "/api/auth/websocket-ticket/rpc" && req.method === "POST") {
@@ -319,6 +340,13 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     requests,
     faults,
     hits,
+    exchanges,
+    /** A one-time pairing code, like `t3 auth pairing create` makes. */
+    pairingCode: () => {
+      const code = `PAIR${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+      codes.add(code);
+      return code;
+    },
     /** Like the user stopping or finishing a run in T3 Code itself. */
     finish: (threadId: string, runId: string, text: string, status = "completed") => finish(threads.get(threadId)!, runId, text, status),
     runsOf: (threadId: string) => [...(threads.get(threadId)?.runs.values() ?? [])],
@@ -340,6 +368,9 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     },
     rotate: (next: string) => {
       token = next;
+    },
+    setLabel: (text: string) => {
+      label = text;
     },
     setEnvironment: (id: string) => {
       environmentId = id;

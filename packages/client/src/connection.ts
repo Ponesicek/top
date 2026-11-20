@@ -12,6 +12,7 @@ import {
   type ResultOf,
   type ServerFrame,
   SkillError,
+  T3CodeError,
   TaskError,
 } from "@top/protocol";
 import * as Clock from "effect/Clock";
@@ -57,7 +58,8 @@ export type RequestFailure =
   | McpServerError
   | AskError
   | SkillError
-  | TaskError;
+  | TaskError
+  | T3CodeError;
 
 const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   BotError: (message) => new BotError({ message }),
@@ -67,6 +69,7 @@ const REFUSALS: Record<string, (message: string) => RequestFailure> = {
   AskError: (message) => new AskError({ message }),
   SkillError: (message) => new SkillError({ message }),
   TaskError: (message) => new TaskError({ message }),
+  T3CodeError: (message) => new T3CodeError({ message }),
 };
 
 const numbered = (frame: RequestFrame, req: number): ClientFrame => ({ ...frame, req });
@@ -91,7 +94,8 @@ export type Connection = {
   readonly attempt: () => number;
   serverId: string | undefined;
   readonly send: (frame: ClientFrame) => boolean;
-  readonly request: <F extends RequestFrame>(frame: F) => Effect.Effect<ResultOf<F["t"]>, RequestFailure>;
+  /** `timeoutMs` replaces the default for a request the daemon may take longer over. */
+  readonly request: <F extends RequestFrame>(frame: F, timeoutMs?: number) => Effect.Effect<ResultOf<F["t"]>, RequestFailure>;
   readonly kick: Effect.Effect<void>;
 };
 
@@ -222,7 +226,7 @@ export const makeConnection = Effect.fnUntraced(function* (options: ConnectionOp
     attempt: () => attempt,
     serverId: undefined,
     send,
-    request: <F extends RequestFrame>(frame: F): Effect.Effect<ResultOf<F["t"]>, RequestFailure> =>
+    request: <F extends RequestFrame>(frame: F, timeoutMs = requestTimeoutMs): Effect.Effect<ResultOf<F["t"]>, RequestFailure> =>
       Effect.suspend(() => {
         if (status !== "open") return Effect.fail(new OfflineError({ message: "Not connected" }));
         const req = nextReq++;
@@ -232,7 +236,7 @@ export const makeConnection = Effect.fnUntraced(function* (options: ConnectionOp
         const decode = decodeResult(frame.t);
         return Deferred.await(answer).pipe(
           Effect.timeoutOrElse({
-            duration: Duration.millis(requestTimeoutMs),
+            duration: Duration.millis(timeoutMs),
             orElse: () => Effect.fail(new TimeoutError({ message: "Request timed out" })),
           }),
           Effect.flatMap((value) =>

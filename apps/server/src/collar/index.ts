@@ -3,6 +3,7 @@ import type { Asks } from "../asks.ts";
 import type { Jobs } from "../jobs.ts";
 import type { Store } from "../store.ts";
 import type { Tasks } from "../tasks/coordinator.ts";
+import type { HarnessAdapter } from "../tasks/harness.ts";
 import type { TopTool } from "../tools.ts";
 import type { WakeClock } from "../wakes.ts";
 import { asksGroup } from "./asks.ts";
@@ -20,6 +21,8 @@ export type CollarDaemon = {
   readonly wakes: WakeClock;
   readonly asks: Asks;
   readonly tasks?: Tasks | undefined;
+  /** The harnesses `task_start` offers (default: all of `tasks`'). */
+  readonly harnesses?: readonly HarnessAdapter[] | undefined;
   readonly changed: (bot: number) => Effect.Effect<void>;
   readonly toolsOf: (bot: number) => readonly TopTool[];
 };

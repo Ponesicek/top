@@ -13,6 +13,7 @@ import {
   type RequestType,
   type ResultOf,
   type ServerFrame,
+  T3CodeError,
   TaskError,
   UnknownBotError,
   UnknownEntryError,
@@ -49,6 +50,7 @@ import { fileViews, type Listing } from "./files.ts";
 import { Mcp } from "./mcp.ts";
 import { type FileServing, sendFile, sendFramedPage } from "./sendFile.ts";
 import { Store, type StoredEntry } from "./store.ts";
+import { T3Link } from "./t3link.ts";
 import type { Tailnet } from "./tailscale.ts";
 import { Updates } from "./updates.ts";
 import { toWire } from "./wire.ts";
@@ -97,6 +99,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const mcp = Option.getOrUndefined(yield* Effect.serviceOption(Mcp));
   const chatgpt = Option.getOrUndefined(yield* Effect.serviceOption(ChatGPT));
   const updates = Option.getOrUndefined(yield* Effect.serviceOption(Updates));
+  const t3link = Option.getOrUndefined(yield* Effect.serviceOption(T3Link));
   const attachments = Option.getOrUndefined(yield* Effect.serviceOption(Attachments));
   const reader = yield* socket.reader;
   const writer = yield* socket.writer;
@@ -204,6 +207,7 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
   const mcpOf = () => (mcp ? Effect.succeed(mcp) : Effect.fail(new NoMcp()));
   const chatgptOf = () => (chatgpt ? Effect.succeed(chatgpt) : Effect.fail(new NoChatGPT()));
   const updatesOf = () => (updates ? Effect.succeed(updates) : Effect.fail(new NoUpdates()));
+  const t3linkOf = () => (t3link ? Effect.succeed(t3link) : Effect.fail(new T3CodeError({ message: "This daemon can't connect to T3 Code." })));
   const skillsOf = () => (daemon.skills ? Effect.succeed(daemon.skills) : Effect.fail(new NoSkills()));
   const tasksOf = () => (daemon.tasks ? Effect.succeed(daemon.tasks) : Effect.fail(new TaskError({ message: "This daemon runs no harnesses." })));
   const known = (bot: number) => (daemon.has(bot) ? Effect.void : Effect.fail(new UnknownBotError({ bot })));
@@ -406,6 +410,37 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
         return answer(
           frame,
           Effect.flatMap(tasksOf(), (t) => Effect.asVoid(t.respond("user", undefined, frame.task, frame.input, { answers: frame.answers }))),
+        );
+      // These wait on T3 Code (a disconnect waits for a connect under way), so they run beside the connection's other frames.
+      case "t3code":
+        return Effect.asVoid(
+          Effect.forkIn(
+            answer(
+              frame,
+              Effect.flatMap(t3linkOf(), (t) => t.view),
+            ),
+            scope,
+          ),
+        );
+      case "t3codeConnect":
+        return Effect.asVoid(
+          Effect.forkIn(
+            answer(
+              frame,
+              Effect.flatMap(t3linkOf(), (t) => t.connect(frame.address, frame.code, frame.plainHttp === true)),
+            ),
+            scope,
+          ),
+        );
+      case "t3codeDisconnect":
+        return Effect.asVoid(
+          Effect.forkIn(
+            answer(
+              frame,
+              Effect.flatMap(t3linkOf(), (t) => t.disconnect),
+            ),
+            scope,
+          ),
         );
     }
   };
