@@ -291,6 +291,7 @@ async function openThread(
    */
   const request = async (tag: string, payload: unknown, stopped?: () => boolean): Promise<unknown> => {
     let sent = false;
+    const since = Date.now();
     for (let tries = 1; ; tries++) {
       const s = await connect();
       if (!sent && stopped?.()) throw new StoppedBeforeSend();
@@ -312,6 +313,11 @@ async function openThread(
       } catch (error) {
         if (!(error instanceof T3NotSent)) sent = true;
         if (!(error instanceof T3Unreachable) || closed) throw error;
+        // Each request has its own window too: a thread's stream catching up says nothing about this request.
+        if (Date.now() - since >= options.reconnectForMs)
+          throw new Error(
+            `T3 Code didn't answer ${tag} for ${duration(options.reconnectForMs)} (${error.message}). Its thread ${threadId} may still be running there.`,
+          );
         // The reconnect window, not a count, ends this: it holds until T3 Code answers.
         await new Promise((resolve) => setTimeout(resolve, Math.min(250 * tries, 5_000)));
       }

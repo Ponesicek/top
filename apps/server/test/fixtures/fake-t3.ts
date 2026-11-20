@@ -26,6 +26,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     configDelayMs: 0,
     dropOnOpen: false,
     silent: false,
+    silentTypes: new Set<string>(),
   };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
@@ -198,11 +199,11 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       const message = JSON.parse(String(data)) as Rec;
       if (message._tag === "Ping") return send({ _tag: "Pong" });
       if (message._tag !== "Request") return;
-      if (faults.silent) return;
       const id = message.id;
       const tag = String(message.tag);
       const payload = (message.payload ?? {}) as Rec;
       requests.push({ tag, payload });
+      if (faults.silent || faults.silentTypes.has(String(payload.type))) return;
       if (tag === "orchestration.subscribeThread") {
         const thread = threads.get(String(payload.threadId));
         if (!thread)

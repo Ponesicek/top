@@ -166,6 +166,25 @@ test("a T3 Code that keeps the socket open but stops answering is dropped, and t
   assert.match(done.error ?? "", /Lost T3 Code at .* for 3s .*may still be running there/);
 });
 
+test("a command T3 Code never answers gives up after the window, even while the thread's stream keeps catching up", async () => {
+  const s = await setup();
+  const first = await start(s, { prompt: "first" });
+  assert.equal((await ended(s, first.task.id)).state, "completed");
+  s.t3.faults.silentTypes.add("message.dispatch");
+  const next = await start(s, { prompt: "never answered", session: first.session.id });
+  const done = await until(
+    "the task to give up",
+    async () => {
+      const t = await task(s, next.task.id);
+      return t.state === "failed" && t;
+    },
+    20_000,
+  );
+  assert.match(done.error ?? "", /T3 Code didn't answer orchestration\.dispatchCommand for 3s/);
+  const sent = s.t3.requests.filter((r) => r.payload.type === "message.dispatch");
+  assert.ok(sent.length >= 2 && sent.every((r) => r.payload.commandId === sent[0]!.payload.commandId), "every retry carried the same command id");
+});
+
 test("questions reach the bot and the user, and the answer goes back as the option's value", async () => {
   assert.deepEqual(
     t3Answers(
@@ -355,7 +374,7 @@ test("addresses are explicit, and plain HTTP is accepted only where it stays pri
   assert.equal(plainHttpExposed("http://127.0.0.1:3773"), false);
   assert.equal(plainHttpExposed("http://[::1]:3773"), false);
   assert.equal(plainHttpExposed("http://127.evil.example:3773"), true, "a name that starts like loopback isn't loopback");
-  assert.equal(plainHttpExposed("http://100.78.69.34:3773"), true, "a tailnet address takes --plain-http too");
+  assert.equal(plainHttpExposed("http://100.101.102.103:3773"), true, "a tailnet address takes --plain-http too");
   assert.equal(plainHttpExposed("http://box.tail1.ts.net:3773"), true);
   assert.equal(plainHttpExposed("http://192.168.1.4:3773"), true);
   assert.equal(plainHttpExposed("https://192.168.1.4"), false);
