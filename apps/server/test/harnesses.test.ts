@@ -151,8 +151,8 @@ test("Claude Code and Codex installed in ~/.local/bin are found when the daemon'
     const wrong = await claudeAdapter({ command: notExecutable }).check();
     assert.match(!wrong.ok ? wrong.error : "", /Claude Code isn't at .*claude\.txt.*TOP_CLAUDE_PATH/);
     // A relative override names the file next to the daemon, not one in the task's folder.
-    const relative = await findCli(relativePath(process.cwd(), join(bin, "codex")), "Codex", "TOP_CODEX_PATH", "Install it");
-    assert.equal(relative, join(bin, "codex"));
+    const relative = relativePath(process.cwd(), join(bin, "codex"));
+    assert.equal(await findCli(relative, "Codex", "TOP_CODEX_PATH", "Install it"), `${process.cwd()}/${relative}`);
   } finally {
     process.env.PATH = saved.PATH;
     process.env.HOME = saved.HOME;

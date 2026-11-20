@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import type { TaskQuestion } from "@top/protocol";
 import type { TObject } from "typebox";
 
@@ -118,8 +118,9 @@ const executable = async (path: string) => {
  */
 export async function findCli(command: string, label: string, envVar: string, install: string): Promise<string> {
   if (command.includes("/")) {
-    // Absolute, so a relative override still names the same file when a task runs in another folder.
-    const path = resolve(command);
+    // Absolute, so a relative override still names the same file when a task runs in another folder. Not
+    // normalized: `link/..` has to mean what the filesystem says it does.
+    const path = isAbsolute(command) ? command : `${process.cwd()}/${command}`;
     if (await executable(path)) return path;
     throw new HarnessUnavailable(
       `${label} isn't at \`${command}\`: there's no executable file there on the daemon's computer. Point ${envVar} at it, or unset ${envVar}.`,
