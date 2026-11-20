@@ -726,15 +726,40 @@ test("a stop that comes as the run ends on its own still stops its delegated wor
   assert.equal((await ended(s, first.task.id)).result, "done: plain first");
   const reordered = `top-${first.session.id}`;
   // Queued in T3 Code with its queue held, before Top's message: a lower number that runs later.
-  const heldRun = s.t3.hold(reordered, "held-1", "the held message");
+  const heldRun = s.t3.hold(reordered, "held-1", "the held question");
   const second = await start(s, { prompt: "delegate the rest", session: first.session.id });
   await held(s, second.task.id);
   s.t3.childDone(reordered, `task-run:${reordered}:3`, "forever: the woken owner");
   const woken = await until("the woken run", () => s.t3.runsOf(reordered).find((r) => r.ordinal === 4 && r.status === "running"));
   s.t3.release(reordered, heldRun);
   s.t3.finish(reordered, String(woken.id), "the woken answer");
+  await inState(s, second.task.id, "waiting_for_input");
+  const asked = (await s.h.run(s.tasks.snapshot(s.h.bot, second.task.id))).inputs[0]!;
+  await s.h.run(s.tasks.respond("user", undefined, second.task.id, asked.id, { answers: { q1: ["Blue"] } }));
   const done2 = await ended(s, second.task.id);
-  assert.equal(done2.result, "done: the held message", "the run that ended last answers, though its number is lower");
+  assert.equal(done2.result, 'answer: {"color":"Blue"}', "the run that ran last asks and answers, though its number is lower");
+
+  // The same race when the run fails on its own.
+  const failing = await start(s, { prompt: "run forever" });
+  const failThread = `top-${failing.session.id}`;
+  const failRun = await runIn(s, failThread);
+  s.t3.delegate(failThread, String(failRun.id), "failing-child");
+  s.t3.faults.silentTypes.add("run.interrupt");
+  const stopping = s.h.run(s.tasks.cancel(s.h.bot, failing.task.id));
+  await until("the stop to be sent", () => s.t3.requests.some((r) => r.payload.type === "run.interrupt" && r.payload.runId === failRun.id));
+  s.t3.finish(failThread, String(failRun.id), "", "failed");
+  await stopping;
+  s.t3.faults.silentTypes.clear();
+  assert.equal((await ended(s, failing.task.id)).state, "cancelled");
+  assert.equal(s.t3.subagentsOf(failThread)[0]!.status, "cancelled", "its delegated work was stopped too");
+
+  // Stop pressed in T3 Code while the task waits: stopped there, not the interim answer.
+  const there = await start(s, { prompt: "delegate then stop there" });
+  await held(s, there.task.id);
+  s.t3.stop(`top-${there.session.id}`);
+  const stoppedThere = await ended(s, there.task.id);
+  assert.equal(stoppedThere.state, "failed");
+  assert.match(stoppedThere.error ?? "", /stopped in T3 Code/);
 });
 
 test("T3 Code's command output and prompts reach Top whole, so its secret-hiding sees a secret before anything is clipped", () => {

@@ -219,7 +219,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
             break;
           }
           case "thread.stop": {
-            // Stop ends the thread's runs and, by default, every task under it.
+            // Stop ends the thread's runs and, by default, every task under it. With none running, it's recorded on the latest.
+            const latest = [...thread.runs.values()].at(-1);
+            if (latest && !active(thread))
+              item(thread, String(latest.id), { id: `stop-${payload.commandId}`, type: "run_interrupt_request", status: "completed", message: "Stop" });
             for (const run of thread.runs.values())
               if (["queued", "starting", "running", "waiting"].includes(String(run.status))) finish(thread, String(run.id), "", "interrupted");
             if (payload.stopDelegatedTasks !== false)

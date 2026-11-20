@@ -400,17 +400,20 @@ async function openThread(
     }
   };
 
+  const startOf = (r: Rec) => (str(r.startedAt) ? Date.parse(str(r.startedAt)!) : Number.POSITIVE_INFINITY);
   /**
    * The turn's own run and every run after it in the thread, such as the ones T3 Code wakes it with when delegated work
-   * reports back. Not a monitor's progress runs: their questions and answers aren't the task's.
+   * reports back: numbered after it, or started after it (T3 Code may run a held, lower-numbered one later), in the
+   * order they ran. Not a monitor's progress runs: their questions and answers aren't the task's.
    */
   const turnRuns = (turn: Current): Rec[] => {
     const own = turn.runId ? runs.get(turn.runId) : undefined;
     if (!own) return [];
     const from = Number(own.ordinal);
+    const later = (r: Rec) => (Number.isFinite(from) && Number(r.ordinal) > from) || (str(own.startedAt) !== undefined && startOf(r) >= startOf(own));
     return [...runs.values()]
-      .filter((r) => r === own || (Number.isFinite(from) && Number(r.ordinal) > from && !monitorRuns.has(String(r.id))))
-      .sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+      .filter((r) => r === own || (later(r) && !monitorRuns.has(String(r.id))))
+      .sort((a, b) => startOf(a) - startOf(b) || Number(a.ordinal) - Number(b.ordinal));
   };
   const ended = (run: Rec) => TERMINAL_RUN.has(String(run.status));
   const ranAfter = (a: Rec, b: Rec) => {
@@ -507,8 +510,8 @@ async function openThread(
     // Its stop isn't confirmed yet; if it never is, the task's cancel times out instead.
     if (turn.cut === "sending") return;
     if (turn.stopped) {
-      // Its run ended on its own before the stop reached it, with delegated work still going: stop that too.
-      if (!turn.cut && own.status === "completed" && delegatedWork().delegated) {
+      // Its run ended, by the stop or on its own before it, with delegated work still going: stop that too.
+      if (!turn.cut && delegatedWork().delegated) {
         cutThread(turn).catch((error: unknown) => emit({ type: "log", kind: "error", text: `T3 Code didn't take the stop: ${message(error)}` }));
         return;
       }
@@ -537,8 +540,10 @@ async function openThread(
         .reduce((a, b) => (ranAfter(b, a) ? b : a), own);
     }
     turn.done = true;
-    const status = turn.cut ? "interrupted" : String(outcome.status);
     const its = [...items.values()].filter((i) => i.runId === outcome.id).sort((a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
+    // Stop in T3 Code while it held: T3 Code records the stop on the run that had already ended, and cancels the work.
+    const stoppedThere = turn.holding && its.some((i) => i.type === "run_interrupt_request");
+    const status = turn.cut || stoppedThere ? "interrupted" : String(outcome.status);
     const answers = its.filter((i) => i.type === "assistant_message" && i.streaming !== true && str(i.text)?.trim());
     const result = str(answers.at(-1)?.text);
     const error = str(its.filter((i) => i.type === "error").at(-1)?.message);
