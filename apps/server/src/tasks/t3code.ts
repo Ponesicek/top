@@ -276,7 +276,7 @@ async function openThread(
           socket = opened;
           return opened;
         } catch (error) {
-          if (!(error instanceof T3Unreachable)) throw error;
+          if (!(error instanceof T3Unreachable) || closed) throw error;
           why = error.message;
           await new Promise((resolve) => setTimeout(resolve, delay));
           delay = Math.min(delay * 2, 15_000);
