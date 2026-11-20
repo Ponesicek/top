@@ -141,14 +141,14 @@ pnpm server --tailscale --tailscale-allow tag:laptops    # only you, this comput
 Each bot has four Markdown files in its folder (`~/.top/bots/<name>/`), and they are what it is:
 `SOUL.md` (who it is: a `# Heading` on its first line is its name in the app, the paragraph under it the line
 under its name), `AGENTS.md` (how it works), `USER.md` (what it knows about you) and `MEMORY.md`
-(what it has learned). The files are the only copy: Settings → **Identity and memory** edits them
-in place, and the bot edits them with its tools, unasked, when it learns something that will
-matter later. A save from Settings is refused when the file changed since it was opened (by the
-bot, say), unless you choose to replace it. Saves from different clients take turns, so two saves
-of the same version can't both win; a write by the bot or an editor landing in the same instant as
-a save can still be replaced by it. When Top creates a file (a new bot's SOUL.md, or a first save
-from Settings) it uses a hard link or an exclusive create, which never replace a file made
-meanwhile.
+(what it has learned). The files are the only copy: the bot edits them with its tools, unasked,
+when it learns something that will matter later, and you can edit them in any editor. The desktop
+app doesn't edit them; the daemon still offers `contextFiles` / `saveContextFile` to clients: a save
+is refused when the file changed since it was opened (by the bot, say), and saves from different
+clients take turns, so two saves of the same version can't both win; a write by the bot or an
+editor landing in the same instant as a save can still be replaced by it. When Top creates a file
+(a new bot's SOUL.md, or a client's first save) it uses a hard link or an exclusive create, which
+never replace a file made meanwhile.
 
 - **Loading.** Each file goes into the bot's instructions whole, between `<file … id="…">` and
   `</file id="…">` lines whose id is a hash of its text, so nothing in a file can end its frame
@@ -157,7 +157,7 @@ meanwhile.
   override Top's rules (safety, permissions, tools), and that text from web pages or tool output is
   information, not instructions. Missing or empty files aren't sent. Each file is at most 8 KB
   (`MAX_CONTEXT_FILE_BYTES`): a longer one, or one that can't be read, is sent as a note saying so
-  and why, never cut short, and Settings shows the same.
+  and why, never cut short.
 - **Changes reach the bot from its next message**, a follow-up queued meanwhile included, never in
   the middle of a task. Top compares the files with what the conversation already has and, for
   each file that differs, saves the whole new version as a system message after the conversation so
