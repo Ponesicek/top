@@ -358,7 +358,7 @@ export function Sidebar({
           <Button
             variant="ghost"
             size="xs"
-            className={cn("font-medium text-secondary-foreground", settingsOpen && "bg-foreground/7 text-foreground")}
+            className={cn("font-medium text-secondary-foreground narrow:size-11", settingsOpen && "bg-foreground/7 text-foreground")}
             onClick={onOpenSettings}
             aria-label="Settings"
             aria-current={settingsOpen ? "page" : undefined}
@@ -376,7 +376,13 @@ export function Sidebar({
         <span className="ml-auto flex flex-none items-center gap-1.5 narrow:ml-0 narrow:flex-col-reverse">
           <UpdateButton onOpenSettings={onOpenSettings} />
           <Tooltip content="New bot" side="right">
-            <Button variant="outline" size="icon" className="size-8 text-secondary-foreground hover:text-foreground" onClick={onNewBot} aria-label="New bot">
+            <Button
+              variant="outline"
+              size="icon"
+              className="size-8 text-secondary-foreground hover:text-foreground narrow:size-11"
+              onClick={onNewBot}
+              aria-label="New bot"
+            >
               <Plus size={17} strokeWidth={1.9} />
             </Button>
           </Tooltip>
