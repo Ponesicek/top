@@ -210,3 +210,94 @@ describe("agents' questions", () => {
     expect(rows.map((r) => r.kind)).toEqual(["assistant", "files", "taskQuestion"]);
   });
 });
+
+describe("citation markers OpenAI left raw", () => {
+  const RELEASES = "https://github.com/earendil-works/pi/releases";
+  const MODELS = "https://raw.githubusercontent.com/earendil-works/pi/main/packages/ai/src/providers/openai-codex.models.ts";
+  const DATA = "https://raw.githubusercontent.com/earendil-works/pi/main/packages/ai/src/providers/data/openai-codex.json";
+  const asked = () => entry({ kind: "user", text: "Also check if pi added sol 6.2 support" });
+  const researched = (...steps: Record<string, unknown>[]) =>
+    entry({
+      kind: "assistant",
+      text: "",
+      tools: [{ id: "call_1", name: "edit", summary: "path: MEMORY.md" }],
+      searches: [{ action: "search", queries: ['github badlogic pi-mono "gpt-6.2"'], sourceCount: 16 }, ...steps],
+    });
+  const opened = (url: string, failed = false) => ({ action: "open_page", url, ...(failed ? { failed: true } : {}) });
+  // The answer as stored: the search ran in an earlier response, so OpenAI sent the marker without a url_citation.
+  const answer = (marker = "citeturn949148view0", more: Record<string, unknown> = {}) =>
+    entry({
+      kind: "assistant",
+      text: `**Yes—pi has added upstream \`gpt-6.2-sol\` support.** No shim needed once that release lands. ${marker}\n\nI haven’t changed Top’s dependency.`,
+      ...more,
+    });
+  type Assistant = Extract<ReturnType<typeof committedRows>[number], { kind: "assistant" }>;
+  const last = (items: TranscriptItem[]) => committedRows(items).at(-1) as Assistant;
+  const raw = /[-]/;
+
+  it("drops the marker and lists the pages the bot read that turn apart from its sources, naming none as the one cited", () => {
+    const row = last([
+      asked(),
+      researched(opened(RELEASES), opened(MODELS), opened(DATA)),
+      entry({ kind: "tool", toolCallId: "call_1", name: "edit", text: "ok" }),
+      answer(),
+    ]);
+    expect(row.text).not.toMatch(raw);
+    expect(row.text).toContain("once that release lands.\n\nI haven’t");
+    expect(row.text).not.toContain("](");
+    expect(row.citations).toEqual([]);
+    expect(row.pagesRead).toEqual([
+      { url: RELEASES, title: "releases" },
+      { url: MODELS, title: "openai-codex.models.ts" },
+      { url: DATA, title: "openai-codex.json" },
+    ]);
+  });
+
+  it("doesn't link a marker even when the bot read only one page, and leaves out pages that failed to open", () => {
+    const row = last([asked(), researched(opened(MODELS, true), opened(RELEASES)), answer()]);
+    expect(row.text).not.toContain(RELEASES);
+    expect(row.pagesRead).toEqual([{ url: RELEASES, title: "releases" }]);
+  });
+
+  it("lists nothing read before the person's last message, or while the turn isn't all loaded", () => {
+    expect(last([researched(opened(RELEASES)), asked(), answer()])).toMatchObject({ text: expect.not.stringMatching(raw) });
+    expect(last([researched(opened(RELEASES)), asked(), answer()])).not.toHaveProperty("pagesRead");
+    const items = [asked(), researched(opened(RELEASES)), answer()];
+    const partial = last([{ kind: "earlier" } as TranscriptItem, items[2]!]);
+    expect(partial.text).not.toMatch(raw);
+    expect(partial).not.toHaveProperty("pagesRead");
+    expect(last(items).pagesRead).toEqual([{ url: RELEASES, title: "releases" }]);
+  });
+
+  it("keeps the citations OpenAI sent as sources, without listing them again as pages read", () => {
+    const row = last([
+      asked(),
+      researched(opened(RELEASES), opened(MODELS)),
+      answer(undefined, { citations: [{ url: `${RELEASES}?utm_source=openai`, title: "Releases · earendil-works/pi" }] }),
+    ]);
+    expect(row.citations).toEqual([{ url: `${RELEASES}?utm_source=openai`, title: "Releases · earendil-works/pi" }]);
+    expect(row.pagesRead).toEqual([{ url: MODELS, title: "openai-codex.models.ts" }]);
+  });
+
+  it("knows a cited page that OpenAI tagged is the same page it opened, whatever else is in its query", () => {
+    const search = "https://example.com/search?q=release%20notes";
+    const row = last([
+      asked(),
+      researched(opened(search)),
+      answer(undefined, { citations: [{ url: "https://example.com/search?q=release%20notes&utm_source=openai", title: "Release notes" }] }),
+    ]);
+    expect(row).not.toHaveProperty("pagesRead");
+  });
+
+  it("still shows an answer that was only a marker, with the sources OpenAI sent for it", () => {
+    const sources = [{ url: `${RELEASES}?utm_source=openai`, title: "Releases · earendil-works/pi" }];
+    const marked = entry({ kind: "assistant", text: "\ue200cite\ue202turn1view0\ue201", citations: sources });
+    const rows = displayRows(committedRows([asked(), marked]), false);
+    expect(rows.at(-1)).toMatchObject({ kind: "assistant", text: "", citations: sources });
+  });
+
+  it("still shows an answer that was only a marker, with the pages read", () => {
+    const rows = displayRows(committedRows([asked(), researched(opened(RELEASES)), entry({ kind: "assistant", text: "citeturn1view0" })]), false);
+    expect(rows.at(-1)).toMatchObject({ kind: "assistant", text: "", pagesRead: [{ url: RELEASES, title: "releases" }] });
+  });
+});

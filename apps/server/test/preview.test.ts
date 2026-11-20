@@ -13,6 +13,10 @@ test("the sidebar preview keeps hyphens and drops only Markdown syntax", () => {
   assert.equal(lastLine("> quoted -- text"), "quoted -- text");
 });
 
+test("the sidebar preview leaves out citation markers OpenAI sent raw", () => {
+  assert.equal(lastLine("No shim needed once that release lands. \ue200cite\ue202turn949148view0\ue201"), "No shim needed once that release lands.");
+});
+
 test("the sidebar preview skips code fences and table rows", () => {
   assert.equal(lastLine("Here:\n```bash\nkill -9 1\n}\n```"), "Here:");
   assert.equal(lastLine("Intro\n| a | b |\n|---|---|\n| 1 | 2 |"), "Intro");
