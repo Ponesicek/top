@@ -37,6 +37,8 @@ export type EntryBody = {
 
 export type Compaction = {
   readonly summary: string;
+  /** A handoff document from another runtime (handoff.ts), not the model's own summary. */
+  readonly handoff?: true;
   readonly keptFrom: number;
   readonly tokensBefore: number;
   readonly usage?: unknown;
@@ -91,6 +93,7 @@ export const ToolResultView = Schema.Struct({
 export const NoticeView = Schema.Struct({ text: Schema.String });
 export const CompactionView = Schema.Struct({
   summary: Schema.String,
+  handoff: Optional(Schema.Literal(true)),
   keptFrom: Schema.Number,
   tokensBefore: Schema.Number,
   usage: Optional(Schema.Unknown),

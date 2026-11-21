@@ -1,4 +1,4 @@
-import { type AssistantMessage, getCurrentSystemMessage, type Models, type SystemMessage, type ToolCall } from "@earendil-works/pi-ai";
+import { type AssistantMessage, getCurrentSystemMessage, type SystemMessage, type ToolCall } from "@earendil-works/pi-ai";
 import type { BotStatus, ToolOutcome } from "@top/protocol";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -10,8 +10,9 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as Latch from "effect/Latch";
 import { type Attachments, userContent, withImageData } from "./attachments.ts";
 import { compactLimit, contextTokens, kTokens, summaryMessage } from "./compaction.ts";
-import { type Compact, runLoop, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
-import type { EntryBody, TopUserMessage, TranscriptMessage, UserText } from "./messages.ts";
+import { type Compact, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
+import type { EntryBody, TopAssistantMessage, TopUserMessage, TranscriptMessage, UserText } from "./messages.ts";
+import type { BotRuntime } from "./runtime.ts";
 import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
 import { type ToolResult, type TopTool, text } from "./tools.ts";
 import { permanentFailure } from "./websearch.ts";
@@ -67,7 +68,7 @@ export type BotRunner = {
 
 export const makeRunner = Effect.fnUntraced(function* (
   bot: BotRow,
-  models: Models,
+  runtime: BotRuntime,
   toolSource: () => readonly TopTool[],
   events: RunnerEvents,
   options: RunnerOptions = {},
@@ -89,6 +90,9 @@ export const makeRunner = Effect.fnUntraced(function* (
   const delivered = new Set<string>();
   let runningTools = 0;
   let assistantSeq = 0;
+  // The answer each call came in: Claude Code can run a call from one saved answer while its next one is saved.
+  const callSeq = new Map<string, number>();
+  const seqOf = (toolCallId: string) => callSeq.get(toolCallId) ?? assistantSeq;
   let pendingError: AssistantMessage | undefined;
   let abortRequested = false;
   let stopRun: AbortController | undefined;
@@ -100,13 +104,9 @@ export const makeRunner = Effect.fnUntraced(function* (
   let tools = new Map<string, TopTool>();
   const gather = yield* FiberHandle.make();
 
-  const slash = bot.model.indexOf("/");
-  const model = models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
-  if (!model) return yield* Effect.die(new Error(`Bot ${bot.name}: unknown model ${bot.model}`));
-
   const key = (seq: number, toolCallId: string) => `${id}:${seq}:${toolCallId}`;
 
-  const compactAt = compactLimit(options.compactAtTokens, model.contextWindow);
+  const compactAt = runtime.contextWindow === undefined ? undefined : compactLimit(options.compactAtTokens, runtime.contextWindow);
   const compact: Compact | undefined =
     compactAt === undefined
       ? undefined
@@ -181,6 +181,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           }
           const stored = yield* append("assistant", message);
           assistantSeq = stored.seq;
+          for (const call of toolCallsOf(message)) callSeq.set(call.id, stored.seq);
           if (!toolCallsOf(message).length && message.stopReason !== "aborted") yield* store.setRestarts(id, 0);
           return;
         }
@@ -203,16 +204,14 @@ export const makeRunner = Effect.fnUntraced(function* (
   const loop = (signal: AbortSignal, prompts?: readonly TranscriptMessage[]) =>
     Effect.gen(function* () {
       looping = true;
-      yield* runLoop(
+      yield* runtime.turn(
         {
-          models,
-          model,
           thinkingLevel: options.thinkingLevel ?? "off",
           sessionId: cacheKey(id),
           compact,
           messages,
           tools: toolList,
-          toolContext: (toolCallId) => ({ key: key(assistantSeq, toolCallId), bot: id }),
+          toolContext: (toolCallId) => ({ key: key(seqOf(toolCallId), toolCallId), bot: id }),
           signal,
           stopped: () => abortRequested,
           steering: () => take(steering),
@@ -225,15 +224,17 @@ export const makeRunner = Effect.fnUntraced(function* (
               runningTools++;
               return setStatus("tool", { tool: call.name });
             },
-            toolRunning: (call, args) => store.toolStarted(id, assistantSeq, call.id, call.name, args),
+            toolRunning: (call, args) => store.toolStarted(id, seqOf(call.id), call.id, call.name, args),
             toolEnd: (result, ran) =>
               Effect.gen(function* () {
-                const stored = yield* store.toolFinished(id, assistantSeq, result.toolCallId, result);
+                const stored = yield* store.toolFinished(id, seqOf(result.toolCallId), result.toolCallId, result);
+                callSeq.delete(result.toolCallId);
                 if (ran) yield* store.setRestarts(id, 0);
                 yield* events.entry(stored);
                 if (--runningTools === 0) yield* setStatus("thinking");
               }),
             searching: (on) => (status.status === "thinking" ? setStatus("thinking", on ? { searching: true } : {}) : Effect.void),
+            notice: (text) => Effect.asVoid(append("notice", { text })),
           },
         },
         prompts,
@@ -281,7 +282,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           const failed = takePendingError();
           if (!failed) break;
           const delay = retryDelays[attempt];
-          if (abortRequested || delay === undefined || permanentFailure(failed.errorMessage)) {
+          if (abortRequested || delay === undefined || !runtime.retries || permanentFailure(failed.errorMessage)) {
             yield* append("assistant", failed);
             yield* setStatus("failed", { error: failed.errorMessage ?? "The model request failed" });
             break;
@@ -327,7 +328,10 @@ export const makeRunner = Effect.fnUntraced(function* (
   const drive = Effect.gen(function* () {
     for (;;) {
       const tail = messages.at(-1);
-      const resumable = (tail?.role === "user" || tail?.role === "toolResult") && (yield* store.bot(id))?.runActive === true;
+      // A run cut off by a restart carries on. Claude Code can have answered part of it (one of several messages, or the
+      // turn before a steer), so a Claude bot's runtime checks its session for what's left whatever the transcript ends with.
+      const unfinished = runtime.id === "claude" || tail?.role === "user" || tail?.role === "toolResult";
+      const resumable = unfinished && (yield* store.bot(id))?.runActive === true;
       const inbox = yield* store.inbox(id);
       if (resumable) {
         if (!(yield* run(undefined, inbox))) break;
@@ -418,12 +422,19 @@ export const makeRunner = Effect.fnUntraced(function* (
       yield* store.setRestarts(id, restarts);
       const giveUp = restarts > RESTART_LIMIT;
 
-      let assistantIndex = messages.length - 1;
-      while (assistantIndex >= 0 && messages[assistantIndex]!.role === "toolResult") assistantIndex--;
-      const assistant = messages[assistantIndex];
       const settled: string[] = [];
-      if (assistant?.role === "assistant") {
-        const seq = yield* store.lastAssistantSeq(id);
+      // Top's own loop leaves at most its last answer with calls unfinished. Claude Code can run a call while the rest
+      // of its answer is still arriving, which Top saves as another entry, so a Claude bot's every answer since its
+      // last one without calls is checked.
+      let open: readonly { readonly seq: number; readonly message: TopAssistantMessage }[] = [];
+      if (runtime.id === "claude") open = yield* store.openAssistants(id);
+      else {
+        let index = messages.length - 1;
+        while (index >= 0 && messages[index]!.role === "toolResult") index--;
+        const last = messages[index];
+        if (last?.role === "assistant") open = [{ seq: yield* store.lastAssistantSeq(id), message: last }];
+      }
+      for (const { seq, message: assistant } of open) {
         const done = yield* store.toolResultsAfter(id, seq);
         for (const call of toolCallsOf(assistant)) {
           if (done.has(call.id)) continue;

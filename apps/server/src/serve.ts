@@ -291,8 +291,12 @@ const connection = Effect.fnUntraced(function* (socket: Socket.Socket, where: { 
       case "createBot":
         return answer(
           frame,
-          Effect.map(daemon.createBot(frame.name, frame.description, frame.avatar), (id) => ({ id })),
+          Effect.map(daemon.createBot(frame.name, frame.description, frame.avatar, frame.model), (id) => ({ id })),
         );
+      case "setBotModel":
+        return answer(frame, daemon.setBotModel(frame.bot, frame.model));
+      case "botRuntimes":
+        return answer(frame, daemon.runtimes);
       case "deleteBot":
         return answer(frame, daemon.deleteBot(frame.bot));
       case "setBotOrder":

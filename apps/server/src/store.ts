@@ -32,6 +32,7 @@ import {
   NoticeView,
   SystemView,
   ToolResultView,
+  type TopAssistantMessage,
   type TranscriptMessage,
   transcriptMessage,
   UserView,
@@ -81,6 +82,8 @@ export const BotRow = Schema.Struct({
   model: Text,
   runActive: Schema.BooleanFromBit,
   restarts: Int,
+  /** The conversation its runtime keeps, for a runtime that keeps one (Claude Code's session id); null until it starts one. */
+  session: NullableText,
 }).pipe(Schema.encodeKeys({ runActive: "run_active" }));
 export type BotRow = typeof BotRow.Type;
 
@@ -344,6 +347,7 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
   }),
   // The order the bots are listed in, once someone reorders them; until then (NULL) it's the order they were made in.
   "9_bot_position": addColumn("bots", "position", "INTEGER"),
+  "10_bot_session": addColumn("bots", "session", "TEXT"),
 };
 
 const refuseNewerData = Effect.gen(function* () {
@@ -418,6 +422,7 @@ export class Store extends Context.Service<
     readonly setRunActive: (bot: number, active: boolean) => Effect.Effect<void>;
     readonly setRestarts: (bot: number, restarts: number) => Effect.Effect<void>;
     readonly setModel: (bot: number, model: string) => Effect.Effect<void>;
+    readonly setSession: (bot: number, session: string | null) => Effect.Effect<void>;
 
     readonly files: (bot: number) => Effect.Effect<Map<string, FileStat> | undefined>;
     readonly recordFiles: (bot: number, listing: ReadonlyMap<string, FileStat>, changes: readonly FileChange[]) => Effect.Effect<StoredEntry | undefined>;
@@ -441,6 +446,8 @@ export class Store extends Context.Service<
     readonly lastContextEntry: (bot: number) => Effect.Effect<StoredEntry | undefined>;
     readonly lastSeq: (bot: number) => Effect.Effect<number>;
     readonly lastAssistantSeq: (bot: number) => Effect.Effect<number>;
+    /** The bot's answers since its last one that called no tools: the ones a restart may have cut off, oldest first. */
+    readonly openAssistants: (bot: number) => Effect.Effect<readonly { readonly seq: number; readonly message: TopAssistantMessage }[]>;
     readonly lastAnswer: (bot: number) => Effect.Effect<AssistantView | undefined>;
     readonly newest: (bot: number, limit: number) => Effect.Effect<StoredEntry[]>;
     readonly after: (bot: number, after: number, limit: number) => Effect.Effect<StoredEntry[]>;
@@ -564,7 +571,7 @@ const make = Effect.gen(function* () {
       const after = items.filter((item) => item.seq! >= compaction.keptFrom);
       return [
         ...(baseline ? [{ seq: undefined, message: baseline }] : []),
-        { seq: undefined, message: summaryMessage(compaction.summary, compaction.timestamp) },
+        { seq: undefined, message: summaryMessage(compaction.summary, compaction.timestamp, compaction.handoff === true) },
         ...after,
       ];
     });
@@ -648,6 +655,7 @@ const make = Effect.gen(function* () {
       setRunActive: (bot, active) => Effect.asVoid(q(sql`UPDATE bots SET run_active = ${active ? 1 : 0} WHERE id = ${bot}`)),
       setRestarts: (bot, restarts) => Effect.asVoid(q(sql`UPDATE bots SET restarts = ${restarts} WHERE id = ${bot}`)),
       setModel: (bot, model) => Effect.asVoid(q(sql`UPDATE bots SET model = ${model} WHERE id = ${bot}`)),
+      setSession: (bot, session) => Effect.asVoid(q(sql`UPDATE bots SET session = ${session} WHERE id = ${bot}`)),
 
       files: (bot) =>
         Effect.gen(function* () {
@@ -751,6 +759,14 @@ const make = Effect.gen(function* () {
         Effect.map(first(sql.unsafe(`SELECT MAX(seq) AS seq FROM entries WHERE bot = ? AND ${VISIBLE}`, [bot])), (row) => Number(row?.seq ?? 0)),
       lastAssistantSeq: (bot) =>
         Effect.map(first(sql`SELECT MAX(seq) AS seq FROM entries WHERE bot = ${bot} AND kind = 'assistant'`), (row) => Number(row?.seq ?? 0)),
+      openAssistants: (bot) =>
+        Effect.map(
+          rows(sql`SELECT seq, message FROM entries WHERE bot = ${bot} AND kind = 'assistant' AND seq > COALESCE((
+            SELECT seq FROM entries AS done WHERE done.bot = ${bot} AND done.kind = 'assistant' AND instr(done.message, '"type":"toolCall"') = 0
+            ORDER BY seq DESC LIMIT 1
+          ), 0) ORDER BY seq`),
+          (r) => r.map((row) => ({ seq: Number(row.seq), message: transcriptMessage("assistant", JSON.parse(String(row.message))) as TopAssistantMessage })),
+        ),
       lastAnswer: (bot) =>
         Effect.map(
           first(
