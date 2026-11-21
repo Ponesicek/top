@@ -1,4 +1,4 @@
-import { type AssistantMessage, getCurrentSystemMessage, type Models, type SystemMessage, type ToolCall } from "@earendil-works/pi-ai";
+import { type AssistantMessage, getCurrentSystemMessage, type SystemMessage, type ToolCall } from "@earendil-works/pi-ai";
 import type { BotStatus, ToolOutcome } from "@top/protocol";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -10,8 +10,9 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as Latch from "effect/Latch";
 import { type Attachments, userContent, withImageData } from "./attachments.ts";
 import { compactLimit, contextTokens, kTokens, summaryMessage } from "./compaction.ts";
-import { type Compact, runLoop, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
+import { type Compact, type ThinkingLevel, toolCallsOf, toolResultMessage } from "./loop.ts";
 import type { EntryBody, TopUserMessage, TranscriptMessage, UserText } from "./messages.ts";
+import type { BotRuntime } from "./runtime.ts";
 import { type BotRow, type InboxRow, Store, type StoredEntry } from "./store.ts";
 import { type ToolResult, type TopTool, text } from "./tools.ts";
 import { permanentFailure } from "./websearch.ts";
@@ -67,7 +68,7 @@ export type BotRunner = {
 
 export const makeRunner = Effect.fnUntraced(function* (
   bot: BotRow,
-  models: Models,
+  runtime: BotRuntime,
   toolSource: () => readonly TopTool[],
   events: RunnerEvents,
   options: RunnerOptions = {},
@@ -100,13 +101,9 @@ export const makeRunner = Effect.fnUntraced(function* (
   let tools = new Map<string, TopTool>();
   const gather = yield* FiberHandle.make();
 
-  const slash = bot.model.indexOf("/");
-  const model = models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
-  if (!model) return yield* Effect.die(new Error(`Bot ${bot.name}: unknown model ${bot.model}`));
-
   const key = (seq: number, toolCallId: string) => `${id}:${seq}:${toolCallId}`;
 
-  const compactAt = compactLimit(options.compactAtTokens, model.contextWindow);
+  const compactAt = runtime.contextWindow === undefined ? undefined : compactLimit(options.compactAtTokens, runtime.contextWindow);
   const compact: Compact | undefined =
     compactAt === undefined
       ? undefined
@@ -203,10 +200,8 @@ export const makeRunner = Effect.fnUntraced(function* (
   const loop = (signal: AbortSignal, prompts?: readonly TranscriptMessage[]) =>
     Effect.gen(function* () {
       looping = true;
-      yield* runLoop(
+      yield* runtime.turn(
         {
-          models,
-          model,
           thinkingLevel: options.thinkingLevel ?? "off",
           sessionId: cacheKey(id),
           compact,
@@ -234,6 +229,7 @@ export const makeRunner = Effect.fnUntraced(function* (
                 if (--runningTools === 0) yield* setStatus("thinking");
               }),
             searching: (on) => (status.status === "thinking" ? setStatus("thinking", on ? { searching: true } : {}) : Effect.void),
+            notice: (text) => Effect.asVoid(append("notice", { text })),
           },
         },
         prompts,
@@ -281,7 +277,7 @@ export const makeRunner = Effect.fnUntraced(function* (
           const failed = takePendingError();
           if (!failed) break;
           const delay = retryDelays[attempt];
-          if (abortRequested || delay === undefined || permanentFailure(failed.errorMessage)) {
+          if (abortRequested || delay === undefined || !runtime.retries || permanentFailure(failed.errorMessage)) {
             yield* append("assistant", failed);
             yield* setStatus("failed", { error: failed.errorMessage ?? "The model request failed" });
             break;
@@ -418,12 +414,11 @@ export const makeRunner = Effect.fnUntraced(function* (
       yield* store.setRestarts(id, restarts);
       const giveUp = restarts > RESTART_LIMIT;
 
-      let assistantIndex = messages.length - 1;
-      while (assistantIndex >= 0 && messages[assistantIndex]!.role === "toolResult") assistantIndex--;
-      const assistant = messages[assistantIndex];
       const settled: string[] = [];
-      if (assistant?.role === "assistant") {
-        const seq = yield* store.lastAssistantSeq(id);
+      // Every answer since the last message the model was given: Top's own loop leaves at most the last one with calls
+      // unfinished, but Claude Code can run a call while the rest of its answer is still arriving, which Top saves as a
+      // second entry.
+      for (const { seq, message: assistant } of yield* store.openAssistants(id)) {
         const done = yield* store.toolResultsAfter(id, seq);
         for (const call of toolCallsOf(assistant)) {
           if (done.has(call.id)) continue;

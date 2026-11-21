@@ -1,10 +1,11 @@
-import { type BotId, type BotSummary, MAX_BOT_AVATAR, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, OfflineError, TimeoutError } from "@top/client";
+import { type BotId, type BotRuntimesView, type BotSummary, MAX_BOT_AVATAR, MAX_BOT_DESCRIPTION, MAX_BOT_NAME, OfflineError, TimeoutError } from "@top/client";
 import * as Schema from "effect/Schema";
 import { Shuffle } from "lucide-react";
-import { type FormEvent, type RefObject, useRef, useState } from "react";
+import { type FormEvent, type RefObject, useEffect, useId, useRef, useState } from "react";
 import { cn } from "../lib/utils.ts";
 import { top } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
+import { Segmented } from "./SettingsSection.tsx";
 import { Button } from "./ui/button.tsx";
 import {
   AlertDialog,
@@ -82,7 +83,83 @@ function AvatarPicker({ name, value, onChange }: { name: string; value: number; 
   );
 }
 
+const CLAUDE = "claude/";
+const MODEL_LABELS: Readonly<Record<string, string>> = { default: "Default", opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
+const modelOptions = (models: readonly string[]) => models.map((value) => ({ value, label: MODEL_LABELS[value] ?? value }));
+
+/** What new bots can run on here, asked once the dialog opens. */
+function useRuntimes() {
+  const [runtimes, setRuntimes] = useState<BotRuntimesView>();
+  useEffect(() => {
+    let live = true;
+    top.botRuntimes().then(
+      (view) => live && setRuntimes(view),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return runtimes;
+}
+
+/** Whether Claude Code on the daemon's computer is ready, and what a Claude bot runs on. */
+function ClaudeStatus({ runtimes }: { runtimes: BotRuntimesView }) {
+  if (runtimes.claudeProblem) return <p className="text-small leading-snug text-destructive-foreground">{runtimes.claudeProblem}</p>;
+  return (
+    <p className="text-small leading-snug text-muted-foreground">
+      Runs on your Claude subscription, through Claude Code {runtimes.claudeVersion ? `${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")} ` : ""}
+      and its sign-in on the daemon's computer. Top never uses API credits for it. Claude Code keeps the conversation, so a bot stays on what it was made with.
+    </p>
+  );
+}
+
+function RuntimePicker({
+  runtimes,
+  runtime,
+  onRuntime,
+  model,
+  onModel,
+}: {
+  runtimes: BotRuntimesView;
+  runtime: "top" | "claude";
+  onRuntime: (runtime: "top" | "claude") => void;
+  model: string;
+  onModel: (model: string) => void;
+}) {
+  const runsOn = useId();
+  const modelId = useId();
+  return (
+    <>
+      <Field>
+        <FieldLabel id={runsOn}>Runs on</FieldLabel>
+        <Segmented
+          labelledBy={runsOn}
+          value={runtime}
+          onChange={onRuntime}
+          options={[
+            { value: "top", label: runtimes.model ? `Top · ${runtimes.model}` : "Top" },
+            { value: "claude", label: "Claude Code" },
+          ]}
+        />
+      </Field>
+      {runtime === "claude" && (
+        <>
+          <Field>
+            <FieldLabel id={modelId}>Claude model</FieldLabel>
+            <Segmented labelledBy={modelId} value={model} onChange={onModel} options={modelOptions(runtimes.claudeModels)} />
+          </Field>
+          <ClaudeStatus runtimes={runtimes} />
+        </>
+      )}
+    </>
+  );
+}
+
 function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; nameRef: RefObject<HTMLInputElement | null> }) {
+  const runtimes = useRuntimes();
+  const [runtime, setRuntime] = useState<"top" | "claude">("top");
+  const [claudeModel, setClaudeModel] = useState("default");
   const [name, setName] = useState("");
   const [avatar, setAvatar] = useState(0);
   const [description, setDescription] = useState("");
@@ -96,7 +173,7 @@ function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; na
     setBusy(true);
     setError(undefined);
     try {
-      onCreated(await top.createBot(name, description, avatar));
+      onCreated(await top.createBot(name, description, avatar, runtime === "claude" ? `${CLAUDE}${claudeModel}` : undefined));
     } catch (err) {
       setError(messageOf(err));
       setBusy(false);
@@ -140,10 +217,11 @@ function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; na
             }}
           />
         </Field>
+        {runtimes?.claude && <RuntimePicker runtimes={runtimes} runtime={runtime} onRuntime={setRuntime} model={claudeModel} onModel={setClaudeModel} />}
         {error && <DialogError>{error}</DialogError>}
         <DialogFooter>
           <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>
-          <Button type="submit" size="wide" disabled={busy || !name.trim()}>
+          <Button type="submit" size="wide" disabled={busy || !name.trim() || (runtime === "claude" && !!runtimes?.claudeProblem)}>
             {busy ? "Creating…" : "Create bot"}
           </Button>
         </DialogFooter>
@@ -211,5 +289,66 @@ export function DeleteBotDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={(o) => !o && onClosed()}>
       <AlertDialogPopup>{bot && <DeleteBotBody key={bot.id} bot={bot} onDone={() => onOpenChange(false)} />}</AlertDialogPopup>
     </AlertDialog>
+  );
+}
+
+function ModelBody({ bot, onDone }: { bot: BotSummary; onDone: () => void }) {
+  const runtimes = useRuntimes();
+  const [model, setModel] = useState((bot.model ?? CLAUDE).slice(CLAUDE.length) || "default");
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const labelId = useId();
+
+  const save = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await top.setBotModel(bot.id, `${CLAUDE}${model}`);
+      onDone();
+    } catch (err) {
+      setError(messageOf(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <DialogBody>
+      <DialogTitle>{bot.name}'s Claude model</DialogTitle>
+      <DialogDescription>From its next message. It stays on Claude Code, which keeps its conversation.</DialogDescription>
+      {runtimes && (
+        <>
+          <Field>
+            <FieldLabel id={labelId}>Claude model</FieldLabel>
+            <Segmented labelledBy={labelId} value={model} onChange={setModel} options={modelOptions(runtimes.claudeModels)} />
+          </Field>
+          <ClaudeStatus runtimes={runtimes} />
+        </>
+      )}
+      {error && <DialogError>{error}</DialogError>}
+      <DialogFooter>
+        <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>
+        <Button size="wide" onClick={save} disabled={busy || !runtimes}>
+          {busy ? "Saving…" : "Save"}
+        </Button>
+      </DialogFooter>
+    </DialogBody>
+  );
+}
+
+export function BotModelDialog({
+  bot,
+  open,
+  onOpenChange,
+  onClosed,
+}: {
+  bot: BotSummary | undefined;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onClosed: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={(o) => !o && onClosed()}>
+      <DialogPopup>{bot && <ModelBody key={bot.id} bot={bot} onDone={() => onOpenChange(false)} />}</DialogPopup>
+    </Dialog>
   );
 }

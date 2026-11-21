@@ -28,6 +28,8 @@ export type LoopHooks = {
   readonly toolRunning: (call: ToolCall, args: ToolArguments) => Effect.Effect<void>;
   readonly toolEnd: (result: ToolResultMessage, ran: boolean) => Effect.Effect<void>;
   readonly searching?: ((on: boolean) => Effect.Effect<void>) | undefined;
+  /** A line under the bot's turn about what its runtime did (Claude's compaction, say), never sent to the model. */
+  readonly notice?: ((text: string) => Effect.Effect<void>) | undefined;
 };
 
 export type LoopOptions = {
@@ -104,6 +106,54 @@ function declareToolChanges(
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 type Prepared = { readonly call: ToolCall; readonly tool: TopTool; readonly args: ToolArguments } | { readonly call: ToolCall; readonly result: ToolResult };
+
+export type ToolStepOptions = Pick<LoopOptions, "tools" | "hooks" | "signal" | "stopped" | "toolContext">;
+
+/** How one tool call runs, the same for every runtime: announced, checked, recorded right before it runs, then its result saved. */
+export const toolSteps = (options: ToolStepOptions) => {
+  const { tools, hooks, signal, stopped } = options;
+  const end = (call: ToolCall, result: ToolResult, isError: boolean, ran: boolean) =>
+    Effect.gen(function* () {
+      const done = toolResultMessage(call.id, call.name, result, isError, yield* Clock.currentTimeMillis);
+      yield* hooks.toolEnd(done, ran);
+      return { done, terminate: result.terminate === true };
+    });
+
+  const prepare = (call: ToolCall) =>
+    Effect.gen(function* (): Effect.fn.Return<Prepared> {
+      yield* hooks.toolStart(call);
+      const tool = tools.find((t) => t.name === call.name);
+      if (!tool) return { call, result: text(`Tool ${call.name} not found`) };
+      const checked = yield* Effect.result(Effect.try(() => checkArguments(tool, call, call.arguments)));
+      if (checked._tag === "Failure") return { call, result: text(message(checked.failure.cause)) };
+      const args = checked.success;
+      if (stopped()) return { call, result: text("Not run: stopped by the user.") };
+      yield* hooks.toolRunning(call, args);
+      if (signal.aborted) return { call, result: text("Operation aborted") };
+      return { call, tool, args };
+    });
+
+  const execute = (prepared: Prepared) =>
+    Effect.gen(function* () {
+      if (!("tool" in prepared)) return yield* end(prepared.call, prepared.result, true, false);
+      const { call, tool, args } = prepared;
+      const ran = yield* tool.run(args, { ...options.toolContext(call.id), signal }).pipe(
+        Effect.map((result) => ({ result, isError: result.isError === true })),
+        Effect.catch((error) => Effect.succeed({ result: text(error.message), isError: true })),
+        Effect.catchDefect((defect) => Effect.succeed({ result: text(message(defect)), isError: true })),
+        Effect.withSpan("Loop.tool", { attributes: { tool: call.name } }),
+      );
+      return yield* end(call, ran.result, ran.isError, true);
+    });
+
+  return { end, prepare, execute };
+};
+
+/** Runs one call through all its steps. */
+export const runToolCall = (options: ToolStepOptions, call: ToolCall) => {
+  const { prepare, execute } = toolSteps(options);
+  return Effect.flatMap(prepare(call), execute);
+};
 
 export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessage[]): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -199,39 +249,7 @@ export const runLoop = (options: LoopOptions, prompts?: readonly TranscriptMessa
       Effect.withSpan("Loop.ask"),
     );
 
-    const end = (call: ToolCall, result: ToolResult, isError: boolean, ran: boolean) =>
-      Effect.gen(function* () {
-        const done = toolResultMessage(call.id, call.name, result, isError, yield* Clock.currentTimeMillis);
-        yield* hooks.toolEnd(done, ran);
-        return { done, terminate: result.terminate === true };
-      });
-
-    const prepare = (call: ToolCall) =>
-      Effect.gen(function* (): Effect.fn.Return<Prepared> {
-        yield* hooks.toolStart(call);
-        const tool = tools.find((t) => t.name === call.name);
-        if (!tool) return { call, result: text(`Tool ${call.name} not found`) };
-        const checked = yield* Effect.result(Effect.try(() => checkArguments(tool, call, call.arguments)));
-        if (checked._tag === "Failure") return { call, result: text(message(checked.failure.cause)) };
-        const args = checked.success;
-        if (stopped()) return { call, result: text("Not run: stopped by the user.") };
-        yield* hooks.toolRunning(call, args);
-        if (signal.aborted) return { call, result: text("Operation aborted") };
-        return { call, tool, args };
-      });
-
-    const execute = (prepared: Prepared) =>
-      Effect.gen(function* () {
-        if (!("tool" in prepared)) return yield* end(prepared.call, prepared.result, true, false);
-        const { call, tool, args } = prepared;
-        const ran = yield* tool.run(args, { ...options.toolContext(call.id), signal }).pipe(
-          Effect.map((result) => ({ result, isError: result.isError === true })),
-          Effect.catch((error) => Effect.succeed({ result: text(error.message), isError: true })),
-          Effect.catchDefect((defect) => Effect.succeed({ result: text(message(defect)), isError: true })),
-          Effect.withSpan("Loop.tool", { attributes: { tool: call.name } }),
-        );
-        return yield* end(call, ran.result, ran.isError, true);
-      });
+    const { end, prepare, execute } = toolSteps(options);
 
     const runTools = (answer: AssistantMessage, calls: readonly ToolCall[]) =>
       Effect.gen(function* () {

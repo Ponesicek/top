@@ -324,6 +324,39 @@ listed among the servers, and no server may be named "Collar". Its tools are nam
 (`collar__<tool>`) but run inside the daemon: wake-ups, background jobs, the cards in Questions and secrets, and
 coding tasks.
 
+### Claude bots
+
+A bot can run on Claude Code instead of Top's own loop: pick **Claude Code** under **Runs on** when you make it
+(with a Claude model: Default, Opus, Sonnet or Haiku). It runs on the [Claude Agent
+SDK](https://code.claude.com/docs/en/agent-sdk/overview), driving the `claude` CLI installed on the daemon's computer,
+signed in as it is there: your own Claude Code sign-in, the same one coding tasks use (`TOP_CLAUDE_PATH` points at
+another CLI). Top has no Claude sign-in of its own, never reads or copies Claude Code's credentials, and never runs a
+Claude bot on API credits: provider keys (`ANTHROPIC_API_KEY`, …) are left out of the CLI's environment, and a turn
+whose CLI reports an API key or a provider other than Anthropic's own fails, before Claude Code is given any message,
+and says how to sign in. Anthropic's Agent SDK docs say that, unless previously approved, third-party developers may
+not offer claude.ai login or rate limits for their products; Top being self-hosted and open source doesn't change
+that, so it's yours to weigh.
+
+- **Tools.** Claude Code's own tools are off (`tools: []`); the bot has Top's tools (its computer tools, Collar, the
+  MCP servers you gave it, its questions and secrets), served to Claude Code by an MCP server inside the daemon. Each
+  call goes through Top as on Top's loop: recorded before it runs, saved when it returns, and settled by its own
+  crash policy after a restart. Anything else Claude Code asks to run is refused. No settings, CLAUDE.md, skills,
+  hooks or plugins are read from the computer (`settingSources: []`), and Claude Code's own memory is off; the bot's
+  four files and skills come from Top, as for any bot.
+- **The conversation.** Claude Code keeps what the model sees, as its session (in `~/.claude/projects`, under the
+  bot's folder; its id is in `top.sqlite`), and compacts it itself; Top's transcript is the record the apps show,
+  and says when Claude Code compacted. A change to the bot's files arrives with its next message, as an update
+  ahead of it; a new session starts with them in its system prompt. If the session is gone, the bot starts a new
+  one and is told the earlier messages aren't in it. A bot stays on the runtime it was made with; a Claude bot can
+  change its Claude model (right-click it → **Claude model…**). `--model` sets only bots on Top's own loop.
+- **Steer, Stop, wake-ups.** Steering goes into the running turn; Stop interrupts it and ends the CLI; wake-ups and
+  background jobs arrive as messages, as for any bot. Claude Code runs only while the bot works, one process per
+  turn, started so that it dies with the daemon (`setpriv --pdeathsig`, on Linux) rather than carrying on a turn
+  with no one to run its tools.
+- **After a crash.** The cut-off calls are settled by their policy (a `deploy` is never run again), the session
+  carries on, and Claude is told what Top recorded for each call its session lacks, and given any message of yours
+  it never saved. Claude Code retries its own failed requests; Top doesn't retry a Claude bot's failed turn.
+
 ### Coding tasks
 
 A bot can hand coding work to a full coding agent on the daemon's computer: **Claude Code** (driven
@@ -597,6 +630,6 @@ Reconnect time depends mostly on where the client's retry backoff is when the da
   needs writing (or borrowing from pi's coding agent).
 - Push notifications when an answer lands, so the phone needn't stay connected.
 - The React Native app; a bigger local cache (IndexedDB / SQLite) there.
-- Choosing a model per bot.
+- Choosing a model per bot on Top's own loop (Claude bots pick theirs).
 - MCP resources and prompts (only tools so far), and signing in to an MCP server from the phone.
 - Login and device pairing for the daemon itself.

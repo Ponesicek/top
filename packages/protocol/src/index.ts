@@ -6,7 +6,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 export const DEFAULT_PORT = 7357;
 
 const Struct = Schema.Struct;
@@ -37,8 +37,25 @@ export const BotSummary = Struct({
   asks: Optional(Schema.Int),
   wakeAt: Optional(Schema.Number),
   lastSeq: Seq,
+  /** Set for a bot that runs on Claude Code: `claude/<model>`. Other bots run on the daemon's model. */
+  model: Optional(Schema.String),
 });
 export type BotSummary = typeof BotSummary.Type;
+
+/** What a new bot can run on: the daemon's model on Top's own loop, or Claude Code on the daemon's computer. */
+export const BotRuntimesView = Struct({
+  /** The model of bots on Top's own loop (`--model`). */
+  model: Schema.String,
+  /** Whether this daemon runs Claude bots at all. */
+  claude: Schema.Boolean,
+  /** Claude Code's version, when it's installed and signed in. */
+  claudeVersion: Optional(Schema.String),
+  /** Why a Claude bot can't run now, in words for the user. */
+  claudeProblem: Optional(Schema.String),
+  /** The models a Claude bot can pick (`default` is Claude Code's own choice). */
+  claudeModels: List(Schema.String),
+});
+export type BotRuntimesView = typeof BotRuntimesView.Type;
 
 export const ToolCallView = Struct({
   id: Schema.String,
@@ -454,7 +471,11 @@ export const ClientFrame = Schema.Union([
     name: Schema.String,
     description: Schema.String,
     avatar: Optional(Schema.Int),
+    /** `claude/<model>` for a bot on Claude Code; left out, the daemon's model. */
+    model: Optional(Schema.String),
   }),
+  Struct({ t: Schema.Literal("setBotModel"), req, bot: BotId, model: Schema.String }),
+  Struct({ t: Schema.Literal("botRuntimes"), req }),
   Struct({ t: Schema.Literal("deleteBot"), req, bot: BotId }),
   Struct({ t: Schema.Literal("setBotOrder"), req, bots: List(BotId) }),
   Struct({ t: Schema.Literal("contextFiles"), req, bot: BotId }),
@@ -507,6 +528,8 @@ export const RequestResult = {
   submit: Struct({ duplicate: Schema.Boolean }),
   abort: Schema.Null,
   createBot: Struct({ id: BotId }),
+  setBotModel: Schema.Null,
+  botRuntimes: BotRuntimesView,
   deleteBot: Schema.Null,
   setBotOrder: Schema.Null,
   contextFiles: List(ContextFileView),

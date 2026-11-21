@@ -18,10 +18,12 @@ import * as Attachments from "./attachments.ts";
 import { AuthFile } from "./auth.ts";
 import { BUILD } from "./build.ts";
 import * as ChatGPT from "./chatgpt.ts";
+import { claudeCli, claudeRuntime, realSdk } from "./claudeRuntime.ts";
 import { CompactAtTokens } from "./compaction.ts";
 import * as Daemon from "./daemon.ts";
 import * as Events from "./events.ts";
 import { BOT_NAMES, FAKE_MODEL, FAKE_PROVIDER, makeFakeModelProvider } from "./fake-bots.ts";
+import { fakeClaude } from "./fakeClaude.ts";
 import * as Home from "./home.ts";
 import { DEFAULT_MODEL, install, installLayout } from "./installation.ts";
 import { ForegroundMs } from "./jobs.ts";
@@ -31,6 +33,7 @@ import { signInHere, signOutHere } from "./login.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import * as Mcp from "./mcp.ts";
 import { RetryDelaysMs } from "./runner.ts";
+import { CLAUDE_PROVIDER } from "./runtime.ts";
 import * as Secrets from "./secrets.ts";
 import { serve } from "./serve.ts";
 import { LOCAL_SKILLS } from "./skills.ts";
@@ -138,6 +141,8 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
         const store = yield* Store.Store;
         const secrets = yield* Secrets.Secrets;
         const folderOf = (bot: Store.BotRow) => ensureFolder(botFolder(home.bots, bot.name)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+        const claude = claudeCli();
+        const row = (bot: Store.BotRow) => Effect.map(store.bot(bot.id), (current) => current ?? bot);
         return Daemon.BotKit.of({
           models,
           tools: (bot) => Effect.map(folderOf(bot), (folder) => computerTools(folder, secrets.outputHider)),
@@ -169,6 +174,18 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           webSearch: canSearchTheWeb(found),
           harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version }), codexCloudAdapter(), claudeCloudAdapter()],
           maxTasks: maxTasks(),
+          claude: {
+            runtime: (bot) =>
+              claudeRuntime({
+                model: Effect.map(row(bot), (current) => current.model.slice(CLAUDE_PROVIDER.length + 1)),
+                cwd: botFolder(home.bots, bot.name),
+                cli: claude.locate,
+                sdk: realSdk,
+                session: Effect.map(row(bot), (current) => current.session),
+                saveSession: (session) => store.setSession(bot.id, session),
+              }),
+            status: Effect.promise(claude.status),
+          },
         });
       }),
     );
@@ -184,6 +201,8 @@ const fakeBots = (args: Args, home: Home.Layout) =>
       const models = createModels();
       models.setProvider((yield* makeFakeModelProvider(args.tps)).provider);
       const filesOf = (bot: Pick<Store.BotRow, "name">) => join(botFolder(home.bots, bot.name), FILES_FOLDER);
+      // Fake Claude bots answer from an in-memory stand-in for the Agent SDK: no Claude Code runs, nothing is signed in.
+      const claudeStandIn = fakeClaude();
       const tools = yield* makeFakeTools(join(home.server, "effects.jsonl"), (id) => Effect.map(store.bot(id), (bot) => bot && filesOf(bot)));
       return Daemon.BotKit.of({
         models,
@@ -201,6 +220,26 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         webSearch: true,
         harnesses: [fakeHarness({ stepMs: 1_500 }), fakeHarness({ stepMs: 1_500, where: "cloud" })],
         maxTasks: maxTasks(),
+        claude: {
+          runtime: (bot) =>
+            claudeRuntime({
+              model: Effect.map(store.bot(bot.id), (row) => (row ?? bot).model.slice(CLAUDE_PROVIDER.length + 1)),
+              cwd: botFolder(home.bots, bot.name),
+              cli: async () => "claude",
+              sdk: async () => claudeStandIn,
+              session: Effect.map(store.bot(bot.id), (row) => row?.session ?? null),
+              saveSession: (session) => store.setSession(bot.id, session),
+            }),
+          // TOP_FAKE_CLAUDE=signed-out plays Claude Code that isn't signed in.
+          status: Effect.succeed(
+            process.env.TOP_FAKE_CLAUDE === "signed-out"
+              ? {
+                  ok: false as const,
+                  error: "Claude Code isn't signed in on the daemon's computer. Run `claude` on the daemon's computer and sign in with your Claude account.",
+                }
+              : { ok: true as const, version: "2.1.330 (Claude Code)" },
+          ),
+        },
       });
     }),
   );
