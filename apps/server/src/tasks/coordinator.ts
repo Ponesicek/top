@@ -185,7 +185,7 @@ const ENDED_AS: Record<string, string> = { completed: "completed", cancelled: "w
 
 /** How a bot carries on with a session, said only where its harness can continue one and it got going there. */
 export function carryOn(session: SessionRow, adapter: Pick<HarnessAdapter, "capabilities"> | undefined, lead = " "): string {
-  if (!session.externalId || (adapter && !adapter.capabilities.resume)) return "";
+  if (!session.externalId || !adapter?.capabilities.resume) return "";
   return `${lead}Its session ${session.id} is kept: to carry on, call collar__task_start with "session": "${session.id}".`;
 }
 
@@ -199,7 +199,7 @@ export function notifyText(task: TaskRow, session: SessionRow, label: string, ad
       : "(no answer text)"
     : (task.error ?? (task.state === "cancelled" ? "Cancelled." : "It failed."));
   const more = task.result && task.result.length > NOTIFY_RESULT_CHARS ? `\n\nThe whole answer is in collar__task_read {"id": "${task.id}"}.` : "";
-  const resumable = !adapter || adapter.capabilities.resume;
+  const resumable = adapter?.capabilities.resume === true;
   const next = resumable ? `\n\nIts session is ${session.id}: to carry on with it, call collar__task_start with "session": "${session.id}".` : "";
   return `${head}${ran}\n\n${body}${more}${next}`;
 }
@@ -679,7 +679,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           fork = true;
         }
       }
-      return { session: session.id, title: live.row.title, cwd: session.cwd, model: session.model ?? undefined, options: session.options, resume, fork };
+      return { session: session.id, cwd: session.cwd, model: session.model ?? undefined, options: session.options, resume, fork };
     });
 
   const runStarted = (live: Live) =>
@@ -889,7 +889,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             return yield* fail(`Session ${source.id} is ${adapter.label}'s; leave out \`harness\` or use "${source.harness}".`);
           if (inCloud(adapter) && request.cwd !== undefined) return yield* fail(cloudCwd(adapter));
           if (request.cwd !== undefined) {
-            const cwd = adapter.locate ? request.cwd.trim() : (yield* resolveCwd(request.cwd, request.bot)).cwd;
+            const cwd = (yield* resolveCwd(request.cwd, request.bot)).cwd;
             if (cwd !== source.cwd) return yield* fail(`Session ${source.id} works in ${source.cwd}. Start a new session to work somewhere else.`);
           }
           if (request.fork) {
@@ -992,8 +992,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const live = lives.get(row.id);
       const session = (yield* q.session(row.session))!;
       const adapter = adapters.get(session.harness);
-      // Said as it always was, except for a harness that can't continue a session.
-      const next = adapter && !adapter.capabilities.resume ? "" : ` To carry on, call collar__task_start with "session": "${session.id}".`;
+      // Said as it always was, except for a harness that can't continue a session or isn't here anymore.
+      const next = !adapter?.capabilities.resume ? "" : ` To carry on, call collar__task_start with "session": "${session.id}".`;
       if (taskEnded(row.state) || !live) return yield* fail(`Task ${row.id} has ended (${row.state}).${next}`);
       if (!adapter?.capabilities[mode === "steer" ? "steer" : "queue"])
         return yield* fail(`${label(session.harness)} can't take ${mode === "steer" ? "steering" : "queued"} messages.`);

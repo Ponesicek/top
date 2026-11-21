@@ -629,6 +629,26 @@ test("a waiter that gets a question isn't sent the question as a message too", a
   );
 });
 
+test("a task whose harness is gone after a restart fails, and the bot isn't told to carry on its session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "top-tasks-gone-"));
+  const gone = fakeHarness({ id: "gone", label: "Gone harness", stepMs: 30 });
+  const first = await setup({ dir, extra: [gone] });
+  const running = await start(first, { harness: "gone", prompt: "run forever" });
+  await inState(first, running.snapshot.task.id, "running");
+  const sessionId = running.snapshot.task.session;
+  await until("the harness's session id to be saved", async () => !!(await first.h.run(first.h.store.tasks.session(sessionId)))?.externalId);
+  await first.h.close();
+
+  const second = await setup({ dir });
+  const cut = await task(second, running.snapshot.task.id);
+  assert.equal(cut.state, "failed");
+  assert.match(cut.error!, /^Cut off: its harness \(gone\) isn't available on this daemon anymore\.$/);
+  const told = await until("the bot to hear it was cut off", async () => (await notes(second)).find((n) => n.includes(running.snapshot.task.id)));
+  assert.doesNotMatch(told, /collar__task_start/);
+  const sent = await failure(second, second.tasks.send(second.h.bot, running.snapshot.task.id, "k-gone", "queue", "more"));
+  assert.doesNotMatch(sent, /collar__task_start/);
+});
+
 test("a task_wait cut off by a restart is recovered with one look, never by waiting again", async () => {
   const s = await setup();
   const { snapshot } = await start(s, { prompt: "run forever" });

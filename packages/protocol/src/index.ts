@@ -424,25 +424,6 @@ export const UpdateView = Struct({
 });
 export type UpdateView = typeof UpdateView.Type;
 
-export const T3CodeProvider = Struct({ id: Schema.String, status: Schema.String, models: List(Schema.String), defaultModel: Optional(Schema.String) });
-export type T3CodeProvider = typeof T3CodeProvider.Type;
-
-/**
- * Top's connection to T3 Code, checked as it's asked for. Without `url`, Top has none. With `error`, it can't use it now;
- * otherwise T3 Code answered, takes Top's session and listed what tasks can use. Never carries the credential.
- */
-export const T3CodeView = Struct({
-  url: Optional(Schema.String),
-  label: Optional(Schema.String),
-  connectedAt: Optional(Schema.String),
-  serverVersion: Optional(Schema.String),
-  expiresAt: Optional(Schema.String),
-  providers: Optional(List(T3CodeProvider)),
-  projects: Optional(List(Struct({ title: Schema.String, path: Schema.String }))),
-  error: Optional(Schema.String),
-});
-export type T3CodeView = typeof T3CodeView.Type;
-
 const req = Schema.Int;
 
 export const ClientFrame = Schema.Union([
@@ -510,9 +491,6 @@ export const ClientFrame = Schema.Union([
     input: Schema.Int,
     answers: TaskAnswers,
   }),
-  Struct({ t: Schema.Literal("t3code"), req }),
-  Struct({ t: Schema.Literal("t3codeConnect"), req, address: Schema.String, code: Schema.String, plainHttp: Optional(Schema.Boolean) }),
-  Struct({ t: Schema.Literal("t3codeDisconnect"), req }),
   Struct({ t: Schema.Literal("ping"), at: Schema.Number }),
 ]);
 export type ClientFrame = typeof ClientFrame.Type;
@@ -553,9 +531,6 @@ export const RequestResult = {
   answer: Schema.Null,
   saveSecret: Schema.Null,
   answerTask: Schema.Null,
-  t3code: T3CodeView,
-  t3codeConnect: T3CodeView,
-  t3codeDisconnect: Schema.Null,
 } as const satisfies { readonly [T in RequestType]: Schema.Codec<unknown> };
 export type ResultOf<T extends RequestType> = (typeof RequestResult)[T]["Type"];
 
@@ -615,7 +590,7 @@ const formatIssue = SchemaIssue.makeFormatterDefault();
 
 type FrameSchema = Schema.Decoder<unknown> & { readonly fields: { readonly t: { readonly literal: string } } };
 
-const SENSITIVE_FRAMES: ReadonlySet<string> = new Set(["saveSecret", "t3codeConnect"]);
+const SENSITIVE_FRAMES: ReadonlySet<string> = new Set(["saveSecret"]);
 
 function frameParser<M extends FrameSchema>(union: { readonly members: ReadonlyArray<M> }): (text: string) => Parsed<M["Type"]> {
   const byTag = new Map<string, M[]>();

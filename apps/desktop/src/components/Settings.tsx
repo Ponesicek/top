@@ -4,7 +4,6 @@ import { DaemonSettings } from "./DaemonSettings.tsx";
 import { McpServers } from "./McpServers.tsx";
 import { Row, Section, Segmented } from "./SettingsSection.tsx";
 import { Skills } from "./Skills.tsx";
-import { T3CodeSettings } from "./T3CodeSettings.tsx";
 import { UpdateSettings } from "./UpdateSettings.tsx";
 import { Switch } from "./ui/switch.tsx";
 
@@ -51,7 +50,6 @@ export function Settings({
           <AccountSection />
           <McpServers />
           <Skills />
-          <T3CodeSettings />
           <DaemonSettings />
           <UpdateSettings />
           <Section title="Performance">

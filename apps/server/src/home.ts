@@ -20,7 +20,6 @@ export const layout = (home: string) => {
     database: join(server, "top.sqlite"),
     auth: join(server, "auth.json"),
     chatgptHost: join(server, "chatgpt-host.json"),
-    t3code: join(server, "t3code.json"),
   };
 };
 
