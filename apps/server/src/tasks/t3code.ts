@@ -317,7 +317,7 @@ export function t3codeAdapter(config: T3CodeConfig = {}): HarnessAdapter {
           if (!thread) return;
           // A message still on its way would start its run after a Stop on the idle thread: wait until T3 Code has it.
           for (const until = Date.now() + LAND_MS; !landed && running === wait && Date.now() < until; ) {
-            const shown = await t3(["thread", "show", thread, "--json", "--messages", "0"], spec.cwd).catch(() => undefined);
+            const shown = await t3(["thread", "show", thread, "--json", "--messages", "0"], spec.cwd, Math.max(1, until - Date.now())).catch(() => undefined);
             if (str(record(jsonOf(shown?.stdout ?? "")?.thread).activeRunId)) landed = true;
             else await new Promise((resolve) => setTimeout(resolve, 250));
           }
