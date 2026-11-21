@@ -19,8 +19,7 @@ import type { AskBody, AskRow } from "../store.ts";
 import { defineTool, type ToolContext, type ToolResult, text } from "../tools.ts";
 import type { CollarDaemon, CollarGroup } from "./index.ts";
 
-const ELSEWHERE =
-  "Cards from other tools (another server's question or secret tool, such as T3 Code's request_secret) don't show in Top, so use these to ask the user.";
+const ELSEWHERE = "Cards from other tools (another server's question or secret tool) don't show in Top, so use these to ask the user.";
 
 export function safeUrl(text: string): string | undefined {
   if (text.length > MAX_SECRET_URL || !URL.canParse(text)) return undefined;

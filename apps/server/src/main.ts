@@ -7,7 +7,6 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DEFAULT_PORT } from "@top/protocol";
 import type * as Config from "effect/Config";
-import * as Argument from "effect/cli/Argument";
 import * as Command from "effect/cli/Command";
 import * as Flag from "effect/cli/Flag";
 import * as Data from "effect/Data";
@@ -37,16 +36,12 @@ import { serve } from "./serve.ts";
 import { LOCAL_SKILLS } from "./skills.ts";
 import * as Sqlite from "./sqlite.ts";
 import * as Store from "./store.ts";
-import { t3Connect, t3Disconnect, t3Status } from "./t3cli.ts";
-import * as T3Link from "./t3link.ts";
 import { connectTailnet, systemCli, TAILNET_PORT, type Tailnet } from "./tailscale.ts";
 import { claudeAdapter } from "./tasks/claude.ts";
 import { claudeCloudAdapter } from "./tasks/claudecloud.ts";
 import { codexAdapter } from "./tasks/codex.ts";
 import { codexCloudAdapter } from "./tasks/codexcloud.ts";
 import { fakeHarness } from "./tasks/fake.ts";
-import { readT3Config } from "./tasks/t3api.ts";
-import { t3codeAdapter } from "./tasks/t3code.ts";
 import { makeFakeTools } from "./tools.ts";
 import * as Updates from "./updates.ts";
 import { canSearchTheWeb } from "./websearch.ts";
@@ -137,9 +132,6 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
     const found = models.getModel(providerId, model.slice(slash + 1));
     if (!found) return yield* new StartError({ message: `${providerId} has no model "${model.slice(slash + 1)}".` });
     yield* Effect.log(`model ${model} (${auth ? (auth.source ?? auth.type) : "not signed in"}), thinking ${args.thinking}`);
-    // T3 Code is offered while Top is paired with one (Settings → T3 Code, or `top t3code connect`); its credential is read again for each task.
-    const t3 = yield* Effect.promise(() => readT3Config(home.t3code).catch(() => undefined));
-    if (t3) yield* Effect.log(`T3 Code at ${t3.url} (${t3.label})`);
     const kit = Layer.effect(
       Daemon.BotKit,
       Effect.gen(function* () {
@@ -175,13 +167,7 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
           webSearch: canSearchTheWeb(found),
-          harnesses: [
-            claudeAdapter(),
-            codexAdapter({ clientVersion: BUILD.version }),
-            t3codeAdapter({ file: home.t3code }),
-            codexCloudAdapter(),
-            claudeCloudAdapter(),
-          ],
+          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version }), codexCloudAdapter(), claudeCloudAdapter()],
           maxTasks: maxTasks(),
         });
       }),
@@ -213,7 +199,7 @@ const fakeBots = (args: Args, home: Home.Layout) =>
         retryDelaysMs: yield* RetryDelaysMs,
         compactAtTokens: yield* CompactAtTokens,
         webSearch: true,
-        harnesses: [fakeHarness({ stepMs: 1_500 }), t3codeAdapter({ file: home.t3code }), fakeHarness({ stepMs: 1_500, where: "cloud" })],
+        harnesses: [fakeHarness({ stepMs: 1_500 }), fakeHarness({ stepMs: 1_500, where: "cloud" })],
         maxTasks: maxTasks(),
       });
     }),
@@ -261,7 +247,6 @@ const program = (args: Args) =>
           Mcp.layer({ oauthPort, redirectOrigin: tailnet?.origin, clientInfo: { name: "Top", version: BUILD.version } }),
           Attachments.layer(home.server),
           Secrets.layer(home.server),
-          T3Link.layer(home.t3code),
         ),
       ),
       Layer.provideMerge(Events.layer),
@@ -341,38 +326,9 @@ const installCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Install this release of the daemon in Top's home, run it with systemd, and let it update itself."));
 
-const t3Run = (run: () => Promise<void>) =>
-  Effect.promise(() =>
-    run().then(
-      () => process.exit(0),
-      (error: unknown) => {
-        process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-        process.exit(1);
-      },
-    ),
-  );
-const t3code = Command.make("t3code").pipe(
-  Command.withDescription('Connect Top to T3 Code over its API, so bots can hand it coding tasks (harness "t3code").'),
-  Command.withSubcommands([
-    Command.make("connect", { home: homeFlag, address: Argument.String("address"), plainHttp: toggle("plain-http", false) }, ({ home, address, plainHttp }) =>
-      Effect.flatMap(homeOf(home), (layout) => t3Run(() => t3Connect(layout.t3code, address, plainHttp))),
-    ).pipe(
-      Command.withDescription(
-        "Pair with the T3 Code server at this address (https://….ts.net, a tailnet address or http://127.0.0.1:3773), with a pairing code.",
-      ),
-    ),
-    Command.make("status", { home: homeFlag }, ({ home }) => Effect.flatMap(homeOf(home), (layout) => t3Run(() => t3Status(layout.t3code)))).pipe(
-      Command.withDescription("Check the connection and list T3 Code's providers, models and projects."),
-    ),
-    Command.make("disconnect", { home: homeFlag }, ({ home }) => Effect.flatMap(homeOf(home), (layout) => t3Run(() => t3Disconnect(layout.t3code)))).pipe(
-      Command.withDescription("Forget the T3 Code connection."),
-    ),
-  ]),
-);
-
 const command = Command.make("top", flags, program).pipe(
   Command.withDescription("The Top daemon: runs your bots and serves the apps."),
-  Command.withSubcommands([login, logout, installCommand, t3code]),
+  Command.withSubcommands([login, logout, installCommand]),
 );
 
 Command.run(command, { version: BUILD.version }).pipe(

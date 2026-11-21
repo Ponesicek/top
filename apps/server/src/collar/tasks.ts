@@ -104,7 +104,7 @@ const ids = { id: Type.String({ description: "The task's id, from collar__task_s
 export const tasksGroup: CollarGroup = (daemon) => {
   const tasks = daemon.tasks;
   if (!tasks?.adapters.length) return [];
-  const offered = daemon.harnesses ?? tasks.adapters;
+  const offered = tasks.adapters;
   const harnesses = offered.map((a) => a.id);
   const capabilityHelp = Object.entries(CAPABILITY_NOTES)
     .map(([name, note]) => `${name}: ${note}`)
@@ -128,9 +128,6 @@ export const tasksGroup: CollarGroup = (daemon) => {
               "A cloud harness (marked above) takes no `cwd`, `model`, images or questions, and Top can't stop its work once it's there (collar__task_cancel is refused). It works on what its options name, never on a folder here.",
             ]
           : []),
-        ...offered
-          .filter((a) => a.locate && !inCloud(a))
-          .map((a) => `"${a.id}" runs on another computer: its \`cwd\` is a folder there, one of its projects, and is checked there.`),
         "A task is one piece of work in a session. To continue a session later (it keeps the conversation), start a new task with `session`; `fork: true` branches it instead.",
       ].join("\n"),
       parameters: Type.Object(
@@ -139,8 +136,7 @@ export const tasksGroup: CollarGroup = (daemon) => {
           prompt: Type.String({ description: "What to do, with everything the harness needs to know: it hasn't seen this conversation." }),
           title: Type.Optional(
             Type.String({
-              description:
-                "A few words for the task, shown to the user on its card, and the name of the thread a T3 Code task starts. Default: the prompt's first line.",
+              description: "A few words for the task, shown to the user on its card. Default: the prompt's first line.",
             }),
           ),
           cwd: Type.Optional(Type.String({ description: "The folder it works in (absolute, ~/…, or relative to your folder). Default: your folder." })),

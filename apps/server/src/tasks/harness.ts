@@ -81,8 +81,6 @@ export type HarnessEvent =
 
 export type OpenSpec = {
   readonly session: string;
-  /** The task's title: a harness that names what it starts names it this, as the conversation's card does. */
-  readonly title: string;
   readonly cwd: string;
   readonly model: string | undefined;
   readonly options: Readonly<Record<string, unknown>>;
@@ -101,13 +99,13 @@ export interface HarnessSession {
 
 export type Availability = { readonly ok: true; readonly version: string } | { readonly ok: false; readonly error: string };
 
-export type Where = "local" | "remote" | "cloud";
+export type Where = "local" | "cloud";
 
 export interface HarnessAdapter {
   readonly id: string;
   readonly label: string;
   /**
-   * Where the work runs. Left out: on the daemon's computer, or on another one when it has `locate`. "cloud": in its vendor's
+   * Where the work runs. Left out: on the daemon's computer. "cloud": in its vendor's
    * cloud, against a repository or environment named in its options, never a local folder.
    */
   readonly where?: Where;
@@ -116,11 +114,9 @@ export interface HarnessAdapter {
   readonly capabilities: Capabilities;
   readonly options: TObject;
   readonly check: () => Promise<Availability>;
-  /** Whether `task_start` offers it to the bots now, asked before each of their turns (default: always). Its sessions carry on either way. */
-  readonly offered?: () => boolean;
   /**
-   * For a harness on another computer: checks `cwd` there (Top doesn't look at its own disk) and returns the folder to use,
-   * with options the new session keeps (which computer it belongs to), set by the harness and not by the bot.
+   * For a harness that doesn't work in a folder here (a cloud one): checks `cwd` and the start's options itself (Top doesn't
+   * look at its own disk) and returns what the session keeps as its `cwd`, with options set by the harness and not by the bot.
    */
   readonly locate?: (
     cwd: string | undefined,

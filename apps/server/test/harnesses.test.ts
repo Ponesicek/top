@@ -13,7 +13,6 @@ import { codexAdapter } from "../src/tasks/codex.ts";
 import { CODEX_CLOUD, codexCloudAdapter } from "../src/tasks/codexcloud.ts";
 import type { Tasks } from "../src/tasks/coordinator.ts";
 import { CAPABILITY_NOTES, findCli, type HarnessEvent, HarnessUnavailable, harnessEnv, type OpenSpec, redact } from "../src/tasks/harness.ts";
-import { t3codeAdapter } from "../src/tasks/t3code.ts";
 import { until } from "./harness.ts";
 
 const FAKE_CODEX = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
@@ -22,7 +21,6 @@ const FAKE_CLAUDE_CLOUD = join(import.meta.dirname, "fixtures", "fake-claude-clo
 
 const spec = (over: Partial<OpenSpec> = {}): OpenSpec => ({
   session: "ses_test",
-  title: "Test task",
   cwd: mkdtempSync(join(tmpdir(), "top-harness-")),
   model: undefined,
   options: {},
@@ -436,18 +434,13 @@ const codexCloud = (over: Parameters<typeof codexCloudAdapter>[0] = {}) => {
 const cloudSpec = (options: Record<string, unknown>, over: Partial<OpenSpec> = {}) => spec({ cwd: "env_fake @ main", options, ...over });
 
 test("the local harnesses and what bots are told about them are as they were before cloud harnesses came", () => {
-  const local = [
-    claudeAdapter({ command: "/nonexistent/claude" }),
-    codexAdapter({ command: "/nonexistent/codex" }),
-    t3codeAdapter({ file: "/nonexistent/t3.json" }),
-  ];
+  const local = [claudeAdapter({ command: "/nonexistent/claude" }), codexAdapter({ command: "/nonexistent/codex" })];
   // Computed with the base commit's own `harnessLines` (71a26a2), before `where`, `guidance` and `follow` existed.
   assert.equal(
     harnessLines(local),
     [
       "- \"claude_code\" (Claude Code): can resume, fork, steer, queue, questions, images, fileChanges, usage, cancel, reconnect; can't durable. Options: effort (How much effort Claude puts into each answer. Default: Claude Code's own setting.); max_turns (Stop a turn after this many model round trips.).",
       "- \"codex\" (Codex): can resume, fork, steer, queue, images, fileChanges, usage, cancel, reconnect; can't questions, durable. Options: reasoning_effort (How hard the model thinks on each turn. Default: Codex's own setting.).",
-      "- \"t3code\" (T3 Code): can resume, steer, queue, questions, fileChanges, cancel, reconnect, durable; can't fork, images, usage. Options: provider (T3 Code's provider instance that runs it, such as claudeAgent or codex. Default: the one that offers `model`, else its first ready one.).",
     ].join("\n"),
   );
   for (const adapter of local) {
@@ -469,19 +462,6 @@ test("the local harnesses and what bots are told about them are as they were bef
     durable: false,
   });
   assert.deepEqual(local[1]!.capabilities, { ...local[0]!.capabilities, questions: false });
-  assert.deepEqual(local[2]!.capabilities, {
-    resume: true,
-    fork: false,
-    steer: true,
-    queue: true,
-    questions: true,
-    images: false,
-    fileChanges: true,
-    usage: false,
-    cancel: true,
-    reconnect: true,
-    durable: true,
-  });
 });
 
 test("cloud harnesses are marked as such for bots, with what they need and what they may receive", () => {
@@ -806,10 +786,8 @@ test("S6 a cloud CLI is never started once its session has closed, even when tha
   }
 });
 
-test("S10 task_start says a cloud harness runs in the cloud, never that its `cwd` is a folder on another computer", () => {
-  const cloud = { ...claudeCloudAdapter({ command: "/nonexistent" }), locate: async () => ({ cwd: "x" }) };
-  const tools = tasksGroup({ tasks: { adapters: [cloud] } as unknown as Tasks } as unknown as CollarDaemon);
+test("S10 task_start says a cloud harness runs in the cloud", () => {
+  const tools = tasksGroup({ tasks: { adapters: [claudeCloudAdapter({ command: "/nonexistent" })] } as unknown as Tasks } as unknown as CollarDaemon);
   const description = tools.find((t) => t.name === "task_start")!.description;
-  assert.doesNotMatch(description, /"claude-cloud" runs on another computer/);
   assert.match(description, /Runs in its vendor's cloud/);
 });

@@ -465,17 +465,17 @@ test("a job that ends while the bot is busy reaches it at its next step, not whe
 });
 
 test("background finds the tool a bot means, even named the way its model sees it", () => {
-  const tools = [{ name: "bash" }, { name: "t3code__t3_thread_wait" }, { name: "github__create_issue" }, { name: "gitlab__create_issue" }];
+  const tools = [{ name: "bash" }, { name: "ci__ci_run_wait" }, { name: "github__create_issue" }, { name: "gitlab__create_issue" }];
   const found = (name: string) => {
     const result = findTool(tools, name);
     return "tool" in result ? result.tool.name : result.error;
   };
-  assert.equal(found("functions.t3code__t3_thread_wait"), "t3code__t3_thread_wait", "a namespace in front");
+  assert.equal(found("functions.ci__ci_run_wait"), "ci__ci_run_wait", "a namespace in front");
   assert.equal(found("multi_tool_use.bash"), "bash");
-  assert.equal(found("T3code__T3_Thread_Wait"), "t3code__t3_thread_wait", "the wrong case");
-  assert.equal(found("t3_thread_wait"), "t3code__t3_thread_wait", "without its server");
+  assert.equal(found("Ci__CI_Run_Wait"), "ci__ci_run_wait", "the wrong case");
+  assert.equal(found("ci_run_wait"), "ci__ci_run_wait", "without its server");
   assert.match(found("create_issue"), /could be "github__create_issue" or "gitlab__create_issue"/, "never a guess between two");
-  assert.match(found("thread_wait"), /no tool named "thread_wait"\. Did you mean "t3code__t3_thread_wait"\?/);
+  assert.match(found("run_wait"), /no tool named "run_wait"\. Did you mean "ci__ci_run_wait"\?/);
   assert.match(found("deploy"), /no tool named "deploy"\. Use a name exactly/);
 });
 
