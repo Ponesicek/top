@@ -7,9 +7,10 @@ import Type from "typebox";
 import { test } from "vitest";
 import { catchUp, promptUuid, subscriptionProblem } from "../src/claudeRuntime.ts";
 import { type FakeClaude, fakeClaude } from "../src/fakeClaude.ts";
-import { textOf } from "../src/messages.ts";
+import { handoffDocument } from "../src/handoff.ts";
+import { type TranscriptMessage, textOf } from "../src/messages.ts";
 import { fromPromise, type TopTool, text } from "../src/tools.ts";
-import { type Harness, harness, idle, until } from "./harness.ts";
+import { type Harness, harness, idle, MODEL, until } from "./harness.ts";
 
 const CLAUDE = { Atlas: "claude/sonnet" };
 
@@ -418,7 +419,7 @@ test("a steer's answer Claude Code saved is recovered even when Top had saved th
   assert.equal(catchUp([first, steer, reply, { ...reply, responseId: "msg_2" }], known, session).lost, undefined);
 });
 
-test("--model keeps setting Top's bots, not Claude bots; a Claude bot can change its Claude model but not its runtime", async () => {
+test("--model keeps setting Top's bots, not Claude bots; a Claude bot can change its Claude model", async () => {
   const fake = fakeClaude();
   const h = await harness({ claude: fake, bots: ["Atlas", "Nova"], models: { Atlas: "claude/opus", Nova: "stale/model" } });
   await h.run(h.daemon.start);
@@ -429,8 +430,7 @@ test("--model keeps setting Top's bots, not Claude bots; a Claude bot can change
   await h.run(h.daemon.setBotModel(atlas, "claude/haiku"));
   await ask(h, "hi", atlas);
   assert.equal(fake.launches.at(-1)!.model, "haiku");
-  await assert.rejects(h.run(h.daemon.setBotModel(atlas, "fake/fake-model")), /Claude Code/);
-  await assert.rejects(h.run(h.daemon.setBotModel(nova, "claude/opus")), /Top's own loop/);
+  await assert.rejects(h.run(h.daemon.setBotModel(atlas, "fake/fake-model")), /daemon's model/);
   await assert.rejects(h.run(h.daemon.setBotModel(atlas, "claude/gpt-9")), /no model "gpt-9"/);
 
   const id = await h.run(h.daemon.createBot("Scout", "", 0, "claude/default"));
@@ -459,4 +459,67 @@ test("older data opens with no session for each bot", async () => {
   db.close();
   const again = await harness({ dir: h.dir });
   assert.equal((await again.run(again.store.bot(again.bot)))!.session, null);
+});
+
+test("a bot on Top's loop moves to Claude Code with the conversation as a handoff, and Claude starts a new session with it", async () => {
+  const fake = fakeClaude();
+  const h = await harness({ claude: fake });
+  await h.run(h.daemon.start);
+  await ask(h, "remember the word kiwi");
+  await h.run(h.daemon.setBotModel(h.bot, "claude/sonnet"));
+  assert.equal((await h.run(h.store.bot(h.bot)))!.model, "claude/sonnet");
+  await ask(h, "what was the word?");
+  const launch = fake.launches.at(-1)!;
+  assert.ok(launch.sessionId && !launch.resume, "a new session");
+  const opening = fake.prompts.map((p) =>
+    typeof p.message.content === "string" ? p.message.content : p.message.content.map((b) => (b.type === "text" ? b.text : "")).join("\n"),
+  );
+  assert.match(opening[0]!, /\[Top: context handoff\. You're now running on Claude Code/);
+  assert.match(opening[0]!, /\[History · user · [^\]]+\]\nremember the word kiwi/);
+  assert.match(opening.at(-1)!, /what was the word\?/);
+  const notices = (await h.entries()).filter((e) => e.kind === "notice").map((e) => (e.kind === "notice" ? e.message.text : ""));
+  assert.ok(notices.some((t) => t.startsWith("Moved to Claude Code (claude/sonnet).")));
+  assert.equal(h.daemon.bots().find((b) => b.id === h.bot)!.model, "claude/sonnet");
+});
+
+test("a Claude bot moves to Top's loop with the conversation as a handoff in place of the earlier context", async () => {
+  const fake = fakeClaude();
+  const requests: TranscriptMessage[][] = [];
+  const h = await harness({ claude: fake, models: CLAUDE, onRequest: (context) => requests.push(structuredClone(context.messages) as TranscriptMessage[]) });
+  await h.run(h.daemon.start);
+  await ask(h, "hello");
+  await h.run(h.daemon.setBotModel(h.bot, MODEL));
+  await ask(h, "and now?");
+  assert.equal(fake.launches.length, 1, "Claude Code wasn't started again");
+  const context = requests.at(-1)!;
+  const users = context.filter((m) => m.role === "user").map((m) => textOf(m.content));
+  assert.match(users[0]!, /\[Top: context handoff\. You're now running on Top's own loop/);
+  assert.match(users[0]!, /\[History · you · [^\]]+\]\nClaude heard: hello/);
+  assert.equal(users.at(-1), "and now?");
+  assert.ok(!context.some((m) => m.role === "assistant" && m.api === "claude-agent-sdk"), "Claude's own entries aren't replayed to the model");
+  assert.equal((await h.run(h.store.bot(h.bot)))!.session, null);
+});
+
+test("a bot can't switch runtime while it works, nor run Top's loop on another model than the daemon's", async () => {
+  const fake = fakeClaude();
+  const { tool, state } = gate("build");
+  const h = await harness({ claude: fake, models: CLAUDE, tools: [tool] });
+  await h.run(h.daemon.start);
+  await submit(h, 'call build {"target":"app"}');
+  await until("the tool running", () => state.started);
+  await assert.rejects(h.run(h.daemon.setBotModel(h.bot, MODEL)), /is working/);
+  state.release();
+  await until("idle", async () => (await idle(h)) && (await answers(h)).length >= 2);
+  await assert.rejects(h.run(h.daemon.setBotModel(h.bot, "other/model")), /daemon's model/);
+});
+
+test("a handoff keeps the first and the last exchange and fills from the newest, within its budget", () => {
+  const user = (text: string, timestamp: number) => ({ role: "user" as const, content: text, timestamp });
+  const messages = Array.from({ length: 40 }, (_, i) => user(`message ${i} ${"x".repeat(200)}`, i * 1000));
+  const doc = handoffDocument(messages, "Testing.", 2_000)!;
+  assert.match(doc, /message 0 /, "the first message");
+  assert.match(doc, /message 39 /, "the last one");
+  assert.doesNotMatch(doc, /message 20 /, "the middle didn't fit");
+  assert.match(doc, /\[\d+ of 40 items; older ones that didn't fit are left out\.\]/);
+  assert.equal(handoffDocument([], "Nothing."), undefined);
 });

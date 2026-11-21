@@ -120,7 +120,7 @@ function ClaudeStatus({ runtimes }: { runtimes: BotRuntimesView }) {
   return (
     <p className="text-small leading-snug text-muted-foreground">
       Uses your Claude subscription, through Claude Code{runtimes.claudeVersion ? ` ${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")}` : ""} signed
-      in on the daemon's computer, never API credits. The bot stays on Claude Code; its model can change later.
+      in on the daemon's computer, never API credits.
     </p>
   );
 }
@@ -305,16 +305,19 @@ export function DeleteBotDialog({
 
 function ModelBody({ bot, onDone }: { bot: BotSummary; onDone: () => void }) {
   const runtimes = useRuntimes();
+  const was: "top" | "claude" = bot.model ? "claude" : "top";
+  const [runtime, setRuntime] = useState(was);
   const [model, setModel] = useState((bot.model ?? CLAUDE).slice(CLAUDE.length) || "default");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const labelId = useId();
+  const moving = runtime !== was;
 
   const save = async () => {
+    if (!runtimes) return;
     setBusy(true);
     setError(undefined);
     try {
-      await top.setBotModel(bot.id, `${CLAUDE}${model}`);
+      await top.setBotModel(bot.id, runtime === "claude" ? `${CLAUDE}${model}` : runtimes.model);
       onDone();
     } catch (err) {
       setError(messageOf(err));
@@ -324,22 +327,25 @@ function ModelBody({ bot, onDone }: { bot: BotSummary; onDone: () => void }) {
 
   return (
     <DialogBody>
-      <DialogTitle>{bot.name}'s Claude model</DialogTitle>
-      <DialogDescription>From its next message.</DialogDescription>
-      {runtimes && (
-        <>
-          <Field>
-            <FieldLabel id={labelId}>Claude model</FieldLabel>
-            <Segmented labelledBy={labelId} value={model} onChange={setModel} options={modelOptions(runtimes.claudeModels)} />
-          </Field>
-          <ClaudeStatus runtimes={runtimes} />
-        </>
-      )}
+      <DialogTitle>What {bot.name} runs on</DialogTitle>
+      <DialogDescription>
+        {moving
+          ? `From its next message. ${runtime === "claude" ? "Claude Code starts a new session" : "Top's own loop starts"} with the conversation so far as a summary of what's shown here; tool and reasoning state and attached files don't carry over.`
+          : "From its next message."}
+      </DialogDescription>
+      {runtimes &&
+        (runtimes.claude ? (
+          <RuntimePicker runtimes={runtimes} runtime={runtime} onRuntime={setRuntime} model={model} onModel={setModel} />
+        ) : (
+          <p className="text-small leading-snug text-muted-foreground">
+            {bot.name} runs on {runtimes.model}. This daemon doesn't run bots on Claude Code.
+          </p>
+        ))}
       {error && <DialogError>{error}</DialogError>}
       <DialogFooter>
         <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>
-        <Button size="wide" onClick={save} disabled={busy || !runtimes}>
-          {busy ? "Saving…" : "Save"}
+        <Button size="wide" onClick={save} disabled={busy || !runtimes?.claude || (runtime === "claude" && !runtimes.claudeVersion)}>
+          {busy ? "Saving…" : moving ? "Switch" : "Save"}
         </Button>
       </DialogFooter>
     </DialogBody>

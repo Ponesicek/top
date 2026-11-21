@@ -94,12 +94,10 @@ function BotMenu({
                 Move down
                 <kbd className="ml-auto pl-3 font-sans text-micro text-muted-foreground">Alt+Shift+↓</kbd>
               </ContextMenu.Item>
-              {bot.model && (
-                <ContextMenu.Item className={MENU_ITEM} onClick={() => setModelOpen(true)}>
-                  <Cpu size={15} strokeWidth={1.9} />
-                  Claude model…
-                </ContextMenu.Item>
-              )}
+              <ContextMenu.Item className={MENU_ITEM} onClick={() => setModelOpen(true)}>
+                <Cpu size={15} strokeWidth={1.9} />
+                Runs on…
+              </ContextMenu.Item>
               <ContextMenu.Separator className="mx-1.5 my-1 h-px bg-border" />
               <ContextMenu.Item
                 className={cn(MENU_ITEM, "text-destructive-foreground data-highlighted:bg-destructive-surface [&_svg]:text-current")}
@@ -112,7 +110,7 @@ function BotMenu({
           </ContextMenu.Positioner>
         </ContextMenu.Portal>
       </ContextMenu.Root>
-      {bot.model && <BotModelDialog bot={bot} open={modelOpen} onOpenChange={setModelOpen} onClosed={() => {}} />}
+      <BotModelDialog bot={bot} open={modelOpen} onOpenChange={setModelOpen} onClosed={() => {}} />
     </>
   );
 }

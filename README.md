@@ -350,9 +350,15 @@ that, so it's yours to weigh.
 - **The conversation.** Claude Code keeps what the model sees, as its session (in `~/.claude/projects`, under the
   bot's folder; its id is in `top.sqlite`), and compacts it itself; Top's transcript is the record the apps show,
   and says when Claude Code compacted. A change to the bot's files arrives with its next message, as an update
-  ahead of it; a new session starts with them in its system prompt. If the session is gone, the bot starts a new
-  one and is told the earlier messages aren't in it. A bot stays on the runtime it was made with; a Claude bot can
-  change its Claude model (right-click it → **Claude model…**). `--model` sets only bots on Top's own loop.
+  ahead of it; a new session starts with them in its system prompt. If the session is gone or can't be read, the bot
+  starts a new one with a handoff (below).
+- **Switching runtime.** Right-click a bot → **Runs on…** moves it between Top's own loop and Claude Code, or picks
+  another Claude model, from its next message; it's refused while the bot works. The conversation goes with it the
+  way T3 Code hands a thread to another agent: a handoff document made from Top's record (messages, tool calls and
+  their results, errors; the first and the last exchange, then the newest that fit in 64 KB), marked as history,
+  not a new request. Tool and reasoning state and attached files don't carry over, and the old runtime's context is
+  left behind: on Claude Code it starts a new session; on Top's loop it takes the place of the earlier messages, like
+  a compaction. `--model` sets only bots on Top's own loop.
 - **Steer, Stop, wake-ups.** Steering goes into the running turn; Stop interrupts it and ends the CLI; wake-ups and
   background jobs arrive as messages, as for any bot. Claude Code runs only while the bot works, one process per
   turn, started so that it dies with the daemon (`setpriv --pdeathsig`, on Linux) rather than carrying on a turn

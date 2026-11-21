@@ -32,6 +32,7 @@ import { collarTools } from "./collar/index.ts";
 import { contextSections, hasContextFiles, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
 import { Events } from "./events.ts";
 import { type FilesFolder, makeFilesFolder } from "./files.ts";
+import { handoffDocument } from "./handoff.ts";
 import { type Jobs, makeJobs } from "./jobs.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import { Mcp } from "./mcp.ts";
@@ -181,7 +182,11 @@ export class Daemon extends Context.Service<
     readonly runner: (bot: number) => Effect.Effect<BotRunner, UnknownBotError>;
     readonly runners: () => BotRunner[];
     readonly createBot: (name: string, description: string, avatar?: number, model?: string) => Effect.Effect<number, BotError>;
-    /** Gives a Claude bot another Claude model, from its next message. A bot can't move between runtimes: each keeps its own conversation. */
+    /**
+     * Gives a bot another model, from its next message. `claude/<model>` runs it on Claude Code, the daemon's model on
+     * Top's own loop. Moving between them (only while the bot is idle) hands the conversation over as a document made
+     * from Top's record (handoff.ts): the new runtime starts without the old one's context.
+     */
     readonly setBotModel: (bot: number, model: string) => Effect.Effect<void, UnknownBotError | BotError>;
     /** What new bots can run on here, and whether Claude Code is ready for them. */
     readonly runtimes: Effect.Effect<BotRuntimesView>;
@@ -231,6 +236,7 @@ const make = Effect.gen(function* () {
   const dirty = yield* FiberMap.make<number>();
   const saving = yield* Semaphore.make(1);
   const ordering = yield* Semaphore.make(1);
+  const switching = yield* Semaphore.make(1);
 
   if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot, kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
   if (kit.folder) yield* moveLegacySouls(kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
@@ -505,13 +511,47 @@ const make = Effect.gen(function* () {
       return id;
     }),
     setBotModel: Effect.fn("Daemon.setBotModel")(function* (bot, model) {
-      const row = bots.has(bot) ? yield* store.bot(bot) : undefined;
-      if (!row) return yield* new UnknownBotError({ bot });
-      if (runtimeOf(row.model) !== "claude")
-        return yield* new BotError({ message: `${row.name} runs on Top's own loop, on the daemon's model (${row.model}); \`--model\` sets it.` });
-      yield* checkClaudeModel(model);
-      yield* store.setModel(bot, model);
-      yield* touch(bot);
+      yield* switching.withPermits(1)(
+        Effect.gen(function* () {
+          const live = bots.get(bot);
+          const row = live ? yield* store.bot(bot) : undefined;
+          if (!live || !row) return yield* new UnknownBotError({ bot });
+          const to = runtimeOf(model);
+          if (to === "claude") yield* checkClaudeModel(model);
+          else if (model !== kit.newBot?.model)
+            return yield* new BotError({ message: `Bots on Top's own loop run on the daemon's model, ${kit.newBot?.model ?? "its --model"}.` });
+          if (runtimeOf(row.model) === to) {
+            if (model !== row.model) yield* store.setModel(bot, model);
+            yield* touch(bot);
+            return;
+          }
+          if (live.runner.busy() || row.runActive || (yield* store.inbox(bot)).length)
+            return yield* new BotError({ message: `${live.summary.name} is working. Switch when it's idle.` });
+          const at = yield* Clock.currentTimeMillis;
+          let notice: StoredEntry;
+          if (to === "top") {
+            const handoff = handoffDocument(
+              yield* store.context(bot),
+              "You're now running on Top's own loop, which has none of your earlier session on Claude Code.",
+            );
+            const text = `Moved to Top's own loop (${model}). The conversation goes with it as a summary of what's shown here.`;
+            notice = handoff
+              ? yield* store.compact(bot, 0, { summary: handoff, handoff: true, tokensBefore: 0, timestamp: at }, text)
+              : yield* store.append(bot, "notice", { text });
+          } else
+            notice = yield* store.append(bot, "notice", {
+              text: `Moved to Claude Code (${model}). It starts a new session, with the conversation so far as a summary of what's shown here.`,
+            });
+          yield* store.setModel(bot, model);
+          yield* store.setSession(bot, null);
+          // A new runner on the new runtime takes the bot's place (and its place in the list); the old one closes.
+          yield* live.runner.close;
+          yield* add((yield* store.bot(bot))!);
+          yield* Scope.close(live.scope, Exit.void);
+          yield* events.publish({ _tag: "Entry", entry: notice });
+          yield* touch(bot);
+        }),
+      );
     }),
     runtimes: Effect.gen(function* () {
       // Answered from what Top last found, so a slow CLI never holds up the connection; each ask checks again.

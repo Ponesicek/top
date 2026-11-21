@@ -571,7 +571,7 @@ const make = Effect.gen(function* () {
       const after = items.filter((item) => item.seq! >= compaction.keptFrom);
       return [
         ...(baseline ? [{ seq: undefined, message: baseline }] : []),
-        { seq: undefined, message: summaryMessage(compaction.summary, compaction.timestamp) },
+        { seq: undefined, message: summaryMessage(compaction.summary, compaction.timestamp, compaction.handoff === true) },
         ...after,
       ];
     });

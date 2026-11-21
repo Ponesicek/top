@@ -7,6 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import { handoffDocument } from "./handoff.ts";
 import { runToolCall, type ThinkingLevel, toolResultMessage } from "./loop.ts";
 import type { TopAssistantMessage, TopUserMessage, TranscriptMessage } from "./messages.ts";
 import type { BotRuntime, TurnOptions } from "./runtime.ts";
@@ -744,15 +745,18 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
         // Claude Code had answered everything before the restart.
         if (!opening.length) return;
       }
-      if (fresh && messages.some((m) => m.role === "assistant"))
-        opening.unshift(
-          sdkUser(randomUUID(), [
-            {
-              type: "text",
-              text: "[Top: Claude Code has no record of this conversation (its session is gone or unreadable), so you start a new one without its earlier messages. The user still sees them in the app.]",
-            },
-          ]),
+      // A new session for a conversation that already has history (the bot came from another runtime, or its session
+      // is gone) starts with Top's record of it.
+      if (fresh) {
+        const sent = new Set<TranscriptMessage>([...(prompts ?? []), ...resend]);
+        const handoff = handoffDocument(
+          messages.filter((m) => !sent.has(m)),
+          "You're now running on Claude Code, in a new session that has none of this conversation.",
         );
+        // It leads the first message rather than going alone, so Claude reads it with the request instead of answering it.
+        const first = opening[0];
+        if (handoff && first) first.message.content = [{ type: "text", text: handoff }, ...(first.message.content as Block[])] as typeof first.message.content;
+      }
 
       // Top's side of the turn (saving entries, running tools) runs as fibers of its own while Claude Code calls in; when
       // the daemon stops the turn, they're interrupted with it, and nothing more is saved.

@@ -42,9 +42,10 @@ export interface SummaryMessage extends TopUserMessage {
   readonly compaction: true;
 }
 
-export const summaryMessage = (summary: string, timestamp: number): SummaryMessage => ({
+/** A handoff (a bot moved to Top's loop from another runtime) is its own text: Top wrote it, not the model. */
+export const summaryMessage = (summary: string, timestamp: number, handoff = false): SummaryMessage => ({
   role: "user",
-  content: `${SUMMARY_HEAD}\n\n${summary}`,
+  content: handoff ? summary : `${SUMMARY_HEAD}\n\n${summary}`,
   timestamp,
   compaction: true,
 });
