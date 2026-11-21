@@ -354,7 +354,8 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
             ...(error !== undefined ? { error: clip(error, 4_000) } : {}),
           },
-          { session: live.session.id, bot: live.bot, runs: accounts, baselined: accounts.some((a) => a.kind === "baseline"), ...(release ? { release } : {}) },
+          // The first runs a session gets accounted are where its account starts, earlier runs or none.
+          { session: live.session.id, bot: live.bot, runs: accounts, baselined: accounts.length > 0, ...(release ? { release } : {}) },
         );
         if (live.usage) yield* q.setUsage(live.id, live.usage);
         if (row) live.row = row;
@@ -415,7 +416,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
     Effect.gen(function* () {
       const harness = live.harness!;
       // A watched harness's turn leaves out work the session's cancelled tasks caused.
-      const turn: Turn = watches.has(live.adapter.id) ? { ...given, cancelled: yield* q.cancelledTasksOf(live.session.id) } : given;
+      // and follows the chains through the runs tasks took, as the watch does.
+      const turn: Turn = watches.has(live.adapter.id)
+        ? { ...given, cancelled: yield* q.cancelledTasksOf(live.session.id), accounted: [...(yield* q.runsOf(live.session.id))] }
+        : given;
       live.turnActive = true;
       const ran = yield* Effect.raceFirst(
         Effect.result(Effect.tryPromise(() => harness.run(turn))),
@@ -575,13 +579,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 live.result = event.result ?? live.result;
                 // The runs this turn reported are accounted for before the next one replaces it.
                 const accounts = yield* coveredAccounts(live);
-                if (accounts.length)
-                  yield* q.accountRuns(
-                    live.session.id,
-                    live.bot,
-                    accounts,
-                    accounts.some((a) => a.kind === "baseline"),
-                  );
+                if (accounts.length) yield* q.accountRuns(live.session.id, live.bot, accounts, true);
                 // A queued message runs on a slot: one it gave back while it held is taken again first, outside the lock,
                 // and the message stays pending until then.
                 let next: TaskMessageRow | undefined;

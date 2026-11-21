@@ -56,6 +56,8 @@ export type Turn = {
   readonly known?: readonly string[] | undefined;
   /** The session's cancelled tasks: work they caused is never this turn's. */
   readonly cancelled?: readonly string[] | undefined;
+  /** How Top accounted for the session's runs so far (see `t3owner.ts`): a chain through a run a task took leads to it. */
+  readonly accounted?: ReadonlyArray<readonly [string, Accounted]> | undefined;
 };
 
 export type HarnessRequest = {

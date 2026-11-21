@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { type WebSocket, WebSocketServer } from "ws";
 
 type Rec = Record<string, unknown>;
+const str = (value: unknown) => (typeof value === "string" ? value : undefined);
 type Thread = {
   id: string;
   projectId: string;
@@ -113,8 +114,29 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     thread.subagents.set(id, value);
     emit(thread, { type: "subagent.updated", payload: value });
   };
-  const delegate = (thread: Thread, runId: string, id: string) =>
-    setSubagent(thread, id, { id, threadId: thread.id, runId, origin: "app_owned", childThreadId: `child-${id}`, status: "running", result: null });
+  const newThread = (id: string, projectId: string): Thread => {
+    const thread: Thread = { id, projectId, events: [], runs: new Map(), items: new Map(), messages: [], subagents: new Map(), providerThreads: new Map() };
+    threads.set(id, thread);
+    return thread;
+  };
+  /** A delegated task, with a thread of its own where a run bound to it (`delegatedTaskId`) does the work. */
+  const delegate = (thread: Thread, runId: string, id: string) => {
+    const child = threads.get(`child-${id}`) ?? newThread(`child-${id}`, thread.projectId);
+    const ordinal = child.runs.size + 1;
+    const childRun = {
+      id: `run:${child.id}:${ordinal}`,
+      threadId: child.id,
+      ordinal,
+      userMessageId: `delegate:${id}`,
+      status: "running",
+      startedAt: clock(),
+      completedAt: null,
+      text: "forever",
+      delegatedTaskId: id,
+    };
+    child.runs.set(childRun.id, childRun);
+    setSubagent(thread, id, { id, threadId: thread.id, runId, origin: "app_owned", childThreadId: child.id, status: "running", result: null });
+  };
   /**
    * A child ends: its result is published first (delivery pending), then T3 Code wakes its owner with a run of its own, which
    * plays out from `reply` like any other.
@@ -167,6 +189,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
   const finish = (thread: Thread, runId: string, text: string, status = "completed") => {
     if (text) item(thread, runId, { id: `am-${runId}-${thread.items.size}`, type: "assistant_message", status: "completed", text });
     setRun(thread, runId, status);
+    // A delegated task's own run stopped: so is the task.
+    const task = str(thread.runs.get(runId)?.delegatedTaskId);
+    if (task && ["interrupted", "cancelled"].includes(status))
+      for (const owner of threads.values()) if (owner.subagents.get(task)?.status === "running") setSubagent(owner, task, { status: "cancelled" });
     const next = [...thread.runs.values()].find((r) => r.status === "queued" && r.queueHeld !== true);
     if (next) play(thread, String(next.id), String(next.text));
   };
@@ -216,17 +242,7 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         const done = receipts.get(String(payload.commandId));
         if (done) return { ...(done as Rec), resumed: true };
         const id = String(payload.threadId);
-        const thread: Thread = {
-          id,
-          projectId: String(payload.projectId),
-          events: [],
-          runs: new Map(),
-          items: new Map(),
-          messages: [],
-          subagents: new Map(),
-          providerThreads: new Map(),
-        };
-        threads.set(id, thread);
+        const thread = newThread(id, String(payload.projectId));
         const initial = payload.initialMessage as Rec;
         addRun(thread, String(initial.messageId), String(initial.text));
         const result = { threadId: id, projection: {}, resumed: false, sequence };
@@ -585,6 +601,9 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       });
     },
     shellRequests: () => requests.filter((r) => r.tag === "orchestration.subscribeShell"),
+    /** Someone sends a follow-up into a delegated task's own thread in T3 Code: it queues behind what runs there. */
+    childFollowUp: (taskId: string, messageId: string, text: string) =>
+      addRun(threads.get(`child-${taskId}`)!, messageId, text, "user", { creationSource: "web" }),
     /** Someone writes into a running run in T3 Code (a steer), as a message of theirs on that run. */
     steerThere: (threadId: string, runId: string, text: string) => {
       const thread = threads.get(threadId)!;

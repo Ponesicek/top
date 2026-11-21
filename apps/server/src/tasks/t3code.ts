@@ -365,6 +365,7 @@ type Current = {
   readonly known: ReadonlySet<string>;
   /** Tasks of the session that were cancelled: their work is never this turn's. */
   readonly cancelled: ReadonlySet<string>;
+  readonly accounted: ReadonlyMap<string, Accounted>;
   readonly adopted: boolean;
   /** The runs it reported, as they were when it ended; a later run isn't the ended turn's. */
   covered: { readonly runs: readonly string[]; readonly earlier: readonly string[] } | undefined;
@@ -565,7 +566,7 @@ async function openThread(
     const own = turn.runId ? runs.get(turn.runId) : undefined;
     if (!own) return [];
     const records = { runs, messages, subagents };
-    const ownerOf = owners(records);
+    const ownerOf = owners(records, turn.accounted);
     // A run Top adopted gathers only what came from it: another wake waiting in the session is a continuation of its own.
     const cause = causes(records);
     const related = (r: Rec) => !turn.adopted || descendsFrom(cause, String(r.id), String(own.id));
@@ -648,15 +649,22 @@ async function openThread(
           runId: String(t.runId),
           subagentId: String(t.id),
         });
-        // As T3 Code's own Stop does: a task with a thread of its own is stopped there (its parent's stop may not reach it).
+        // A task with a thread of its own is stopped there (its parent's stop may not reach it), but only its own runs:
+        // T3 Code reuses a child's thread for follow-ups, and someone else's may be going or queued in it too.
         if (t.origin === "app_owned" && str(t.childThreadId)) {
           await stopTask.catch(() => {});
-          await command({
-            type: "thread.stop",
-            commandId: `top:stop-thread:${turn.key}:${String(t.id)}`,
-            threadId: str(t.childThreadId)!,
-            reason: "Cancelled from Top.",
-          });
+          const child = str(t.childThreadId)!;
+          const childRuns = (await readThread(cfg.url, cfg.token, child)).runs;
+          for (const r of (Array.isArray(childRuns) ? childRuns : []).map(record)) {
+            if (r.delegatedTaskId !== t.id || TERMINAL_RUN.has(String(r.status))) continue;
+            const queued = r.status === "queued";
+            await command({
+              type: queued ? "queued-run.cancel" : "run.interrupt",
+              commandId: `top:${queued ? "unqueue" : "stop"}:${String(r.id)}`,
+              threadId: child,
+              runId: String(r.id),
+            });
+          }
         } else await stopTask;
       }
       emit({ type: "log", kind: "status", text: "Someone else's work is going in the thread, so Top stopped only its own runs and tasks there." });
@@ -956,6 +964,7 @@ async function openThread(
         joined: new Set(),
         known: new Set(turn.known ?? []),
         cancelled: new Set(turn.cancelled ?? []),
+        accounted: new Map(turn.accounted ?? []),
         adopted: turn.adopt !== undefined,
         covered: undefined,
         followOnly: turn.followOnly === true,

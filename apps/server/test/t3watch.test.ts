@@ -292,20 +292,13 @@ test("a bot's new task racing a wake: the wake is reported once, by whichever go
   s.t3.finish(thread, wake, "the racing wake's answer");
   await until("the session to settle", async () => (await tasksOf(s, first.session.id)).every((t) => ["completed", "failed", "cancelled"].includes(t.state)));
   await settle(800);
-  const all = await tasksOf(s, first.session.id);
-  const reporting = all.filter((t) => t.result === "the racing wake's answer" || t.adopt === wake);
-  if (raced._tag === "Success") {
-    // The new task got there first: the wake ran as part of it, and no continuation reports it again.
-    assert.equal((await continuations(s, first.session.id)).length, 0);
-    assert.ok(
-      (await log(s, raced.success.snapshot.task.id)).some((t) => t.includes("the racing wake's answer")),
-      "the wake's work shows in the task it joined",
-    );
-  } else {
-    assert.match((raced.failure as { message: string }).message, /busy with task/);
-    assert.equal(reporting.length, 1, "the continuation got there first and reports it");
-  }
-  assert.ok(reporting.length <= 1);
+  // Reported once, by one task: a continuation adopting it, or the bot's task it ran as part of (its work in that
+  // task's log). Which one depends on whether that task saw the wake going.
+  const adopting = (await continuations(s, first.session.id)).filter((t) => t.adopt === wake);
+  const joined = raced._tag === "Success" && (await log(s, raced.success.snapshot.task.id)).some((t) => t.includes("the racing wake's answer")) ? 1 : 0;
+  assert.equal(adopting.length + joined, 1, "the wake was reported exactly once");
+  if (adopting.length) assert.equal((await ended(s, adopting[0]!.id)).result, "the racing wake's answer");
+  if (raced._tag === "Failure") assert.match((raced.failure as { message: string }).message, /busy with task/);
 });
 
 test("an archived thread isn't looked at until it's back; a T3 Code Top isn't paired with anymore is picked up again once it is", async () => {
@@ -727,7 +720,7 @@ test("cancelling a held task leaves someone else's delegated work alone, and a w
   await until("their child", () => s.t3.subagentsOf(thread).find((t) => t.id === `task-${theirs}` && t.status === "running"));
   assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, holding.task.id))).task.state, "cancelled");
   assert.equal(s.t3.subagentsOf(thread).find((t) => t.id === `task-${theirs}`)!.status, "running", "their child goes on");
-  assert.equal(s.t3.subagentsOf(thread).find((t) => t.id === `task-run:${thread}:1`)!.status, "cancelled", "Top's child was stopped");
+  await until("Top's child to be stopped", () => s.t3.subagentsOf(thread).find((t) => t.id === `task-run:${thread}:1`)!.status === "cancelled");
 
   const other = await start(s, { prompt: "delegate the other work" });
   const otherThread = `top-${other.session.id}`;
@@ -800,4 +793,65 @@ test("a late wake of a cancelled task's work doesn't become the answer of the ta
   await until("the late wake to end", () => s.t3.runsOf(thread).find((r) => r.id === late && r.status === "completed"));
   const done = await ended(s, next.task.id);
   assert.equal(done.result, "the next task's answer");
+});
+
+test("cancelling stops only Top's own run in a delegated task's thread, leaving someone's follow-up there alone", async () => {
+  const s = await setup();
+  const holding = await start(s, { prompt: "delegate the long work" });
+  const thread = `top-${holding.session.id}`;
+  const task = `task-run:${thread}:1`;
+  await until("it to hold", async () => (await log(s, holding.task.id)).some((t) => /still has delegated work/.test(t)));
+  // Someone else's work in the parent, and their follow-up queued in the task's own thread.
+  const theirs = s.t3.wake(thread, "theirs", "forever: someone's work", person);
+  await until("their run", () => s.t3.runsOf(thread).find((r) => r.id === theirs && r.status === "running"));
+  const followUp = s.t3.childFollowUp(task, "their-follow-up", "forever: their follow-up");
+  assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, holding.task.id))).task.state, "cancelled");
+  await until(
+    "Top's run in the task's thread to be stopped",
+    () => s.t3.runsOf(`child-${task}`).find((r) => r.delegatedTaskId === task)!.status === "interrupted",
+  );
+  await settle(200);
+  assert.notEqual(s.t3.runsOf(`child-${task}`).find((r) => r.id === followUp)!.status, "interrupted", "their follow-up wasn't");
+  assert.ok(!s.t3.requests.some((r) => r.payload.type === "thread.stop" && r.payload.threadId === `child-${task}`));
+});
+
+test("a late wake of a cancelled continuation's work doesn't become the next task's answer", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  const wake = s.t3.wake(thread, "wake-1", "delegate more", nativeWake("c1"));
+  const c = await until("a continuation", async () => (await continuations(s, first.session.id))[0]);
+  await until("it to hold", async () => (await log(s, c.id)).some((t) => /still has delegated work/.test(t)));
+  assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, c.id))).task.state, "cancelled");
+  const next = await start(s, { prompt: "run forever", session: first.session.id });
+  const own = await until("its run", () => s.t3.runsOf(thread).find((r) => r.userMessageId === `top:${next.task.id}` && r.status === "running"));
+  const late = s.t3.wake(thread, "late", "the cancelled continuation's late answer", {
+    createdBy: "agent",
+    delegatedCompletion: { parentRunId: wake, generation: 1, taskIds: [] },
+  });
+  s.t3.finish(thread, String(own.id), "the next task's answer");
+  await until("the late wake to end", () => s.t3.runsOf(thread).find((r) => r.id === late && r.status === "completed"));
+  assert.equal((await ended(s, next.task.id)).result, "the next task's answer");
+});
+
+test("a session from before this account starts it at its first covered turn, earlier runs or none, so a wake after is reported", async () => {
+  const s = await setup();
+  const first = await start(s, { prompt: "run forever" });
+  const thread = `top-${first.session.id}`;
+  await until("its run", () => s.t3.runsOf(thread).find((r) => r.userMessageId === `top:${first.task.id}` && r.status === "running"));
+  await s.h.close();
+  // As if the session came from an earlier Top: not started on this account, nothing accounted.
+  await edit(s.dir, `UPDATE harness_sessions SET baselined = 0 WHERE id = '${first.session.id}';`);
+  const second = await setup({ dir: s.dir, t3: s.t3 });
+  await until("it to be followed again", async () => (await log(second, first.task.id)).some((t) => t.includes("following it again")));
+  const run = second.t3.runsOf(thread).find((r) => r.userMessageId === `top:${first.task.id}`)!;
+  second.t3.nativeChildDone(thread, String(run.id), "c1");
+  // Reads fail for a while, so the watch first reads the thread once the wake has ended.
+  second.t3.faults.threadReadFailures = 1_000;
+  second.t3.finish(thread, String(run.id), "the answer");
+  assert.equal((await ended(second, first.task.id)).result, "the answer");
+  const wake = second.t3.wake(thread, "wake-1", "the child's report", nativeWake("c1"));
+  await until("the wake to end", () => second.t3.runsOf(thread).find((r) => r.id === wake && r.status === "completed"));
+  second.t3.faults.threadReadFailures = 0;
+  const c = await continuation(second, first.session.id, 1, 20_000);
+  assert.equal(c.result, "done: the child's report");
 });
