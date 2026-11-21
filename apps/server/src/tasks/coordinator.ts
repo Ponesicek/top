@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import Value from "typebox/value";
 import type { InboxRow } from "../store.ts";
@@ -25,12 +26,15 @@ import {
   HarnessUnavailable,
   inCloud,
   redact,
+  type SessionWatch,
   type Turn,
   type Usage,
+  type WatchedThread,
 } from "./harness.ts";
 import {
   ACTIVE_STATES,
   type NewEvent,
+  type RunAccount,
   type SessionRow,
   type TaskEventKind,
   type TaskEventRow,
@@ -156,6 +160,8 @@ type Live = {
   phase: "pending" | "started";
   readonly resumed: boolean;
   readonly cancelOnResume: boolean;
+  /** Holds one of the execution slots: from when it starts until it ends, or only waits on work it delegated. */
+  slot: boolean;
   harness: HarnessSession | undefined;
   turnActive: boolean;
   cancelling: boolean;
@@ -190,7 +196,8 @@ export function carryOn(session: SessionRow, adapter: Pick<HarnessAdapter, "capa
 }
 
 export function notifyText(task: TaskRow, session: SessionRow, label: string, adapter?: Pick<HarnessAdapter, "capabilities">): string {
-  const head = `[Task ${task.id} ${ENDED_AS[task.state] ?? "failed"}] ${task.title} (${label})`;
+  const continues = task.continues ? `, continuing task ${task.continues}: ${label} went on with it on its own` : "";
+  const head = `[Task ${task.id} ${ENDED_AS[task.state] ?? "failed"}] ${task.title} (${label}${continues})`;
   const ran = task.startedAt && task.endedAt ? `, after ${duration(task.endedAt - task.startedAt)}` : "";
   const answered = task.state === "completed" || task.state === "handed_off";
   const body = answered
@@ -213,6 +220,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
   const flushing = yield* Semaphore.make(1);
   const cancelGraceMs = config.cancelGraceMs ?? 10_000;
   const lives = new Map<string, Live>();
+  const watches = new Map<string, SessionWatch>();
+  /** Sessions a look is under way for, and whether another change came meanwhile. */
+  const looking = new Map<string, boolean>();
   let buffer: NewEvent[] = [];
   const dirty = yield* Queue.sliding<void>(1);
   // What clients were last sent: a connecting client starts from it, so every later broadcast is a change to what it has.
@@ -329,10 +339,24 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         const result = kept === undefined ? undefined : scrub(kept);
         const said = end.error === undefined ? undefined : scrub(end.error);
         const error = said && dropped ? `${said}\n(${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : said;
-        const row = yield* q.setState(live.id, ACTIVE_STATES, state, {
-          ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
-          ...(error !== undefined ? { error: clip(error, 4_000) } : {}),
-        });
+        // The runs it reported, so no later task reports them again; on a session Top accounts for the first time, also
+        // the runs that had ended before it, which nobody will.
+        const accounts = yield* coveredAccounts(live);
+        // A continuation that failed before it reported its run (T3 Code out of reach for too long) gives the run back,
+        // so the watch adopts it again once T3 Code is back.
+        const adopted = live.row.adopt;
+        const release = adopted && state === "failed" && !accounts.some((a) => a.run === adopted) ? adopted : undefined;
+        const row = yield* q.endTask(
+          live.id,
+          ACTIVE_STATES,
+          state,
+          {
+            ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
+            ...(error !== undefined ? { error: clip(error, 4_000) } : {}),
+          },
+          // The first runs a session gets accounted are where its account starts, earlier runs or none.
+          { session: live.session.id, bot: live.bot, runs: accounts, baselined: accounts.length > 0, ...(release ? { release } : {}) },
+        );
         if (live.usage) yield* q.setUsage(live.id, live.usage);
         if (row) live.row = row;
         yield* log(live, "state", state + (error ? `: ${error}` : ""));
@@ -342,8 +366,45 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         if (row) yield* notify(live, row.state, notifyText(row, live.session, label(live.session.harness), live.adapter), suppressed);
         yield* changed(live);
         yield* Deferred.succeed(live.done, undefined);
+        yield* freeSlot(live);
+        // What the harness does in the session from here on is the watch's to report.
+        if (watches.has(live.adapter.id)) yield* Effect.forkIn(look(live.session.id), scope);
       }),
     );
+
+  /** The runs a turn of the task reported, as accounts; for a session Top accounts for the first time, also the earlier ones. */
+  const coveredAccounts = (live: Live) =>
+    Effect.gen(function* () {
+      const covered = live.harness?.covered?.();
+      const accounts: RunAccount[] = [];
+      if (!covered) return accounts;
+      if (!(yield* q.session(live.session.id))?.baselined) for (const run of covered.earlier) accounts.push({ run, task: null, kind: "baseline" });
+      for (const run of covered.runs) accounts.push({ run, task: live.id, kind: "reported" });
+      return accounts;
+    });
+
+  /** A slot again for a task that gave its own back while it held, before it runs anything more here; a cancel wins the wait. */
+  const takeSlot = (live: Live) =>
+    Effect.gen(function* () {
+      if (live.slot || inCloud(live.adapter)) return true;
+      const got = yield* Effect.raceFirst(
+        Effect.uninterruptibleMask((restore) =>
+          Effect.as(
+            Effect.tap(restore(slots.take(1)), () => Effect.sync(() => (live.slot = true))),
+            true,
+          ),
+        ),
+        Effect.as(Deferred.await(live.cancelRequested), false),
+      );
+      return got;
+    });
+
+  const freeSlot = (live: Live) =>
+    Effect.suspend(() => {
+      if (!live.slot) return Effect.void;
+      live.slot = false;
+      return Effect.asVoid(slots.release(1));
+    });
 
   const emitTo = (live: Live) => (event: HarnessEvent) => {
     Queue.offerUnsafe(live.signals, { type: "harness", event });
@@ -351,9 +412,14 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const queuedTurn = (live: Live, message: TaskMessageRow): Turn => ({ key: `${live.id}:m${message.id}`, text: message.text, images: [] });
 
-  const runTurn = (live: Live, turn: Turn) =>
+  const runTurn = (live: Live, given: Turn) =>
     Effect.gen(function* () {
       const harness = live.harness!;
+      // A watched harness's turn leaves out work the session's cancelled tasks caused.
+      // and follows the chains through the runs tasks took, as the watch does.
+      const turn: Turn = watches.has(live.adapter.id)
+        ? { ...given, cancelled: yield* q.cancelledTasksOf(live.session.id), accounted: [...(yield* q.runsOf(live.session.id))] }
+        : given;
       live.turnActive = true;
       const ran = yield* Effect.raceFirst(
         Effect.result(Effect.tryPromise(() => harness.run(turn))),
@@ -436,6 +502,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             case "usage":
               live.usage = event.usage;
               return;
+            case "held":
+              yield* log(live, "status", "only waiting on work it delegated: its execution slot is free for other tasks meanwhile");
+              yield* freeSlot(live);
+              return;
             case "request": {
               const request = event.request;
               if (live.cancelling) {
@@ -507,15 +577,30 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
               if (live.inputs.size) yield* cancelInputs(live);
               if (event.status === "completed") {
                 live.result = event.result ?? live.result;
-                const next = yield* live.lock.withPermits(1)(
-                  Effect.gen(function* () {
-                    if (!live.cancelling)
-                      for (const candidate of (yield* q.pendingMessages(live.id)).filter((m) => m.mode === "queue"))
-                        if (yield* q.setMessageState(candidate.id, "sent")) return candidate;
-                    live.closing = true;
-                    return undefined;
-                  }),
-                );
+                // The runs this turn reported are accounted for before the next one replaces it.
+                const accounts = yield* coveredAccounts(live);
+                if (accounts.length) yield* q.accountRuns(live.session.id, live.bot, accounts, true);
+                // A queued message runs on a slot: one it gave back while it held is taken again first, outside the lock,
+                // and the message stays pending until then.
+                let next: TaskMessageRow | undefined;
+                for (;;) {
+                  const picked = yield* live.lock.withPermits(1)(
+                    Effect.gen(function* () {
+                      if (!live.cancelling) {
+                        const pending = (yield* q.pendingMessages(live.id)).filter((m) => m.mode === "queue");
+                        if (pending.length && !live.slot && !inCloud(live.adapter)) return "slot" as const;
+                        for (const candidate of pending) if (yield* q.setMessageState(candidate.id, "sent")) return candidate;
+                      }
+                      live.closing = true;
+                      return undefined;
+                    }),
+                  );
+                  if (picked !== "slot") {
+                    next = picked;
+                    break;
+                  }
+                  if (!(yield* takeSlot(live))) return yield* finish(live, "cancelled");
+                }
                 if (!next) return yield* finish(live, "completed", { result: live.result ?? "" });
                 yield* log(live, "sent", `queued message ${next.id} started a new turn`);
                 if (live.row.state === "waiting_for_input") yield* setState(live, ["waiting_for_input"], "running");
@@ -619,8 +704,10 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         }
         case "queued":
           yield* log(live, "sent", `queued message ${signal.message.id}: ${firstLine(signal.message.text)}`);
-          if (!live.turnActive && live.harness && !live.cancelling && live.row.state === "running" && (yield* q.setMessageState(signal.message.id, "sent")))
-            yield* runTurn(live, queuedTurn(live, signal.message));
+          if (!live.turnActive && live.harness && !live.cancelling && live.row.state === "running") {
+            if (!(yield* takeSlot(live))) return yield* finish(live, "cancelled");
+            if (!live.cancelling && (yield* q.setMessageState(signal.message.id, "sent"))) yield* runTurn(live, queuedTurn(live, signal.message));
+          }
           return;
         case "cancel": {
           if (live.stopping) return;
@@ -735,8 +822,12 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if (live.cancelling && !live.resumed) return yield* finish(live, "cancelled");
       // A durable harness that Top follows again after a restart gets the turn it was on, with the same key, so it takes it once.
       const sent = live.resumed ? yield* q.lastSentQueued(live.id) : undefined;
-      if (live.resumed) yield* log(live, "status", `following it again after Top restarted`);
-      const turn: Turn = sent ? queuedTurn(live, sent) : { key: live.id, text: live.row.prompt, images: live.row.images };
+      if (live.resumed && !live.row.adopt) yield* log(live, "status", `following it again after Top restarted`);
+      const turn: Turn = sent
+        ? queuedTurn(live, sent)
+        : live.row.adopt
+          ? { key: live.id, text: "", images: [], adopt: live.row.adopt, known: [...(yield* q.runsOf(live.session.id)).keys()] }
+          : { key: live.id, text: live.row.prompt, images: live.row.images };
       // A cancel started before Top restarted, or since: stop the turn if the harness has it, and never send it.
       const stopping = live.resumed && (live.cancelOnResume || live.cancelling);
       if (stopping) {
@@ -751,7 +842,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
   const actor = (live: Live) =>
     Effect.gen(function* () {
       // A cloud harness's work runs there, not here: following it holds none of this computer's running slots.
-      yield* inCloud(live.adapter) ? runStarted(live) : slots.withPermits(1)(runStarted(live));
+      if (!inCloud(live.adapter))
+        yield* Effect.uninterruptibleMask((restore) => Effect.tap(restore(slots.take(1)), () => Effect.sync(() => (live.slot = true))));
+      yield* runStarted(live).pipe(Effect.ensuring(freeSlot(live)));
       if (!live.finished) yield* finish(live, "failed", { error: "The task ended without an outcome." });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -783,6 +876,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         phase: "pending",
         resumed,
         cancelOnResume,
+        slot: false,
         harness: undefined,
         turnActive: false,
         cancelling: false,
@@ -1151,6 +1245,168 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       ),
     );
 
+  /**
+   * Looks at what a watched harness did in a session while no task followed it, and accounts for each run once: a run of
+   * Top's work gets a task that follows it and reports its answer (sending nothing); a person's turn in the harness, a
+   * monitor's progress, a run of a cancelled task's work, or a wake Top can't link to its work gets none. The first look
+   * at a session Top kept no account of yet only takes note of the runs that had ended.
+   */
+  const lookOnce = (sessionId: string) =>
+    Effect.gen(function* () {
+      const session = yield* q.session(sessionId);
+      const adapter = session ? adapters.get(session.harness) : undefined;
+      const watch = adapter ? watches.get(adapter.id) : undefined;
+      if (!session?.externalId || !adapter || !watch) return;
+      if ([...lives.values()].some((l) => l.session.id === sessionId)) return;
+      // With what Top accounted for, so a chain through a run a task took leads to that task.
+      const known = yield* q.runsOf(sessionId);
+      const environment = typeof session.options.environment === "string" ? session.options.environment : undefined;
+      const reviewed = yield* Effect.option(Effect.tryPromise(() => watch.review(session.externalId!, known, environment)));
+      // Couldn't read it: the change that brought Top here won't come again, so it looks again later.
+      if (reviewed._tag === "None") return "retry" as const;
+      // Under the lock `task_start` takes, spawning included: a bot's task and a continuation never both take the session.
+      yield* starting.withPermits(1)(
+        Effect.gen(function* () {
+          if ([...lives.values()].some((l) => l.session.id === sessionId) || (yield* q.sessionBusy(sessionId, ""))) return;
+          const accounted = yield* q.runsOf(sessionId);
+          const firstLook = !(yield* q.session(sessionId))?.baselined;
+          const accounts: RunAccount[] = [];
+          const notes: string[] = [];
+          const note = Effect.gen(function* () {
+            const last = notes.length ? yield* q.latestTaskOf(sessionId) : undefined;
+            if (last)
+              yield* q.appendEvents(
+                notes.map((run) => ({
+                  task: last.id,
+                  bot: last.bot,
+                  at: Date.now(),
+                  kind: "status" as const,
+                  text: `${label(session.harness)} ran on its own in this session (run ${run}) with nothing linking it to Top's work, and someone else also writes in its thread there, so Top didn't report it.`,
+                })),
+              );
+          });
+          for (const r of reviewed.value) {
+            if (accounted.has(r.run)) continue;
+            if (firstLook && r.ended) {
+              accounts.push({ run: r.run, task: null, kind: "baseline" });
+              continue;
+            }
+            const owner = r.owner;
+            if (owner.kind === "top") {
+              const root = owner.task ?? owner.key?.split(":m")[0];
+              // A wake with no link has no root: the session's latest task stands for it, cancelled or not.
+              const rootRow = root ? yield* q.task(root) : yield* q.latestTaskOf(sessionId);
+              if (rootRow?.state === "cancelled") {
+                accounts.push({ run: r.run, task: null, kind: "cancelled" });
+                continue;
+              }
+              yield* note;
+              const last = rootRow ?? (yield* q.latestTaskOf(sessionId));
+              const title = clip(`${last?.title ?? "Task"} (continued)`, MAX_TITLE);
+              const row = yield* q.createContinuation(
+                {
+                  id: newId("task"),
+                  bot: session.bot,
+                  key: `t3:${session.externalId}:${r.run}`,
+                  session: sessionId,
+                  title,
+                  prompt: `${label(session.harness)} went on in session ${sessionId} on its own (run ${r.run}).`,
+                  images: [],
+                  continues: last?.id ?? null,
+                  adopt: r.run,
+                },
+                accounts,
+              );
+              if (!row) return;
+              // Followed like a task Top picks up after a restart: through T3 Code's reconnect window, not on one look.
+              const live = yield* spawnLive(row, session, adapter, true);
+              yield* log(live, "state", "queued");
+              yield* log(
+                live,
+                "status",
+                `${label(session.harness)} went on with task ${row.continues ?? "?"}'s session on its own: following it (run ${row.adopt})`,
+              );
+              yield* changed(live);
+              return;
+            }
+            accounts.push({ run: r.run, task: null, kind: owner.kind === "unknown" ? "unlinked" : owner.kind });
+            if (owner.kind === "unknown") notes.push(r.run);
+          }
+          yield* q.accountRuns(sessionId, session.bot, accounts, firstLook);
+          yield* note;
+        }),
+      );
+    });
+
+  /**
+   * One look at a session at a time; a change during it gets one more look after. A look that couldn't read the thread
+   * tries again later, backing off to every few minutes, until one gets through.
+   */
+  const look = (sessionId: string, delay = 2_000): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (looking.has(sessionId)) {
+        looking.set(sessionId, true);
+        return Effect.void;
+      }
+      looking.set(sessionId, false);
+      return lookOnce(sessionId).pipe(
+        Effect.catchCause((cause) => Effect.as(Effect.logWarning(`Top couldn't look at session ${sessionId}`, cause), "retry" as const)),
+        Effect.flatMap((outcome) =>
+          Effect.suspend(() => {
+            const again = looking.get(sessionId) === true;
+            looking.delete(sessionId);
+            if (again) return look(sessionId);
+            if (outcome !== "retry" || !watches.size) return Effect.void;
+            return Effect.asVoid(Effect.forkIn(Effect.andThen(Effect.sleep(Duration.millis(delay)), look(sessionId, Math.min(delay * 2, 300_000))), scope));
+          }),
+        ),
+      );
+    });
+
+  /** The watched threads that changed: the sessions they belong to get a look, unless their thread is archived there. */
+  const threadsChanged = (adapter: HarnessAdapter, threads: readonly WatchedThread[], environment: string, everything = false) =>
+    Effect.gen(function* () {
+      const byThread = new Map<string, SessionRow[]>();
+      for (const session of yield* q.sessionsWithThreads(adapter.id)) {
+        const env = session.options.environment;
+        if (typeof env === "string" && env !== environment) continue;
+        byThread.set(session.externalId!, [...(byThread.get(session.externalId!) ?? []), session]);
+      }
+      for (const thread of threads) {
+        if (thread.archived) continue;
+        for (const session of byThread.get(thread.externalId) ?? []) {
+          // Only what changed since Top last looked: a latest or active run it hasn't accounted for.
+          const accounted = yield* q.runsOf(session.id);
+          const fresh = [thread.latestRunId, thread.activeRunId].some((run) => run && !accounted.has(run));
+          // When Top starts, every session gets one look: a crash may have come between a task's end and the look after it.
+          if (everything || fresh || (thread.latestRunId === undefined && thread.activeRunId === undefined)) yield* Effect.forkIn(look(session.id), scope);
+        }
+      }
+    });
+
+  const startWatching = Effect.gen(function* () {
+    for (const adapter of config.adapters) {
+      if (!adapter.watch || watches.has(adapter.id)) continue;
+      const services = yield* Effect.context<never>();
+      const run = Effect.runForkWith(services);
+      let first = true;
+      watches.set(
+        adapter.id,
+        adapter.watch((threads, environment) => {
+          run(threadsChanged(adapter, threads, environment, first).pipe(Effect.ignoreCause({ log: true })));
+          first = false;
+        }),
+      );
+    }
+    yield* Scope.addFinalizer(
+      scope,
+      Effect.sync(() => {
+        for (const watch of watches.values()) watch.close();
+        watches.clear();
+      }),
+    );
+  });
+
   const recover: Tasks["recover"] = Effect.gen(function* () {
     let cut = 0;
     for (const row of yield* q.activeTasks) {
@@ -1189,6 +1445,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       if (message) yield* events.deliver(message);
     }
     yield* Queue.offer(dirty, undefined);
+    yield* startWatching;
     return cut;
   });
 

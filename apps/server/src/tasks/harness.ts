@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import type { TaskQuestion } from "@top/protocol";
 import type { TObject } from "typebox";
+import type { Accounted, Owner } from "./t3owner.ts";
 
 export type Capabilities = {
   readonly resume: boolean;
@@ -43,8 +44,21 @@ export const CAPABILITY_NOTES: Record<keyof Capabilities, string> = {
 /**
  * `key` is unique to this turn in Top and the same when a restart sends it again, so a durable harness can take it once.
  * `followOnly`: a cancel came before Top restarted, so follow the turn if the harness already has it, but never send it.
+ * `adopt`: a run the harness started on its own in the session (see `watch`): follow it as this turn, sending nothing.
+ * `known`: runs in the session other tasks already reported, which this turn never reports again.
  */
-export type Turn = { readonly key: string; readonly text: string; readonly images: readonly string[]; readonly followOnly?: boolean };
+export type Turn = {
+  readonly key: string;
+  readonly text: string;
+  readonly images: readonly string[];
+  readonly followOnly?: boolean;
+  readonly adopt?: string | undefined;
+  readonly known?: readonly string[] | undefined;
+  /** The session's cancelled tasks: work they caused is never this turn's. */
+  readonly cancelled?: readonly string[] | undefined;
+  /** How Top accounted for the session's runs so far (see `t3owner.ts`): a chain through a run a task took leads to it. */
+  readonly accounted?: ReadonlyArray<readonly [string, Accounted]> | undefined;
+};
 
 export type HarnessRequest = {
   readonly id: string;
@@ -77,6 +91,8 @@ export type HarnessEvent =
       readonly result?: string | undefined;
       readonly error?: string | undefined;
     }
+  /** The turn's own work is over and it only waits on work it delegated: it needs no execution slot meanwhile. */
+  | { readonly type: "held" }
   | { readonly type: "exited"; readonly error: string };
 
 export type OpenSpec = {
@@ -97,6 +113,34 @@ export interface HarnessSession {
   /** A harness that confirms answers returns a promise, rejected when it refuses one, so the request waits again. */
   readonly answer: (request: string, answer: HarnessAnswer) => void | Promise<void>;
   readonly close: () => Promise<void>;
+  /**
+   * For a harness that can run on its own in a session (`watch`): the runs this turn reported, which no later task
+   * reports again, and, for a session Top accounts for the first time, the ones that had ended before it.
+   */
+  readonly covered?: () => { readonly runs: readonly string[]; readonly earlier: readonly string[] };
+}
+
+/** A run in a watched session, in the order the harness ran them, and whose work it is (see `t3owner.ts`). */
+export type ReviewedRun = {
+  readonly run: string;
+  readonly ended: boolean;
+  readonly owner: Owner;
+};
+
+/** A session's thread as the harness's change feed last showed it. */
+export type WatchedThread = {
+  readonly externalId: string;
+  readonly archived: boolean;
+  /** Its newest run and the one going, when the feed says: a thread whose runs Top accounted for already needs no look. */
+  readonly latestRunId?: string | null | undefined;
+  readonly activeRunId?: string | null | undefined;
+};
+
+export interface SessionWatch {
+  /** Every run in the session's thread, with whose work each is, given how Top accounted for some already. */
+  /** `environment`: the one the session belongs to; a review against another is refused. */
+  readonly review: (externalId: string, accounted: ReadonlyMap<string, Accounted>, environment: string | undefined) => Promise<readonly ReviewedRun[]>;
+  readonly close: () => void;
 }
 
 export type Availability = { readonly ok: true; readonly version: string } | { readonly ok: false; readonly error: string };
@@ -127,6 +171,12 @@ export interface HarnessAdapter {
     start: { readonly options: Readonly<Record<string, unknown>>; readonly model: string | undefined },
   ) => Promise<{ readonly cwd: string; readonly options?: Readonly<Record<string, unknown>> }>;
   readonly open: (spec: OpenSpec, emit: (event: HarnessEvent) => void) => Promise<HarnessSession>;
+  /**
+   * For a harness that runs on its own in a session after a task ends (T3 Code waking a thread when delegated work reports
+   * back): one feed of the threads that changed, for the whole environment, kept up through drops until closed. Which
+   * environment it is reaches `environment`, so sessions that belong to another are left alone.
+   */
+  readonly watch?: (changed: (threads: readonly WatchedThread[], environment: string) => void) => SessionWatch;
 }
 
 export class HarnessUnavailable extends Error {}

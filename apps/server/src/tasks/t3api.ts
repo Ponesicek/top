@@ -306,6 +306,25 @@ export async function threadKnown(origin: string, token: string, threadId: strin
   throw new T3Unreachable(`T3 Code at ${origin} didn't say whether it has thread ${threadId} (HTTP ${response.status}).`);
 }
 
+/**
+ * A thread's whole saved record: every run and the message that started it, with its links (unlike the socket's
+ * projection, which keeps only the latest runs). Read-only.
+ */
+export async function readThread(origin: string, token: string, threadId: string): Promise<Record<string, unknown>> {
+  const response = await http(origin, `/api/orchestration/threads/${encodeURIComponent(threadId)}`, {
+    headers: { ...bearer(token), "x-t3-orchestration-protocol": String(T3_PROTOCOL) },
+  });
+  if (response.status === 401) throw new T3AuthError(`T3 Code at ${origin} no longer accepts Top's credential; ${pairAgain(origin)}.`);
+  // A thread T3 Code doesn't have (deleted there) has no runs to look at.
+  if (response.status === 404 && record(await json(response)).reason === "thread_not_found") return {};
+  if (!response.ok) throw new T3Unreachable(`T3 Code at ${origin} didn't send thread ${threadId} (HTTP ${response.status}).`);
+  // A body that broke off or isn't a thread is a read that failed, not a thread with nothing in it.
+  const projection = record(await json(response)).projection;
+  if (typeof projection !== "object" || projection === null || !Array.isArray(record(projection).runs))
+    throw new T3Unreachable(`T3 Code at ${origin} sent thread ${threadId} incomplete.`);
+  return record(projection);
+}
+
 /** A short-lived ticket for one socket, so the credential never goes into a socket URL. */
 async function rpcTicket(origin: string, token: string): Promise<string> {
   const response = await http(origin, "/api/auth/websocket-ticket/rpc", { method: "POST", headers: bearer(token) });
