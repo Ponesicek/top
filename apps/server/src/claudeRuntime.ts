@@ -8,7 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { runToolCall, type ThinkingLevel } from "./loop.ts";
-import type { TopAssistantMessage, TopUserMessage, TranscriptMessage } from "./messages.ts";
+import { type TopAssistantMessage, type TopUserMessage, type TranscriptMessage, textOf } from "./messages.ts";
 import type { BotRuntime, TurnOptions } from "./runtime.ts";
 import { findCli, harnessEnv, redact, tail } from "./tasks/harness.ts";
 import type { TopTool } from "./tools.ts";
@@ -256,19 +256,20 @@ function usageOf(raw: unknown): TopAssistantMessage["usage"] {
 const jsonSchema = (tool: TopTool): Record<string, unknown> => JSON.parse(JSON.stringify(tool.parameters)) as Record<string, unknown>;
 
 const RESTARTED = "[Top: the daemon restarted during your turn. Carry on where you left off.]";
-const MAX_UNSENT = 20;
 
 /**
  * What to send Claude Code when Top carries on a run a restart cut off: Top's record of the tool calls the session
- * lacks or has another result for (Claude Code marks a call it lost as interrupted), and the user's messages it never
- * saved, from the newest back to the last one it has. Nothing, when the session already answered everything.
+ * lacks or has another result for (Claude Code marks a call it lost as interrupted), and the user's messages of the cut-off
+ * run it never saved (back to the last one it has, or the last run that failed or was stopped). When the session had
+ * answered everything, nothing to send, and the answer itself if Top hadn't saved it yet.
  */
 export function catchUp(messages: readonly TranscriptMessage[], known: readonly SessionEntry[], session: string) {
   const seen = new Set(known.map((entry) => entry.uuid));
   const results = sessionResults(known);
   const unsent: TopUserMessage[] = [];
-  for (let i = messages.length - 1; i >= 0 && unsent.length < MAX_UNSENT; i--) {
+  for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
+    if (m.role === "assistant" && (m.stopReason === "aborted" || m.stopReason === "error")) break;
     if (m.role !== "user") continue;
     if (seen.has(promptUuid(session, m))) break;
     unsent.unshift(m);
@@ -281,6 +282,9 @@ export function catchUp(messages: readonly TranscriptMessage[], known: readonly 
   const last = known.findLast((entry) => entry.type === "user" || entry.type === "assistant");
   const content = record(last?.message).content;
   const answered = last?.type === "assistant" && !(Array.isArray(content) && content.some((block) => record(block).type === "tool_use"));
+  const answer = answered ? resultText(content as Parameters<typeof resultText>[0]) : "";
+  const shown = messages.findLast((m) => m.role === "assistant" && m.stopReason === "stop");
+  const lost = answer && !unsent.length && (shown?.role !== "assistant" || textOf(shown.content) !== answer) ? answer : undefined;
   const note = settled.length
     ? [
         '[Top: the daemon restarted during your turn, and Claude Code lost part of it: it may show the turn as interrupted, or as answered with "No response requested.", which Claude Code wrote itself during the restart. You had called these tools; this is what Top recorded for each:]',
@@ -292,7 +296,7 @@ export function catchUp(messages: readonly TranscriptMessage[], known: readonly 
     : unsent.length || answered
       ? undefined
       : RESTARTED;
-  return { note, unsent };
+  return { note, unsent, lost };
 }
 
 /** The messages since the last answer that called no tools: the turn a restart may have cut short. */
@@ -399,6 +403,9 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
   };
 
   const { createSdkMcpServer } = await import("@anthropic-ai/claude-agent-sdk");
+  // Stopped (or the daemon stopping) while Top was getting ready: Claude Code isn't started at all.
+  if (signal.aborted || shutdown.aborted) return { aborted: true };
+  const pushed = new Set<string>();
   const server = createSdkMcpServer({ name: TOOL_SERVER, version: "1.0.0", tools: [], alwaysLoad: true });
   // Top's tools are JSON Schema (TypeBox), so the server answers MCP's tool requests itself rather than through `tool()`'s zod.
   const low = (server.instance as unknown as { server: { registerCapabilities: (c: unknown) => void; setRequestHandler: (s: unknown, h: unknown) => void } })
@@ -468,6 +475,7 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
         await run(hooks.added(message));
         if (message.role !== "user") return;
         const [withImages] = options.transformContext ? await run(options.transformContext([message])) : [message];
+        pushed.add(uuid);
         inbox.push(sdkUser(uuid, userBlocks(withImages as TopUserMessage), "next"));
       });
     }
@@ -491,6 +499,7 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
 
     for (const message of opening) {
       outstanding.add(message.uuid!);
+      pushed.add(message.uuid!);
       inbox.push(message);
     }
     steer = setInterval(() => void takeSteering().catch(() => {}), STEER_POLL_MS);
@@ -524,8 +533,9 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
       if (message.type !== "result") continue;
       await flush();
       const answered = message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : undefined);
+      // A result that doesn't say which messages it answered answers those Claude Code had, not a steer still on its way.
       if (answered?.length) for (const uuid of answered) outstanding.delete(uuid);
-      else outstanding.clear();
+      else for (const uuid of pushed) outstanding.delete(uuid);
       if (signal.aborted) return { aborted: true };
       if (message.subtype !== "success" || message.is_error) {
         const text = message.subtype === "success" ? message.result : [message.subtype, ...(message.errors ?? [])].join(": ");
@@ -593,10 +603,29 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
       const saved = yield* config.session;
       const known = saved ? yield* Effect.promise(() => sdk.sessionMessages(saved, config.cwd)) : [];
       const fresh = known.length === 0;
-      const session = saved ?? randomUUID();
-      if (!saved) yield* config.saveSession(session);
+      // A session Top can't read back (gone, or unreadable: the SDK can't say which) is never started over under the same
+      // id: the bot moves to a new one, so an old file it couldn't read is left as it is.
+      const session = !saved || (fresh && messages.some((m) => m.role === "assistant")) ? randomUUID() : saved;
+      if (session !== saved) yield* config.saveSession(session);
+      const caught = prompts?.length ? undefined : catchUp(messages, known, session);
+      if (caught?.lost) {
+        // Claude Code saved its answer, but the daemon stopped before Top did.
+        const answer: TopAssistantMessage = {
+          role: "assistant",
+          content: [{ type: "text", text: caught.lost }],
+          api: "claude-agent-sdk",
+          provider: "claude",
+          model,
+          usage: EMPTY_USAGE,
+          stopReason: "stop",
+          timestamp: yield* Clock.currentTimeMillis,
+        };
+        messages.push(answer);
+        yield* hooks.added(answer);
+      }
 
-      const needed = prompts?.length ? prompts : messages.slice(-MAX_UNSENT * 4);
+      const resend = caught ? (fresh ? caught.unsent.filter((m) => openTurn(messages).includes(m)) : caught.unsent) : [];
+      const needed = prompts?.length ? prompts : resend;
       const transformed = options.transformContext ? yield* options.transformContext(needed) : needed;
       const view = new Map(needed.map((m, i) => [m, transformed[i] ?? m]));
       const withData = (m: TopUserMessage) => (view.get(m) ?? m) as TopUserMessage;
@@ -604,15 +633,6 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
       // This launch's first messages: the new prompts, each with its own id, or what a restart left unsaid.
       const opening: SDKUserMessage[] = [];
       const userMessage = (m: TopUserMessage, extra: Block[] = []) => sdkUser(promptUuid(session, m), [...extra, ...userBlocks(withData(m))]);
-      if (fresh && messages.some((m) => m.role === "assistant"))
-        opening.push(
-          sdkUser(randomUUID(), [
-            {
-              type: "text",
-              text: "[Top: Claude Code has no record of this conversation (its session is gone), so you start without its earlier messages. The user still sees them in the app.]",
-            },
-          ]),
-        );
       if (prompts?.length) {
         // A new session's system prompt has the files as they are now; a running one hears of each change at its next message.
         const updates = fresh
@@ -630,12 +650,20 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
         if (extra.length) opening.push(sdkUser(randomUUID(), extra));
       } else {
         // A lost session still hears what Top recorded before it's given the request again, so it can't repeat a call blind.
-        const { note, unsent } = catchUp(messages, known, session);
-        if (note) opening.push(sdkUser(randomUUID(), [{ type: "text", text: note }]));
-        for (const m of fresh ? unsent.filter((m) => openTurn(messages).includes(m)) : unsent) opening.push(userMessage(m));
+        if (caught?.note) opening.push(sdkUser(randomUUID(), [{ type: "text", text: caught.note }]));
+        for (const m of resend) opening.push(userMessage(m));
         // Claude Code had answered everything before the restart.
         if (!opening.length) return;
       }
+      if (fresh && messages.some((m) => m.role === "assistant"))
+        opening.unshift(
+          sdkUser(randomUUID(), [
+            {
+              type: "text",
+              text: "[Top: Claude Code has no record of this conversation (its session is gone or unreadable), so you start a new one without its earlier messages. The user still sees them in the app.]",
+            },
+          ]),
+        );
 
       // Top's side of the turn (saving entries, running tools) runs as fibers of its own while Claude Code calls in; when
       // the daemon stops the turn, they're interrupted with it, and nothing more is saved.

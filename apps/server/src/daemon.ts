@@ -516,6 +516,7 @@ const make = Effect.gen(function* () {
         model: kit.newBot?.model ?? "",
         claude: kit.claude !== undefined,
         ...(status?.ok ? { claudeVersion: status.version } : status ? { claudeProblem: status.error } : {}),
+        ...(checkingClaude ? { claudeChecking: true } : {}),
         claudeModels: kit.claude ? [...CLAUDE_MODELS] : [],
       };
     }),

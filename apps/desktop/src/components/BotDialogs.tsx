@@ -99,7 +99,7 @@ function useRuntimes() {
           if (!live) return;
           setRuntimes(view);
           // The daemon is still checking Claude Code: ask again shortly.
-          if (view.claude && !view.claudeVersion && !view.claudeProblem) timer = setTimeout(ask, 1_500);
+          if (view.claudeChecking) timer = setTimeout(ask, 1_500);
         },
         () => {},
       );
@@ -115,7 +115,8 @@ function useRuntimes() {
 /** Whether Claude Code on the daemon's computer is ready, and what a Claude bot runs on. */
 function ClaudeStatus({ runtimes }: { runtimes: BotRuntimesView }) {
   if (runtimes.claudeProblem) return <p className="text-small leading-snug text-destructive-foreground">{runtimes.claudeProblem}</p>;
-  if (!runtimes.claudeVersion) return <p className="text-small leading-snug text-muted-foreground">Checking Claude Code on the daemon's computer…</p>;
+  if (!runtimes.claudeVersion && runtimes.claudeChecking)
+    return <p className="text-small leading-snug text-muted-foreground">Checking Claude Code on the daemon's computer…</p>;
   return (
     <p className="text-small leading-snug text-muted-foreground">
       Uses your Claude subscription, through Claude Code{runtimes.claudeVersion ? ` ${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")}` : ""} signed
@@ -179,7 +180,7 @@ function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; na
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (busy || !name.trim()) return;
+    if (busy || !name.trim() || (runtime === "claude" && !runtimes?.claudeVersion)) return;
     setBusy(true);
     setError(undefined);
     try {

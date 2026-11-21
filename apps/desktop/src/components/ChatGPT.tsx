@@ -226,7 +226,7 @@ export function SignInGate() {
   const open = needed && !skipped;
   return (
     <Dialog open={open} onOpenChange={(next) => !next && optional && setSkipped(true)} disablePointerDismissal={!optional}>
-      <DialogPopup className="w-125">{open && <SignInForm required={!optional} onDone={() => setSkipped(true)} />}</DialogPopup>
+      <DialogPopup className="w-125">{open && <SignInForm required={!optional} onDone={() => {}} />}</DialogPopup>
     </Dialog>
   );
 }

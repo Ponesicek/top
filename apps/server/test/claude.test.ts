@@ -309,6 +309,40 @@ test("a restart after Claude answered everything starts nothing more", async () 
   assert.equal((await again.run(again.store.bot(again.bot)))!.runActive, false);
 });
 
+test("an answer Claude Code saved but Top hadn't when the daemon stopped shows after the restart, without asking again", async () => {
+  const fake = fakeClaude();
+  const first = await harness({ claude: fake, models: CLAUDE });
+  await first.run(first.daemon.start);
+  await ask(first, "hello");
+  await first.close();
+  const db = new DatabaseSync(join(first.dir, "top.sqlite"));
+  db.exec("DELETE FROM entries WHERE kind = 'assistant'; UPDATE bots SET run_active = 1");
+  db.close();
+  const again = await harness({ dir: first.dir, claude: fake, models: CLAUDE });
+  await again.run(again.daemon.start);
+  await until("the answer back", async () => (await idle(again)) && (await answers(again)).length === 1);
+  assert.deepEqual(await answers(again), ["Claude heard: hello"]);
+  assert.equal(fake.launches.length, 1, "Claude wasn't asked again");
+});
+
+test("recovery resends only the cut-off run's messages, never one from a run that was stopped", () => {
+  const session = "00000000-0000-4000-8000-000000000002";
+  const stopped = { role: "user" as const, content: "deploy prod", timestamp: 1 };
+  const aborted = {
+    role: "assistant" as const,
+    content: [{ type: "text" as const, text: "" }],
+    api: "claude-agent-sdk",
+    provider: "claude",
+    model: "sonnet",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "aborted" as const,
+    errorMessage: "Stopped",
+    timestamp: 2,
+  };
+  const next = { role: "user" as const, content: "something else", timestamp: 3 };
+  assert.deepEqual(catchUp([stopped, aborted, next], [], session).unsent, [next]);
+});
+
 test("--model keeps setting Top's bots, not Claude bots; a Claude bot can change its Claude model but not its runtime", async () => {
   const fake = fakeClaude();
   const h = await harness({ claude: fake, bots: ["Atlas", "Nova"], models: { Atlas: "claude/opus", Nova: "stale/model" } });
