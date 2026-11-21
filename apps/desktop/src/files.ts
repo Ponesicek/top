@@ -63,7 +63,7 @@ export function closeFiles() {
   if (inside) requestAnimationFrame(() => document.getElementById(FILES_TOGGLE_ID)?.focus());
 }
 
-/** Ctrl+Shift+E and the Files button: open, or close the same way the panel's own close does. */
+/** Ctrl+Shift+E and the Files button: open, or close the same way Esc does. */
 export const toggleFiles = () => (registry.get(panelAtom).open ? closeFiles() : togglePanel());
 export const closePanel = () => set({ open: false });
 export const setPanelWidth = (width: number) => set({ width: Math.round(width) });

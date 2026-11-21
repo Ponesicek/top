@@ -1,5 +1,5 @@
 import type { BotFiles, BotId, FileView } from "@top/client";
-import { Check, ChevronLeft, Copy, ExternalLink, FolderOpen, Link, X } from "lucide-react";
+import { Check, ChevronLeft, Copy, ExternalLink, FolderOpen, Link } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   closeFiles,
@@ -54,10 +54,6 @@ function PanelHeader({ children }: { children: React.ReactNode }) {
   return (
     <header className="@container flex h-15 flex-none items-center gap-1 border-b pr-[calc(var(--titlebar-inset)+5rem)] pl-2 [-webkit-app-region:drag] narrow:pr-[calc(var(--titlebar-inset)+4rem)] [&_button]:[-webkit-app-region:no-drag]">
       {children}
-      <span className="flex-1" />
-      <IconAction label="Close files (Esc)" onClick={closeFiles} className="narrow:size-11">
-        <X size={17} />
-      </IconAction>
     </header>
   );
 }
@@ -214,7 +210,7 @@ function FileViewer({ bot, path, files }: { bot: BotId; path: string; files: Bot
         )}
         {url && (
           <>
-            {/* Under 320px there's no room for it beside Close and the Files button; Open in browser has the link too. */}
+            {/* Under 320px there's no room for it beside the Files button; Open in browser has the link too. */}
             <IconAction label={copied === "link" ? "Copied" : "Copy link"} onClick={() => copy("link", url)} className="@max-xs:hidden">
               {copied === "link" ? <Check size={16} /> : <Link size={16} />}
             </IconAction>
@@ -255,7 +251,7 @@ export const FilesPanel = memo(function FilesPanel({ bot, name, layout }: { bot:
 
   // Over the conversation, the panel takes focus and Esc closes it; beside it, Esc does when focus is in the panel.
   useEffect(() => {
-    if (overlay && !ref.current?.contains(document.activeElement)) ref.current?.querySelector<HTMLElement>('[aria-label^="Close files"]')?.focus();
+    if (overlay && !ref.current?.contains(document.activeElement)) ref.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || document.querySelector("[role=dialog], [role=menu]")) return;
       if (!overlay && !ref.current?.contains(document.activeElement)) return;
@@ -271,8 +267,9 @@ export const FilesPanel = memo(function FilesPanel({ bot, name, layout }: { bot:
     <aside
       ref={ref}
       id="files-panel"
+      tabIndex={-1}
       className={cn(
-        "flex min-h-0 min-w-0 flex-col bg-background",
+        "flex min-h-0 min-w-0 flex-col bg-background outline-hidden",
         overlay
           ? "absolute inset-y-0 right-0 z-20 border-l shadow-popover narrow:border-l-0 narrow:shadow-none"
           : "relative max-w-[calc(100vw-var(--sidebar-width)-var(--chat-min))] border-l",
