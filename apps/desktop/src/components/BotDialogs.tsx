@@ -108,8 +108,8 @@ function ClaudeStatus({ runtimes }: { runtimes: BotRuntimesView }) {
   if (runtimes.claudeProblem) return <p className="text-small leading-snug text-destructive-foreground">{runtimes.claudeProblem}</p>;
   return (
     <p className="text-small leading-snug text-muted-foreground">
-      Runs on your Claude subscription, through Claude Code {runtimes.claudeVersion ? `${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")} ` : ""}
-      and its sign-in on the daemon's computer. Top never uses API credits for it. Claude Code keeps the conversation, so a bot stays on what it was made with.
+      Uses your Claude subscription, through Claude Code{runtimes.claudeVersion ? ` ${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")}` : ""} signed
+      in on the daemon's computer, never API credits. The bot stays on Claude Code; its model can change later.
     </p>
   );
 }
@@ -314,7 +314,7 @@ function ModelBody({ bot, onDone }: { bot: BotSummary; onDone: () => void }) {
   return (
     <DialogBody>
       <DialogTitle>{bot.name}'s Claude model</DialogTitle>
-      <DialogDescription>From its next message. It stays on Claude Code, which keeps its conversation.</DialogDescription>
+      <DialogDescription>From its next message.</DialogDescription>
       {runtimes && (
         <>
           <Field>

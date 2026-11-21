@@ -47,7 +47,9 @@ function daemon(dir: string, phase: "first" | "resume", messages: string[]) {
 
 const exited = (child: ChildProcess) => new Promise((resolve) => (child.exitCode !== null ? resolve(undefined) : child.once("exit", resolve)));
 const textOf = (message: Record<string, unknown>) =>
-  Array.isArray(message.content) ? message.content.map((p: { type: string; text?: string }) => (p.type === "text" ? (p.text ?? "") : "")).join("") : String(message.content);
+  Array.isArray(message.content)
+    ? message.content.map((p: { type: string; text?: string }) => (p.type === "text" ? (p.text ?? "") : "")).join("")
+    : String(message.content);
 
 /** Claude Code processes working in this folder. */
 function claudeIn(folder: string): number[] {

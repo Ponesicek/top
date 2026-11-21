@@ -3,6 +3,7 @@
 // It prints one JSON line per event: {"started": true}, {"entries": [...], "status": ...} when idle.
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createModels } from "@earendil-works/pi-ai/models";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -11,11 +12,10 @@ import Type from "typebox";
 import { claudeCli, claudeRuntime, realSdk } from "../../src/claudeRuntime.ts";
 import * as Daemon from "../../src/daemon.ts";
 import * as Events from "../../src/events.ts";
-import { createModels } from "@earendil-works/pi-ai/models";
 import * as Secrets from "../../src/secrets.ts";
 import * as Sqlite from "../../src/sqlite.ts";
 import * as Store from "../../src/store.ts";
-import { fromPromise, text, type TopTool } from "../../src/tools.ts";
+import { fromPromise, type TopTool, text } from "../../src/tools.ts";
 import { botFolder } from "../../src/workspace.ts";
 
 const [dir, phase, ...messages] = process.argv.slice(2) as [string, "first" | "resume", ...string[]];
