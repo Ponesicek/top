@@ -49,6 +49,7 @@ import { WEB_SEARCH_SECTION } from "./websearch.ts";
 import { textOf } from "./wire.ts";
 
 const SUMMARY_DELAY_MS = 100;
+const CLAUDE_RECHECK_MS = 10_000;
 
 export function lastLine(text: string): string {
   const prose: string[] = [];
@@ -427,10 +428,14 @@ const make = Effect.gen(function* () {
 
   let claudeStatus: ClaudeCliStatus | undefined;
   let checkingClaude = false;
-  const refreshClaude = Effect.suspend(() => {
-    if (!kit.claude || checkingClaude) return Effect.void;
+  let claudeCheckedAt = 0;
+  const refreshClaude = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    // At most one check every few seconds: the dialog asks again while one runs.
+    if (!kit.claude || checkingClaude || now - claudeCheckedAt < CLAUDE_RECHECK_MS) return;
+    claudeCheckedAt = now;
     checkingClaude = true;
-    return Effect.asVoid(
+    yield* Effect.asVoid(
       Effect.forkIn(
         kit.claude.status.pipe(
           Effect.tap((status) =>

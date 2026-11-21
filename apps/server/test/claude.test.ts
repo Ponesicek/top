@@ -314,15 +314,16 @@ test("an answer Claude Code saved but Top hadn't when the daemon stopped shows a
   const first = await harness({ claude: fake, models: CLAUDE });
   await first.run(first.daemon.start);
   await ask(first, "hello");
+  await ask(first, "hello");
   await first.close();
   const db = new DatabaseSync(join(first.dir, "top.sqlite"));
-  db.exec("DELETE FROM entries WHERE kind = 'assistant'; UPDATE bots SET run_active = 1");
+  db.exec("DELETE FROM entries WHERE seq = (SELECT MAX(seq) FROM entries WHERE kind = 'assistant'); UPDATE bots SET run_active = 1");
   db.close();
   const again = await harness({ dir: first.dir, claude: fake, models: CLAUDE });
   await again.run(again.daemon.start);
-  await until("the answer back", async () => (await idle(again)) && (await answers(again)).length === 1);
-  assert.deepEqual(await answers(again), ["Claude heard: hello"]);
-  assert.equal(fake.launches.length, 1, "Claude wasn't asked again");
+  await until("the answer back", async () => (await idle(again)) && (await answers(again)).length === 2);
+  assert.deepEqual(await answers(again), ["Claude heard: hello", "Claude heard: hello"], "the same words as an earlier answer still come back");
+  assert.equal(fake.launches.length, 2, "Claude wasn't asked again");
 });
 
 test("recovery resends only the cut-off run's messages, never one from a run that was stopped", () => {

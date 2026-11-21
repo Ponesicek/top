@@ -8,7 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { runToolCall, type ThinkingLevel } from "./loop.ts";
-import { type TopAssistantMessage, type TopUserMessage, type TranscriptMessage, textOf } from "./messages.ts";
+import type { TopAssistantMessage, TopUserMessage, TranscriptMessage } from "./messages.ts";
 import type { BotRuntime, TurnOptions } from "./runtime.ts";
 import { findCli, harnessEnv, redact, tail } from "./tasks/harness.ts";
 import type { TopTool } from "./tools.ts";
@@ -267,11 +267,15 @@ export function catchUp(messages: readonly TranscriptMessage[], known: readonly 
   const seen = new Set(known.map((entry) => entry.uuid));
   const results = sessionResults(known);
   const unsent: TopUserMessage[] = [];
+  let lastSeen = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.role === "assistant" && (m.stopReason === "aborted" || m.stopReason === "error")) break;
     if (m.role !== "user") continue;
-    if (seen.has(promptUuid(session, m))) break;
+    if (seen.has(promptUuid(session, m))) {
+      lastSeen = i;
+      break;
+    }
     unsent.unshift(m);
   }
   const open = openTurn(messages);
@@ -283,8 +287,9 @@ export function catchUp(messages: readonly TranscriptMessage[], known: readonly 
   const content = record(last?.message).content;
   const answered = last?.type === "assistant" && !(Array.isArray(content) && content.some((block) => record(block).type === "tool_use"));
   const answer = answered ? resultText(content as Parameters<typeof resultText>[0]) : "";
-  const shown = messages.findLast((m) => m.role === "assistant" && m.stopReason === "stop");
-  const lost = answer && !unsent.length && (shown?.role !== "assistant" || textOf(shown.content) !== answer) ? answer : undefined;
+  // The session answered the last message it has; Top saved no answer since that message.
+  const shown = lastSeen >= 0 && messages.slice(lastSeen + 1).some((m) => m.role === "assistant" && m.stopReason === "stop");
+  const lost = answer && !unsent.length && lastSeen >= 0 && !shown ? answer : undefined;
   const note = settled.length
     ? [
         '[Top: the daemon restarted during your turn, and Claude Code lost part of it: it may show the turn as interrupted, or as answered with "No response requested.", which Claude Code wrote itself during the restart. You had called these tools; this is what Top recorded for each:]',
@@ -531,11 +536,11 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
         continue;
       }
       if (message.type !== "result") continue;
+      // A result that doesn't say which messages it answered answers those Claude Code had when it came, not a steer
+      // pushed after.
+      const answered = message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [...pushed]);
       await flush();
-      const answered = message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : undefined);
-      // A result that doesn't say which messages it answered answers those Claude Code had, not a steer still on its way.
-      if (answered?.length) for (const uuid of answered) outstanding.delete(uuid);
-      else for (const uuid of pushed) outstanding.delete(uuid);
+      for (const uuid of answered) outstanding.delete(uuid);
       if (signal.aborted) return { aborted: true };
       if (message.subtype !== "success" || message.is_error) {
         const text = message.subtype === "success" ? message.result : [message.subtype, ...(message.errors ?? [])].join(": ");
@@ -605,7 +610,7 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
       const fresh = known.length === 0;
       // A session Top can't read back (gone, or unreadable: the SDK can't say which) is never started over under the same
       // id: the bot moves to a new one, so an old file it couldn't read is left as it is.
-      const session = !saved || (fresh && messages.some((m) => m.role === "assistant")) ? randomUUID() : saved;
+      const session = !saved || fresh ? randomUUID() : saved;
       if (session !== saved) yield* config.saveSession(session);
       const caught = prompts?.length ? undefined : catchUp(messages, known, session);
       if (caught?.lost) {
