@@ -55,6 +55,8 @@ export type RunOptions = {
   readonly detached?: boolean | undefined;
   /** Asked last, after all setup and just before the process starts: true leaves it unstarted (`skipped`). */
   readonly skip?: (() => boolean) | undefined;
+  /** Aborted: it's stopped as at its time limit, but not counted as timed out. */
+  readonly signal?: AbortSignal | undefined;
 };
 
 const MAX_OUTPUT = 1_000_000;
@@ -72,6 +74,7 @@ export function runCli(path: string, args: readonly string[], options: RunOption
       settled = true;
       clearTimeout(timer);
       clearTimeout(kill);
+      options.signal?.removeEventListener("abort", aborted);
       resolve(ran);
     };
     let kill: NodeJS.Timeout | undefined;
@@ -81,11 +84,18 @@ export function runCli(path: string, args: readonly string[], options: RunOption
       stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       detached: options.detached ?? false,
     });
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stop = () => {
+      if (kill) return;
       child.kill("SIGTERM");
       kill = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
     }, options.timeoutMs);
+    const aborted = () => stop();
+    if (options.signal?.aborted) stop();
+    else options.signal?.addEventListener("abort", aborted, { once: true });
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {

@@ -42,6 +42,7 @@ import { claudeCloudAdapter } from "./tasks/claudecloud.ts";
 import { codexAdapter } from "./tasks/codex.ts";
 import { codexCloudAdapter } from "./tasks/codexcloud.ts";
 import { fakeHarness } from "./tasks/fake.ts";
+import { t3codeAdapter } from "./tasks/t3code.ts";
 import { makeFakeTools } from "./tools.ts";
 import * as Updates from "./updates.ts";
 import { canSearchTheWeb } from "./websearch.ts";
@@ -167,7 +168,7 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
           retryDelaysMs: yield* RetryDelaysMs,
           compactAtTokens: yield* CompactAtTokens,
           webSearch: canSearchTheWeb(found),
-          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version }), codexCloudAdapter(), claudeCloudAdapter()],
+          harnesses: [claudeAdapter(), codexAdapter({ clientVersion: BUILD.version }), codexCloudAdapter(), claudeCloudAdapter(), t3codeAdapter()],
           maxTasks: maxTasks(),
         });
       }),

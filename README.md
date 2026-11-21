@@ -327,8 +327,8 @@ coding tasks.
 ### Coding tasks
 
 A bot can hand coding work to a full coding agent on the daemon's computer: **Claude Code** (driven
-through the official Claude Agent SDK) or **Codex** (through `codex app-server`, its official JSON-RPC
-protocol). Each harness runs its own agent loop and tools; Top coordinates the work, keeps it durable
+through the official Claude Agent SDK), **Codex** (through `codex app-server`, its official JSON-RPC
+protocol) or **T3 Code** (a thread in the T3 Code running there, through its `t3` CLI; below). Each harness runs its own agent loop and tools; Top coordinates the work, keeps it durable
 and puts its questions in front of the bot and the user. The harness, the model and where it runs are
 separate things: a task names a harness, may name a model in that harness's terms, and runs locally,
 or in its vendor's cloud through **Codex cloud** or
@@ -409,6 +409,10 @@ An end whose message to the bot was lost in a crash is sent at the next start.
 | MCP servers' requests for input | not relayed | declined, and logged |
 | Options | `effort`, `max_turns` | `reasoning_effort` |
 
+T3 Code continues a session (its thread), steers the running turn (`steer_active`) and queues the next,
+and cancels; it can't branch a session, take images, or report changed files or usage, and its questions
+stay in T3 Code.
+
 **Setting up.** Top uses the `claude` and `codex` already installed and signed in on the daemon's
 computer: on its PATH, or in `~/.local/bin`, where their installers put them and a systemd service's
 PATH doesn't reach (`TOP_CLAUDE_PATH` and `TOP_CODEX_PATH` point elsewhere). It never signs them in, out, or
@@ -418,6 +422,36 @@ a fake harness instead: message one `call collar__task_start {"harness": "fake",
 "fail", "crash" or "forever" in the prompt play the other cases.
 `TOP_REAL_HARNESS=codex pnpm --filter @top/server test test/real-harness.test.ts` runs one real
 harness end to end in a temporary folder (it uses your plan).
+
+#### T3 Code
+
+The `t3code` harness runs a task as a thread in the [T3 Code](https://github.com/pingdotgg/t3code)
+running on the daemon's computer, through T3 Code's own `t3` CLI. T3 Code on another computer isn't
+reachable this way.
+
+- **Running.** A new session runs `t3 thread start <cwd> - --wait`, the prompt on stdin, in the folder:
+  T3 Code starts a thread in the project that holds `cwd` (a folder outside every project fails, saying
+  so; add it in T3 Code first) with the project's own provider and model, or `options.provider` with
+  `model` (both or neither). The next turn, a queued message or a continued session, is `t3 thread send
+  <thread> - --wait`. Top doesn't decide when a run is done: the CLI waits with T3 Code's own
+  `t3_thread_wait`, which follows a run through a restart of T3 Code and through the work it handed off,
+  and prints the reply. Exit 0 completes the task with it; 1 fails it with T3 Code's reason (a run
+  someone stopped in T3 Code says so); 2, a run waiting for an answer, hands the task off with the
+  thread's link, and the user answers it in T3 Code.
+- **Stop and steer.** The CLI has neither, so for each one Top has the CLI issue a short session
+  (`t3 auth session issue --scope orchestration:operate --ttl 5m`, which only the computer's own user can
+  do), sends one command over T3 Code's app socket, and revokes the session straight after; the
+  credential never reaches the disk, a log or the bot. `task_cancel` is T3 Code's Stop on the task's
+  thread (`thread.stop`: its run, its queue and the work it delegated); `task_send` with `steer` goes
+  into the thread's active run (`message.dispatch`, `steer_active`). That socket is T3 Code's own app
+  protocol, not a published API: Top checks it speaks orchestration protocol 2 first, and refuses
+  otherwise, saying which side to update.
+- **Restarts.** Like the other local harnesses, a Top restart cuts the wait off and fails the task
+  as cut off; the thread keeps going in T3 Code, and continuing the session sends to it again.
+- **Setting up.** Nothing to pair: Top uses `TOP_T3_PATH`, else the running server's own version of
+  the CLI (`~/.t3/runtime/versions/<version>/t3`), else a `t3` on PATH, with T3 Code's data folder
+  (`T3CODE_HOME`, default `~/.t3`). T3 Code has to be running. The tests use a stand-in for the CLI and
+  T3 Code's socket.
 
 #### Codex cloud and Claude Code cloud
 
