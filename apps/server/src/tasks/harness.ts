@@ -54,6 +54,8 @@ export type Turn = {
   readonly followOnly?: boolean;
   readonly adopt?: string | undefined;
   readonly known?: readonly string[] | undefined;
+  /** The session's cancelled tasks: work they caused is never this turn's. */
+  readonly cancelled?: readonly string[] | undefined;
 };
 
 export type HarnessRequest = {

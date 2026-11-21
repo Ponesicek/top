@@ -363,6 +363,8 @@ type Current = {
   readonly joined: Set<string>;
   /** Runs other tasks already reported: never this turn's. */
   readonly known: ReadonlySet<string>;
+  /** Tasks of the session that were cancelled: their work is never this turn's. */
+  readonly cancelled: ReadonlySet<string>;
   readonly adopted: boolean;
   /** The runs it reported, as they were when it ended; a later run isn't the ended turn's. */
   covered: { readonly runs: readonly string[]; readonly earlier: readonly string[] } | undefined;
@@ -567,7 +569,9 @@ async function openThread(
     // A run Top adopted gathers only what came from it: another wake waiting in the session is a continuation of its own.
     const cause = causes(records);
     const related = (r: Rec) => !turn.adopted || descendsFrom(cause, String(r.id), String(own.id));
-    const top = (r: Rec) => !monitorRuns.has(String(r.id)) && !turn.known.has(String(r.id)) && ownerOf(String(r.id)).kind === "top" && related(r);
+    // Not work of a task that was cancelled: what T3 Code still does for it isn't reported.
+    const live = (o: ReturnType<typeof ownerOf>) => o.kind === "top" && !turn.cancelled.has(o.task ?? o.key?.split(":m")[0] ?? "");
+    const top = (r: Rec) => !monitorRuns.has(String(r.id)) && !turn.known.has(String(r.id)) && live(ownerOf(String(r.id))) && related(r);
     for (const r of runs.values()) if (r !== own && str(r.startedAt) && !ended(r) && top(r)) turn.joined.add(String(r.id));
     // A run Top adopted that someone has since written into in T3 Code is theirs now: Top reports none of it.
     const mine = turn.adopted && ownerOf(String(own.id)).kind !== "top" ? [] : [own];
@@ -636,8 +640,25 @@ async function openThread(
     if (others) {
       for (const r of [...runs.values()].filter((r) => going(r) && r.status !== "queued" && ours.has(String(r.id))))
         await command({ type: "run.interrupt", commandId: `top:stop:${String(r.id)}`, threadId, runId: String(r.id) });
-      for (const t of [...subagents.values()].filter((t) => working(t) && ours.has(String(t.runId))))
-        await command({ type: "subagent.stop", commandId: `top:stop-task:${String(t.id)}`, threadId, runId: String(t.runId), subagentId: String(t.id) });
+      for (const t of [...subagents.values()].filter((t) => working(t) && ours.has(String(t.runId)))) {
+        const stopTask = command({
+          type: "subagent.stop",
+          commandId: `top:stop-task:${String(t.id)}`,
+          threadId,
+          runId: String(t.runId),
+          subagentId: String(t.id),
+        });
+        // As T3 Code's own Stop does: a task with a thread of its own is stopped there (its parent's stop may not reach it).
+        if (t.origin === "app_owned" && str(t.childThreadId)) {
+          await stopTask.catch(() => {});
+          await command({
+            type: "thread.stop",
+            commandId: `top:stop-thread:${turn.key}:${String(t.id)}`,
+            threadId: str(t.childThreadId)!,
+            reason: "Cancelled from Top.",
+          });
+        } else await stopTask;
+      }
       emit({ type: "log", kind: "status", text: "Someone else's work is going in the thread, so Top stopped only its own runs and tasks there." });
     } else await command({ type: "thread.stop", commandId: `top:stop-thread:${turn.key}`, threadId, reason: "Cancelled from Top." });
     turn.cut = "confirmed";
@@ -934,6 +955,7 @@ async function openThread(
         holding: false,
         joined: new Set(),
         known: new Set(turn.known ?? []),
+        cancelled: new Set(turn.cancelled ?? []),
         adopted: turn.adopt !== undefined,
         covered: undefined,
         followOnly: turn.followOnly === true,

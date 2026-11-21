@@ -354,7 +354,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             ...(result !== undefined ? { result: clip(result, RESULT_CHARS) } : {}),
             ...(error !== undefined ? { error: clip(error, 4_000) } : {}),
           },
-          { session: live.session.id, bot: live.bot, runs: accounts, ...(release ? { release } : {}) },
+          { session: live.session.id, bot: live.bot, runs: accounts, baselined: accounts.some((a) => a.kind === "baseline"), ...(release ? { release } : {}) },
         );
         if (live.usage) yield* q.setUsage(live.id, live.usage);
         if (row) live.row = row;
@@ -377,7 +377,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
       const covered = live.harness?.covered?.();
       const accounts: RunAccount[] = [];
       if (!covered) return accounts;
-      if ((yield* q.runsOf(live.session.id)).size === 0) for (const run of covered.earlier) accounts.push({ run, task: null, kind: "baseline" });
+      if (!(yield* q.session(live.session.id))?.baselined) for (const run of covered.earlier) accounts.push({ run, task: null, kind: "baseline" });
       for (const run of covered.runs) accounts.push({ run, task: live.id, kind: "reported" });
       return accounts;
     });
@@ -411,9 +411,11 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
 
   const queuedTurn = (live: Live, message: TaskMessageRow): Turn => ({ key: `${live.id}:m${message.id}`, text: message.text, images: [] });
 
-  const runTurn = (live: Live, turn: Turn) =>
+  const runTurn = (live: Live, given: Turn) =>
     Effect.gen(function* () {
       const harness = live.harness!;
+      // A watched harness's turn leaves out work the session's cancelled tasks caused.
+      const turn: Turn = watches.has(live.adapter.id) ? { ...given, cancelled: yield* q.cancelledTasksOf(live.session.id) } : given;
       live.turnActive = true;
       const ran = yield* Effect.raceFirst(
         Effect.result(Effect.tryPromise(() => harness.run(turn))),
@@ -573,7 +575,13 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
                 live.result = event.result ?? live.result;
                 // The runs this turn reported are accounted for before the next one replaces it.
                 const accounts = yield* coveredAccounts(live);
-                if (accounts.length) yield* q.accountRuns(live.session.id, live.bot, accounts);
+                if (accounts.length)
+                  yield* q.accountRuns(
+                    live.session.id,
+                    live.bot,
+                    accounts,
+                    accounts.some((a) => a.kind === "baseline"),
+                  );
                 // A queued message runs on a slot: one it gave back while it held is taken again first, outside the lock,
                 // and the message stays pending until then.
                 let next: TaskMessageRow | undefined;
@@ -1263,7 +1271,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         Effect.gen(function* () {
           if ([...lives.values()].some((l) => l.session.id === sessionId) || (yield* q.sessionBusy(sessionId, ""))) return;
           const accounted = yield* q.runsOf(sessionId);
-          const firstLook = accounted.size === 0;
+          const firstLook = !(yield* q.session(sessionId))?.baselined;
           const accounts: RunAccount[] = [];
           const notes: string[] = [];
           const note = Effect.gen(function* () {
@@ -1326,7 +1334,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
             accounts.push({ run: r.run, task: null, kind: owner.kind === "unknown" ? "unlinked" : owner.kind });
             if (owner.kind === "unknown") notes.push(r.run);
           }
-          yield* q.accountRuns(sessionId, session.bot, accounts);
+          yield* q.accountRuns(sessionId, session.bot, accounts, firstLook);
           yield* note;
         }),
       );

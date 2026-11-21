@@ -349,6 +349,9 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     yield* sql.unsafe(HARNESS_RUNS_TABLE);
     yield* addColumn("tasks", "continues", "TEXT");
     yield* addColumn("tasks", "adopt", "TEXT");
+    // Sessions from before Top kept this account start from what their thread shows at the first look; newer ones from
+    // nothing.
+    yield* addColumn("harness_sessions", "baselined", "INTEGER NOT NULL DEFAULT 0");
   }),
 };
 

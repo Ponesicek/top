@@ -318,7 +318,11 @@ export async function readThread(origin: string, token: string, threadId: string
   // A thread T3 Code doesn't have (deleted there) has no runs to look at.
   if (response.status === 404 && record(await json(response)).reason === "thread_not_found") return {};
   if (!response.ok) throw new T3Unreachable(`T3 Code at ${origin} didn't send thread ${threadId} (HTTP ${response.status}).`);
-  return record(record(await json(response)).projection);
+  // A body that broke off or isn't a thread is a read that failed, not a thread with nothing in it.
+  const projection = record(await json(response)).projection;
+  if (typeof projection !== "object" || projection === null || !Array.isArray(record(projection).runs))
+    throw new T3Unreachable(`T3 Code at ${origin} sent thread ${threadId} incomplete.`);
+  return record(projection);
 }
 
 /** A short-lived ticket for one socket, so the credential never goes into a socket URL. */

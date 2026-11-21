@@ -54,6 +54,8 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
     shellEnrichThenDrop: false,
     /** This many reads of a thread over HTTP fail before they work again. */
     threadReadFailures: 0,
+    /** This many reads of a thread over HTTP answer 200 and then break off. */
+    threadReadBroken: 0,
   };
   const hits: { path: string; authorized: boolean }[] = [];
   const projects = options.projects ?? [{ id: "p1", workspaceRoot: "/srv/app" }];
@@ -235,7 +237,19 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
         const done = receipts.get(String(payload.commandId));
         if (done) return done;
         const thread = threads.get(String(payload.threadId));
-        if (!thread) throw new Error("Thread not found.");
+        if (!thread) {
+          // Stop on a delegated task's own thread ends the task (its child threads aren't modelled further).
+          if (payload.type === "thread.stop")
+            for (const owner of threads.values())
+              for (const task of owner.subagents.values())
+                if (task.childThreadId === payload.threadId && ["pending", "running", "waiting"].includes(String(task.status))) {
+                  setSubagent(owner, String(task.id), { status: "cancelled" });
+                  const result = { sequence };
+                  receipts.set(String(payload.commandId), result);
+                  return result;
+                }
+          throw new Error("Thread not found.");
+        }
         switch (payload.type) {
           case "message.dispatch": {
             const mode = payload.dispatchMode as Rec;
@@ -254,8 +268,10 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
             break;
           }
           case "subagent.stop": {
+            // As T3 Code does: an app-owned task bound to a run of its own isn't stopped by its parent's command.
             const task = thread.subagents.get(String(payload.subagentId));
-            if (task && ["pending", "running", "waiting"].includes(String(task.status))) setSubagent(thread, String(task.id), { status: "cancelled" });
+            if (task && task.origin !== "app_owned" && ["pending", "running", "waiting"].includes(String(task.status)))
+              setSubagent(thread, String(task.id), { status: "cancelled" });
             break;
           }
           case "thread.stop": {
@@ -472,6 +488,11 @@ export async function fakeT3(options: { environmentId?: string; protocol?: numbe
       if (faults.threadReadFailures > 0) {
         faults.threadReadFailures--;
         return json(res, 503, { code: "unavailable" });
+      }
+      if (faults.threadReadBroken > 0) {
+        faults.threadReadBroken--;
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end('{"projection": {"runs": [');
       }
       const thread = threads.get(decodeURIComponent(threadRoute[1]!));
       return thread ? json(res, 200, snapshot(thread)) : json(res, 404, { code: "not_found", reason: "thread_not_found" });

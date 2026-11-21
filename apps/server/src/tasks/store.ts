@@ -110,6 +110,8 @@ export const SessionRow = Schema.Struct({
   parent: NullableText,
   createdAt: Schema.Number,
   usedAt: Schema.Number,
+  /** Whether Top's account of its runs started (see `harness_runs`): sessions from before it start from a baseline. */
+  baselined: Schema.optional(Schema.Number),
 }).pipe(Schema.encodeKeys({ externalId: "external_id", createdAt: "created_at", usedAt: "used_at" }));
 export type SessionRow = typeof SessionRow.Type;
 
@@ -239,6 +241,7 @@ export function makeTaskQueries(
   const accountRuns = (session: string, bot: number, runs: readonly RunAccount[]) =>
     Effect.gen(function* () {
       const at = yield* now;
+
       for (const r of runs)
         yield* q(sql`INSERT INTO harness_runs (session, run, bot, task, kind, at) VALUES (${session}, ${r.run}, ${bot}, ${r.task}, ${r.kind}, ${at})
           ON CONFLICT (session, run) DO NOTHING`);
@@ -249,9 +252,9 @@ export function makeTaskQueries(
       Effect.gen(function* () {
         const at = yield* now;
         yield* q(sql`
-          INSERT INTO harness_sessions (id, bot, harness, cwd, model, options, parent, created_at, used_at)
+          INSERT INTO harness_sessions (id, bot, harness, cwd, model, options, parent, created_at, used_at, baselined)
           VALUES (${row.id}, ${row.bot}, ${row.harness}, ${row.cwd}, ${row.model}, ${JSON.stringify(row.options)}, ${row.parent},
-                  ${at}, ${at})`);
+                  ${at}, ${at}, 1)`);
         return (yield* session(row.id))!;
       }),
     session,
@@ -300,12 +303,19 @@ export function makeTaskQueries(
       from: readonly TaskState[],
       to: TaskState,
       end: TaskEnd,
-      accounts: { readonly session: string; readonly bot: number; readonly runs: readonly RunAccount[]; readonly release?: string },
+      accounts: {
+        readonly session: string;
+        readonly bot: number;
+        readonly runs: readonly RunAccount[];
+        readonly release?: string;
+        readonly baselined?: boolean;
+      },
     ) =>
       transaction(
         Effect.gen(function* () {
           const row = yield* setState(id, from, to, end);
           if (row) yield* accountRuns(accounts.session, accounts.bot, accounts.runs);
+          if (row && accounts.baselined) yield* q(sql`UPDATE harness_sessions SET baselined = 1 WHERE id = ${accounts.session}`);
           if (row && accounts.release)
             yield* q(sql`DELETE FROM harness_runs WHERE session = ${accounts.session} AND run = ${accounts.release} AND task = ${id}`);
           return row;
@@ -316,7 +326,14 @@ export function makeTaskQueries(
         rows(sql`SELECT run, task, kind FROM harness_runs WHERE session = ${session}`),
         (r) => new Map(r.map((row) => [String(row.run), { task: row.task === null ? null : String(row.task), kind: String(row.kind) }])),
       ),
-    accountRuns: (session: string, bot: number, runs: readonly RunAccount[]) => transaction(accountRuns(session, bot, runs)),
+    /** `baselined`: this was the session's first account, so it starts from here. */
+    accountRuns: (session: string, bot: number, runs: readonly RunAccount[], baselined = false) =>
+      transaction(
+        Effect.gen(function* () {
+          yield* accountRuns(session, bot, runs);
+          if (baselined) yield* q(sql`UPDATE harness_sessions SET baselined = 1 WHERE id = ${session}`);
+        }),
+      ),
     /**
      * A task that reports a run the harness started on its own, and that run's account, at once; nothing when the run is
      * accounted for already (a replay, or another look got there first), so each run gets at most one task.
@@ -327,6 +344,7 @@ export function makeTaskQueries(
           const taken = yield* first(sql`SELECT 1 AS one FROM harness_runs WHERE session = ${row.session} AND run = ${row.adopt}`);
           if (taken) return undefined;
           yield* accountRuns(row.session, row.bot, others);
+          yield* q(sql`UPDATE harness_sessions SET baselined = 1 WHERE id = ${row.session}`);
           const at = yield* now;
           // A run given back by a continuation that failed gets another, under a key of its own.
           const before = Number((yield* first(sql`SELECT COUNT(*) AS n FROM tasks WHERE session = ${row.session} AND adopt = ${row.adopt}`))?.n ?? 0);
@@ -342,6 +360,8 @@ export function makeTaskQueries(
       ),
     sessionsWithThreads: (harness: string) =>
       Effect.map(rows(sql`SELECT * FROM harness_sessions WHERE harness = ${harness} AND external_id IS NOT NULL`), (r) => r.map(sessionOf)),
+    cancelledTasksOf: (session: string) =>
+      Effect.map(rows(sql`SELECT id FROM tasks WHERE session = ${session} AND state = 'cancelled'`), (r) => r.map((row) => String(row.id))),
     latestTaskOf: (session: string) =>
       Effect.map(first(sql`SELECT * FROM tasks WHERE session = ${session} ORDER BY created_at DESC, id DESC LIMIT 1`), (row) => row && taskOf(row)),
     setUsage: (id: string, usage: Readonly<Record<string, unknown>>) =>

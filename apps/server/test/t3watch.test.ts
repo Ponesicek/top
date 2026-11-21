@@ -344,7 +344,10 @@ test("sessions from before Top kept this account start from what T3 Code shows t
   const { first, thread, run } = await interimThenChild(s, "c1");
   await s.h.close();
   // As if an earlier Top had run this session: no account of its runs, and a wake it never saw.
-  await edit(s.dir, `DELETE FROM harness_runs WHERE session = '${first.session.id}';`);
+  await edit(
+    s.dir,
+    `DELETE FROM harness_runs WHERE session = '${first.session.id}'; UPDATE harness_sessions SET baselined = 0 WHERE id = '${first.session.id}';`,
+  );
   const old = s.t3.wake(thread, "old-1", "an old wake from before", nativeWake("c1"));
   await until("the old wake to end", () => s.t3.runsOf(thread).find((r) => r.id === old && r.status === "completed"));
   const second = await setup({ dir: s.dir, t3: s.t3 });
@@ -747,4 +750,54 @@ test("T3 Code's own /compact from an older server is never reported", async () =
   await until("it to end", () => s.t3.runsOf(thread).find((r) => r.id === compact && r.status === "completed"));
   await settle(800);
   assert.equal((await continuations(s, first.session.id)).length, 0);
+});
+
+test("a new session whose first task lost T3 Code before it ended still gets its wake reported, not taken for history", async () => {
+  const s = await setup();
+  const first = await start(s, { prompt: "run forever" });
+  const thread = `top-${first.session.id}`;
+  const run = await until("its run", () => s.t3.runsOf(thread).find((r) => r.userMessageId === `top:${first.task.id}` && r.status === "running"));
+  s.t3.nativeChildDone(thread, String(run.id), "c1");
+  // T3 Code entirely out of reach: neither its socket nor its thread reads answer.
+  s.t3.faults.dropOnOpen = true;
+  s.t3.faults.threadReadFailures = 1_000;
+  s.t3.dropSockets();
+  await until("the task to give up", async () => (await task(s, first.task.id)).state === "failed", 20_000);
+  s.t3.finish(thread, String(run.id), "the interim answer");
+  const wake = s.t3.wake(thread, "wake-1", "the report while Top was away", nativeWake("c1"));
+  await until("the wake to end", () => s.t3.runsOf(thread).find((r) => r.id === wake && r.status === "completed"));
+  s.t3.faults.dropOnOpen = false;
+  s.t3.faults.threadReadFailures = 0;
+  const c = await continuation(s, first.session.id, 1, 30_000);
+  assert.equal(c.result, "done: the report while Top was away");
+});
+
+test("a thread read that breaks off is read again", async () => {
+  const s = await setup();
+  const { first, thread } = await interimThenChild(s, "c1");
+  s.t3.faults.threadReadBroken = 1_000;
+  const wake = s.t3.wake(thread, "wake-1", "after a broken read", nativeWake("c1"));
+  await until("the wake to end", () => s.t3.runsOf(thread).find((r) => r.id === wake && r.status === "completed"));
+  await settle(500);
+  s.t3.faults.threadReadBroken = 0;
+  const c = await continuation(s, first.session.id, 1, 15_000);
+  assert.equal(c.result, "done: after a broken read");
+});
+
+test("a late wake of a cancelled task's work doesn't become the answer of the task that follows the session", async () => {
+  const s = await setup();
+  const holding = await start(s, { prompt: "delegate the long work" });
+  const thread = `top-${holding.session.id}`;
+  await until("it to hold", async () => (await log(s, holding.task.id)).some((t) => /still has delegated work/.test(t)));
+  assert.equal((await s.h.run(s.tasks.cancel(s.h.bot, holding.task.id))).task.state, "cancelled");
+  const next = await start(s, { prompt: "run forever", session: holding.session.id });
+  const own = await until("its run", () => s.t3.runsOf(thread).find((r) => r.userMessageId === `top:${next.task.id}` && r.status === "running"));
+  const late = s.t3.wake(thread, "late", "the cancelled work's late answer", {
+    createdBy: "agent",
+    delegatedCompletion: { parentRunId: `run:${thread}:1`, generation: 1, taskIds: [] },
+  });
+  s.t3.finish(thread, String(own.id), "the next task's answer");
+  await until("the late wake to end", () => s.t3.runsOf(thread).find((r) => r.id === late && r.status === "completed"));
+  const done = await ended(s, next.task.id);
+  assert.equal(done.result, "the next task's answer");
 });
