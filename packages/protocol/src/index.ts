@@ -48,7 +48,7 @@ export const BotRuntimesView = Struct({
   model: Schema.String,
   /** Whether this daemon runs Claude bots at all. */
   claude: Schema.Boolean,
-  /** Claude Code's version, when it's installed and signed in. */
+  /** Claude Code's version, when it's installed and signed in. Neither this nor `claudeProblem`: still checking. */
   claudeVersion: Optional(Schema.String),
   /** Why a Claude bot can't run now, in words for the user. */
   claudeProblem: Optional(Schema.String),

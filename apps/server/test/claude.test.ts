@@ -72,6 +72,7 @@ test("a Claude bot answers through the Agent SDK, with Top's instructions, no bu
   assert.equal(first.model, "sonnet");
   assert.match(String(first.systemPrompt), /You are one of the user's bots/);
   assert.equal(first.permissionMode, "default");
+  assert.equal(first.verbatimPrompts, true, "a Top message like /skill isn't a Claude Code command");
   const session = (await h.run(h.store.bot(h.bot)))!.session;
   assert.ok(session && first.sessionId === session, "the session id is saved before Claude Code starts");
 
@@ -124,7 +125,8 @@ test("a Claude bot never runs on an API key: the turn fails with how to sign in,
   assert.match(status.error ?? "", /sign in with your Claude account/);
   assert.equal(fake.prompts.length, 0, "Claude Code was given no message");
 
-  assert.match(subscriptionProblem({}) ?? "", /isn't signed in with a Claude subscription/);
+  assert.match(subscriptionProblem({ apiProvider: "firstParty" }) ?? "", /isn't signed in with a Claude subscription/);
+  assert.match(subscriptionProblem({ subscriptionType: "Claude Max" }) ?? "", /unknown provider/);
   assert.match(subscriptionProblem({ apiProvider: "bedrock", subscriptionType: "Claude Max" }) ?? "", /bedrock/);
   assert.equal(subscriptionProblem({ apiProvider: "firstParty", subscriptionType: "Claude Max" }), undefined);
 });
@@ -238,6 +240,73 @@ test("a restart before Claude saved the user's message gives it the message agai
   assert.match(saved.note ?? "", /Carry on where you left off/);
   assert.equal(promptUuid(session, message), promptUuid(session, { ...message }), "the same message, the same id");
   void fake;
+});
+
+test("a call that finishes after the next part of the answer was saved is still recorded against its own answer", async () => {
+  const fake = fakeClaude();
+  const first = gate("build");
+  const h = await harness({ claude: fake, models: CLAUDE, tools: [first.tool, echo] });
+  await h.run(h.daemon.start);
+  await submit(h, 'call build {"target":"app"} and call echo {"text":"later"}');
+  await until("both parts saved", async () => (await h.entries()).filter((e) => e.kind === "assistant").length === 2 && first.state.started);
+  first.state.release();
+  await until("idle", async () => (await idle(h)) && (await answers(h)).length >= 3);
+  const entries = await h.entries();
+  const [a, b] = entries.filter((e) => e.kind === "assistant");
+  for (const entry of [a!, b!]) {
+    assert.ok(entry.kind === "assistant" && Array.isArray(entry.message.content));
+    const call = entry.message.content.find((p) => p.type === "toolCall");
+    assert.ok(call && call.type === "toolCall");
+    const row = await h.run(h.store.toolCall(entry.seq, call.id));
+    assert.ok(row?.finishedAt, `${call.name} finished under its own answer`);
+  }
+});
+
+test("a call Claude Code sends without its tool-use id isn't run", async () => {
+  const fake = fakeClaude();
+  const { tool, state } = gate("deploy");
+  const h = await harness({ claude: fake, models: CLAUDE, tools: [tool] });
+  await h.run(h.daemon.start);
+  await ask(h, 'call deploy {"target":"x"} nometa');
+  assert.equal(state.runs, 0);
+  const result = (await h.entries()).find((e) => e.kind === "tool");
+  assert.equal(result, undefined, "nothing was recorded as run");
+  assert.match((await answers(h)).at(-1) ?? "", /Not run: Top couldn't match this call/);
+});
+
+test("a steer Claude Code took but hadn't answered when the daemon stopped is carried on after the restart", async () => {
+  const fake = fakeClaude();
+  const { tool, state } = gate("build");
+  const first = await harness({ claude: fake, models: CLAUDE, tools: [tool] });
+  await first.run(first.daemon.start);
+  await submit(first, 'call build {"target":"app"}');
+  await until("the tool running", () => state.started);
+  await submit(first, "then hang", "steer");
+  await until("the steer saved", async () => (await first.entries()).filter((e) => e.kind === "user").length === 2);
+  state.release();
+  await until("the answer to the first saved, the steer taken", async () => (await answers(first)).length >= 2 && fake.prompts.length === 2);
+  assert.equal((await first.entries()).at(-1)?.kind, "assistant", "the transcript ends with an answer");
+  await first.close();
+
+  const again = await harness({ dir: first.dir, claude: fake, models: CLAUDE, tools: [tool] });
+  await again.run(again.daemon.start);
+  await until("carried on", async () => (await idle(again)) && fake.launches.length === 2);
+  assert.match(promptText(fake, -1), /Carry on where you left off/);
+  assert.equal(fake.launches[1]!.resume, fake.launches[0]!.sessionId);
+});
+
+test("a restart after Claude answered everything starts nothing more", async () => {
+  const fake = fakeClaude();
+  const first = await harness({ claude: fake, models: CLAUDE });
+  await first.run(first.daemon.start);
+  await ask(first, "hello");
+  await first.run(first.store.setRunActive(first.bot, true));
+  await first.close();
+  const again = await harness({ dir: first.dir, claude: fake, models: CLAUDE });
+  await again.run(again.daemon.start);
+  await until("idle", () => idle(again));
+  assert.equal(fake.launches.length, 1, "no launch: the session had answered");
+  assert.equal((await again.run(again.store.bot(again.bot)))!.runActive, false);
 });
 
 test("--model keeps setting Top's bots, not Claude bots; a Claude bot can change its Claude model but not its runtime", async () => {

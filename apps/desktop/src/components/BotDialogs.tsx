@@ -92,12 +92,21 @@ function useRuntimes() {
   const [runtimes, setRuntimes] = useState<BotRuntimesView>();
   useEffect(() => {
     let live = true;
-    top.botRuntimes().then(
-      (view) => live && setRuntimes(view),
-      () => {},
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = () =>
+      top.botRuntimes().then(
+        (view) => {
+          if (!live) return;
+          setRuntimes(view);
+          // The daemon is still checking Claude Code: ask again shortly.
+          if (view.claude && !view.claudeVersion && !view.claudeProblem) timer = setTimeout(ask, 1_500);
+        },
+        () => {},
+      );
+    void ask();
     return () => {
       live = false;
+      if (timer) clearTimeout(timer);
     };
   }, []);
   return runtimes;
@@ -106,6 +115,7 @@ function useRuntimes() {
 /** Whether Claude Code on the daemon's computer is ready, and what a Claude bot runs on. */
 function ClaudeStatus({ runtimes }: { runtimes: BotRuntimesView }) {
   if (runtimes.claudeProblem) return <p className="text-small leading-snug text-destructive-foreground">{runtimes.claudeProblem}</p>;
+  if (!runtimes.claudeVersion) return <p className="text-small leading-snug text-muted-foreground">Checking Claude Code on the daemon's computer…</p>;
   return (
     <p className="text-small leading-snug text-muted-foreground">
       Uses your Claude subscription, through Claude Code{runtimes.claudeVersion ? ` ${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")}` : ""} signed
@@ -221,7 +231,7 @@ function NewBotForm({ onCreated, nameRef }: { onCreated: (id: BotId) => void; na
         {error && <DialogError>{error}</DialogError>}
         <DialogFooter>
           <DialogClose render={<Button variant="outline" size="wide" />}>Cancel</DialogClose>
-          <Button type="submit" size="wide" disabled={busy || !name.trim() || (runtime === "claude" && !!runtimes?.claudeProblem)}>
+          <Button type="submit" size="wide" disabled={busy || !name.trim() || (runtime === "claude" && !runtimes?.claudeVersion)}>
             {busy ? "Creating…" : "Create bot"}
           </Button>
         </DialogFooter>

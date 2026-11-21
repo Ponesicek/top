@@ -39,7 +39,7 @@ export const realSdk = async (): Promise<ClaudeSdk> => {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
   return {
     query: (params) => sdk.query(params) as unknown as ClaudeQuery,
-    sessionMessages: (session, cwd) => sdk.getSessionMessages(session, { dir: cwd }).catch(() => []),
+    sessionMessages: (session, cwd) => sdk.getSessionMessages(session, { dir: cwd }),
   };
 };
 
@@ -71,45 +71,63 @@ export const EFFORTS: Readonly<Record<ThinkingLevel, EffortLevel | undefined>> =
 /** A Claude subscription signed in through Claude Code itself, or why this isn't one. Top never runs Claude bots on API credits. */
 export function subscriptionProblem(info: AccountInfo): string | undefined {
   const signIn = "Run `claude` on the daemon's computer and sign in with your Claude account (`/login`), then send the message again.";
-  if (info.apiProvider && info.apiProvider !== "firstParty")
-    return `Claude Code on the daemon's computer goes through ${info.apiProvider}, not a Claude subscription, and Top's Claude bots only run on your Claude subscription. ${signIn}`;
+  if (info.apiProvider !== "firstParty")
+    return `Claude Code on the daemon's computer goes through ${info.apiProvider ?? "an unknown provider"}, not a Claude subscription, and Top's Claude bots only run on your Claude subscription. ${signIn}`;
   if (info.apiKeySource && info.apiKeySource !== "none" && info.apiKeySource !== "oauth")
     return `Claude Code on the daemon's computer uses an API key (${info.apiKeySource}), which bills API credits; Top's Claude bots only run on your Claude subscription. ${signIn}`;
   if (!info.subscriptionType) return `Claude Code on the daemon's computer isn't signed in with a Claude subscription. ${signIn}`;
   return undefined;
 }
 
+/** `verbatimPrompts`, which keeps Claude Code from reading the user's text as its own commands, needs this CLI. */
+const MIN_CLI = [2, 1, 248] as const;
+
+const versionAtLeast = (version: string, min: readonly number[]) => {
+  const parts = /(\d+)\.(\d+)\.(\d+)/.exec(version)?.slice(1).map(Number);
+  if (!parts) return false;
+  for (let i = 0; i < min.length; i++) if (parts[i] !== min[i]) return (parts[i] ?? 0) > min[i]!;
+  return true;
+};
+
 const SIGN_IN = "Run `claude` on the daemon's computer and sign in with your Claude account.";
 
 /** Finds the Claude Code CLI once (`TOP_CLAUDE_PATH`, else `claude` on the PATH or in ~/.local/bin), the same one coding tasks use. */
 export function claudeCli(command = process.env.TOP_CLAUDE_PATH ?? "claude") {
-  let found: Promise<string> | undefined;
-  const locate = () => {
-    found ??= findCli(command, "Claude Code", "TOP_CLAUDE_PATH", `Install Claude Code and sign in by running \`claude\` once`);
-    found.catch(() => {
-      found = undefined;
-    });
-    return found;
-  };
   const exec = (path: string, args: string[]) =>
     new Promise<{ ok: boolean; stdout: string; error?: string }>((resolve) =>
       execFile(path, args, { timeout: 15_000, env: harnessEnv(process.env) }, (error, stdout) =>
         resolve(error ? { ok: false, stdout, error: error.message } : { ok: true, stdout }),
       ),
     );
+  let found: Promise<{ path: string; version: string }> | undefined;
+  const find = () => {
+    found ??= (async () => {
+      const path = await findCli(command, "Claude Code", "TOP_CLAUDE_PATH", `Install Claude Code and sign in by running \`claude\` once`);
+      const version = await exec(path, ["--version"]);
+      if (!version.ok) throw new Error(`\`${command} --version\` failed: ${redact(version.error ?? "")}`);
+      const text = version.stdout.trim();
+      if (!versionAtLeast(text, MIN_CLI))
+        throw new Error(`Claude Code ${text} is too old for Claude bots; update it to ${MIN_CLI.join(".")} or newer (\`claude update\`).`);
+      return { path, version: text };
+    })();
+    found.catch(() => {
+      found = undefined;
+    });
+    return found;
+  };
+  const locate = () => find().then((cli) => cli.path);
   /**
    * Installed and signed in, as `claude auth status` tells it. Whether that sign-in is a Claude subscription is checked
    * again each time a bot starts (`subscriptionProblem`): it's the only thing that can tell a subscription from an API key.
    */
   const status = async (): Promise<{ ok: true; version: string } | { ok: false; error: string }> => {
-    let path: string;
+    let cli: { path: string; version: string };
     try {
-      path = await locate();
+      cli = await find();
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-    const version = await exec(path, ["--version"]);
-    if (!version.ok) return { ok: false, error: `\`${command} --version\` failed: ${redact(version.error ?? "")}` };
+    const { path } = cli;
     const auth = await exec(path, ["auth", "status", "--json"]);
     let parsed: Record<string, unknown> = {};
     try {
@@ -118,7 +136,12 @@ export function claudeCli(command = process.env.TOP_CLAUDE_PATH ?? "claude") {
     if (parsed.loggedIn !== true) return { ok: false, error: `Claude Code isn't signed in on the daemon's computer. ${SIGN_IN}` };
     if (typeof parsed.apiProvider === "string" && parsed.apiProvider !== "firstParty")
       return { ok: false, error: `Claude Code on the daemon's computer goes through ${parsed.apiProvider}, not a Claude subscription. ${SIGN_IN}` };
-    return { ok: true, version: version.stdout.trim() };
+    if (typeof parsed.authMethod === "string" && /api|key|console/i.test(parsed.authMethod))
+      return {
+        ok: false,
+        error: `Claude Code on the daemon's computer is signed in with an API key (${parsed.authMethod}), not a Claude subscription. ${SIGN_IN}`,
+      };
+    return { ok: true, version: cli.version };
   };
   return { locate, status };
 }
@@ -233,20 +256,31 @@ function usageOf(raw: unknown): TopAssistantMessage["usage"] {
 const jsonSchema = (tool: TopTool): Record<string, unknown> => JSON.parse(JSON.stringify(tool.parameters)) as Record<string, unknown>;
 
 const RESTARTED = "[Top: the daemon restarted during your turn. Carry on where you left off.]";
+const MAX_UNSENT = 20;
 
 /**
- * What to send Claude Code when Top carries on a turn its session didn't finish (after a restart): Top's record of the
- * tool calls the session lacks or has another result for (Claude Code marks a call it lost as interrupted), and the
- * user's messages it never saved.
+ * What to send Claude Code when Top carries on a run a restart cut off: Top's record of the tool calls the session
+ * lacks or has another result for (Claude Code marks a call it lost as interrupted), and the user's messages it never
+ * saved, from the newest back to the last one it has. Nothing, when the session already answered everything.
  */
-export function catchUp(open: readonly TranscriptMessage[], known: readonly SessionEntry[], session: string) {
+export function catchUp(messages: readonly TranscriptMessage[], known: readonly SessionEntry[], session: string) {
   const seen = new Set(known.map((entry) => entry.uuid));
   const results = sessionResults(known);
-  const unsent = open.filter((m): m is TopUserMessage => m.role === "user" && !seen.has(promptUuid(session, m)));
+  const unsent: TopUserMessage[] = [];
+  for (let i = messages.length - 1; i >= 0 && unsent.length < MAX_UNSENT; i--) {
+    const m = messages[i]!;
+    if (m.role !== "user") continue;
+    if (seen.has(promptUuid(session, m))) break;
+    unsent.unshift(m);
+  }
+  const open = openTurn(messages);
   const settled = open.filter((m): m is ToolResultMessage => m.role === "toolResult" && results.get(m.toolCallId) !== resultText(m.content));
   const calls = new Map(
     open.flatMap((m) => (m.role === "assistant" ? m.content.filter((part): part is ToolCall => part.type === "toolCall") : [])).map((call) => [call.id, call]),
   );
+  const last = known.findLast((entry) => entry.type === "user" || entry.type === "assistant");
+  const content = record(last?.message).content;
+  const answered = last?.type === "assistant" && !(Array.isArray(content) && content.some((block) => record(block).type === "tool_use"));
   const note = settled.length
     ? [
         '[Top: the daemon restarted during your turn, and Claude Code lost part of it: it may show the turn as interrupted, or as answered with "No response requested.", which Claude Code wrote itself during the restart. You had called these tools; this is what Top recorded for each:]',
@@ -255,7 +289,7 @@ export function catchUp(open: readonly TranscriptMessage[], known: readonly Sess
             `- ${m.toolName} ${JSON.stringify(calls.get(m.toolCallId)?.arguments ?? {})} (${m.toolCallId})${m.isError ? ", error" : ""}: ${resultText(m.content)}`,
         ),
       ].join("\n")
-    : unsent.length
+    : unsent.length || answered
       ? undefined
       : RESTARTED;
   return { note, unsent };
@@ -280,10 +314,12 @@ type Conversation = {
   readonly opening: readonly SDKUserMessage[];
   /** Runs one of Top's effects (a save, a tool) as a fiber of the turn; refused once the daemon stopped the turn. */
   readonly run: <A>(effect: Effect.Effect<A>) => Promise<A>;
+  /** Aborted when the daemon stops the turn (not Stop: that's `options.signal`). */
+  readonly shutdown: AbortSignal;
 };
 
 /** One launch of Claude Code: the opening messages, then whatever it does, until every message given it was answered. */
-async function converse({ config, options, path, sdk, session, model, fresh, opening, run }: Conversation): Promise<Outcome> {
+async function converse({ config, options, path, sdk, session, model, fresh, opening, run, shutdown }: Conversation): Promise<Outcome> {
   const { messages, hooks, signal } = options;
   const inbox = new Inbox();
   const outstanding = new Set<string>();
@@ -318,21 +354,25 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
       saved.delete(call.id);
     }
   };
-  // A call is recorded against the saved answer it came in, so the answer is saved before the call runs.
-  const whenSaved = (toolUseId: string) =>
-    savedIds.has(toolUseId)
-      ? Promise.resolve()
-      : pending?.content.some((part) => part.type === "toolCall" && part.id === toolUseId)
-        ? flush()
-        : new Promise<void>((resolve) => {
-            saved.set(toolUseId, resolve);
-            setTimeout(resolve, 5_000);
-          });
+  // A call is recorded against the saved answer it came in, so that answer is saved before the call runs. A call Top
+  // can't match to one isn't run: after a restart it couldn't be told apart from one that never started.
+  const whenSaved = (toolUseId: string | undefined) =>
+    toolUseId === undefined
+      ? Promise.resolve(false)
+      : savedIds.has(toolUseId)
+        ? Promise.resolve(true)
+        : pending?.content.some((part) => part.type === "toolCall" && part.id === toolUseId)
+          ? flush().then(() => true)
+          : new Promise<boolean>((resolve) => {
+              saved.set(toolUseId, () => resolve(true));
+              setTimeout(() => resolve(savedIds.has(toolUseId)), 5_000);
+            });
 
   let sequential = Promise.resolve();
   const running = new Set<Promise<unknown>>();
-  const callTool = async (name: string, args: unknown, toolUseId: string) => {
-    await whenSaved(toolUseId);
+  const callTool = async (name: string, args: unknown, toolUseId: string | undefined) => {
+    if (!(await whenSaved(toolUseId)) || toolUseId === undefined)
+      return { content: [{ type: "text" as const, text: `Not run: Top couldn't match this call of ${name} to your answer. Call it again.` }], isError: true };
     const call: ToolCall = { type: "toolCall", id: toolUseId, name, arguments: record(args) as ToolCall["arguments"] };
     const go = async () => {
       const ran = run(runToolCall(toolOptions, call));
@@ -369,7 +409,7 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
   }));
   low.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments?: unknown; _meta?: Record<string, unknown> } }) => {
     const meta = request.params._meta?.[TOOL_USE_ID];
-    return callTool(request.params.name, request.params.arguments ?? {}, typeof meta === "string" ? meta : `top-${randomUUID()}`);
+    return callTool(request.params.name, request.params.arguments ?? {}, typeof meta === "string" ? meta : undefined);
   });
 
   // Only Top's own tools run: Claude Code's built-in tools are switched off, and anything else it asks for is refused.
@@ -393,6 +433,8 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
       ...(EFFORTS[options.thinkingLevel] ? { effort: EFFORTS[options.thinkingLevel]! } : {}),
       systemPrompt: getCurrentSystemPrompt(messages),
       tools: [],
+      // The user's text goes to Claude as written: `/name` is a Top skill, not a Claude Code command, and `@path` isn't expanded.
+      verbatimPrompts: true,
       settingSources: [],
       settings: { autoMemoryEnabled: false },
       strictMcpConfig: true,
@@ -413,38 +455,39 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
   };
   const stderrTail = () => (stderr.trim() ? `\n${tail(redact(stderr.trim()), 600)}` : "");
 
-  // Steering goes in as soon as Top has it, between the steps of the turn Claude Code is taking.
+  // Steering goes in as soon as Top has it, between the steps of the turn Claude Code is taking, one message at a time
+  // in the order it came.
+  let steered = Promise.resolve();
   const takeSteering = () => {
     const steering = signal.aborted ? [] : options.steering();
-    const queued: { message: TranscriptMessage; uuid: string }[] = [];
     for (const message of steering) {
       const uuid = promptUuid(session, message);
       if (message.role === "user") outstanding.add(uuid);
-      queued.push({ message, uuid });
-    }
-    return Promise.all(
-      queued.map(async ({ message, uuid }) => {
+      steered = steered.then(async () => {
         messages.push(message);
         await run(hooks.added(message));
         if (message.role !== "user") return;
         const [withImages] = options.transformContext ? await run(options.transformContext([message])) : [message];
         inbox.push(sdkUser(uuid, userBlocks(withImages as TopUserMessage), "next"));
-      }),
-    );
+      });
+    }
+    return steered;
   };
 
   let steer: NodeJS.Timeout | undefined;
   const onAbort = () => {
     void Promise.race([q.interrupt().catch(() => {}), new Promise((resolve) => setTimeout(resolve, INTERRUPT_MS))]).then(close);
   };
+  // The daemon stopping the turn ends Claude Code at once; Stop interrupts its turn first.
+  shutdown.addEventListener("abort", close, { once: true });
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
     const account = await q.accountInfo().catch((error: unknown) => {
       throw new Error(`Claude Code didn't start: ${redact(error instanceof Error ? error.message : String(error))}${stderrTail()}`);
     });
+    if (signal.aborted) return { aborted: true };
     const problem = subscriptionProblem(account);
     if (problem) return { error: problem };
-    if (signal.aborted) return { aborted: true };
-    signal.addEventListener("abort", onAbort, { once: true });
 
     for (const message of opening) {
       outstanding.add(message.uuid!);
@@ -499,6 +542,7 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
   } finally {
     if (steer) clearInterval(steer);
     signal.removeEventListener("abort", onAbort);
+    shutdown.removeEventListener("abort", close);
     close();
     // A call cut off by Stop ends once its tool sees the signal; its result is saved before the turn ends, as on Top's loop.
     await Promise.allSettled([...running]);
@@ -552,7 +596,7 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
       const session = saved ?? randomUUID();
       if (!saved) yield* config.saveSession(session);
 
-      const needed = prompts?.length ? prompts : openTurn(messages);
+      const needed = prompts?.length ? prompts : messages.slice(-MAX_UNSENT * 4);
       const transformed = options.transformContext ? yield* options.transformContext(needed) : needed;
       const view = new Map(needed.map((m, i) => [m, transformed[i] ?? m]));
       const withData = (m: TopUserMessage) => (view.get(m) ?? m) as TopUserMessage;
@@ -585,11 +629,13 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
         }
         if (extra.length) opening.push(sdkUser(randomUUID(), extra));
       } else {
-        const { note, unsent } = catchUp(openTurn(messages), known, session);
-        if (note && !fresh) opening.push(sdkUser(randomUUID(), [{ type: "text", text: note }]));
-        for (const m of unsent) opening.push(userMessage(m));
+        // A lost session still hears what Top recorded before it's given the request again, so it can't repeat a call blind.
+        const { note, unsent } = catchUp(messages, known, session);
+        if (note) opening.push(sdkUser(randomUUID(), [{ type: "text", text: note }]));
+        for (const m of fresh ? unsent.filter((m) => openTurn(messages).includes(m)) : unsent) opening.push(userMessage(m));
+        // Claude Code had answered everything before the restart.
+        if (!opening.length) return;
       }
-      if (!opening.length) opening.push(sdkUser(randomUUID(), [{ type: "text", text: RESTARTED }]));
 
       // Top's side of the turn (saving entries, running tools) runs as fibers of its own while Claude Code calls in; when
       // the daemon stops the turn, they're interrupted with it, and nothing more is saved.
@@ -610,7 +656,7 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
           },
           { once: true },
         );
-        return converse({ config, options, path, sdk, session, model, fresh, opening, run });
+        return converse({ config, options, path, sdk, session, model, fresh, opening, run, shutdown: interrupted });
       });
       if (outcome.error) yield* fail(outcome.error);
       else if (outcome.aborted) yield* fail("Stopped", true);

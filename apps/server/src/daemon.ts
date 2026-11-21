@@ -425,6 +425,31 @@ const make = Effect.gen(function* () {
         return yield* new BotError({ message: `Claude Code has no model "${name}" Top knows of. Pick ${CLAUDE_MODELS.join(", ")}, or a full claude-… id.` });
     });
 
+  let claudeStatus: ClaudeCliStatus | undefined;
+  let checkingClaude = false;
+  const refreshClaude = Effect.suspend(() => {
+    if (!kit.claude || checkingClaude) return Effect.void;
+    checkingClaude = true;
+    return Effect.asVoid(
+      Effect.forkIn(
+        kit.claude.status.pipe(
+          Effect.tap((status) =>
+            Effect.sync(() => {
+              claudeStatus = status;
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              checkingClaude = false;
+            }),
+          ),
+        ),
+        scope,
+      ),
+    );
+  });
+  yield* refreshClaude;
+
   const runnerOf = (bot: number) =>
     Effect.suspend(() => {
       const live = bots.get(bot);
@@ -484,7 +509,9 @@ const make = Effect.gen(function* () {
       yield* touch(bot);
     }),
     runtimes: Effect.gen(function* () {
-      const status = kit.claude ? yield* kit.claude.status : undefined;
+      // Answered from what Top last found, so a slow CLI never holds up the connection; each ask checks again.
+      yield* refreshClaude;
+      const status = claudeStatus;
       return {
         model: kit.newBot?.model ?? "",
         claude: kit.claude !== undefined,

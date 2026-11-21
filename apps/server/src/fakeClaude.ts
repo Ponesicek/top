@@ -8,7 +8,9 @@ import type { ClaudeQuery, ClaudeSdk, SessionEntry } from "./claudeRuntime.ts";
  * A stand-in for the Claude Agent SDK, for tests and fake bots: it keeps sessions in memory, calls Top's tools over the
  * real MCP server Top hands it, and answers by rule:
  *
- * - `call <tool> <json>` calls that tool (by Top's name), then says what it returned.
+ * - `call <tool> <json>` calls that tool (by Top's name), then says what it returned. Several calls go out as parts of
+ *   one answer, each running as soon as it's out; with `nometa` they come without Claude Code's tool-use id.
+ * - `hang` never answers (until it's interrupted or closed).
  * - anything else gets "Claude heard: <the message's last line>".
  */
 export type FakeClaude = ClaudeSdk & {
@@ -62,27 +64,44 @@ export function fakeClaude(): FakeClaude {
           prompts.push(message);
           log.push({ type: "user", uuid: message.uuid ?? randomUUID(), message: message.message });
           const text = textOf(message);
-          const call = /call (\S+) (\{.*\})/s.exec(text);
+          const calls = [...text.matchAll(/call (\S+) (\{[^}]*\})/g)];
           const answerId = randomUUID();
           let reply = `Claude heard: ${text.trim().split("\n").at(-1) ?? ""}`;
-          if (call) {
-            const id = `toolu_${randomUUID().slice(0, 8)}`;
-            const input = JSON.parse(call[2]!) as Record<string, unknown>;
-            const block = { type: "tool_use", id, name: `mcp__top__${call[1]}`, input };
-            log.push({ type: "assistant", uuid: randomUUID(), message: { role: "assistant", content: [block] } });
-            yield {
-              type: "assistant",
-              parent_tool_use_id: null,
-              message: { id: answerId, model, role: "assistant", content: [block], usage: { input_tokens: 10, output_tokens: 5 } },
-            } as unknown as SDKMessage;
+          const stopped = new Promise<"stopped">((resolve) => {
+            interrupted = () => resolve("stopped");
+          });
+          if (/\bhang\b/.test(text)) {
+            await stopped;
+            return;
+          }
+          if (calls.length) {
+            // Each call goes out as its own message of one answer, and runs as soon as it's out, as Claude Code does.
             const mcp = await tools();
-            const stopped = new Promise<"stopped">((resolve) => {
-              interrupted = () => resolve("stopped");
-            });
-            const result = await Promise.race([
-              mcp!.callTool({ name: call[1]!, arguments: input, _meta: { "claudecode/toolUseId": id } }).then((r) => r as { content: { text?: string }[] }),
-              stopped,
-            ]);
+            const running: Promise<string>[] = [];
+            for (const call of calls) {
+              const id = `toolu_${randomUUID().slice(0, 8)}`;
+              const input = JSON.parse(call[2]!) as Record<string, unknown>;
+              const block = { type: "tool_use", id, name: `mcp__top__${call[1]}`, input };
+              log.push({ type: "assistant", uuid: randomUUID(), message: { role: "assistant", content: [block] } });
+              yield {
+                type: "assistant",
+                parent_tool_use_id: null,
+                message: { id: answerId, model, role: "assistant", content: [block], usage: { input_tokens: 10, output_tokens: 5 } },
+              } as unknown as SDKMessage;
+              const meta = /\bnometa\b/.test(text) ? {} : { _meta: { "claudecode/toolUseId": id } };
+              running.push(
+                mcp!.callTool({ name: call[1]!, arguments: input, ...meta }).then((r) => {
+                  const output = (r as { content: { text?: string }[] }).content.map((part) => part.text ?? "").join("");
+                  log.push({
+                    type: "user",
+                    uuid: randomUUID(),
+                    message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: output }] },
+                  });
+                  return `${call[1]} said: ${output}`;
+                }),
+              );
+            }
+            const result = await Promise.race([Promise.all(running), stopped]);
             if (result === "stopped" || closed) {
               yield {
                 type: "result",
@@ -93,9 +112,7 @@ export function fakeClaude(): FakeClaude {
               } as unknown as SDKMessage;
               continue;
             }
-            const output = result.content.map((part) => part.text ?? "").join("");
-            log.push({ type: "user", uuid: randomUUID(), message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: output }] } });
-            reply = `${call[1]} said: ${output}`;
+            reply = result.join("; ");
           }
           log.push({ type: "assistant", uuid: randomUUID(), message: { role: "assistant", content: [{ type: "text", text: reply }] } });
           yield {

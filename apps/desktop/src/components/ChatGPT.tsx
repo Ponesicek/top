@@ -208,10 +208,25 @@ export function AccountSection() {
 
 export function SignInGate() {
   const account = useAccount();
-  const open = !!account && !account.signedIn && account.canSignIn;
+  const needed = !!account && !account.signedIn && account.canSignIn;
+  // Where bots can run on Claude Code instead, signing in with ChatGPT can wait: Claude bots don't need it.
+  const [optional, setOptional] = useState(false);
+  const [skipped, setSkipped] = useState(false);
+  useEffect(() => {
+    if (!needed) return;
+    let live = true;
+    top.botRuntimes().then(
+      (view) => live && setOptional(view.claude),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [needed]);
+  const open = needed && !skipped;
   return (
-    <Dialog open={open} disablePointerDismissal>
-      <DialogPopup className="w-125">{open && <SignInForm required onDone={() => {}} />}</DialogPopup>
+    <Dialog open={open} onOpenChange={(next) => !next && optional && setSkipped(true)} disablePointerDismissal={!optional}>
+      <DialogPopup className="w-125">{open && <SignInForm required={!optional} onDone={() => setSkipped(true)} />}</DialogPopup>
     </Dialog>
   );
 }
