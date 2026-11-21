@@ -16,6 +16,7 @@ export type FakeHarnessConfig = {
   readonly label?: string;
   /** "cloud": takes no `cwd`, sends to its `cloud_session` option, and only hands work off (its turns end `handed_off`). */
   readonly where?: Where;
+  readonly outlives?: boolean;
 };
 
 export type FakeHarness = HarnessAdapter & {
@@ -44,6 +45,7 @@ export function fakeHarness(config: FakeHarnessConfig = {}): FakeHarness {
     id: config.id ?? (cloud ? FAKE_CLOUD : FAKE_HARNESS),
     label: config.label ?? (cloud ? "Fake cloud" : "Fake harness"),
     ...(config.where ? { where: config.where } : {}),
+    ...(config.outlives ? { outlives: true } : {}),
     capabilities: cloud
       ? {
           ...ALL,

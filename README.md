@@ -443,11 +443,14 @@ reachable this way.
   do), sends one command over T3 Code's app socket, and revokes the session straight after; the
   credential never reaches the disk, a log or the bot. `task_cancel` is T3 Code's Stop on the task's
   thread (`thread.stop`: its run, its queue and the work it delegated); `task_send` with `steer` goes
-  into the thread's active run (`message.dispatch`, `steer_active`). That socket is T3 Code's own app
+  into the thread's active run (`message.dispatch`, `steer_active`). A cancel right after a message was
+  sent waits (up to 15 s) for T3 Code to show its run, so the run can't start after the Stop. A stop T3
+  Code doesn't confirm leaves the task cancelled, saying the run may still be going there. That socket is T3 Code's own app
   protocol, not a published API: Top checks it speaks orchestration protocol 2 first, and refuses
   otherwise, saying which side to update.
-- **Restarts.** Like the other local harnesses, a Top restart cuts the wait off and fails the task
-  as cut off; the thread keeps going in T3 Code, and continuing the session sends to it again.
+- **Restarts.** Like the other local harnesses, a Top restart fails the task as cut off, but only
+  Top's wait ended: the task says the thread may still be running in T3 Code, and continuing the
+  session sends to it again.
 - **Setting up.** Nothing to pair: Top uses `TOP_T3_PATH`, else the running server's own version of
   the CLI (`~/.t3/runtime/versions/<version>/t3`), else a `t3` on PATH, with T3 Code's data folder
   (`T3CODE_HOME`, default `~/.t3`). T3 Code has to be running. The tests use a stand-in for the CLI and

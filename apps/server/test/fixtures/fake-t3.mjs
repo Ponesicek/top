@@ -2,7 +2,8 @@
 // A stand-in for T3 Code's `t3` CLI (0.1.12) as far as Top uses it: `thread start|send <…> - --wait`, `thread show --json`,
 // `thread start --help` and `auth session issue|revoke`, printing what the real one prints. It never touches the network.
 // FAKE_T3_DIR: a folder for its log (calls.jsonl) and the state it shares with the test's fake server: `running-<thread>`
-// while a run waits, `stopped-<thread>` once the server took a Stop for it.
+// while a run waits, `stopped-<thread>` once the server took a Stop for it (a Stop on a thread with no run does nothing).
+// FAKE_T3_SEND_DELAY_MS: how long `thread send` takes to reach T3 Code before its run starts.
 // A message decides the run: "forever" runs until stopped, "question" waits for an answer, "fail" fails, "noproject"
 // isn't in a project; anything else completes with "done: <message>".
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -11,7 +12,8 @@ import { join } from "node:path";
 const dir = process.env.FAKE_T3_DIR;
 const args = process.argv.slice(2);
 const log = (entry = {}) =>
-  dir && appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify({ args, cwd: process.cwd(), home: process.env.T3CODE_HOME, ...entry })}\n`);
+  dir &&
+  appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify({ args, cwd: process.cwd(), home: process.env.T3CODE_HOME, pid: process.pid, ...entry })}\n`);
 const say = (text) => process.stderr.write(`${text}\n`);
 const [group, command] = args;
 
@@ -61,7 +63,9 @@ const thread = command === "start" ? (process.env.FAKE_T3_THREAD ?? "thr-1") : a
 // As the real one does with --wait and without --json: the thread's id first, on stderr.
 if (command === "start") say(`Thread ${thread}`);
 
+if (command === "send" && process.env.FAKE_T3_SEND_DELAY_MS) await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_T3_SEND_DELAY_MS)));
 if (message.includes("forever")) {
+  rmSync(join(dir, `stopped-${thread}`), { force: true });
   writeFileSync(join(dir, `running-${thread}`), "");
   const timer = setInterval(() => {
     if (!existsSync(join(dir, `stopped-${thread}`))) return;

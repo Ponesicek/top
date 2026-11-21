@@ -649,6 +649,31 @@ test("a task whose harness is gone after a restart fails, and the bot isn't told
   assert.doesNotMatch(sent, /collar__task_start/);
 });
 
+test("a harness whose work outlives Top says it may still be running there, after a restart or a stop it never confirmed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "top-tasks-outlives-"));
+  const elsewhere = fakeHarness({ id: "elsewhere", label: "Elsewhere", stepMs: 30, outlives: true });
+  const first = await setup({ dir, extra: [elsewhere] });
+  const running = await start(first, { harness: "elsewhere", prompt: "run forever" });
+  await inState(first, running.snapshot.task.id, "running");
+  await first.h.close();
+  const second = await setup({ dir, extra: [elsewhere] });
+  const cut = await task(second, running.snapshot.task.id);
+  assert.equal(cut.state, "failed");
+  assert.match(cut.error!, /^Cut off: the daemon restarted while it ran, so Top stopped waiting on Elsewhere\. It may still be running there\./);
+
+  const deaf: HarnessAdapter = {
+    ...elsewhere,
+    open: async (spec, emit) => ({ ...(await elsewhere.open(spec, emit)), interrupt: async () => {} }),
+  };
+  const third = await setup({ extra: [{ ...deaf, id: "deaf" }] });
+  const stuck = await start(third, { harness: "deaf", prompt: "run forever" });
+  await inState(third, stuck.snapshot.task.id, "running");
+  await third.h.run(third.tasks.cancel(third.h.bot, stuck.snapshot.task.id));
+  const stopped = await ended(third, stuck.snapshot.task.id);
+  assert.equal(stopped.state, "cancelled");
+  assert.match(stopped.error!, /didn't confirm the stop within 0\.3 s; it may still be running there\./);
+});
+
 test("a task_wait cut off by a restart is recovered with one look, never by waiting again", async () => {
   const s = await setup();
   const { snapshot } = await start(s, { prompt: "run forever" });

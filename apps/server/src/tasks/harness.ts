@@ -109,6 +109,11 @@ export interface HarnessAdapter {
    * cloud, against a repository or environment named in its options, never a local folder.
    */
   readonly where?: Where;
+  /**
+   * Its work runs in a process Top doesn't own (T3 Code's server) and Top doesn't follow it again after a restart: closing the
+   * harness ends only Top's wait, so a stop it didn't confirm, or a restart, may leave the work running there.
+   */
+  readonly outlives?: boolean;
   /** What a bot has to know to use it, beyond its options, said under its line in `task_start`. */
   readonly guidance?: string;
   readonly capabilities: Capabilities;

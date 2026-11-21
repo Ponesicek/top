@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -20,6 +20,7 @@ afterEach(() => {
   for (const close of closing.splice(0)) close();
   delete process.env.FAKE_T3_DIR;
   delete process.env.FAKE_T3_THREAD;
+  delete process.env.FAKE_T3_SEND_DELAY_MS;
 });
 
 /** T3 Code's server as far as Top's stop and steer reach it: its descriptor, a socket ticket for the CLI's session, and /ws. */
@@ -47,7 +48,7 @@ async function fakeServer(dir: string, protocol = 2) {
         if (frame._tag !== "Request" || frame.tag !== "orchestration.dispatchCommand") return;
         const command = frame.payload as Rec;
         commands.push(command);
-        if (command.type === "thread.stop") writeFileSync(join(dir, `stopped-${command.threadId}`), "");
+        if (command.type === "thread.stop" && existsSync(join(dir, `running-${command.threadId}`))) writeFileSync(join(dir, `stopped-${command.threadId}`), "");
         ws.send(JSON.stringify({ _tag: "Exit", requestId: frame.id, exit: { _tag: "Success", value: { sequence: 1 } } }));
       }),
     );
@@ -72,10 +73,10 @@ async function setup(options: { running?: boolean; protocol?: number } = {}) {
   const cwd = join(dir, "project");
   mkdirSync(cwd);
   const calls = () =>
-    readFileSync(join(dir, "calls.jsonl"), "utf8")
+    (existsSync(join(dir, "calls.jsonl")) ? readFileSync(join(dir, "calls.jsonl"), "utf8") : "")
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { args: string[]; cwd: string; home: string; message?: string });
+      .map((line) => JSON.parse(line) as { args: string[]; cwd: string; home: string; pid: number; message?: string });
   return { dir, home, cwd, server, calls, adapter: t3codeAdapter({ command: FAKE_T3, home }) };
 }
 
@@ -193,6 +194,21 @@ test("T3 Code: a cancel before T3 Code names the thread goes out once it does", 
   assert.equal(s.server.commands[0]?.type, "thread.stop");
 });
 
+test("T3 Code: a cancel while a follow-up is still on its way waits for T3 Code to have it, so its run doesn't start after the Stop", async () => {
+  const s = await setup();
+  process.env.FAKE_T3_SEND_DELAY_MS = "600";
+  const c = collect();
+  const session = await s.adapter.open(spec(s.cwd, { resume: "thr-1" }), c.emit);
+  await session.run({ key: "k", text: "run forever", images: [] });
+  await until("the send", () => s.calls().some((call) => call.args[1] === "send"));
+  await session.interrupt();
+  assert.deepEqual(await until("the stop", () => c.of("turn_ended")[0], 10_000), { type: "turn_ended", status: "interrupted", error: "Stopped." });
+  assert.deepEqual(
+    s.server.commands.map((command) => command.type),
+    ["thread.stop"],
+  );
+});
+
 test("T3 Code: steering goes into the run that's going, and a stop T3 Code can't take is logged", async () => {
   const s = await setup();
   const c = collect();
@@ -236,7 +252,16 @@ test("T3 Code: closing stops only Top's wait, and says nothing more", async () =
   await session.run({ key: "k", text: "run forever", images: [] });
   await until("the thread", () => c.of("session")[0]);
   await session.close();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  const pid = s.calls().find((call) => call.args[1] === "start")!.pid;
+  await until("the CLI's wait to end", () => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
   assert.deepEqual(c.of("turn_ended"), []);
   assert.deepEqual(s.server.commands, [], "the run in T3 Code isn't stopped");
   await assert.rejects(session.run({ key: "k2", text: "more", images: [] }), /closed/);

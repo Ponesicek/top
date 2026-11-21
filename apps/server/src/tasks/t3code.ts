@@ -22,6 +22,8 @@ export const T3CODE = "t3code";
 const T3_PROTOCOL = 2;
 /** The longest a timer can wait: a run's wait has no limit of its own. */
 const FOREVER_MS = 2_147_483_647;
+/** How long a stop waits for T3 Code to have a message Top just sent, inside the coordinator's bound on sending a stop. */
+const LAND_MS = 15_000;
 const INSTALL = "Install T3 Code (t3.codes) and keep it running";
 
 export const t3codeOptions = Type.Object(
@@ -208,6 +210,7 @@ export function t3codeAdapter(config: T3CodeConfig = {}): HarnessAdapter {
       reconnect: true,
       durable: false,
     },
+    outlives: true,
     options: t3codeOptions,
     check,
     open: async (spec: OpenSpec, emit: (event: HarnessEvent) => void) => {
@@ -220,6 +223,8 @@ export function t3codeAdapter(config: T3CodeConfig = {}): HarnessAdapter {
       let closed = false;
       let running: AbortController | undefined;
       let stopWanted = false;
+      /** T3 Code has the running turn: its thread was just made, or a sent message shows as its active run. */
+      let landed = false;
       let stopping: Promise<void> | undefined;
 
       const end = (event: Omit<Extract<HarnessEvent, { type: "turn_ended" }>, "type">) => {
@@ -241,6 +246,7 @@ export function t3codeAdapter(config: T3CodeConfig = {}): HarnessAdapter {
         const abort = new AbortController();
         running = abort;
         stopWanted = false;
+        landed = false;
         const starting = !thread;
         const args = starting
           ? ["thread", "start", spec.cwd, "-", "--wait", ...(provider && spec.model ? ["--provider", provider, "--model", spec.model] : [])]
@@ -257,6 +263,7 @@ export function t3codeAdapter(config: T3CodeConfig = {}): HarnessAdapter {
             const id = /^Thread (\S+)$/m.exec(stripAnsi(stderr))?.[1];
             if (!id) return;
             thread = id;
+            landed = true;
             emit({ type: "session", externalId: id, ...(spec.model ? { model: spec.model } : {}) });
             if (stopWanted) void stop(id);
           },
@@ -281,9 +288,7 @@ export function t3codeAdapter(config: T3CodeConfig = {}): HarnessAdapter {
         run: async (turn) => {
           if (closed) throw new Error("closed");
           if (turn.images.length) throw new Error("Top doesn't send images to T3 Code.");
-          // Never sent before a restart cut it off: nothing to follow.
-          if (turn.followOnly) setTimeout(() => end({ status: "interrupted" }));
-          else void go(turn).catch((error: unknown) => end({ status: "failed", error: `Top failed while waiting on T3 Code: ${message(error)}` }));
+          void go(turn).catch((error: unknown) => end({ status: "failed", error: `Top failed while waiting on T3 Code: ${message(error)}` }));
         },
         steer: async (text) => {
           if (!running || !thread) throw new Error("T3 Code has no run of this task going to steer yet.");
@@ -306,9 +311,17 @@ export function t3codeAdapter(config: T3CodeConfig = {}): HarnessAdapter {
         },
         interrupt: async () => {
           if (!running) return;
+          const wait = running;
           stopWanted = true;
           // Not started yet: the stop goes out as soon as T3 Code names the thread.
-          if (thread) await stop(thread);
+          if (!thread) return;
+          // A message still on its way would start its run after a Stop on the idle thread: wait until T3 Code has it.
+          for (const until = Date.now() + LAND_MS; !landed && running === wait && Date.now() < until; ) {
+            const shown = await t3(["thread", "show", thread, "--json", "--messages", "0"], spec.cwd).catch(() => undefined);
+            if (str(record(jsonOf(shown?.stdout ?? "")?.thread).activeRunId)) landed = true;
+            else await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+          if (running === wait) await stop(thread);
         },
         answer: () => {},
         close: async () => {

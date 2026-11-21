@@ -652,7 +652,7 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
           return yield* finish(
             live,
             "cancelled",
-            live.adapter.capabilities.durable
+            live.adapter.capabilities.durable || live.adapter.outlives
               ? { error: `${label(live.session.harness)} didn't confirm the stop within ${cancelGraceMs / 1000} s; it may still be running there.` }
               : {},
           );
@@ -1172,7 +1172,9 @@ export const makeTasks = Effect.fnUntraced(function* (q: TaskQueries, config: Ta
         ? `its harness (${session?.harness ?? "unknown"}) isn't available on this daemon anymore`
         : inCloud(adapter)
           ? `the daemon restarted while it was handing the task to ${adapter.label}, so Top can't tell whether it got there. Check there before starting it again: Top never sends it twice`
-          : `the daemon restarted ${when}, so ${adapter.label} stopped with it. It may have made some of its changes`;
+          : adapter.outlives && row.startedAt !== null
+            ? `the daemon restarted while it ran, so Top stopped waiting on ${adapter.label}. It may still be running there`
+            : `the daemon restarted ${when}, so ${adapter.label} stopped with it. It may have made some of its changes`;
       const resume = session ? carryOn(session, adapter) : "";
       const ended = yield* q.setState(row.id, ACTIVE_STATES, "failed", {
         error: `Cut off: ${why}.${resume}${dropped ? ` (${dropped} queued message${dropped === 1 ? " was" : "s were"} not sent.)` : ""}`,
