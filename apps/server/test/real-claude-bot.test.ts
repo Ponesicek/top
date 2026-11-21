@@ -105,7 +105,8 @@ test.skipIf(!real)(
     const settled = await again.next((l) => l.idle === true);
     await exited(again.child);
     assert.equal(settled.deployRuns, 1, "deploy ran once, before the kill, and never again");
-    const deployResult = settled.entries!.filter((e) => e.kind === "tool").at(-1)!;
+    // After the restart Claude may check or ask before anything else, so the deploy's own result is the one to look at.
+    const deployResult = settled.entries!.find((e) => e.kind === "tool" && (e.message as { toolName?: string }).toolName === "deploy")!;
     assert.equal(deployResult.outcome, "interrupted");
     const final = settled.entries!.filter((e) => e.kind === "assistant").at(-1)!;
     assert.ok(textOf(final.message).trim(), "Claude answered after the restart");
