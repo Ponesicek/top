@@ -287,9 +287,10 @@ export function catchUp(messages: readonly TranscriptMessage[], known: readonly 
   const content = record(last?.message).content;
   const answered = last?.type === "assistant" && !(Array.isArray(content) && content.some((block) => record(block).type === "tool_use"));
   const answer = answered ? resultText(content as Parameters<typeof resultText>[0]) : "";
-  // The session answered the last message it has; Top saved no answer since that message.
-  const shown = lastSeen >= 0 && messages.slice(lastSeen + 1).some((m) => m.role === "assistant" && m.stopReason === "stop");
-  const lost = answer && !unsent.length && lastSeen >= 0 && !shown ? answer : undefined;
+  // The session's last answer, by Claude's message id, isn't one Top saved.
+  const answerId = record(last?.message).id;
+  const shown = messages.some((m) => m.role === "assistant" && m.responseId !== undefined && m.responseId === answerId);
+  const lost = answer && typeof answerId === "string" && !unsent.length && lastSeen >= 0 && !shown ? { id: answerId, text: answer } : undefined;
   const note = settled.length
     ? [
         '[Top: the daemon restarted during your turn, and Claude Code lost part of it: it may show the turn as interrupted, or as answered with "No response requested.", which Claude Code wrote itself during the restart. You had called these tools; this is what Top recorded for each:]',
@@ -353,6 +354,7 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
       model: answer.model,
       usage: usageOf(answer.usage),
       stopReason: calls.length ? "toolUse" : "stop",
+      responseId: answer.id,
       timestamp: Date.now(),
     };
     messages.push(message);
@@ -617,7 +619,8 @@ export function claudeRuntime(config: ClaudeRuntimeConfig): BotRuntime {
         // Claude Code saved its answer, but the daemon stopped before Top did.
         const answer: TopAssistantMessage = {
           role: "assistant",
-          content: [{ type: "text", text: caught.lost }],
+          content: [{ type: "text", text: caught.lost.text }],
+          responseId: caught.lost.id,
           api: "claude-agent-sdk",
           provider: "claude",
           model,

@@ -82,7 +82,7 @@ export function fakeClaude(): FakeClaude {
               const id = `toolu_${randomUUID().slice(0, 8)}`;
               const input = JSON.parse(call[2]!) as Record<string, unknown>;
               const block = { type: "tool_use", id, name: `mcp__top__${call[1]}`, input };
-              log.push({ type: "assistant", uuid: randomUUID(), message: { role: "assistant", content: [block] } });
+              log.push({ type: "assistant", uuid: randomUUID(), message: { id: answerId, role: "assistant", content: [block] } });
               yield {
                 type: "assistant",
                 parent_tool_use_id: null,
@@ -114,7 +114,7 @@ export function fakeClaude(): FakeClaude {
             }
             reply = result.join("; ");
           }
-          log.push({ type: "assistant", uuid: randomUUID(), message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+          log.push({ type: "assistant", uuid: randomUUID(), message: { id: `${answerId}-2`, role: "assistant", content: [{ type: "text", text: reply }] } });
           yield {
             type: "assistant",
             parent_tool_use_id: null,

@@ -344,6 +344,31 @@ test("recovery resends only the cut-off run's messages, never one from a run tha
   assert.deepEqual(catchUp([stopped, aborted, next], [], session).unsent, [next]);
 });
 
+test("a steer's answer Claude Code saved is recovered even when Top had saved the steer before the answer before it", () => {
+  const session = "00000000-0000-4000-8000-000000000003";
+  const first = { role: "user" as const, content: "first", timestamp: 1 };
+  const steer = { role: "user" as const, content: "steer", timestamp: 2 };
+  const reply = {
+    role: "assistant" as const,
+    content: [{ type: "text" as const, text: "reply one" }],
+    api: "claude-agent-sdk",
+    provider: "claude",
+    model: "sonnet",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "stop" as const,
+    responseId: "msg_1",
+    timestamp: 3,
+  };
+  const known = [
+    { type: "user", uuid: promptUuid(session, first), message: {} },
+    { type: "assistant", uuid: "a1", message: { id: "msg_1", content: [{ type: "text", text: "reply one" }] } },
+    { type: "user", uuid: promptUuid(session, steer), message: {} },
+    { type: "assistant", uuid: "a2", message: { id: "msg_2", content: [{ type: "text", text: "reply two" }] } },
+  ];
+  assert.deepEqual(catchUp([first, steer, reply], known, session).lost, { id: "msg_2", text: "reply two" });
+  assert.equal(catchUp([first, steer, reply, { ...reply, responseId: "msg_2" }], known, session).lost, undefined);
+});
+
 test("--model keeps setting Top's bots, not Claude bots; a Claude bot can change its Claude model but not its runtime", async () => {
   const fake = fakeClaude();
   const h = await harness({ claude: fake, bots: ["Atlas", "Nova"], models: { Atlas: "claude/opus", Nova: "stale/model" } });
