@@ -33,7 +33,7 @@ import { signInHere, signOutHere } from "./login.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import * as Mcp from "./mcp.ts";
 import { RetryDelaysMs } from "./runner.ts";
-import { CLAUDE_PROVIDER } from "./runtime.ts";
+import { CLAUDE_PROVIDER, runtimeOf } from "./runtime.ts";
 import * as Secrets from "./secrets.ts";
 import { serve } from "./serve.ts";
 import { LOCAL_SKILLS } from "./skills.ts";
@@ -145,13 +145,15 @@ const realBots = (args: Args, model: string, home: Home.Layout) =>
         const row = (bot: Store.BotRow) => Effect.map(store.bot(bot.id), (current) => current ?? bot);
         return Daemon.BotKit.of({
           models,
-          tools: (bot) => Effect.map(folderOf(bot), (folder) => computerTools(folder, secrets.outputHider)),
+          // A Claude bot works with Claude Code's own computer tools (CLAUDE_TOOLS), not Top's.
+          tools: (bot) =>
+            runtimeOf(bot.model) === "claude" ? Effect.succeed([]) : Effect.map(folderOf(bot), (folder) => computerTools(folder, secrets.outputHider)),
           thinking: args.thinking,
           sections: (bot) =>
             Effect.gen(function* () {
               const prompt = getCurrentSystemPrompt(yield* store.context(bot.id));
               return {
-                workspace: workspaceSection(yield* folderOf(bot), prompt.includes("You have no tools yet")),
+                workspace: workspaceSection(yield* folderOf(bot), prompt.includes("You have no tools yet"), runtimeOf(bot.model) === "claude"),
                 quotes: QUOTES_SECTION,
                 waiting: WAITING_SECTION,
               };

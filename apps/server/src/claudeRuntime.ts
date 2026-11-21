@@ -7,16 +7,24 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { runToolCall, type ThinkingLevel } from "./loop.ts";
+import { runToolCall, type ThinkingLevel, toolResultMessage } from "./loop.ts";
 import type { TopAssistantMessage, TopUserMessage, TranscriptMessage } from "./messages.ts";
 import type { BotRuntime, TurnOptions } from "./runtime.ts";
-import { findCli, harnessEnv, redact, tail } from "./tasks/harness.ts";
+import { clip, findCli, harnessEnv, redact, tail } from "./tasks/harness.ts";
 import type { TopTool } from "./tools.ts";
 
 /** The MCP server Top's tools reach Claude Code through, in the daemon's process: Claude sees them as `mcp__top__<name>`. */
 export const TOOL_SERVER = "top";
 const TOOL_PREFIX = `mcp__${TOOL_SERVER}__`;
 const TOOL_USE_ID = "claudecode/toolUseId";
+/**
+ * Claude Code's own tools a Claude bot works with, instead of Top's computer tools. Not its subagents (Task),
+ * AskUserQuestion (Top's questions are Collar's) or TodoWrite. Top records each call and its result, but Claude Code
+ * runs them: Top's secret hiding and background jobs don't apply to them.
+ */
+export const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebSearch", "WebFetch"] as const;
+const OWN_TOOLS: ReadonlySet<string> = new Set(CLAUDE_TOOLS);
+const RESULT_CHARS = 30_000;
 const INTERRUPT_MS = 15_000;
 const STEER_POLL_MS = 250;
 
@@ -428,7 +436,77 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
 
   // Only Top's own tools run: Claude Code's built-in tools are switched off, and anything else it asks for is refused.
   const canUseTool: CanUseTool = async (name, input) =>
-    name.startsWith(TOOL_PREFIX) ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: `${name} isn't one of this bot's tools.` };
+    name.startsWith(TOOL_PREFIX) || OWN_TOOLS.has(name)
+      ? { behavior: "allow", updatedInput: input }
+      : { behavior: "deny", message: `${name} isn't one of this bot's tools.` };
+
+  // Claude Code's own tools run in Claude Code; Top records each call before it runs and its result after, as for its own.
+  const builtins = new Map<string, ToolCall>();
+  const ownCall = (input: unknown): { name: string; id: string; args: Record<string, unknown> } | undefined => {
+    const hook = record(input);
+    const name = hook.tool_name;
+    const id = hook.tool_use_id;
+    if (typeof name !== "string" || typeof id !== "string" || !OWN_TOOLS.has(name)) return undefined;
+    return { name, id, args: record(hook.tool_input) };
+  };
+  const ownEnd = async (id: string, text: string, isError: boolean) => {
+    const call = builtins.get(id);
+    if (!call) return;
+    builtins.delete(id);
+    const done = toolResultMessage(id, call.name, { content: [{ type: "text", text: clip(text, RESULT_CHARS) }], details: undefined }, isError, Date.now());
+    messages.push(done);
+    await run(hooks.toolEnd(done, true));
+  };
+  const toolHooks: Options["hooks"] = {
+    PreToolUse: [
+      {
+        hooks: [
+          async (input) => {
+            const own = ownCall(input);
+            if (!own) return {};
+            if (!(await whenSaved(own.id)) || signal.aborted)
+              return {
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "deny",
+                  permissionDecisionReason: "Not run: stopped, or Top couldn't record it.",
+                },
+              };
+            const call: ToolCall = { type: "toolCall", id: own.id, name: own.name, arguments: own.args as ToolCall["arguments"] };
+            builtins.set(own.id, call);
+            await run(hooks.toolStart(call));
+            await run(hooks.toolRunning(call, own.args));
+            return {};
+          },
+        ],
+      },
+    ],
+    PostToolUse: [
+      {
+        hooks: [
+          async (input) => {
+            const own = ownCall(input);
+            if (own) {
+              const response = record(input).tool_response;
+              await ownEnd(own.id, typeof response === "string" ? response : JSON.stringify(response ?? ""), false);
+            }
+            return {};
+          },
+        ],
+      },
+    ],
+    PostToolUseFailure: [
+      {
+        hooks: [
+          async (input) => {
+            const own = ownCall(input);
+            if (own) await ownEnd(own.id, String(record(input).error ?? "The tool failed."), true);
+            return {};
+          },
+        ],
+      },
+    ],
+  };
 
   const abort = new AbortController();
   let stderr = "";
@@ -446,7 +524,8 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
       ...(model && model !== "default" ? { model } : {}),
       ...(EFFORTS[options.thinkingLevel] ? { effort: EFFORTS[options.thinkingLevel]! } : {}),
       systemPrompt: getCurrentSystemPrompt(messages),
-      tools: [],
+      tools: [...CLAUDE_TOOLS],
+      hooks: toolHooks,
       // The user's text goes to Claude as written: `/name` is a Top skill, not a Claude Code command, and `@path` isn't expanded.
       verbatimPrompts: true,
       settingSources: [],
@@ -564,6 +643,8 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
     // A call cut off by Stop ends once its tool sees the signal; its result is saved before the turn ends, as on Top's loop.
     await Promise.allSettled([...running]);
     await flush().catch(() => {});
+    // A call of Claude Code's own that never reported back (Stop cut it off) still gets a result in Top's record.
+    for (const id of [...builtins.keys()]) await ownEnd(id, "Stopped before it finished. It may or may not have taken effect.", true).catch(() => {});
   }
 }
 

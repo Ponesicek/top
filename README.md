@@ -337,12 +337,16 @@ and says how to sign in. Anthropic's Agent SDK docs say that, unless previously 
 not offer claude.ai login or rate limits for their products; Top being self-hosted and open source doesn't change
 that, so it's yours to weigh.
 
-- **Tools.** Claude Code's own tools are off (`tools: []`); the bot has Top's tools (its computer tools, Collar, the
-  MCP servers you gave it, its questions and secrets), served to Claude Code by an MCP server inside the daemon. Each
-  call goes through Top as on Top's loop: recorded before it runs, saved when it returns, and settled by its own
-  crash policy after a restart. Anything else Claude Code asks to run is refused. No settings, CLAUDE.md, skills,
-  hooks or plugins are read from the computer (`settingSources: []`), and Claude Code's own memory is off; the bot's
-  four files and skills come from Top, as for any bot.
+- **Tools.** A Claude bot works with Claude Code's own `Bash`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `WebSearch` and
+  `WebFetch`, in its folder, instead of Top's computer tools. It also has Top's Collar tools (questions, permissions,
+  secrets, wake-ups, background jobs, coding tasks) and the MCP servers you gave it, served to Claude Code by an MCP
+  server inside the daemon. Claude Code's subagents (`Task`), `AskUserQuestion`, `TodoWrite` and anything else are
+  refused. Every call, Claude Code's own included, is recorded before it runs and its result saved after, and a
+  restart settles a cut-off one by its policy (Claude Code's own are reported as interrupted, never run again by
+  Top). Claude Code runs its own tools itself, so Top's secret hiding doesn't cover their output and a long command
+  doesn't move to the background. No settings, CLAUDE.md, skills, hooks or plugins are read from the computer
+  (`settingSources: []`), and Claude Code's own memory is off; the bot's four files and skills come from Top, as for
+  any bot.
 - **The conversation.** Claude Code keeps what the model sees, as its session (in `~/.claude/projects`, under the
   bot's folder; its id is in `top.sqlite`), and compacts it itself; Top's transcript is the record the apps show,
   and says when Claude Code compacted. A change to the bot's files arrives with its next message, as an update

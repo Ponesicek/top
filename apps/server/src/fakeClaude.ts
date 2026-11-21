@@ -11,6 +11,8 @@ import type { ClaudeQuery, ClaudeSdk, SessionEntry } from "./claudeRuntime.ts";
  * - `call <tool> <json>` calls that tool (by Top's name), then says what it returned. Several calls go out as parts of
  *   one answer, each running as soon as it's out; with `nometa` they come without Claude Code's tool-use id.
  * - `hang` never answers (until it's interrupted or closed).
+ * - `own <Tool> <json>` plays one of Claude Code's own tools: its PreToolUse hooks run first (a deny stops it), then it
+ *   "runs" (`stall` keeps it running until interrupted or closed) and its PostToolUse hooks get `ran <Tool>`.
  * - anything else gets "Claude heard: <the message's last line>".
  */
 export type FakeClaude = ClaudeSdk & {
@@ -74,7 +76,37 @@ export function fakeClaude(): FakeClaude {
             await stopped;
             return;
           }
-          if (calls.length) {
+          const own = /own (\w+) (\{[^}]*\})/.exec(text);
+          if (own) {
+            const id = `toolu_${randomUUID().slice(0, 8)}`;
+            const input = JSON.parse(own[2]!) as Record<string, unknown>;
+            const block = { type: "tool_use", id, name: own[1], input };
+            log.push({ type: "assistant", uuid: randomUUID(), message: { id: answerId, role: "assistant", content: [block] } });
+            yield {
+              type: "assistant",
+              parent_tool_use_id: null,
+              message: { id: answerId, model, role: "assistant", content: [block], usage: { input_tokens: 10, output_tokens: 5 } },
+            } as unknown as SDKMessage;
+            const hook = { hook_event_name: "PreToolUse", tool_name: own[1], tool_input: input, tool_use_id: id };
+            const signal = new AbortController().signal;
+            let denied = false;
+            for (const matcher of options.hooks?.PreToolUse ?? [])
+              for (const run of matcher.hooks) {
+                const out = (await run(hook as never, id, { signal })) as { hookSpecificOutput?: { permissionDecision?: string } };
+                if (out.hookSpecificOutput?.permissionDecision === "deny") denied = true;
+              }
+            const allowed = denied ? undefined : await options.canUseTool?.(own[1]!, input, { signal, toolUseID: id } as never);
+            if (!denied && allowed?.behavior === "allow") {
+              if (/\bstall\b/.test(text)) {
+                await stopped;
+                return;
+              }
+              for (const matcher of options.hooks?.PostToolUse ?? [])
+                for (const run of matcher.hooks)
+                  await run({ ...hook, hook_event_name: "PostToolUse", tool_response: `ran ${own[1]}` } as never, id, { signal });
+              reply = `${own[1]} ran`;
+            } else reply = `${own[1]} was refused`;
+          } else if (calls.length) {
             // Each call goes out as its own message of one answer, and runs as soon as it's out, as Claude Code does.
             const mcp = await tools();
             const running: Promise<string>[] = [];

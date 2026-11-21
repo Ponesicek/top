@@ -67,7 +67,11 @@ test("a Claude bot answers through the Agent SDK, with Top's instructions, no bu
   await ask(h, "hello there");
   assert.deepEqual(await answers(h), ["Claude heard: hello there"]);
   const first = fake.launches[0]!;
-  assert.deepEqual(first.tools, [], "Claude Code's own tools are off");
+  assert.deepEqual(
+    first.tools,
+    ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebSearch", "WebFetch"],
+    "Claude Code's computer tools, nothing else of its own",
+  );
   assert.deepEqual(first.settingSources, [], "no settings, CLAUDE.md or skills from the computer");
   assert.equal(first.model, "sonnet");
   assert.match(String(first.systemPrompt), /You are one of the user's bots/);
@@ -240,6 +244,51 @@ test("a restart before Claude saved the user's message gives it the message agai
   assert.match(saved.note ?? "", /Carry on where you left off/);
   assert.equal(promptUuid(session, message), promptUuid(session, { ...message }), "the same message, the same id");
   void fake;
+});
+
+test("Claude Code's own tools run with Top recording each call, and the rest of its tools are refused", async () => {
+  const fake = fakeClaude();
+  const h = await harness({ claude: fake, models: CLAUDE });
+  await h.run(h.daemon.start);
+  await ask(h, 'own Bash {"command":"ls"}');
+  assert.equal((await answers(h)).at(-1), "Bash ran");
+  const entries = await h.entries();
+  const call = entries.find((e) => e.kind === "assistant" && Array.isArray(e.message.content) && e.message.content.some((p) => p.type === "toolCall"));
+  const result = entries.find((e) => e.kind === "tool");
+  assert.ok(call && result && result.kind === "tool");
+  assert.equal(result.message.toolName, "Bash");
+  assert.equal(textOf(result.message.content), "ran Bash");
+  const row = await h.run(h.store.toolCall(call.seq, result.message.toolCallId));
+  assert.ok(row?.finishedAt, "recorded before it ran, finished after");
+
+  for (const refused of ["Task", "AskUserQuestion", "TodoWrite"]) {
+    await ask(h, `own ${refused} {}`);
+    assert.equal((await answers(h)).at(-1), `${refused} was refused`);
+  }
+});
+
+test("a call of Claude Code's own cut off by a restart is settled as interrupted", async () => {
+  const fake = fakeClaude();
+  const first = await harness({ claude: fake, models: CLAUDE });
+  await first.run(first.daemon.start);
+  await submit(first, 'own Bash {"command":"deploy"} stall');
+  await until("the call recorded", async () => {
+    const seq = (await first.entries()).find((e) => e.kind === "assistant")?.seq;
+    const call = fake.sessions
+      .values()
+      .next()
+      .value?.find((e) => e.type === "assistant");
+    const id = (call?.message as { content?: { id?: string }[] } | undefined)?.content?.[0]?.id;
+    return seq !== undefined && id !== undefined && (await first.run(first.store.toolCall(seq, id))) !== undefined;
+  });
+  await first.close();
+  const again = await harness({ dir: first.dir, claude: fake, models: CLAUDE });
+  await again.run(again.daemon.start);
+  await until("idle", async () => (await idle(again)) && (await answers(again)).length >= 1);
+  const result = (await again.entries()).find((e) => e.kind === "tool");
+  assert.ok(result && result.kind === "tool");
+  assert.equal(result.outcome, "interrupted");
+  assert.match(promptText(fake, -1), /Bash \{"command":"deploy"\}.*Interrupted/);
 });
 
 test("a call that finishes after the next part of the answer was saved is still recorded against its own answer", async () => {

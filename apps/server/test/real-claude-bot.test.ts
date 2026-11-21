@@ -73,6 +73,7 @@ test.skipIf(!real)(
     const first = daemon(dir, "first", [
       "What is my favourite colour? Reply with one word.",
       'Call the echo tool with the text "zebra", then reply with exactly what it returned.',
+      "Use your Bash tool to run exactly: echo built-in-ok > proof.txt && cat proof.txt. Then reply with only what it printed.",
       'Deploy to "staging" with the deploy tool. Call deploy once only; never call it again for this request, whatever happens. Then reply DONE.',
     ]);
     await first.next((l) => l.started === true);
@@ -84,6 +85,11 @@ test.skipIf(!real)(
     assert.ok(tool, "the echo call ran through Top");
     assert.equal(textOf(tool.message), "arbez");
     assert.match(textOf(echoed.entries!.filter((e) => e.kind === "assistant").at(-1)!.message), /arbez/);
+    const bashed = await first.next((l) => l.idle === true && l !== colour && l !== echoed);
+    const bash = bashed.entries!.filter((e) => e.kind === "tool").at(-1)!;
+    assert.equal((bash.message as { toolName?: string }).toolName, "Bash", "Claude Code's own Bash ran, recorded by Top");
+    assert.match(textOf(bash.message), /built-in-ok/);
+    assert.equal(readFileSync(join(folder, "proof.txt"), "utf8").trim(), "built-in-ok", "in the bot's folder");
 
     await first.next((l) => l.deployStarted === "staging");
     const working = claudeIn(folder);
