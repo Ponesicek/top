@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { test } from "vitest";
-import { catchUp, promptUuid, subscriptionProblem } from "../src/claudeRuntime.ts";
+import { catchUp, claudeEnv, promptUuid } from "../src/claudeRuntime.ts";
 import { summaryMessage } from "../src/compaction.ts";
 import { type FakeClaude, fakeClaude } from "../src/fakeClaude.ts";
 import { handoffDocument } from "../src/handoff.ts";
@@ -119,22 +120,35 @@ test("Top's tools reach Claude over MCP with their JSON Schema, and run through 
   assert.ok(invalid?.isError, "Top checks the arguments against the tool's schema");
 });
 
-test("a Claude bot never runs on an API key: the turn fails with how to sign in, and nothing is sent", async () => {
+test("a Claude bot runs on whatever Claude Code is set up with, an API key included", async () => {
   const fake = fakeClaude();
   fake.account = { apiProvider: "firstParty", apiKeySource: "ANTHROPIC_API_KEY" };
   const h = await harness({ claude: fake, models: CLAUDE });
   await h.run(h.daemon.start);
-  await submit(h, "hello");
-  await until("failed", async () => (await h.run(h.daemon.runner(h.bot))).status().status === "failed" && (await idle(h)));
-  const status = (await h.run(h.daemon.runner(h.bot))).status();
-  assert.match(status.error ?? "", /API key/);
-  assert.match(status.error ?? "", /sign in with your Claude account/);
-  assert.equal(fake.prompts.length, 0, "Claude Code was given no message");
+  await ask(h, "hello");
+  assert.deepEqual(await answers(h), ["Claude heard: hello"]);
+});
 
-  assert.match(subscriptionProblem({ apiProvider: "firstParty" }) ?? "", /isn't signed in with a Claude subscription/);
-  assert.match(subscriptionProblem({ subscriptionType: "Claude Max" }) ?? "", /unknown provider/);
-  assert.match(subscriptionProblem({ apiProvider: "bedrock", subscriptionType: "Claude Max" }) ?? "", /bedrock/);
-  assert.equal(subscriptionProblem({ apiProvider: "firstParty", subscriptionType: "Claude Max" }), undefined);
+test("Claude Code gets the daemon's provider keys and its own settings' env, but not a parent session's variables", () => {
+  const home = mkdtempSync(join(tmpdir(), "top-claude-env-"));
+  mkdirSync(join(home, ".claude"));
+  writeFileSync(
+    join(home, ".claude", "settings.json"),
+    JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://proxy:8317", ANTHROPIC_AUTH_TOKEN: "from-settings", N: 1 } }),
+  );
+  const env = claudeEnv({ HOME: home, ANTHROPIC_API_KEY: "key", ANTHROPIC_AUTH_TOKEN: "from-env", CLAUDECODE: "1", PATH: "/bin" });
+  assert.equal(env.ANTHROPIC_API_KEY, "key");
+  assert.equal(env.ANTHROPIC_BASE_URL, "http://proxy:8317");
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, "from-settings", "Claude Code's settings win, as they do in Claude Code");
+  assert.equal(env.N, undefined, "only strings");
+  assert.equal(env.CLAUDECODE, undefined);
+  assert.equal(env.PATH, "/bin");
+
+  const other = join(home, "account");
+  mkdirSync(other);
+  writeFileSync(join(other, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://other" } }));
+  assert.equal(claudeEnv({ HOME: home, CLAUDE_CONFIG_DIR: other }).ANTHROPIC_BASE_URL, "http://other");
+  assert.deepEqual(claudeEnv({ HOME: join(home, "nowhere"), A: "b" }), { HOME: join(home, "nowhere"), A: "b" });
 });
 
 test("a change to the bot's files reaches Claude with its next message, not before", async () => {

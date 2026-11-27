@@ -8,7 +8,7 @@ import { test } from "vitest";
 import { botFolder } from "../src/workspace.ts";
 
 // TOP_REAL_CLAUDE_BOT=1 runs a Claude bot on the real Agent SDK and the Claude Code CLI installed here, signed in as
-// it is (a Claude subscription; Top refuses API keys), on Haiku with short harmless prompts. It kills the daemon with
+// it is (whatever it runs on there), on Haiku with short harmless prompts. It kills the daemon with
 // SIGKILL while a tool runs and starts it again.
 const real = process.env.TOP_REAL_CLAUDE_BOT === "1";
 

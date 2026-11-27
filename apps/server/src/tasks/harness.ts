@@ -254,6 +254,13 @@ const PROVIDER_KEYS = new Set([
   "ZAI_CODING_CN_API_KEY",
 ]);
 
+/** The daemon's environment without the variables of a Claude Code session it may have been started from. */
+export function sessionlessEnv(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(env)) if (!PARENT_SESSION_VARS.has(name)) out[name] = value;
+  return out;
+}
+
 export function harnessEnv(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const [name, value] of Object.entries(env)) if (!PARENT_SESSION_VARS.has(name) && !PROVIDER_KEYS.has(name)) out[name] = value;
