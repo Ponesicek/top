@@ -648,13 +648,18 @@ const make = Effect.gen(function* () {
         const told: InboxRow[] = [];
         let dropped = 0;
         for (const message of ended) {
-          dropped += (yield* rows(sql`DELETE FROM inbox WHERE request_id = ${messageRequest(message.id)} RETURNING id`)).length;
+          dropped += (yield* rows(
+            sql`DELETE FROM inbox WHERE request_id = ${messageRequest(message.id)} AND bot = ${recipient} AND source = 'bot' RETURNING id`,
+          )).length;
           const sender = yield* first(sql`SELECT 1 AS one FROM bots WHERE id = ${message.sender} AND deleted = 0`);
           if (sender) told.push(yield* queueEvent(message.sender, outcomeRequest(message.id), outcomeText(message, outcome), "bot", "followUp"));
         }
         // Unread ones from a bot deleted meanwhile go too, with no one to tell.
         const orphaned = yield* rows(sql`SELECT id FROM bot_messages WHERE recipient = ${recipient} AND state = 'orphaned'`);
-        for (const { id } of orphaned) dropped += (yield* rows(sql`DELETE FROM inbox WHERE request_id = ${messageRequest(Number(id))} RETURNING id`)).length;
+        for (const { id } of orphaned)
+          dropped += (yield* rows(
+            sql`DELETE FROM inbox WHERE request_id = ${messageRequest(Number(id))} AND bot = ${recipient} AND source = 'bot' RETURNING id`,
+          )).length;
         return { told, dropped };
       }),
     );

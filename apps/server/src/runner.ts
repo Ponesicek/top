@@ -276,6 +276,8 @@ export const makeRunner = Effect.fnUntraced(function* (
       yield* setStatus("thinking");
       const controller = new AbortController();
       stopRun = controller;
+      // Stopped while the run was being set up (between taking the inbox and here): Claude Code goes by the signal alone.
+      if (abortRequested) controller.abort();
       const ok = yield* Effect.gen(function* () {
         yield* loop(controller.signal, prompts);
         for (let attempt = 0; ; attempt++) {
