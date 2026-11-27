@@ -7,6 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import { isSummary } from "./compaction.ts";
 import { handoffDocument } from "./handoff.ts";
 import { runToolCall, type ThinkingLevel, toolResultMessage } from "./loop.ts";
 import type { TopAssistantMessage, TopUserMessage, TranscriptMessage } from "./messages.ts";
@@ -280,7 +281,8 @@ export function catchUp(messages: readonly TranscriptMessage[], known: readonly 
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.role === "assistant" && (m.stopReason === "aborted" || m.stopReason === "error")) break;
-    if (m.role !== "user") continue;
+    // A summary (a handoff from Top's loop) isn't a request: a new session gets it in the handoff instead.
+    if (m.role !== "user" || isSummary(m)) continue;
     if (seen.has(promptUuid(session, m))) {
       lastSeen = i;
       break;

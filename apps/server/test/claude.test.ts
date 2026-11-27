@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import Type from "typebox";
 import { test } from "vitest";
 import { catchUp, promptUuid, subscriptionProblem } from "../src/claudeRuntime.ts";
+import { summaryMessage } from "../src/compaction.ts";
 import { type FakeClaude, fakeClaude } from "../src/fakeClaude.ts";
 import { handoffDocument } from "../src/handoff.ts";
 import { type TranscriptMessage, textOf } from "../src/messages.ts";
@@ -461,13 +462,19 @@ test("older data opens with no session for each bot", async () => {
   assert.equal((await again.run(again.store.bot(again.bot)))!.session, null);
 });
 
-test("a bot on Top's loop moves to Claude Code with the conversation as a handoff, and Claude starts a new session with it", async () => {
+test("a bot on Top's loop moves to Claude Code with the conversation compacted into a handoff, and Claude starts a new session with it", async () => {
   const fake = fakeClaude();
   const h = await harness({ claude: fake });
   await h.run(h.daemon.start);
   await ask(h, "remember the word kiwi");
   await h.run(h.daemon.setBotModel(h.bot, "claude/sonnet"));
   assert.equal((await h.run(h.store.bot(h.bot)))!.model, "claude/sonnet");
+  const context = await h.run(h.store.context(h.bot));
+  assert.ok(
+    context.some((m) => m.role === "user" && "handoff" in m && m.handoff === true),
+    "the switch compacts with a handoff",
+  );
+  assert.ok(!context.some((m) => m.role === "assistant"), "the earlier context is replaced");
   await ask(h, "what was the word?");
   const launch = fake.launches.at(-1)!;
   assert.ok(launch.sessionId && !launch.resume, "a new session");
@@ -477,6 +484,7 @@ test("a bot on Top's loop moves to Claude Code with the conversation as a handof
   assert.match(opening[0]!, /\[Top: context handoff\. You're now running on Claude Code/);
   assert.match(opening[0]!, /\[History · user · [^\]]+\]\nremember the word kiwi/);
   assert.match(opening.at(-1)!, /what was the word\?/);
+  assert.equal(opening.join("\n").match(/\[Top: context handoff\./g)?.length, 1, "the stored handoff goes as it is, not inside another");
   const notices = (await h.entries()).filter((e) => e.kind === "notice").map((e) => (e.kind === "notice" ? e.message.text : ""));
   assert.ok(notices.some((t) => t.startsWith("Moved to Claude Code (claude/sonnet).")));
   assert.equal(h.daemon.bots().find((b) => b.id === h.bot)!.model, "claude/sonnet");
@@ -511,6 +519,28 @@ test("a bot can't switch runtime while it works, nor run Top's loop on another m
   state.release();
   await until("idle", async () => (await idle(h)) && (await answers(h)).length >= 2);
   await assert.rejects(h.run(h.daemon.setBotModel(h.bot, "other/model")), /daemon's model/);
+});
+
+test("a handoff carries an earlier one: as it is when nothing came after, else kept first and clipped to its newest part", () => {
+  const earlier = handoffDocument([{ role: "user", content: "remember kiwi", timestamp: 0 }], "Moved.")!;
+  const summary = summaryMessage(earlier, 1000, true);
+  assert.equal(handoffDocument([summary], "Moved again."), earlier);
+  const later: TranscriptMessage = { role: "user", content: "and mango", timestamp: 2000 };
+  const doc = handoffDocument([summary, later], "Moved again.")!;
+  assert.ok(doc.indexOf("remember kiwi") < doc.indexOf("and mango"));
+  const long = summaryMessage(`${"old ".repeat(20_000)}newest part`, 1000, true);
+  const clipped = handoffDocument([long, later], "Moved again.")!;
+  assert.match(clipped, /newest part/);
+  assert.ok(clipped.length < 40_000, "an earlier handoff takes at most half the budget");
+  const model = handoffDocument([summaryMessage("the user likes kiwi", 1000), later], "Moved.")!;
+  assert.match(model, /\[History · summary of the earlier conversation\]\n\[Summary of the conversation so far\][\s\S]*the user likes kiwi/);
+});
+
+test("after a restart, a handoff from Top's loop isn't sent again as a request", () => {
+  const session = "11111111-1111-4111-8111-111111111111";
+  const summary = summaryMessage("[Top: context handoff.]", 1000, true);
+  const message: TranscriptMessage = { role: "user", content: "what was the word?", timestamp: 2000 };
+  assert.deepEqual(catchUp([summary, message], [], session).unsent, [message]);
 });
 
 test("a handoff keeps the first and the last exchange and fills from the newest, within its budget", () => {

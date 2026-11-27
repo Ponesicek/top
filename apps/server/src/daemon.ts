@@ -528,20 +528,21 @@ const make = Effect.gen(function* () {
           if (live.runner.busy() || row.runActive || (yield* store.inbox(bot)).length)
             return yield* new BotError({ message: `${live.summary.name} is working. Switch when it's idle.` });
           const at = yield* Clock.currentTimeMillis;
-          let notice: StoredEntry;
-          if (to === "top") {
-            const handoff = handoffDocument(
-              yield* store.context(bot),
-              "You're now running on Top's own loop, which has none of your earlier session on Claude Code.",
-            );
-            const text = `Moved to Top's own loop (${model}). The conversation goes with it as a summary of what's shown here.`;
-            notice = handoff
-              ? yield* store.compact(bot, 0, { summary: handoff, handoff: true, tokensBefore: 0, timestamp: at }, text)
-              : yield* store.append(bot, "notice", { text });
-          } else
-            notice = yield* store.append(bot, "notice", {
-              text: `Moved to Claude Code (${model}). It starts a new session, with the conversation so far as a summary of what's shown here.`,
-            });
+          // Either way the conversation is compacted into a handoff made from Top's record: the new runtime starts with
+          // that in place of the earlier context (Top's loop as its summary, Claude Code at the head of a new session).
+          const handoff = handoffDocument(
+            yield* store.context(bot),
+            to === "top"
+              ? "You're now running on Top's own loop, which has none of your earlier session on Claude Code."
+              : "You're now running on Claude Code, in a new session that has none of this conversation.",
+          );
+          const text =
+            to === "top"
+              ? `Moved to Top's own loop (${model}). The conversation goes with it as a summary of what's shown here.`
+              : `Moved to Claude Code (${model}). It starts a new session, with the conversation so far as a summary of what's shown here.`;
+          const notice: StoredEntry = handoff
+            ? yield* store.compact(bot, 0, { summary: handoff, handoff: true, tokensBefore: 0, timestamp: at }, text)
+            : yield* store.append(bot, "notice", { text });
           yield* store.setModel(bot, model);
           yield* store.setSession(bot, null);
           // A new runner on the new runtime takes the bot's place (and its place in the list); the old one closes.

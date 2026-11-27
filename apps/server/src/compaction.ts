@@ -40,6 +40,8 @@ export const SUMMARY_HEAD =
 
 export interface SummaryMessage extends TopUserMessage {
   readonly compaction: true;
+  /** Top's handoff from another runtime (handoff.ts) rather than the model's own summary. */
+  readonly handoff?: true;
 }
 
 /** A handoff (a bot moved to Top's loop from another runtime) is its own text: Top wrote it, not the model. */
@@ -48,9 +50,10 @@ export const summaryMessage = (summary: string, timestamp: number, handoff = fal
   content: handoff ? summary : `${SUMMARY_HEAD}\n\n${summary}`,
   timestamp,
   compaction: true,
+  ...(handoff ? { handoff: true as const } : {}),
 });
 
-const isSummary = (message: TranscriptMessage): boolean => "compaction" in message && message.compaction === true;
+export const isSummary = (message: TranscriptMessage): message is SummaryMessage => "compaction" in message && message.compaction === true;
 
 const IMAGE_CHARS = 4_800;
 
