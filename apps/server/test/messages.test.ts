@@ -291,10 +291,8 @@ test("when the user stops the recipient before it replied, the sender hears so o
   ]);
   assert.match((await call(h, bolt, { reply_to: 2, text: "late" })).text, /ended when the user stopped you/);
 
-  // Taken by Bolt's runner just before Stop dropped it, the message is still placed as a bot's, not the user's.
-  const late = await h.run(h.store.place(bolt, "bot:1", { role: "user", content: "taken", timestamp: 2 }));
-  assert.equal(late.source, "bot");
-  assert.ok(late.kind === "user" && late.message.peer?.bot === atlas);
+  // Taken by Bolt's runner just before Stop dropped it, the message isn't saved at all.
+  assert.equal(await h.run(h.store.place(bolt, "bot:1", { role: "user", content: "taken", timestamp: 2 })), undefined);
 
   await read(h, atlas);
   const outcome = (await h.entries(atlas)).find((e) => e.kind === "user");
@@ -325,6 +323,52 @@ test("when the recipient is deleted before it replied, the sender hears so once;
   assert.ok(made.includes(clio), "Clio's id is reused");
   assert.match((await call(h, atlas, { reply_to: 2, text: "pong" })).text, /Clio has been deleted/);
   assert.match((await call(h, atlas, { to: "Bolt", text: "hello?" })).text, /there's no bot named Bolt\. You can message: Dax, Eve\./);
+});
+
+test("a message Stop drops while its Claude recipient is setting up the run never reaches Claude, then or in its next turn", async () => {
+  const fake = fakeClaude();
+  let hold: Promise<void> | undefined;
+  let release = () => {};
+  const h = await harness({
+    bots: BOTS,
+    gatherMs: 0,
+    claude: fake,
+    models: { Atlas: "claude/sonnet" },
+    store: (store) => ({
+      ...store,
+      setRunActive: (bot, active) =>
+        active && hold
+          ? Effect.andThen(
+              Effect.promise(() => hold!),
+              store.setRunActive(bot, active),
+            )
+          : store.setRunActive(bot, active),
+    }),
+  });
+  const [atlas, bolt] = h.bots as [number, number];
+  await h.run(h.daemon.start);
+  hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await call(h, bolt, { to: "Atlas", text: "secret plan, then stopped" });
+  await until(
+    "Atlas to take it and start setting up",
+    async () => (await h.run(h.daemon.runner(atlas))).busy() && (await h.run(h.store.inbox(atlas))).length === 1,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await h.run(h.daemon.stop(atlas));
+  hold = undefined;
+  release();
+  await until("Atlas to settle", () => idle(h, atlas));
+  await submit(h, atlas, "hello again");
+  await until("Atlas to answer", async () => (await idle(h, atlas)) && (await h.entries(atlas)).at(-1)?.kind === "assistant", 10_000);
+  const said = fake.prompts
+    .map(({ message: { content } }) => (typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join("\n")))
+    .join("\n");
+  assert.match(said, /hello again/);
+  assert.doesNotMatch(said, /secret plan/, "Claude never got the dropped message");
+  assert.equal((await userTexts(h, atlas)).filter((m) => m.source === "bot").length, 0, "nor is it in the transcript");
+  assert.equal((await h.run(h.store.botMessage(1)))?.state, "stopped");
 });
 
 test("a Claude bot messages and replies the same way, through Top's tools over MCP", async () => {

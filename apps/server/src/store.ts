@@ -508,7 +508,8 @@ export class Store extends Context.Service<
     ) => Effect.Effect<"queued" | "duplicate">;
     readonly inbox: (bot: number) => Effect.Effect<InboxRow[]>;
     readonly inboxRow: (requestId: string) => Effect.Effect<InboxRow | undefined>;
-    readonly place: (bot: number, requestId: string, message: EntryBody["user"]) => Effect.Effect<StoredEntry>;
+    /** Saves a message the bot was given; undefined for a bot's message Stop dropped after the runner took it, which isn't saved. */
+    readonly place: (bot: number, requestId: string, message: EntryBody["user"]) => Effect.Effect<StoredEntry | undefined>;
 
     readonly addAttachment: (attachment: Attachment) => Effect.Effect<void>;
     readonly attachment: (id: string) => Effect.Effect<AttachmentRow | undefined>;
@@ -908,9 +909,9 @@ const make = Effect.gen(function* () {
       place: (bot, requestId, message) =>
         transaction(
           Effect.gen(function* () {
-            // A bot's message dropped by Stop after the runner took it is still a bot's, not the user's.
             const queued = yield* inboxRow(requestId);
-            const source = queued ? queued.source : requestMessageId(requestId) === undefined ? null : "bot";
+            if (!queued && requestMessageId(requestId) !== undefined) return undefined;
+            const source = queued?.source ?? null;
             yield* q(sql`DELETE FROM inbox WHERE request_id = ${requestId}`);
             const about = source === "bot" ? requestMessageId(requestId) : undefined;
             const peer = about === undefined ? undefined : yield* botMessage(about);
