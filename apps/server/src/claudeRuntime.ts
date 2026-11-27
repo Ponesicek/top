@@ -1,6 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { AccountInfo, CanUseTool, EffortLevel, Options, SDKMessage, SDKUserMessage, SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import { getCurrentSystemPrompt, renderSystemMessageUpdate, type SystemMessage, type ToolCall, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -12,7 +14,7 @@ import { handoffDocument } from "./handoff.ts";
 import { runToolCall, type ThinkingLevel, toolResultMessage } from "./loop.ts";
 import type { TopAssistantMessage, TopUserMessage, TranscriptMessage } from "./messages.ts";
 import type { BotRuntime, TurnOptions } from "./runtime.ts";
-import { clip, findCli, harnessEnv, redact, tail } from "./tasks/harness.ts";
+import { clip, findCli, redact, sessionlessEnv, tail } from "./tasks/harness.ts";
 import type { TopTool } from "./tools.ts";
 
 /** The MCP server Top's tools reach Claude Code through, in the daemon's process: Claude sees them as `mcp__top__<name>`. */
@@ -78,15 +80,22 @@ export const EFFORTS: Readonly<Record<ThinkingLevel, EffortLevel | undefined>> =
   max: "max",
 };
 
-/** A Claude subscription signed in through Claude Code itself, or why this isn't one. Top never runs Claude bots on API credits. */
-export function subscriptionProblem(info: AccountInfo): string | undefined {
-  const signIn = "Run `claude` on the daemon's computer and sign in with your Claude account (`/login`), then send the message again.";
-  if (info.apiProvider !== "firstParty")
-    return `Claude Code on the daemon's computer goes through ${info.apiProvider ?? "an unknown provider"}, not a Claude subscription, and Top's Claude bots only run on your Claude subscription. ${signIn}`;
-  if (info.apiKeySource && info.apiKeySource !== "none" && info.apiKeySource !== "oauth")
-    return `Claude Code on the daemon's computer uses an API key (${info.apiKeySource}), which bills API credits; Top's Claude bots only run on your Claude subscription. ${signIn}`;
-  if (!info.subscriptionType) return `Claude Code on the daemon's computer isn't signed in with a Claude subscription. ${signIn}`;
-  return undefined;
+/**
+ * The environment a Claude bot's CLI runs in: the daemon's own, provider keys included, plus the `env` of Claude Code's
+ * user settings, which Top doesn't otherwise load (`settingSources: []`). So Claude Code runs on whatever it's set up
+ * with on the daemon's computer, as in a terminal: a Claude sign-in, an API key, a proxy, Bedrock or Vertex.
+ */
+export function claudeEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+  const out = sessionlessEnv(env);
+  const dir = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude");
+  let settings: unknown;
+  try {
+    settings = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+  } catch {
+    return out;
+  }
+  for (const [name, value] of Object.entries(record(record(settings).env))) if (typeof value === "string") out[name] = value;
+  return out;
 }
 
 /** `verbatimPrompts`, which keeps Claude Code from reading the user's text as its own commands, needs this CLI. */
@@ -99,13 +108,13 @@ const versionAtLeast = (version: string, min: readonly number[]) => {
   return true;
 };
 
-const SIGN_IN = "Run `claude` on the daemon's computer and sign in with your Claude account.";
+const SIGN_IN = "Run `claude` on the daemon's computer and sign in, or set it up with an API key.";
 
 /** Finds the Claude Code CLI once (`TOP_CLAUDE_PATH`, else `claude` on the PATH or in ~/.local/bin), the same one coding tasks use. */
 export function claudeCli(command = process.env.TOP_CLAUDE_PATH ?? "claude") {
   const exec = (path: string, args: string[]) =>
     new Promise<{ ok: boolean; stdout: string; error?: string }>((resolve) =>
-      execFile(path, args, { timeout: 15_000, env: harnessEnv(process.env) }, (error, stdout) =>
+      execFile(path, args, { timeout: 15_000, env: claudeEnv() }, (error, stdout) =>
         resolve(error ? { ok: false, stdout, error: error.message } : { ok: true, stdout }),
       ),
     );
@@ -126,10 +135,7 @@ export function claudeCli(command = process.env.TOP_CLAUDE_PATH ?? "claude") {
     return found;
   };
   const locate = () => find().then((cli) => cli.path);
-  /**
-   * Installed and signed in, as `claude auth status` tells it. Whether that sign-in is a Claude subscription is checked
-   * again each time a bot starts (`subscriptionProblem`): it's the only thing that can tell a subscription from an API key.
-   */
+  /** Installed and set up to reach a model at all (a sign-in, an API key, a proxy or a cloud provider), as `claude auth status` tells it. */
   const status = async (): Promise<{ ok: true; version: string } | { ok: false; error: string }> => {
     let cli: { path: string; version: string };
     try {
@@ -143,14 +149,7 @@ export function claudeCli(command = process.env.TOP_CLAUDE_PATH ?? "claude") {
     try {
       parsed = record(JSON.parse(auth.stdout));
     } catch {}
-    if (parsed.loggedIn !== true) return { ok: false, error: `Claude Code isn't signed in on the daemon's computer. ${SIGN_IN}` };
-    if (typeof parsed.apiProvider === "string" && parsed.apiProvider !== "firstParty")
-      return { ok: false, error: `Claude Code on the daemon's computer goes through ${parsed.apiProvider}, not a Claude subscription. ${SIGN_IN}` };
-    if (typeof parsed.authMethod === "string" && /api|key|console/i.test(parsed.authMethod))
-      return {
-        ok: false,
-        error: `Claude Code on the daemon's computer is signed in with an API key (${parsed.authMethod}), not a Claude subscription. ${SIGN_IN}`,
-      };
+    if (parsed.loggedIn !== true) return { ok: false, error: `Claude Code on the daemon's computer isn't signed in or given a key. ${SIGN_IN}` };
     return { ok: true, version: cli.version };
   };
   return { locate, status };
@@ -522,7 +521,7 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
     options: {
       cwd: config.cwd,
       pathToClaudeCodeExecutable: path,
-      env: (config.env ?? (() => harnessEnv(process.env)))(),
+      env: (config.env ?? claudeEnv)(),
       abortController: abort,
       ...(model && model !== "default" ? { model } : {}),
       ...(EFFORTS[options.thinkingLevel] ? { effort: EFFORTS[options.thinkingLevel]! } : {}),
@@ -579,12 +578,11 @@ async function converse({ config, options, path, sdk, session, model, fresh, ope
   shutdown.addEventListener("abort", close, { once: true });
   signal.addEventListener("abort", onAbort, { once: true });
   try {
-    const account = await q.accountInfo().catch((error: unknown) => {
+    // Asked only to know Claude Code started: whatever it runs on (a sign-in, an API key, a proxy) is its own business.
+    await q.accountInfo().catch((error: unknown) => {
       throw new Error(`Claude Code didn't start: ${redact(error instanceof Error ? error.message : String(error))}${stderrTail()}`);
     });
     if (signal.aborted) return { aborted: true };
-    const problem = subscriptionProblem(account);
-    if (problem) return { error: problem };
 
     for (const message of opening) {
       outstanding.add(message.uuid!);

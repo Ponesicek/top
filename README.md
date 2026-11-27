@@ -330,10 +330,10 @@ A bot can run on Claude Code instead of Top's own loop: pick **Claude Code** und
 (with a Claude model: Default, Opus, Sonnet or Haiku). It runs on the [Claude Agent
 SDK](https://code.claude.com/docs/en/agent-sdk/overview), driving the `claude` CLI installed on the daemon's computer,
 signed in as it is there: your own Claude Code sign-in, the same one coding tasks use (`TOP_CLAUDE_PATH` points at
-another CLI). Top has no Claude sign-in of its own, never reads or copies Claude Code's credentials, and never runs a
-Claude bot on API credits: provider keys (`ANTHROPIC_API_KEY`, …) are left out of the CLI's environment, and a turn
-whose CLI reports an API key or a provider other than Anthropic's own fails, before Claude Code is given any message,
-and says how to sign in. Anthropic's Agent SDK docs say that, unless previously approved, third-party developers may
+another CLI). Whatever Claude Code runs on there, Top runs on too: a Claude sign-in, an API key (which bills API
+credits), a proxy or Bedrock and Vertex. The CLI gets the daemon's environment, provider keys included, and the `env`
+of Claude Code's own user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR`'s), the only part of them it
+reads. Top has no Claude sign-in of its own and never reads or copies Claude Code's credentials. Anthropic's Agent SDK docs say that, unless previously approved, third-party developers may
 not offer claude.ai login or rate limits for their products; Top being self-hosted and open source doesn't change
 that, so it's yours to weigh.
 

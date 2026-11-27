@@ -119,8 +119,8 @@ function ClaudeStatus({ runtimes }: { runtimes: BotRuntimesView }) {
     return <p className="text-small leading-snug text-muted-foreground">Checking Claude Code on the daemon's computer…</p>;
   return (
     <p className="text-small leading-snug text-muted-foreground">
-      Uses your Claude subscription, through Claude Code{runtimes.claudeVersion ? ` ${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")}` : ""} signed
-      in on the daemon's computer, never API credits.
+      Runs on Claude Code{runtimes.claudeVersion ? ` ${runtimes.claudeVersion.replace(/\s*\(Claude Code\)$/, "")}` : ""} on the daemon's computer, set up as it
+      is there: your Claude sign-in, an API key or a proxy.
     </p>
   );
 }
