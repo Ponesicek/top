@@ -3,6 +3,7 @@ import {
   type Attachment,
   AttachmentError,
   BotError,
+  type BotRuntimesView,
   type BotSummary,
   BusyError,
   type ContextFileName,
@@ -31,10 +32,12 @@ import { collarTools } from "./collar/index.ts";
 import { contextSections, hasContextFiles, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
 import { Events } from "./events.ts";
 import { type FilesFolder, makeFilesFolder } from "./files.ts";
+import { handoffDocument } from "./handoff.ts";
 import { type Jobs, makeJobs } from "./jobs.ts";
 import type { ThinkingLevel } from "./loop.ts";
 import { Mcp } from "./mcp.ts";
 import { type BotRunner, makeRunner } from "./runner.ts";
+import { type BotRuntime, CLAUDE_PROVIDER, runtimeOf, topRuntime, unavailable } from "./runtime.ts";
 import { Secrets } from "./secrets.ts";
 import { seedHistory } from "./seed.ts";
 import { makeSkills, type Skills, type SkillsConfig } from "./skills.ts";
@@ -47,6 +50,7 @@ import { WEB_SEARCH_SECTION } from "./websearch.ts";
 import { textOf } from "./wire.ts";
 
 const SUMMARY_DELAY_MS = 100;
+const CLAUDE_RECHECK_MS = 10_000;
 
 export function lastLine(text: string): string {
   const prose: string[] = [];
@@ -77,6 +81,18 @@ export type NewBot = {
 
 export const DEFAULT_INSTRUCTIONS = "You are one of the user's bots.";
 
+/** Claude Code on the daemon's computer, as Top can tell without running a bot on it. */
+export type ClaudeCliStatus = { readonly ok: true; readonly version: string } | { readonly ok: false; readonly error: string };
+
+/** Bots on the Claude Agent SDK (`claude/<model>`), when this daemon can run them. */
+export type ClaudeBots = {
+  readonly runtime: (bot: BotRow) => BotRuntime;
+  readonly status: Effect.Effect<ClaudeCliStatus>;
+};
+
+/** The models a Claude bot can pick from; `default` is whatever Claude Code itself would use. */
+export const CLAUDE_MODELS = ["default", "opus", "sonnet", "haiku"] as const;
+
 export class BotKit extends Context.Service<
   BotKit,
   {
@@ -97,17 +113,18 @@ export class BotKit extends Context.Service<
     readonly compactAtTokens?: number | undefined;
     readonly webSearch?: boolean | undefined;
     readonly harnesses?: readonly HarnessAdapter[] | undefined;
+    readonly claude?: ClaudeBots | undefined;
     readonly maxTasks?: number | undefined;
     readonly taskCancelGraceMs?: number | undefined;
   }
 >()("top/BotKit") {}
 
-const addBot = (name: string, newBot: NewBot, avatar = 0) =>
+const addBot = (name: string, newBot: NewBot, avatar = 0, model = newBot.model) =>
   Effect.gen(function* () {
     const store = yield* Store;
     return yield* store.transaction(
       Effect.gen(function* () {
-        const id = yield* store.createBot(name, newBot.model, avatar);
+        const id = yield* store.createBot(name, model, avatar);
         const system = createInitialSystemMessage(newBot.instructions, newBot.declare.map(toToolDeclaration));
         if (system) yield* store.append(id, "system", system);
         return id;
@@ -164,7 +181,15 @@ export class Daemon extends Context.Service<
     readonly has: (bot: number) => boolean;
     readonly runner: (bot: number) => Effect.Effect<BotRunner, UnknownBotError>;
     readonly runners: () => BotRunner[];
-    readonly createBot: (name: string, description: string, avatar?: number) => Effect.Effect<number, BotError>;
+    readonly createBot: (name: string, description: string, avatar?: number, model?: string) => Effect.Effect<number, BotError>;
+    /**
+     * Gives a bot another model, from its next message. `claude/<model>` runs it on Claude Code, the daemon's model on
+     * Top's own loop. Moving between them (only while the bot is idle) hands the conversation over as a document made
+     * from Top's record (handoff.ts): the new runtime starts without the old one's context.
+     */
+    readonly setBotModel: (bot: number, model: string) => Effect.Effect<void, UnknownBotError | BotError>;
+    /** What new bots can run on here, and whether Claude Code is ready for them. */
+    readonly runtimes: Effect.Effect<BotRuntimesView>;
     /** Lists the bots in this order, on every client. Bots it leaves out keep their place after the ones it names. */
     readonly setBotOrder: (ids: readonly number[]) => Effect.Effect<void>;
     readonly contextFiles: (bot: number) => Effect.Effect<readonly ContextFileView[], UnknownBotError | BotError>;
@@ -211,10 +236,13 @@ const make = Effect.gen(function* () {
   const dirty = yield* FiberMap.make<number>();
   const saving = yield* Semaphore.make(1);
   const ordering = yield* Semaphore.make(1);
+  const switching = yield* Semaphore.make(1);
 
   if (kit.newBot && kit.firstBots) yield* ensureBots(kit.firstBots, kit.newBot, kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
   if (kit.folder) yield* moveLegacySouls(kit.folder).pipe(Effect.provideService(FileSystem.FileSystem, fs));
-  if (kit.newBot) for (const bot of yield* store.bots) if (bot.model !== kit.newBot.model) yield* store.setModel(bot.id, kit.newBot.model);
+  // `--model` is the model of every bot on Top's own loop. A Claude bot keeps the model it was given.
+  if (kit.newBot)
+    for (const bot of yield* store.bots) if (runtimeOf(bot.model) === "top" && bot.model !== kit.newBot.model) yield* store.setModel(bot.id, kit.newBot.model);
   const seeded = (yield* store.bots)[0];
   if (kit.seed && seeded) yield* seedHistory(seeded.id, kit.seed);
 
@@ -248,6 +276,7 @@ const make = Effect.gen(function* () {
         queued: (yield* store.inbox(bot)).length,
         ...(yield* waiting(bot)),
         lastSeq: yield* store.lastSeq(bot),
+        ...(runtimeOf(row.model) === "claude" ? { model: row.model } : {}),
       } satisfies BotSummary;
     });
 
@@ -305,6 +334,17 @@ const make = Effect.gen(function* () {
     ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
     : undefined;
 
+  const runtimeFor = (bot: BotRow): Effect.Effect<BotRuntime> => {
+    if (runtimeOf(bot.model) === "claude") {
+      if (kit.claude) return Effect.succeed(kit.claude.runtime(bot));
+      return Effect.succeed(unavailable(`${bot.name} runs on Claude Code, which this daemon doesn't run.`));
+    }
+    const slash = bot.model.indexOf("/");
+    const model = kit.models.getModel(bot.model.slice(0, slash), bot.model.slice(slash + 1));
+    if (!model) return Effect.die(new Error(`Bot ${bot.name}: unknown model ${bot.model}`));
+    return Effect.succeed(topRuntime(kit.models, model));
+  };
+
   const add = (bot: BotRow): Effect.Effect<LiveBot> =>
     Effect.gen(function* () {
       const botScope = yield* Scope.fork(scope);
@@ -320,12 +360,15 @@ const make = Effect.gen(function* () {
       const wrapped = own.map(jobs.wrap);
       const tools = () => [...wrapped, ...servers().map(jobs.wrap)];
       const fixed = kit.sections ? yield* kit.sections(bot) : undefined;
+      const runtime = yield* runtimeFor(bot);
+      // OpenAI's web search is part of the model request on Top's own loop; Claude bots don't get it.
+      const webSearch = kit.webSearch === true && runtime.id === "top";
       // Every bot on a model that can search may search. The stored per-bot flag, from when it was a setting, isn't read.
       const searchOn = Effect.succeed(true);
       const folder = kit.folder?.(bot);
       const changing = [
         ...(skills ? [Effect.map(skills.section(bot), (section) => ({ skills: section }))] : []),
-        ...(kit.webSearch ? [Effect.succeed({ web_search: WEB_SEARCH_SECTION })] : []),
+        ...(webSearch ? [Effect.succeed({ web_search: WEB_SEARCH_SECTION })] : []),
         ...(folder
           ? [Effect.map(readContextFiles(folder).pipe(Effect.provideService(FileSystem.FileSystem, fs)), (files) => contextSections(folder, bot.name, files))]
           : []),
@@ -336,7 +379,7 @@ const make = Effect.gen(function* () {
           : fixed && Effect.succeed(fixed);
       const runner = yield* makeRunner(
         bot,
-        kit.models,
+        runtime,
         tools,
         {
           entry: announce,
@@ -351,7 +394,7 @@ const make = Effect.gen(function* () {
           attachments,
           retryDelaysMs: kit.retryDelaysMs,
           compactAtTokens: kit.compactAtTokens,
-          webSearch: kit.webSearch ? searchOn : undefined,
+          webSearch: webSearch ? searchOn : undefined,
         },
       ).pipe(Scope.provide(botScope));
       const live: LiveBot = { runner, scope: botScope, folder: undefined, summary: yield* summarize(bot.id, runner) };
@@ -379,6 +422,45 @@ const make = Effect.gen(function* () {
 
   for (const bot of yield* store.bots) yield* add(bot);
 
+  const checkClaudeModel = (model: string) =>
+    Effect.gen(function* () {
+      if (runtimeOf(model) !== "claude")
+        return yield* new BotError({ message: `Bots here run on ${kit.newBot?.model ?? "the daemon's model"} or on Claude Code (claude/<model>).` });
+      if (!kit.claude) return yield* new BotError({ message: "This daemon doesn't run bots on Claude Code." });
+      const name = model.slice(CLAUDE_PROVIDER.length + 1);
+      if (!(CLAUDE_MODELS as readonly string[]).includes(name) && !/^claude-[a-z0-9.-]+$/.test(name))
+        return yield* new BotError({ message: `Claude Code has no model "${name}" Top knows of. Pick ${CLAUDE_MODELS.join(", ")}, or a full claude-… id.` });
+    });
+
+  let claudeStatus: ClaudeCliStatus | undefined;
+  let checkingClaude = false;
+  let claudeCheckedAt = 0;
+  const refreshClaude = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    // At most one check every few seconds: the dialog asks again while one runs.
+    if (!kit.claude || checkingClaude || now - claudeCheckedAt < CLAUDE_RECHECK_MS) return;
+    claudeCheckedAt = now;
+    checkingClaude = true;
+    yield* Effect.asVoid(
+      Effect.forkIn(
+        kit.claude.status.pipe(
+          Effect.tap((status) =>
+            Effect.sync(() => {
+              claudeStatus = status;
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              checkingClaude = false;
+            }),
+          ),
+        ),
+        scope,
+      ),
+    );
+  });
+  yield* refreshClaude;
+
   const runnerOf = (bot: number) =>
     Effect.suspend(() => {
       const live = bots.get(bot);
@@ -390,9 +472,11 @@ const make = Effect.gen(function* () {
     has: (bot) => bots.has(bot),
     runner: runnerOf,
     runners: () => [...bots.values()].map((live) => live.runner),
-    createBot: Effect.fn("Daemon.createBot")(function* (rawName, rawDescription, avatar = 0) {
+    createBot: Effect.fn("Daemon.createBot")(function* (rawName, rawDescription, avatar = 0, rawModel) {
       const newBot = kit.newBot;
       if (!newBot) return yield* new BotError({ message: "This daemon can't make bots." });
+      const model = rawModel ?? newBot.model;
+      if (model !== newBot.model) yield* checkClaudeModel(model);
       const name = rawName.trim().replace(/\s+/g, " ");
       const description = rawDescription.trim();
       const folder = kit.folder;
@@ -420,11 +504,67 @@ const make = Effect.gen(function* () {
           Effect.mapError((error) => new BotError({ message: `Couldn't write ${name}'s SOUL.md: ${error.message}` })),
         );
       }
-      const id = yield* addBot(name, newBot, avatar).pipe(Effect.provideService(Store, store));
+      const id = yield* addBot(name, newBot, avatar, model).pipe(Effect.provideService(Store, store));
       const live = yield* add((yield* store.bot(id))!);
       yield* events.publish({ _tag: "Bot", summary: live.summary });
       if (skills) yield* skills.rescan;
       return id;
+    }),
+    setBotModel: Effect.fn("Daemon.setBotModel")(function* (bot, model) {
+      yield* switching.withPermits(1)(
+        Effect.gen(function* () {
+          const live = bots.get(bot);
+          const row = live ? yield* store.bot(bot) : undefined;
+          if (!live || !row) return yield* new UnknownBotError({ bot });
+          const to = runtimeOf(model);
+          if (to === "claude") yield* checkClaudeModel(model);
+          else if (model !== kit.newBot?.model)
+            return yield* new BotError({ message: `Bots on Top's own loop run on the daemon's model, ${kit.newBot?.model ?? "its --model"}.` });
+          if (runtimeOf(row.model) === to) {
+            if (model !== row.model) yield* store.setModel(bot, model);
+            yield* touch(bot);
+            return;
+          }
+          if (live.runner.busy() || row.runActive || (yield* store.inbox(bot)).length)
+            return yield* new BotError({ message: `${live.summary.name} is working. Switch when it's idle.` });
+          const at = yield* Clock.currentTimeMillis;
+          // Either way the conversation is compacted into a handoff made from Top's record: the new runtime starts with
+          // that in place of the earlier context (Top's loop as its summary, Claude Code at the head of a new session).
+          const handoff = handoffDocument(
+            yield* store.context(bot),
+            to === "top"
+              ? "You're now running on Top's own loop, which has none of your earlier session on Claude Code."
+              : "You're now running on Claude Code, in a new session that has none of this conversation.",
+          );
+          const text =
+            to === "top"
+              ? `Moved to Top's own loop (${model}). The conversation goes with it as a summary of what's shown here.`
+              : `Moved to Claude Code (${model}). It starts a new session, with the conversation so far as a summary of what's shown here.`;
+          const notice: StoredEntry = handoff
+            ? yield* store.compact(bot, 0, { summary: handoff, handoff: true, tokensBefore: 0, timestamp: at }, text)
+            : yield* store.append(bot, "notice", { text });
+          yield* store.setModel(bot, model);
+          yield* store.setSession(bot, null);
+          // A new runner on the new runtime takes the bot's place (and its place in the list); the old one closes.
+          yield* live.runner.close;
+          yield* add((yield* store.bot(bot))!);
+          yield* Scope.close(live.scope, Exit.void);
+          yield* events.publish({ _tag: "Entry", entry: notice });
+          yield* touch(bot);
+        }),
+      );
+    }),
+    runtimes: Effect.gen(function* () {
+      // Answered from what Top last found, so a slow CLI never holds up the connection; each ask checks again.
+      yield* refreshClaude;
+      const status = claudeStatus;
+      return {
+        model: kit.newBot?.model ?? "",
+        claude: kit.claude !== undefined,
+        ...(status?.ok ? { claudeVersion: status.version } : status ? { claudeProblem: status.error } : {}),
+        ...(checkingClaude ? { claudeChecking: true } : {}),
+        claudeModels: kit.claude ? [...CLAUDE_MODELS] : [],
+      };
     }),
     contextFiles: Effect.fn("Daemon.contextFiles")(function* (bot) {
       const row = bots.has(bot) ? yield* store.bot(bot) : undefined;

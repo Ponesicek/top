@@ -2,6 +2,7 @@ import {
   type AccountView,
   Attachment,
   type BotId,
+  type BotRuntimesView,
   type BotSummary,
   type Channel,
   type ContextFileName,
@@ -44,6 +45,7 @@ export type {
   AskOutcome,
   Attachment,
   BotId,
+  BotRuntimesView,
   BotSkills,
   BotStatus,
   Channel,
@@ -261,8 +263,18 @@ export class TopClient {
     this.#run.fork(this.#connection.kick);
   }
 
-  createBot(name: string, description: string, avatar = 0): Promise<BotId> {
-    return this.#request({ t: "createBot", name, description, ...(avatar ? { avatar } : {}) }).then(({ id }) => id);
+  createBot(name: string, description: string, avatar = 0, model?: string): Promise<BotId> {
+    return this.#request({ t: "createBot", name, description, ...(avatar ? { avatar } : {}), ...(model ? { model } : {}) }).then(({ id }) => id);
+  }
+
+  /** Gives a Claude bot another Claude model, from its next message. */
+  setBotModel(bot: BotId, model: string): Promise<void> {
+    return this.#command({ t: "setBotModel", bot, model });
+  }
+
+  /** What new bots can run on here, and whether Claude Code is ready. */
+  botRuntimes(): Promise<BotRuntimesView> {
+    return this.#request({ t: "botRuntimes" });
   }
 
   deleteBot(id: BotId): Promise<void> {

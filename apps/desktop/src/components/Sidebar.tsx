@@ -1,12 +1,12 @@
 import { ContextMenu } from "@base-ui/react/context-menu";
 import type { BotId, BotSummary } from "@top/client";
-import { ArrowDown, ArrowUp, Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Cpu, Pin, PinOff, Plus, Settings, Trash2 } from "lucide-react";
 import { memo, type ReactNode, useCallback, useId, useRef, useState } from "react";
 import { cn } from "../lib/utils.ts";
 import { withRestOrder } from "../order.ts";
 import { pin, reorderPins, serverUrl, sidebarGroups, top, unpin, useClient, usePins, useSeen } from "../top.ts";
 import { Avatar } from "./Avatar.tsx";
-import { DeleteBotDialog } from "./BotDialogs.tsx";
+import { BotModelDialog, DeleteBotDialog } from "./BotDialogs.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 import { type Group, menuOpened, reordering, useSidebarReorder } from "./sidebarReorder.ts";
 import { UpdateButton } from "./UpdateButton.tsx";
@@ -63,47 +63,55 @@ function BotMenu({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
   return (
-    <ContextMenu.Root
-      open={open}
-      onOpenChange={(next) => {
-        if (next && reordering()) return;
-        if (next) menuOpened();
-        setOpen(next);
-      }}
-    >
-      <ContextMenu.Trigger className={className} data-reorder={reorder.group} data-bot={bot.id}>
-        {children}
-      </ContextMenu.Trigger>
-      <ContextMenu.Portal>
-        <ContextMenu.Positioner className="z-40" collisionPadding={8}>
-          <ContextMenu.Popup className={MENU_POPUP} onKeyDown={(e) => e.stopPropagation()}>
-            <ContextMenu.Item className={MENU_ITEM} onClick={() => (pinned ? unpin(bot.id) : pin(bot.id))}>
-              {pinned ? <PinOff size={15} strokeWidth={1.9} /> : <Pin size={15} strokeWidth={1.9} />}
-              {pinned ? "Unpin" : "Pin to top"}
-            </ContextMenu.Item>
-            <ContextMenu.Item className={cn(MENU_ITEM, "data-disabled:opacity-45")} disabled={!reorder.up} onClick={() => reorder.onMove(bot.id, -1)}>
-              <ArrowUp size={15} strokeWidth={1.9} />
-              Move up
-              <kbd className="ml-auto pl-3 font-sans text-micro text-muted-foreground">Alt+Shift+↑</kbd>
-            </ContextMenu.Item>
-            <ContextMenu.Item className={cn(MENU_ITEM, "data-disabled:opacity-45")} disabled={!reorder.down} onClick={() => reorder.onMove(bot.id, 1)}>
-              <ArrowDown size={15} strokeWidth={1.9} />
-              Move down
-              <kbd className="ml-auto pl-3 font-sans text-micro text-muted-foreground">Alt+Shift+↓</kbd>
-            </ContextMenu.Item>
-            <ContextMenu.Separator className="mx-1.5 my-1 h-px bg-border" />
-            <ContextMenu.Item
-              className={cn(MENU_ITEM, "text-destructive-foreground data-highlighted:bg-destructive-surface [&_svg]:text-current")}
-              onClick={() => onDelete(bot)}
-            >
-              <Trash2 size={15} strokeWidth={1.9} />
-              Delete…
-            </ContextMenu.Item>
-          </ContextMenu.Popup>
-        </ContextMenu.Positioner>
-      </ContextMenu.Portal>
-    </ContextMenu.Root>
+    <>
+      <ContextMenu.Root
+        open={open}
+        onOpenChange={(next) => {
+          if (next && reordering()) return;
+          if (next) menuOpened();
+          setOpen(next);
+        }}
+      >
+        <ContextMenu.Trigger className={className} data-reorder={reorder.group} data-bot={bot.id}>
+          {children}
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Positioner className="z-40" collisionPadding={8}>
+            <ContextMenu.Popup className={MENU_POPUP} onKeyDown={(e) => e.stopPropagation()}>
+              <ContextMenu.Item className={MENU_ITEM} onClick={() => (pinned ? unpin(bot.id) : pin(bot.id))}>
+                {pinned ? <PinOff size={15} strokeWidth={1.9} /> : <Pin size={15} strokeWidth={1.9} />}
+                {pinned ? "Unpin" : "Pin to top"}
+              </ContextMenu.Item>
+              <ContextMenu.Item className={cn(MENU_ITEM, "data-disabled:opacity-45")} disabled={!reorder.up} onClick={() => reorder.onMove(bot.id, -1)}>
+                <ArrowUp size={15} strokeWidth={1.9} />
+                Move up
+                <kbd className="ml-auto pl-3 font-sans text-micro text-muted-foreground">Alt+Shift+↑</kbd>
+              </ContextMenu.Item>
+              <ContextMenu.Item className={cn(MENU_ITEM, "data-disabled:opacity-45")} disabled={!reorder.down} onClick={() => reorder.onMove(bot.id, 1)}>
+                <ArrowDown size={15} strokeWidth={1.9} />
+                Move down
+                <kbd className="ml-auto pl-3 font-sans text-micro text-muted-foreground">Alt+Shift+↓</kbd>
+              </ContextMenu.Item>
+              <ContextMenu.Item className={MENU_ITEM} onClick={() => setModelOpen(true)}>
+                <Cpu size={15} strokeWidth={1.9} />
+                Runs on…
+              </ContextMenu.Item>
+              <ContextMenu.Separator className="mx-1.5 my-1 h-px bg-border" />
+              <ContextMenu.Item
+                className={cn(MENU_ITEM, "text-destructive-foreground data-highlighted:bg-destructive-surface [&_svg]:text-current")}
+                onClick={() => onDelete(bot)}
+              >
+                <Trash2 size={15} strokeWidth={1.9} />
+                Delete…
+              </ContextMenu.Item>
+            </ContextMenu.Popup>
+          </ContextMenu.Positioner>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
+      <BotModelDialog bot={bot} open={modelOpen} onOpenChange={setModelOpen} onClosed={() => {}} />
+    </>
   );
 }
 
