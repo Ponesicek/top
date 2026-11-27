@@ -652,6 +652,9 @@ const make = Effect.gen(function* () {
           const sender = yield* first(sql`SELECT 1 AS one FROM bots WHERE id = ${message.sender} AND deleted = 0`);
           if (sender) told.push(yield* queueEvent(message.sender, outcomeRequest(message.id), outcomeText(message, outcome), "bot", "followUp"));
         }
+        // Unread ones from a bot deleted meanwhile go too, with no one to tell.
+        const orphaned = yield* rows(sql`SELECT id FROM bot_messages WHERE recipient = ${recipient} AND state = 'orphaned'`);
+        for (const { id } of orphaned) dropped += (yield* rows(sql`DELETE FROM inbox WHERE request_id = ${messageRequest(Number(id))} RETURNING id`)).length;
         return { told, dropped };
       }),
     );
@@ -901,7 +904,8 @@ const make = Effect.gen(function* () {
         transaction(
           Effect.gen(function* () {
             // A bot's message dropped by Stop after the runner took it is still a bot's, not the user's.
-            const source = (yield* inboxRow(requestId))?.source ?? (requestMessageId(requestId) === undefined ? null : "bot");
+            const queued = yield* inboxRow(requestId);
+            const source = queued ? queued.source : requestMessageId(requestId) === undefined ? null : "bot";
             yield* q(sql`DELETE FROM inbox WHERE request_id = ${requestId}`);
             const about = source === "bot" ? requestMessageId(requestId) : undefined;
             const peer = about === undefined ? undefined : yield* botMessage(about);
@@ -995,9 +999,9 @@ const make = Effect.gen(function* () {
       chainOf: (bot) =>
         Effect.gen(function* () {
           const last = yield* first(
-            sql`SELECT request_id FROM entries WHERE bot = ${bot} AND kind = 'user' AND (source IS NULL OR source = 'bot') ORDER BY seq DESC LIMIT 1`,
+            sql`SELECT request_id, source FROM entries WHERE bot = ${bot} AND kind = 'user' AND (source IS NULL OR source = 'bot') ORDER BY seq DESC LIMIT 1`,
           );
-          const about = last?.request_id == null ? undefined : requestMessageId(String(last.request_id));
+          const about = last?.source !== "bot" || last.request_id == null ? undefined : requestMessageId(String(last.request_id));
           const message = about === undefined ? undefined : yield* botMessage(about);
           return message ? { chain: message.chain, hop: message.hop } : undefined;
         }),

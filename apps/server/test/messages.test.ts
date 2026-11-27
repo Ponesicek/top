@@ -351,3 +351,21 @@ test("a Claude bot messages and replies the same way, through Top's tools over M
   await until("Bolt to read it", async () => (await settled(h)) && (await userTexts(h, bolt)).length === 3, 10_000);
   assert.deepEqual((await userTexts(h, bolt))[2]!.peer, { id: 3, bot: atlas, name: "Atlas" });
 });
+
+test("Stop drops an unread message from a bot deleted meanwhile, telling no one; a user's message is the user's whatever its request id", async () => {
+  const h = await harness({ bots: ["Atlas", "Bolt", "Clio"], gatherMs: 60_000 });
+  const [atlas, bolt, clio] = h.bots as [number, number, number];
+  await call(h, clio, { to: "Atlas", text: "from a bot about to go" });
+  await h.run(h.daemon.deleteBot(clio));
+  assert.equal((await h.run(h.store.inbox(atlas))).length, 1, "still queued for Atlas");
+  await h.run(h.daemon.stop(atlas));
+  assert.deepEqual(await h.run(h.store.inbox(atlas)), []);
+  assert.deepEqual(await h.run(h.store.inbox(bolt)), []);
+
+  // A client picks its own request ids; one that looks like a bot message's is still the user's own.
+  await h.run(h.daemon.submit(bolt, "bot:1", "from the user", "followUp", null));
+  await read(h, bolt);
+  const placed = (await userTexts(h, bolt))[0]!;
+  assert.deepEqual([placed.source, placed.peer], [null, undefined]);
+  assert.equal(await h.run(h.store.chainOf(bolt)), undefined, "and it starts a new chain");
+});
