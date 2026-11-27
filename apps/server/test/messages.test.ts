@@ -329,6 +329,7 @@ test("a message Stop drops while its Claude recipient is setting up the run neve
   const fake = fakeClaude();
   let hold: Promise<void> | undefined;
   let release = () => {};
+  let parked = false;
   const h = await harness({
     bots: BOTS,
     gatherMs: 0,
@@ -338,10 +339,9 @@ test("a message Stop drops while its Claude recipient is setting up the run neve
       ...store,
       setRunActive: (bot, active) =>
         active && hold
-          ? Effect.andThen(
-              Effect.promise(() => hold!),
-              store.setRunActive(bot, active),
-            )
+          ? Effect.sync(() => {
+              parked = true;
+            }).pipe(Effect.andThen(Effect.promise(() => hold!)), Effect.andThen(store.setRunActive(bot, active)))
           : store.setRunActive(bot, active),
     }),
   });
@@ -351,11 +351,7 @@ test("a message Stop drops while its Claude recipient is setting up the run neve
     release = resolve;
   });
   await call(h, bolt, { to: "Atlas", text: "secret plan, then stopped" });
-  await until(
-    "Atlas to take it and start setting up",
-    async () => (await h.run(h.daemon.runner(atlas))).busy() && (await h.run(h.store.inbox(atlas))).length === 1,
-  );
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await until("Atlas to park while setting up its run", () => parked);
   await h.run(h.daemon.stop(atlas));
   hold = undefined;
   release();
