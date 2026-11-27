@@ -3,12 +3,14 @@ import type {
   Ask,
   AskOutcome,
   Attachment,
+  BotMessageSent,
   BotSummary,
   Citation,
   ConversationSnapshot,
   Entry,
   FileChange,
   Gap,
+  PeerMessage,
   PendingMessage,
   QuestionReply,
   QueuedMessage,
@@ -62,6 +64,10 @@ export type Row =
       readonly reply?: QuestionReply;
     }
   | { readonly kind: "agent"; readonly key: string; readonly agent: AgentSpawn }
+  /** From another bot, or the daemon's word that one won't reply to a message this bot sent it. */
+  | { readonly kind: "peer"; readonly key: string; readonly peer: PeerMessage; readonly text: string; readonly at: number }
+  /** A message this bot sent another (collar__message_bot's receipt). */
+  | { readonly kind: "botMessage"; readonly key: string; readonly message: BotMessageSent; readonly at: number }
   | { readonly kind: "taskQuestion"; readonly key: string; readonly task: WaitingTask }
   | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
@@ -77,17 +83,19 @@ function rowForEntry(entry: Exclude<Entry, AnswerEntry>): Row {
   const key = `e${entry.seq}`;
   switch (entry.kind) {
     case "user":
-      row = entry.source
-        ? { kind: "wake", key }
-        : {
-            kind: "user",
-            // Keyed like the message was while it was being sent or queued, so its row stays the same one.
-            key: entry.requestId ? `m${entry.requestId}` : key,
-            text: entry.text,
-            at: entry.at,
-            ...(entry.attachments ? { attachments: entry.attachments } : {}),
-            ...(entry.skill ? { skill: entry.skill } : {}),
-          };
+      row = entry.peer
+        ? { kind: "peer", key, peer: entry.peer, text: entry.text, at: entry.at }
+        : entry.source
+          ? { kind: "wake", key }
+          : {
+              kind: "user",
+              // Keyed like the message was while it was being sent or queued, so its row stays the same one.
+              key: entry.requestId ? `m${entry.requestId}` : key,
+              text: entry.text,
+              at: entry.at,
+              ...(entry.attachments ? { attachments: entry.attachments } : {}),
+              ...(entry.skill ? { skill: entry.skill } : {}),
+            };
       break;
     case "assistant":
       row = {
@@ -166,6 +174,18 @@ function askRow(entry: ToolEntry, ask: Ask, settled: AnswerEntry | undefined): A
   return row;
 }
 
+type BotMessageRow = Extract<Row, { kind: "botMessage" }>;
+const botMessageRows = new WeakMap<ToolEntry, BotMessageRow>();
+
+function botMessageRow(entry: ToolEntry, message: BotMessageSent): BotMessageRow {
+  let row = botMessageRows.get(entry);
+  if (!row) {
+    row = { kind: "botMessage", key: `e${entry.seq}`, message, at: entry.at };
+    botMessageRows.set(entry, row);
+  }
+  return row;
+}
+
 type AgentRow = Extract<Row, { kind: "agent" }>;
 const agentRows = new WeakMap<ToolEntry, AgentRow>();
 
@@ -191,6 +211,7 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
     else if (item.entry.kind === "answer") continue;
     else if (item.entry.kind === "tool" && item.entry.ask) rows.push(askRow(item.entry, item.entry.ask, settled.get(item.entry.ask.id)));
     else if (item.entry.kind === "tool" && item.entry.agent && !item.entry.isError) rows.push(agentRow(item.entry, item.entry.agent));
+    else if (item.entry.kind === "tool" && item.entry.botMessage) rows.push(botMessageRow(item.entry, item.entry.botMessage));
     else rows.push(rowForEntry(item.entry));
   }
   for (let i = 0; i < rows.length; i++) {
@@ -292,6 +313,7 @@ export function author(row: DisplayRow): "user" | "bot" | undefined {
     row.kind === "working" ||
     row.kind === "ask" ||
     row.kind === "agent" ||
+    row.kind === "botMessage" ||
     row.kind === "taskQuestion"
   )
     return "bot";
@@ -300,7 +322,7 @@ export function author(row: DisplayRow): "user" | "bot" | undefined {
 
 export function rowTime(row: DisplayRow | undefined): number | undefined {
   if (!row) return undefined;
-  if (row.kind === "user" || row.kind === "assistant" || row.kind === "toolgroup") return row.at;
+  if (row.kind === "user" || row.kind === "assistant" || row.kind === "toolgroup" || row.kind === "peer") return row.at;
   return undefined;
 }
 

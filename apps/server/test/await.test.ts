@@ -252,6 +252,8 @@ const collarOf = (h: Harness) => ({
   asks: h.daemon.asks,
   changed: h.daemon.changed,
   toolsOf: h.daemon.toolsOf,
+  roster: () => [],
+  deliver: () => Effect.void,
 });
 const backgroundOf = (h: Harness) => {
   const tool = backgroundGroup(collarOf(h))[0]!;

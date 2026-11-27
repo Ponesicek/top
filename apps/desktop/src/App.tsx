@@ -17,6 +17,7 @@ import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { readShowTools, saveShowTools } from "./display.ts";
 import { toggleFiles, useBotFiles, usePanel, usePanelLayout } from "./files.ts";
 import { cn } from "./lib/utils.ts";
+import { onOpenBot } from "./openBot.ts";
 import { applyScale, canScale, readScale, type Scale, stepScale } from "./scale.ts";
 import { conversation, markSeen, sidebarOrder, top, useBot, useClient, useRoster } from "./top.ts";
 
@@ -130,6 +131,8 @@ export function App() {
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, [bot?.id, select, setHud, settingsOpen, scale, setScale]);
+
+  useEffect(() => onOpenBot(select), [select]);
 
   useEffect(() => {
     window.__topSelect = (i) => {

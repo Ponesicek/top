@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import { BotMessageRow, messageRequest, messageText, outcomeRequest, outcomeText, requestMessageId } from "./botMessages.ts";
 import { summaryMessage } from "./compaction.ts";
 import {
   AnswerView,
@@ -348,6 +349,26 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
   // The order the bots are listed in, once someone reorders them; until then (NULL) it's the order they were made in.
   "9_bot_position": addColumn("bots", "position", "INTEGER"),
   "10_bot_session": addColumn("bots", "session", "TEXT"),
+  // Messages between bots (collar__message_bot). Kept when either bot is deleted: the other's conversation still names them.
+  "11_bot_messages": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS bot_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      sender INTEGER NOT NULL,
+      sender_name TEXT NOT NULL,
+      recipient INTEGER NOT NULL,
+      recipient_name TEXT NOT NULL,
+      reply_to INTEGER,
+      chain INTEGER NOT NULL,
+      hop INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      state TEXT NOT NULL,
+      at INTEGER NOT NULL
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS bot_messages_open ON bot_messages(recipient, state)`;
+    yield* sql`CREATE INDEX IF NOT EXISTS bot_messages_chain ON bot_messages(chain)`;
+  }),
 };
 
 const refuseNewerData = Effect.gen(function* () {
@@ -380,6 +401,7 @@ const attachmentOf = decoder(Schema.decodeUnknownSync(AttachmentRow));
 const wakeOf = decoder(Schema.decodeUnknownSync(WakeRow));
 const jobOf = decoder(Schema.decodeUnknownSync(JobRow));
 const askOf = Schema.decodeUnknownSync(Ask);
+const botMessageOf = decoder(Schema.decodeUnknownSync(BotMessageRow));
 const askRowOf = (row: Row): AskRow => ({
   id: Number(row.id),
   bot: Number(row.bot),
@@ -399,6 +421,21 @@ const contextOf = (row: Row): ContextItem => {
 
 export const PLANNED_RESTART = "planned_restart";
 
+export type NewBotMessage = {
+  readonly key: string;
+  readonly sender: number;
+  readonly senderName: string;
+  readonly recipient: number;
+  readonly recipientName: string;
+  readonly replyTo: number | null;
+  /** The chain it carries on; undefined starts one, at hop 1. */
+  readonly chain: { readonly chain: number; readonly hop: number } | undefined;
+  readonly text: string;
+};
+
+/** What the store did with a message: sent it (and queued it for its recipient), had it already, or found its original answered meanwhile. */
+export type SentBotMessage = { readonly sent: BotMessageRow; readonly inbox: InboxRow } | { readonly known: BotMessageRow } | { readonly taken: BotMessageRow };
+
 export class Store extends Context.Service<
   Store,
   {
@@ -413,7 +450,8 @@ export class Store extends Context.Service<
     readonly setBotOrder: (ids: readonly number[]) => Effect.Effect<void>;
     readonly legacySouls: Effect.Effect<LegacySoul[]>;
     readonly settleLegacySoul: (bot: number) => Effect.Effect<void>;
-    readonly markDeleted: (bot: number) => Effect.Effect<void>;
+    /** Returns the messages that tell other bots it won't reply to theirs. */
+    readonly markDeleted: (bot: number) => Effect.Effect<InboxRow[]>;
     readonly purgeBot: (bot: number) => Effect.Effect<void>;
     readonly flag: (key: string) => Effect.Effect<boolean>;
     readonly setFlag: (key: string) => Effect.Effect<void>;
@@ -495,6 +533,15 @@ export class Store extends Context.Service<
       outcome: AskOutcome,
       extra?: { readonly reply?: QuestionReply | undefined; readonly text?: string | undefined },
     ) => Effect.Effect<{ entry: StoredEntry; message: InboxRow | undefined } | undefined>;
+
+    readonly botMessage: (id: number) => Effect.Effect<BotMessageRow | undefined>;
+    readonly botMessageByKey: (key: string) => Effect.Effect<BotMessageRow | undefined>;
+    /** The chain the bot's turn is in: the message it last got from a bot, unless the user has written since. */
+    readonly chainOf: (bot: number) => Effect.Effect<{ readonly chain: number; readonly hop: number } | undefined>;
+    readonly repeatedInChain: (chain: number, sender: number, recipient: number, text: string) => Effect.Effect<boolean>;
+    readonly sendBotMessage: (message: NewBotMessage) => Effect.Effect<SentBotMessage>;
+    /** Settles the messages waiting for this bot's reply, and tells each sender why it won't come; drops the ones it hasn't read. */
+    readonly endBotMessages: (recipient: number, outcome: "stopped" | "deleted") => Effect.Effect<{ readonly told: InboxRow[]; readonly dropped: number }>;
 
     readonly toolStarted: (bot: number, assistantSeq: number, toolCallId: string, name: string, args: Readonly<Record<string, unknown>>) => Effect.Effect<void>;
     readonly toolFinished: (
@@ -578,12 +625,32 @@ const make = Effect.gen(function* () {
 
   const inboxRow = (requestId: string) => Effect.map(first(sql`SELECT * FROM inbox WHERE request_id = ${requestId}`), (row) => row && inboxOf(row));
 
-  const queueEvent = Effect.fnUntraced(function* (bot: number, requestId: string, text: string, source: MessageSource) {
+  const queueEvent = Effect.fnUntraced(function* (bot: number, requestId: string, text: string, source: MessageSource, mode: "steer" | "followUp" = "steer") {
     yield* q(sql`
       INSERT INTO inbox (bot, request_id, text, mode, client_id, source, attachments, at)
-      VALUES (${bot}, ${requestId}, ${text}, 'steer', NULL, ${source}, NULL, ${yield* now})`);
+      VALUES (${bot}, ${requestId}, ${text}, ${mode}, NULL, ${source}, NULL, ${yield* now})`);
     return (yield* inboxRow(requestId))!;
   });
+
+  const botMessage = (message: number) => Effect.map(first(sql`SELECT * FROM bot_messages WHERE id = ${message}`), (row) => row && botMessageOf(row));
+
+  // A message waits for its recipient's turn (a follow-up), never steers into it.
+  const endBotMessages = (recipient: number, outcome: "stopped" | "deleted") =>
+    transaction(
+      Effect.gen(function* () {
+        const ended = (yield* rows(sql`UPDATE bot_messages SET state = ${outcome} WHERE recipient = ${recipient} AND state = 'open' RETURNING *`)).map(
+          botMessageOf,
+        );
+        const told: InboxRow[] = [];
+        let dropped = 0;
+        for (const message of ended) {
+          dropped += (yield* rows(sql`DELETE FROM inbox WHERE request_id = ${messageRequest(message.id)} RETURNING id`)).length;
+          const sender = yield* first(sql`SELECT 1 AS one FROM bots WHERE id = ${message.sender} AND deleted = 0`);
+          if (sender) told.push(yield* queueEvent(message.sender, outcomeRequest(message.id), outcomeText(message, outcome), "bot", "followUp"));
+        }
+        return { told, dropped };
+      }),
+    );
 
   const purgeBot = (bot: number) =>
     transaction(
@@ -630,12 +697,14 @@ const make = Effect.gen(function* () {
         transaction(
           Effect.gen(function* () {
             yield* q(sql`UPDATE bots SET deleted = 1, run_active = 0, name = ${`deleted:${bot}:${randomUUID()}`} WHERE id = ${bot}`);
+            const { told } = yield* endBotMessages(bot, "deleted");
             yield* q(sql`DELETE FROM inbox WHERE bot = ${bot}`);
             yield* q(sql`DELETE FROM bot_mcp WHERE bot = ${bot}`);
             yield* q(sql`DELETE FROM bot_skills WHERE bot = ${bot}`);
             yield* q(sql`UPDATE wakes SET state = 'cancelled' WHERE bot = ${bot} AND state = 'pending'`);
             yield* q(sql`UPDATE jobs SET state = 'stopped' WHERE bot = ${bot} AND state = 'running'`);
             yield* q(sql`UPDATE asks SET state = 'withdrawn' WHERE bot = ${bot} AND state = 'pending'`);
+            return told;
           }),
         ),
       purgeBot,
@@ -828,7 +897,17 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const source = (yield* inboxRow(requestId))?.source ?? null;
             yield* q(sql`DELETE FROM inbox WHERE request_id = ${requestId}`);
-            return yield* append(bot, "user", message, { requestId, source });
+            const about = source === "bot" ? requestMessageId(requestId) : undefined;
+            const peer = about === undefined ? undefined : yield* botMessage(about);
+            const saved: EntryBody["user"] = peer
+              ? {
+                  ...message,
+                  peer: requestId.startsWith("bot-outcome:")
+                    ? { id: peer.id, bot: peer.recipient, name: peer.recipientName, outcome: peer.state === "deleted" ? "deleted" : "stopped" }
+                    : { id: peer.id, bot: peer.sender, name: peer.senderName, ...(peer.replyTo === null ? {} : { replyTo: peer.replyTo }) },
+                }
+              : message;
+            return yield* append(bot, "user", saved, { requestId, source });
           }),
         ),
 
@@ -904,6 +983,47 @@ const make = Effect.gen(function* () {
             return { entry, message };
           }),
         ),
+
+      botMessage,
+      botMessageByKey: (key) => Effect.map(first(sql`SELECT * FROM bot_messages WHERE key = ${key}`), (row) => row && botMessageOf(row)),
+      chainOf: (bot) =>
+        Effect.gen(function* () {
+          const last = yield* first(
+            sql`SELECT request_id FROM entries WHERE bot = ${bot} AND kind = 'user' AND (source IS NULL OR source = 'bot') ORDER BY seq DESC LIMIT 1`,
+          );
+          const about = last?.request_id == null ? undefined : requestMessageId(String(last.request_id));
+          const message = about === undefined ? undefined : yield* botMessage(about);
+          return message ? { chain: message.chain, hop: message.hop } : undefined;
+        }),
+      repeatedInChain: (chain, sender, recipient, text) =>
+        Effect.map(
+          first(sql`SELECT 1 AS one FROM bot_messages WHERE chain = ${chain} AND sender = ${sender} AND recipient = ${recipient} AND text = ${text}`),
+          (row) => row !== undefined,
+        ),
+      sendBotMessage: (message) =>
+        transaction(
+          Effect.gen(function* () {
+            const known = yield* first(sql`SELECT * FROM bot_messages WHERE key = ${message.key}`);
+            if (known) return { known: botMessageOf(known) };
+            if (message.replyTo !== null) {
+              const answered = yield* rows(sql`UPDATE bot_messages SET state = 'replied' WHERE id = ${message.replyTo} AND state = 'open' RETURNING id`);
+              if (!answered.length) return { taken: (yield* botMessage(message.replyTo))! };
+            }
+            const hop = (message.chain?.hop ?? 0) + 1;
+            const state = message.replyTo === null ? "open" : "reply";
+            const inserted = yield* first(sql`
+              INSERT INTO bot_messages (key, sender, sender_name, recipient, recipient_name, reply_to, chain, hop, text, state, at)
+              VALUES (${message.key}, ${message.sender}, ${message.senderName}, ${message.recipient}, ${message.recipientName}, ${message.replyTo},
+                ${message.chain?.chain ?? 0}, ${hop}, ${message.text}, ${state}, ${yield* now})
+              RETURNING id`);
+            const id = Number(inserted!.id);
+            if (!message.chain) yield* q(sql`UPDATE bot_messages SET chain = ${id} WHERE id = ${id}`);
+            const sent = (yield* botMessage(id))!;
+            const inbox = yield* queueEvent(message.recipient, messageRequest(id), messageText(sent), "bot", "followUp");
+            return { sent, inbox };
+          }),
+        ),
+      endBotMessages,
 
       toolStarted: (bot, assistantSeq, toolCallId, name, args) =>
         Effect.gen(function* () {

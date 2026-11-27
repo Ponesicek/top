@@ -341,3 +341,33 @@ describe("a message you send", () => {
     expect(rows[0]!.key).toMatch(/^e\d+$/);
   });
 });
+
+describe("bot-to-bot rows", () => {
+  const MSG = "collar__message_bot";
+  it("a message from another bot is its own row, signed, whether tool steps show or not; a wake-up still shows nothing", () => {
+    const items = [
+      entry({ kind: "user", text: "check the build", source: "bot", requestId: "bot:4", peer: { id: 4, bot: 7, name: "Atlas" } }),
+      entry({ kind: "user", text: "[Wake-up] later", source: "wake", requestId: "wake:1" }),
+    ];
+    for (const showTools of [true, false]) {
+      const rows = displayRows(committedRows(items), showTools);
+      expect(rows.map((r) => r.kind)).toEqual(["peer", "wake"]);
+      expect(rows[0]).toMatchObject({ peer: { id: 4, bot: 7, name: "Atlas" }, text: "check the build" });
+    }
+  });
+
+  it("a sent message is a card in place of its tool step even with tool steps hidden; a refused send is an ordinary failed step", () => {
+    const call = entry({ kind: "assistant", text: "", tools: [{ id: "call_9", name: MSG, summary: "to: Bolt" }] });
+    const sent = entry({
+      kind: "tool",
+      toolCallId: "call_9",
+      name: MSG,
+      text: "Sent message 2 to Bolt.",
+      botMessage: { id: 2, to: 8, name: "Bolt", text: "hi" },
+    });
+    const refused = entry({ kind: "tool", toolCallId: "call_9", name: MSG, text: "Not sent: that's you.", isError: true });
+    expect(displayRows(committedRows([call, sent]), false).map((r) => r.kind)).toEqual(["botMessage"]);
+    expect(displayRows(committedRows([call, sent]), true)[0]).toMatchObject({ kind: "botMessage", message: { id: 2, to: 8 } });
+    expect(displayRows(committedRows([call, refused]), true).map((r) => r.kind)).toEqual(["toolgroup"]);
+  });
+});

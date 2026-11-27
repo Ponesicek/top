@@ -303,8 +303,34 @@ const entryBase = { seq: Seq, bot: BotId, at: Schema.Number };
 export const FileChange = Struct({ path: Schema.String, change: Schema.Literals(["added", "changed", "removed"]) });
 export type FileChange = typeof FileChange.Type;
 
-export const MessageSource = Schema.Literals(["wake", "job", "answer", "task"]);
+export const MessageSource = Schema.Literals(["wake", "job", "answer", "task", "bot"]);
 export type MessageSource = typeof MessageSource.Type;
+
+/**
+ * A message from another bot on the same daemon (`source: "bot"`), or the daemon saying what became of one this bot
+ * sent (`outcome`): the recipient was stopped by the user, or deleted, before it replied.
+ */
+export const PeerMessage = Struct({
+  /** The message's number, which a reply names. */
+  id: Schema.Int,
+  /** The bot it's from (for an outcome: the bot it went to). */
+  bot: BotId,
+  name: Schema.String,
+  /** A reply: the number of the message it answers. */
+  replyTo: Optional(Schema.Int),
+  outcome: Optional(Schema.Literals(["stopped", "deleted"])),
+});
+export type PeerMessage = typeof PeerMessage.Type;
+
+/** A message this bot sent another with collar__message_bot, as its call's receipt shows it. */
+export const BotMessageSent = Struct({
+  id: Schema.Int,
+  to: BotId,
+  name: Schema.String,
+  text: Schema.String,
+  replyTo: Optional(Schema.Int),
+});
+export type BotMessageSent = typeof BotMessageSent.Type;
 
 export const Entry = Schema.Union([
   Struct({
@@ -314,6 +340,7 @@ export const Entry = Schema.Union([
     attachments: Optional(List(Attachment)),
     requestId: Optional(Schema.String),
     source: Optional(MessageSource),
+    peer: Optional(PeerMessage),
     skill: Optional(SkillUse),
   }),
   Struct({
@@ -339,6 +366,7 @@ export const Entry = Schema.Union([
     outcome: Optional(ToolOutcome),
     ask: Optional(Ask),
     agent: Optional(AgentSpawn),
+    botMessage: Optional(BotMessageSent),
   }),
   Struct({ ...entryBase, kind: Schema.Literal("answer"), request: Schema.Int, answer: AskOutcome, reply: Optional(QuestionReply) }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),

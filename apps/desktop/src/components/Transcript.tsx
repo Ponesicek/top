@@ -27,6 +27,8 @@ function estimate(row: DisplayRow | undefined): number {
   if (row.kind === "toolgroup" || row.kind === "files") return 34;
   if (row.kind === "ask") return row.ask.kind === "question" && !row.answer ? 120 + row.ask.options.length * 44 : 140;
   if (row.kind === "agent") return 76;
+  if (row.kind === "peer") return row.peer.outcome ? 52 : 72 + Math.ceil(row.text.length / 90) * 22;
+  if (row.kind === "botMessage") return 64;
   if (row.kind === "taskQuestion") return 140;
   return 48;
 }
