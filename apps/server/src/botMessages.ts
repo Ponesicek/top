@@ -15,8 +15,11 @@ import * as Schema from "effect/Schema";
 export const MAX_HOPS = 4;
 export const MAX_BOT_MESSAGE_CHARS = 16_000;
 
-/** open: waits for a reply. replied / stopped / deleted: settled. reply: a reply, which takes none. */
-export const BotMessageState = Schema.Literals(["open", "replied", "stopped", "deleted", "reply"]);
+/**
+ * open: waits for a reply. replied / stopped / deleted: settled (deleted: its recipient was). orphaned: its sender was
+ * deleted, so it can't be replied to (a new bot can get the deleted one's id). reply: a reply, which takes none.
+ */
+export const BotMessageState = Schema.Literals(["open", "replied", "stopped", "deleted", "orphaned", "reply"]);
 export type BotMessageState = typeof BotMessageState.Type;
 
 export const BotMessageRow = Schema.Struct({

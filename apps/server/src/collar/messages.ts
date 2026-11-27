@@ -8,7 +8,7 @@ const PREVIEW_CHARS = 500;
 
 const refused = (why: string): ToolResult => ({ ...text(why), isError: true });
 
-const sameName = (a: string, b: string) => a.trim().replace(/^@/, "").toLowerCase() === b.trim().toLowerCase();
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 const rosterLine = (others: readonly RosterBot[]) =>
   others.length ? `You can message: ${others.map((b) => b.name).join(", ")}.` : "There are no other bots to message.";
@@ -72,7 +72,7 @@ export const messagesGroup: CollarGroup = (daemon) => [
         const known = yield* store.botMessageByKey(ctx.key);
         if (known) return receipt(known);
 
-        const roster = daemon.roster();
+        const roster = yield* daemon.roster;
         const me = roster.find((b) => b.id === ctx.bot);
         if (!me) return refused("Not sent: you're being deleted.");
         const others = roster.filter((b) => b.id !== ctx.bot);
@@ -93,10 +93,10 @@ export const messagesGroup: CollarGroup = (daemon) => [
               `Not sent: message ${original.id} is ${original.senderName}'s reply to you, which takes none. To say more, send a new message with \`to\`.`,
             );
           if (original.state === "replied") return refused(`Not sent: you already replied to message ${original.id}.`);
+          const sender = roster.find((b) => b.id === original.sender);
+          if (original.state === "orphaned" || !sender) return refused(`Not sent: ${original.senderName} has been deleted, so there's no one to reply to.`);
           if (original.state !== "open")
             return refused(`Not sent: message ${original.id} ended when the user stopped you, and ${original.senderName} was told you won't reply.`);
-          const sender = roster.find((b) => b.id === original.sender);
-          if (!sender) return refused(`Not sent: ${original.senderName} has been deleted, so there's no one to reply to.`);
           if (args.to !== undefined && !sameName(args.to, sender.name))
             return refused(
               `Not sent: message ${original.id} is from ${sender.name}, and a reply goes back to its sender. To message ${args.to}, leave out \`reply_to\`.`,
@@ -107,11 +107,13 @@ export const messagesGroup: CollarGroup = (daemon) => [
         } else {
           if (args.to === undefined || !args.to.trim()) return refused(`Not sent: say who it's for with \`to\`. ${rosterLine(others)}`);
           const to = args.to;
-          if (sameName(to, me.name)) return refused("Not sent: that's you. Message another bot.");
+          if (sameName(to, me.name)) return refused(`Not sent: that's you. ${rosterLine(others)}`);
           const named = others.filter((b) => sameName(to, b.name));
           if (named.length === 0) return refused(`Not sent: there's no bot named ${to.trim()}. ${rosterLine(others)}`);
           if (named.length > 1)
-            return refused(`Not sent: ${named.length} bots are named ${named[0]!.name}, so Top can't tell which you mean. Ask the user to rename one.`);
+            return refused(
+              `Not sent: ${named.length} bots are named ${named[0]!.name}, so Top can't tell which you mean. Ask the user to rename one. ${rosterLine(others)}`,
+            );
           recipient = named[0]!;
           chain = yield* store.chainOf(ctx.bot);
           const hop = (chain?.hop ?? 0) + 1;
@@ -119,8 +121,6 @@ export const messagesGroup: CollarGroup = (daemon) => [
             return refused(
               `Not sent: this exchange between bots is already ${MAX_HOPS} messages long since the user last wrote, the most Top allows, so it can't loop. Stop here and tell the user where things stand; they can ask you to carry on.`,
             );
-          if (chain && (yield* store.repeatedInChain(chain.chain, ctx.bot, recipient.id, body)))
-            return refused(`Not sent: you already sent ${recipient.name} exactly this in this exchange.`);
         }
 
         const result = yield* store.sendBotMessage({
@@ -134,6 +134,7 @@ export const messagesGroup: CollarGroup = (daemon) => [
           text: body,
         });
         if ("known" in result) return receipt(result.known);
+        if ("repeated" in result) return refused(`Not sent: you already sent ${recipient.name} exactly this in this exchange.`);
         if ("taken" in result)
           return refused(
             result.taken.state === "replied"

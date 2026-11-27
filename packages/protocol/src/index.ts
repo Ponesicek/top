@@ -6,7 +6,7 @@ import { CHANNELS } from "./release.ts";
 export * from "./errors.ts";
 export * from "./release.ts";
 
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 export const DEFAULT_PORT = 7357;
 
 const Struct = Schema.Struct;

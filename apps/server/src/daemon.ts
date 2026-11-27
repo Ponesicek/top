@@ -330,7 +330,17 @@ const make = Effect.gen(function* () {
         { deliver: queued, publish: (waiting) => events.publish({ _tag: "WaitingTasks", tasks: waiting }) },
       )
     : undefined;
-  const roster = (): RosterBot[] => [...bots.values()].map((live) => ({ id: live.runner.id, name: live.summary.name, about: live.summary.description }));
+  // Read from each SOUL.md when it's asked for, not from the sidebar's summaries, which only refresh with activity.
+  const roster: Effect.Effect<RosterBot[]> = Effect.suspend(() =>
+    Effect.forEach([...bots.values()], ({ runner }) =>
+      kit.folder
+        ? Effect.map(readContextFile(kit.folder(runner), "SOUL.md").pipe(Effect.provideService(FileSystem.FileSystem, fs)), (file) => {
+            const soul = soulIdentity(file.content);
+            return { id: runner.id, name: soul.name ?? runner.name, about: soul.about ?? "" };
+          })
+        : Effect.succeed({ id: runner.id, name: runner.name, about: "" }),
+    ),
+  );
   const collar = collarTools({ store, jobs, wakes, asks, tasks, changed, toolsOf, roster, deliver: queued });
   const skills = kit.skills
     ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
@@ -371,7 +381,7 @@ const make = Effect.gen(function* () {
       const changing = [
         ...(skills ? [Effect.map(skills.section(bot), (section) => ({ skills: section }))] : []),
         ...(webSearch ? [Effect.succeed({ web_search: WEB_SEARCH_SECTION })] : []),
-        Effect.sync(() => ({ bots: rosterSection(roster(), bot.id) })),
+        Effect.map(roster, (all) => ({ bots: rosterSection(all, bot.id) })),
         ...(folder
           ? [Effect.map(readContextFiles(folder).pipe(Effect.provideService(FileSystem.FileSystem, fs)), (files) => contextSections(folder, bot.name, files))]
           : []),

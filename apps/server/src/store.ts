@@ -434,7 +434,12 @@ export type NewBotMessage = {
 };
 
 /** What the store did with a message: sent it (and queued it for its recipient), had it already, or found its original answered meanwhile. */
-export type SentBotMessage = { readonly sent: BotMessageRow; readonly inbox: InboxRow } | { readonly known: BotMessageRow } | { readonly taken: BotMessageRow };
+export type SentBotMessage =
+  | { readonly sent: BotMessageRow; readonly inbox: InboxRow }
+  | { readonly known: BotMessageRow }
+  | { readonly taken: BotMessageRow }
+  /** A new message with the same text to the same bot, in the same chain (or since the user last wrote, for a chain's first). */
+  | { readonly repeated: true };
 
 export class Store extends Context.Service<
   Store,
@@ -538,7 +543,6 @@ export class Store extends Context.Service<
     readonly botMessageByKey: (key: string) => Effect.Effect<BotMessageRow | undefined>;
     /** The chain the bot's turn is in: the message it last got from a bot, unless the user has written since. */
     readonly chainOf: (bot: number) => Effect.Effect<{ readonly chain: number; readonly hop: number } | undefined>;
-    readonly repeatedInChain: (chain: number, sender: number, recipient: number, text: string) => Effect.Effect<boolean>;
     readonly sendBotMessage: (message: NewBotMessage) => Effect.Effect<SentBotMessage>;
     /** Settles the messages waiting for this bot's reply, and tells each sender why it won't come; drops the ones it hasn't read. */
     readonly endBotMessages: (recipient: number, outcome: "stopped" | "deleted") => Effect.Effect<{ readonly told: InboxRow[]; readonly dropped: number }>;
@@ -698,6 +702,7 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             yield* q(sql`UPDATE bots SET deleted = 1, run_active = 0, name = ${`deleted:${bot}:${randomUUID()}`} WHERE id = ${bot}`);
             const { told } = yield* endBotMessages(bot, "deleted");
+            yield* q(sql`UPDATE bot_messages SET state = 'orphaned' WHERE sender = ${bot} AND state = 'open'`);
             yield* q(sql`DELETE FROM inbox WHERE bot = ${bot}`);
             yield* q(sql`DELETE FROM bot_mcp WHERE bot = ${bot}`);
             yield* q(sql`DELETE FROM bot_skills WHERE bot = ${bot}`);
@@ -895,7 +900,8 @@ const make = Effect.gen(function* () {
       place: (bot, requestId, message) =>
         transaction(
           Effect.gen(function* () {
-            const source = (yield* inboxRow(requestId))?.source ?? null;
+            // A bot's message dropped by Stop after the runner took it is still a bot's, not the user's.
+            const source = (yield* inboxRow(requestId))?.source ?? (requestMessageId(requestId) === undefined ? null : "bot");
             yield* q(sql`DELETE FROM inbox WHERE request_id = ${requestId}`);
             const about = source === "bot" ? requestMessageId(requestId) : undefined;
             const peer = about === undefined ? undefined : yield* botMessage(about);
@@ -995,16 +1001,21 @@ const make = Effect.gen(function* () {
           const message = about === undefined ? undefined : yield* botMessage(about);
           return message ? { chain: message.chain, hop: message.hop } : undefined;
         }),
-      repeatedInChain: (chain, sender, recipient, text) =>
-        Effect.map(
-          first(sql`SELECT 1 AS one FROM bot_messages WHERE chain = ${chain} AND sender = ${sender} AND recipient = ${recipient} AND text = ${text}`),
-          (row) => row !== undefined,
-        ),
       sendBotMessage: (message) =>
         transaction(
           Effect.gen(function* () {
             const known = yield* first(sql`SELECT * FROM bot_messages WHERE key = ${message.key}`);
             if (known) return { known: botMessageOf(known) };
+            if (message.replyTo === null) {
+              const { sender, recipient, text } = message;
+              const repeated = message.chain
+                ? yield* first(
+                    sql`SELECT 1 AS one FROM bot_messages WHERE chain = ${message.chain.chain} AND sender = ${sender} AND recipient = ${recipient} AND text = ${text}`,
+                  )
+                : yield* first(sql`SELECT 1 AS one FROM bot_messages WHERE hop = 1 AND sender = ${sender} AND recipient = ${recipient} AND text = ${text}
+                    AND at >= COALESCE((SELECT MAX(at) FROM entries WHERE bot = ${sender} AND kind = 'user' AND source IS NULL), 0)`);
+              if (repeated) return { repeated: true as const };
+            }
             if (message.replyTo !== null) {
               const answered = yield* rows(sql`UPDATE bot_messages SET state = 'replied' WHERE id = ${message.replyTo} AND state = 'open' RETURNING id`);
               if (!answered.length) return { taken: (yield* botMessage(message.replyTo))! };

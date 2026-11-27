@@ -26,8 +26,8 @@ export type CollarDaemon = {
   readonly tasks?: Tasks | undefined;
   readonly changed: (bot: number) => Effect.Effect<void>;
   readonly toolsOf: (bot: number) => readonly TopTool[];
-  /** The bots there are now, deleted ones gone. */
-  readonly roster: () => readonly RosterBot[];
+  /** The bots there are now, deleted ones gone, named as their SOUL.md says now. */
+  readonly roster: Effect.Effect<readonly RosterBot[]>;
   /** Hands a row just queued to its bot. */
   readonly deliver: (row: InboxRow) => Effect.Effect<void>;
 };

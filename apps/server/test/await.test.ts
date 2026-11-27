@@ -252,7 +252,7 @@ const collarOf = (h: Harness) => ({
   asks: h.daemon.asks,
   changed: h.daemon.changed,
   toolsOf: h.daemon.toolsOf,
-  roster: () => [],
+  roster: Effect.succeed([]),
   deliver: () => Effect.void,
 });
 const backgroundOf = (h: Harness) => {

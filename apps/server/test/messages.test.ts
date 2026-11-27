@@ -220,6 +220,12 @@ test("the same text to the same bot twice in one exchange is refused, and so are
   assert.match(repeat.text, /already sent Bolt exactly this in this exchange/);
 
   assert.match((await call(h, bolt, { reply_to: 1, text: "again" })).text, /already replied to message 1/);
+
+  // Twice from one turn the user started: the second is the same message, though neither carries a chain on.
+  await submit(h, atlas, "ask Bolt");
+  await read(h, atlas);
+  assert.equal((await call(h, atlas, { to: "Bolt", text: "deploy?" })).isError, false);
+  assert.match((await call(h, atlas, { to: "Bolt", text: "deploy?" })).text, /already sent Bolt exactly this/);
   assert.match((await call(h, atlas, { reply_to: 2, text: "thanks" })).text, /Bolt's reply to you, which takes none/);
   assert.match((await call(h, atlas, { reply_to: 1, text: "mine" })).text, /no bot sent you a message 1/);
   assert.match((await call(h, atlas, { reply_to: 99, text: "?" })).text, /no bot sent you a message 99/);
@@ -242,14 +248,15 @@ test("names resolve case-insensitively; an unknown or shared name is refused wit
     asks: h.daemon.asks,
     changed: h.daemon.changed,
     toolsOf: h.daemon.toolsOf,
-    roster: () => roster,
+    roster: Effect.succeed(roster),
     deliver: () => Effect.void,
   })[0]!;
   const run = async (args: Record<string, unknown>) => (await h.run(tool.run(args, { key: `r${++sent}`, bot: atlas }))).content[0] as { text: string };
   assert.match((await run({ to: "Nobody", text: "hi" })).text, /^Not sent: there's no bot named Nobody\. You can message: Clio, Clio, Bolt\.$/);
-  assert.match((await run({ to: "clio", text: "hi" })).text, /2 bots are named Clio/);
+  assert.match((await run({ to: "clio", text: "hi" })).text, /2 bots are named Clio.* You can message: Clio, Clio, Bolt\.$/);
   assert.match((await run({ text: "hi" })).text, /say who it's for with `to`\. You can message: Clio, Clio, Bolt\./);
-  assert.match((await run({ to: "@BOLT", text: "hi" })).text, /^Sent message 1 to Bolt\./);
+  assert.match((await run({ to: "atlas", text: "hi" })).text, /^Not sent: that's you\. You can message: Clio, Clio, Bolt\.$/);
+  assert.match((await run({ to: "BOLT", text: "hi" })).text, /^Sent message 1 to Bolt\./);
 
   assert.equal(rosterSection(roster, atlas)?.split("\n").slice(2, -1).join("\n"), "- Clio: Writes.\n- Clio: Also writes.\n- Bolt: Builds.");
   assert.equal(rosterSection([roster[0]!], atlas), null, "a bot alone has no one to message, and no section");
@@ -284,6 +291,11 @@ test("when the user stops the recipient before it replied, the sender hears so o
   ]);
   assert.match((await call(h, bolt, { reply_to: 2, text: "late" })).text, /ended when the user stopped you/);
 
+  // Taken by Bolt's runner just before Stop dropped it, the message is still placed as a bot's, not the user's.
+  const late = await h.run(h.store.place(bolt, "bot:1", { role: "user", content: "taken", timestamp: 2 }));
+  assert.equal(late.source, "bot");
+  assert.ok(late.kind === "user" && late.message.peer?.bot === atlas);
+
   await read(h, atlas);
   const outcome = (await h.entries(atlas)).find((e) => e.kind === "user");
   assert.deepEqual(outcome?.kind === "user" ? outcome.message.peer : undefined, { id: 1, bot: bolt, name: "Bolt", outcome: "stopped" });
@@ -307,7 +319,12 @@ test("when the recipient is deleted before it replied, the sender hears so once;
   const reply = await call(h, atlas, { reply_to: 2, text: "pong" });
   assert.equal(reply.isError, true);
   assert.match(reply.text, /Clio has been deleted, so there's no one to reply to/);
-  assert.match((await call(h, atlas, { to: "Bolt", text: "hello?" })).text, /there's no bot named Bolt\. There are no other bots to message\./);
+  // SQLite gives a new bot the deleted one's id once it's purged; Clio's message still can't reach it.
+  await until("Clio to be purged", async () => (await h.run(h.store.bot(clio))) === undefined);
+  const made = [await h.run(h.daemon.createBot("Dax", "")), await h.run(h.daemon.createBot("Eve", ""))];
+  assert.ok(made.includes(clio), "Clio's id is reused");
+  assert.match((await call(h, atlas, { reply_to: 2, text: "pong" })).text, /Clio has been deleted/);
+  assert.match((await call(h, atlas, { to: "Bolt", text: "hello?" })).text, /there's no bot named Bolt\. You can message: Dax, Eve\./);
 });
 
 test("a Claude bot messages and replies the same way, through Top's tools over MCP", async () => {
