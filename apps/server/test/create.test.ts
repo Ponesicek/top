@@ -134,6 +134,18 @@ test("a creation a restart cut off after the files were written is finished by t
   assert.equal(readFileSync(join(folderOf(h, "Nova"), "AGENTS.md"), "utf8"), "Cite lines.\n");
 });
 
+test("a call that reserved a folder and stopped before writing can't adopt what a later call wrote there", async () => {
+  const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
+  await h.run(h.store.reserveCreation("1:4:call_a", h.bot, folderOf(h, "Nova")));
+  // A later call finds the folder empty, takes it, writes the files and stops before saving the bot.
+  await h.run(h.store.reserveCreation("1:9:call_b", h.bot, folderOf(h, "Nova")));
+  mkdirSync(folderOf(h, "Nova"), { recursive: true });
+  writeFileSync(join(folderOf(h, "Nova"), "SOUL.md"), "# Nova\n\nReviews.\n");
+  const first = await call(h, h.bot, { name: "Nova", purpose: "Reviews." }, "1:4:call_a");
+  assert.equal(first.isError, true);
+  assert.equal((await call(h, h.bot, { name: "Nova", purpose: "Reviews." }, "1:9:call_b")).isError, false);
+});
+
 test("deleting a bot it made gives the maker no slot back, and running the call again doesn't make it again", async () => {
   const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
   for (let i = 1; i <= MAX_MADE_SINCE_USER; i++) await call(h, h.bot, { name: `Helper ${i}`, purpose: "Helps." }, `make-${i}`);
