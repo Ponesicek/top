@@ -83,8 +83,10 @@ export const createGroup: CollarGroup = (daemon) => {
               return refused(
                 `Not created: you've made ${MAX_MADE_SINCE_USER} bots since the user last wrote to you, the most Top allows. Tell the user why you need another; they can ask you to.`,
               );
-            const purpose = args.purpose.trim();
+            // One plain paragraph: it's SOUL.md's first, which the sidebar and every bot's <bots> show.
+            const purpose = args.purpose.trim().replace(/\s+/g, " ");
             if (!purpose) return refused("Not created: say what it's for with `purpose`.");
+            if (/^(#|<!--|---|```)/.test(purpose)) return refused("Not created: write `purpose` as a plain sentence; put headings and the rest in `soul`.");
             if (purpose.length > MAX_BOT_DESCRIPTION)
               return refused(`Not created: keep \`purpose\` under ${MAX_BOT_DESCRIPTION + 1} characters; put more in \`soul\`.`);
             const made = yield* Effect.result(

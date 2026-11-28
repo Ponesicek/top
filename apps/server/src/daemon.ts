@@ -526,10 +526,12 @@ const make = Effect.gen(function* () {
         if (Buffer.byteLength(content) > MAX_CONTEXT_FILE_BYTES)
           return yield* new BotError({ message: `Keep ${file} under ${MAX_CONTEXT_FILE_BYTES / 1024} KB: it goes with every request the bot makes.` });
       const path = folder({ name });
+      // A bot's call is recorded before it writes the files, so one cut off by a restart before the bot was saved finds
+      // its own files when it runs again; no other call takes them.
+      const resuming = extra.origin ? yield* store.reserveCreation(extra.origin.key, extra.origin.by) : false;
       const left = yield* hasContextFiles(path).pipe(Effect.provideService(FileSystem.FileSystem, fs));
-      // A bot's call cut off by a restart after it wrote these files but before the bot was saved finds its own files when it runs again.
       const own =
-        extra.origin !== undefined &&
+        resuming &&
         left.length > 0 &&
         (yield* Effect.forEach(left, (file) => readContextFile(path, file)).pipe(Effect.provideService(FileSystem.FileSystem, fs))).every(
           (file) => file.content === meant[file.name],

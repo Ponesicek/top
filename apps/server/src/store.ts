@@ -372,14 +372,19 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     yield* sql`CREATE INDEX IF NOT EXISTS bot_messages_open ON bot_messages(recipient, state)`;
     yield* sql`CREATE INDEX IF NOT EXISTS bot_messages_chain ON bot_messages(chain)`;
   }),
-  // Bots made by bots (collar__create_bot): who made it (and as what name), and the call that did, so a replay makes none.
+  // Bots made by bots (collar__create_bot): who made it (and as what name). Each making call is kept by its key, apart
+  // from the bots (purging a deleted bot leaves it), so a replay makes none and deleting one doesn't free a slot.
   "12_bot_created_by": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* addColumn("bots", "created_by", "INTEGER");
     yield* addColumn("bots", "created_by_name", "TEXT");
-    yield* addColumn("bots", "created_key", "TEXT");
-    yield* addColumn("bots", "created_at", "INTEGER");
-    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS bots_created_key ON bots(created_key)`;
+    yield* sql`CREATE TABLE IF NOT EXISTS bot_creations (
+      key TEXT PRIMARY KEY,
+      creator INTEGER NOT NULL,
+      bot INTEGER,
+      at INTEGER NOT NULL
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS bot_creations_creator ON bot_creations(creator, at)`;
   }),
 };
 
@@ -466,8 +471,10 @@ export class Store extends Context.Service<
     readonly bots: Effect.Effect<BotRow[]>;
     readonly bot: (id: number) => Effect.Effect<BotRow | undefined>;
     readonly createBot: (name: string, model: string, avatar?: number, origin?: BotOrigin) => Effect.Effect<number>;
-    /** The bot a collar__create_bot call with this key made, deleted or not. */
+    /** The bot a collar__create_bot call with this key made, deleted (or purged) or not. */
     readonly botMadeBy: (key: string) => Effect.Effect<{ readonly id: number; readonly deleted: boolean } | undefined>;
+    /** Records a collar__create_bot call before it writes the bot's files; true if it was recorded already (a replay). */
+    readonly reserveCreation: (key: string, creator: number) => Effect.Effect<boolean>;
     /** How many bots this one has made since the user last wrote to it (ever, if they never have). */
     readonly madeSinceUser: (bot: number) => Effect.Effect<number>;
     /** Lists the bots in this order from now on; a bot made later goes after them. */
@@ -720,19 +727,30 @@ const make = Effect.gen(function* () {
       bot: (bot) => Effect.map(first(sql`SELECT * FROM bots WHERE id = ${bot}`), (row) => row && botOf(row)),
       createBot: (name, model, avatar = 0, origin) =>
         Effect.gen(function* () {
-          const at = yield* now;
-          const row = yield* first(sql`INSERT INTO bots (name, avatar, model, created_by, created_by_name, created_key, created_at)
-            VALUES (${name}, ${avatar}, ${model}, ${origin?.by ?? null}, ${origin?.byName ?? null}, ${origin?.key ?? null}, ${at}) RETURNING id`);
-          return Number(row!.id);
+          const row = yield* first(sql`INSERT INTO bots (name, avatar, model, created_by, created_by_name)
+            VALUES (${name}, ${avatar}, ${model}, ${origin?.by ?? null}, ${origin?.byName ?? null}) RETURNING id`);
+          const id = Number(row!.id);
+          if (origin)
+            yield* q(sql`INSERT INTO bot_creations (key, creator, bot, at) VALUES (${origin.key}, ${origin.by}, ${id}, ${yield* now})
+              ON CONFLICT(key) DO UPDATE SET bot = excluded.bot, at = excluded.at`);
+          return id;
         }),
       botMadeBy: (key) =>
-        Effect.map(first(sql`SELECT id, deleted FROM bots WHERE created_key = ${key}`), (row) =>
-          row ? { id: Number(row.id), deleted: Number(row.deleted) === 1 } : undefined,
+        Effect.map(
+          first(sql`SELECT bot_creations.bot AS id, bots.deleted AS deleted FROM bot_creations
+            LEFT JOIN bots ON bots.id = bot_creations.bot WHERE key = ${key} AND bot_creations.bot IS NOT NULL`),
+          (row) => (row ? { id: Number(row.id), deleted: row.deleted == null || Number(row.deleted) === 1 } : undefined),
         ),
+      reserveCreation: (key, creator) =>
+        Effect.gen(function* () {
+          const added = yield* rows(sql`INSERT INTO bot_creations (key, creator, bot, at) VALUES (${key}, ${creator}, NULL, ${yield* now})
+            ON CONFLICT(key) DO NOTHING RETURNING key`);
+          return added.length === 0;
+        }),
       madeSinceUser: (bot) =>
         Effect.map(
-          first(sql`SELECT COUNT(*) AS n FROM bots WHERE created_by = ${bot}
-            AND created_at >= COALESCE((SELECT MAX(at) FROM entries WHERE bot = ${bot} AND kind = 'user' AND source IS NULL), 0)`),
+          first(sql`SELECT COUNT(*) AS n FROM bot_creations WHERE creator = ${bot} AND bot IS NOT NULL
+            AND at >= COALESCE((SELECT MAX(at) FROM entries WHERE bot = ${bot} AND kind = 'user' AND source IS NULL), 0)`),
           (row) => Number(row?.n ?? 0),
         ),
       legacySouls: Effect.map(

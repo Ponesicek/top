@@ -120,20 +120,39 @@ test("a call run again, before or after a restart, finds the bot it made and mak
   assert.equal(await h.run(h.store.madeSinceUser(atlas)), 1);
 });
 
-test("a creation a restart cut off after the files were written is finished by the call run again; someone else's files aren't taken", async () => {
+test("a creation a restart cut off after the files were written is finished by the same call run again; no other call takes the files", async () => {
   const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
-  // What the call had written before the daemon died: the files, not the bot.
+  // What the call had done before the daemon died: recorded itself and written the files, not saved the bot.
+  await h.run(h.store.reserveCreation("1:4:call_a", h.bot));
   mkdirSync(folderOf(h, "Nova"), { recursive: true });
   writeFileSync(join(folderOf(h, "Nova"), "SOUL.md"), "# Nova\n\nReviews.\n");
-  const done = await call(h, h.bot, { name: "Nova", purpose: "Reviews.", agents: "Cite lines." });
+  const other = await call(h, h.bot, { name: "Nova", purpose: "Reviews.", agents: "Cite lines." }, "1:9:call_b");
+  assert.equal(other.isError, true, "another call with the same name and purpose doesn't adopt them");
+  assert.match(other.text, /still has SOUL\.md from an earlier bot/);
+  const done = await call(h, h.bot, { name: "Nova", purpose: "Reviews.", agents: "Cite lines." }, "1:4:call_a");
   assert.equal(done.isError, false, done.text);
   assert.equal(readFileSync(join(folderOf(h, "Nova"), "AGENTS.md"), "utf8"), "Cite lines.\n");
+});
 
-  mkdirSync(folderOf(h, "Vega"), { recursive: true });
-  writeFileSync(join(folderOf(h, "Vega"), "SOUL.md"), "# Vega\n\nSomeone else's.\n");
-  const taken = await call(h, h.bot, { name: "Vega", purpose: "Reviews." });
-  assert.equal(taken.isError, true);
-  assert.match(taken.text, /still has SOUL\.md from an earlier bot/);
+test("deleting a bot it made gives the maker no slot back, and running the call again doesn't make it again", async () => {
+  const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
+  for (let i = 1; i <= MAX_MADE_SINCE_USER; i++) await call(h, h.bot, { name: `Helper ${i}`, purpose: "Helps." }, `make-${i}`);
+  await h.run(h.daemon.deleteBot(named(h, "Helper 1")!.id));
+  assert.equal((await call(h, h.bot, { name: "Another", purpose: "Helps." })).isError, true, "still capped");
+  const replayed = await call(h, h.bot, { name: "Helper 1", purpose: "Helps." }, "make-1");
+  assert.equal(replayed.isError, false);
+  assert.match(replayed.text, /deleted since/);
+  assert.equal(named(h, "Helper 1"), undefined);
+});
+
+test("the purpose is kept as one plain paragraph, so the sidebar and rosters show all of it", async () => {
+  const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
+  const made = await call(h, h.bot, { name: "Nova", purpose: "Reviews pull requests.\n\nAnd flags risky ones." });
+  assert.equal(made.isError, false, made.text);
+  assert.equal(named(h, "Nova")?.description, "Reviews pull requests. And flags risky ones.");
+  const heading = await call(h, h.bot, { name: "Vega", purpose: "# Vega\nReviews." });
+  assert.equal(heading.isError, true);
+  assert.match(heading.text, /plain sentence/);
 });
 
 test(`a bot made by a bot can't make bots, and a bot makes at most ${MAX_MADE_SINCE_USER} since the user last wrote`, async () => {
