@@ -332,6 +332,16 @@ export const BotMessageSent = Struct({
 });
 export type BotMessageSent = typeof BotMessageSent.Type;
 
+/** A bot this one made with collar__create_bot, as its call's receipt shows it. */
+export const CreatedBot = Struct({
+  id: BotId,
+  name: Schema.String,
+  /** What it's for (its SOUL.md's first paragraph), cut short. */
+  purpose: Schema.String,
+  avatar: Optional(Schema.Int),
+});
+export type CreatedBot = typeof CreatedBot.Type;
+
 export const Entry = Schema.Union([
   Struct({
     ...entryBase,
@@ -367,6 +377,7 @@ export const Entry = Schema.Union([
     ask: Optional(Ask),
     agent: Optional(AgentSpawn),
     botMessage: Optional(BotMessageSent),
+    createdBot: Optional(CreatedBot),
   }),
   Struct({ ...entryBase, kind: Schema.Literal("answer"), request: Schema.Int, answer: AskOutcome, reply: Optional(QuestionReply) }),
   Struct({ ...entryBase, kind: Schema.Literal("notice"), text: Schema.String }),

@@ -29,6 +29,7 @@ function estimate(row: DisplayRow | undefined): number {
   if (row.kind === "agent") return 76;
   if (row.kind === "peer") return row.peer.outcome ? 52 : 72 + Math.ceil(row.text.length / 90) * 22;
   if (row.kind === "botMessage") return 64;
+  if (row.kind === "createdBot") return 76;
   if (row.kind === "taskQuestion") return 140;
   return 48;
 }

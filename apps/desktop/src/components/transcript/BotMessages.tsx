@@ -1,5 +1,5 @@
 import type { BotId } from "@top/client";
-import { CornerUpLeft, Send } from "lucide-react";
+import { ChevronRight, CornerUpLeft, Send, UserPlus } from "lucide-react";
 import { memo } from "react";
 import { cn } from "../../lib/utils.ts";
 import { openBot } from "../../openBot.ts";
@@ -10,6 +10,7 @@ import { DIVIDER, time } from "./parts.tsx";
 
 type PeerRow = Extract<DisplayRow, { kind: "peer" }>;
 type SentRow = Extract<DisplayRow, { kind: "botMessage" }>;
+type CreatedRow = Extract<DisplayRow, { kind: "createdBot" }>;
 
 /** The bot as it is now (its name and icon may have changed), or as the message named it once it's been deleted. */
 function useBotNamed(id: BotId, name: string) {
@@ -83,6 +84,47 @@ export const SentCard = memo(function SentCard({ row, first }: { row: SentRow; f
           {message.text}
         </p>
       </div>
+    </div>
+  );
+});
+
+/** A bot this bot made: its icon, name and purpose, and a way to open it while it's there. */
+export const CreatedCard = memo(function CreatedCard({ row, first }: { row: CreatedRow; first: boolean }) {
+  const made = row.bot;
+  const bot = useRoster().find((b) => b.id === made.id);
+  const name = bot?.name ?? made.name;
+  const purpose = made.purpose;
+  const body = (
+    <>
+      <div className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
+        <UserPlus size={13} className="flex-none" aria-hidden />
+        <span className="min-w-0 truncate">{bot ? "Created a bot" : "Created a bot, since deleted"}</span>
+      </div>
+      <div className="flex min-w-0 items-center gap-2.5 pt-0.5">
+        <Avatar name={name} avatar={bot ? bot.avatar : made.avatar} size="sm" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate font-medium text-foreground">{name}</span>
+          {purpose && <span className="line-clamp-2 text-small text-muted-foreground [overflow-wrap:anywhere]">{purpose}</span>}
+        </div>
+        {bot && <ChevronRight size={15} className="flex-none text-muted-foreground" aria-hidden />}
+      </div>
+    </>
+  );
+  const card = "flex w-fit max-w-[min(80%,420px)] min-w-[min(100%,15rem)] flex-col gap-0.5 rounded-[10px] bg-chat-in/75 px-2.75 py-1.5 text-left shadow-bubble";
+  return (
+    <div className={cn("pl-2", first ? "pt-2.5" : "pt-0.75")} data-created={made.id}>
+      {bot ? (
+        <button
+          type="button"
+          className={cn(card, "cursor-pointer outline-none hover:bg-chat-in focus-visible:ring-2 focus-visible:ring-ring")}
+          title={`Open ${name}`}
+          onClick={() => openBot(made.id)}
+        >
+          {body}
+        </button>
+      ) : (
+        <div className={card}>{body}</div>
+      )}
     </div>
   );
 });

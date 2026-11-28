@@ -254,6 +254,7 @@ const collarOf = (h: Harness) => ({
   toolsOf: h.daemon.toolsOf,
   roster: Effect.succeed([]),
   deliver: () => Effect.void,
+  createBot: h.daemon.createBot,
 });
 const backgroundOf = (h: Harness) => {
   const tool = backgroundGroup(collarOf(h))[0]!;

@@ -371,3 +371,21 @@ describe("bot-to-bot rows", () => {
     expect(displayRows(committedRows([call, refused]), true).map((r) => r.kind)).toEqual(["toolgroup"]);
   });
 });
+
+describe("a bot this bot made", () => {
+  it("is a card in place of its tool step, tool steps shown or not; a refused one is an ordinary failed step", () => {
+    const TOOL = "collar__create_bot";
+    const call = entry({ kind: "assistant", text: "", tools: [{ id: "call_3", name: TOOL, summary: "name: Nova" }] });
+    const made = entry({
+      kind: "tool",
+      toolCallId: "call_3",
+      name: TOOL,
+      text: "Created Nova (bot 9).",
+      createdBot: { id: 9, name: "Nova", purpose: "Reviews pull requests." },
+    });
+    const refused = entry({ kind: "tool", toolCallId: "call_3", name: TOOL, text: "Not created: There's already a bot named Nova.", isError: true });
+    for (const showTools of [true, false])
+      expect(displayRows(committedRows([call, made]), showTools)).toMatchObject([{ kind: "createdBot", bot: { id: 9, name: "Nova" } }]);
+    expect(displayRows(committedRows([call, refused]), true).map((r) => r.kind)).toEqual(["toolgroup"]);
+  });
+});

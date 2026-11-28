@@ -1,5 +1,7 @@
+import type { BotError } from "@top/protocol";
 import type * as Effect from "effect/Effect";
 import type { Asks } from "../asks.ts";
+import type { NewBotExtra } from "../daemon.ts";
 import type { Jobs } from "../jobs.ts";
 import type { InboxRow, Store } from "../store.ts";
 import type { Tasks } from "../tasks/coordinator.ts";
@@ -7,6 +9,7 @@ import type { TopTool } from "../tools.ts";
 import type { WakeClock } from "../wakes.ts";
 import { asksGroup } from "./asks.ts";
 import { backgroundGroup } from "./background.ts";
+import { createGroup } from "./create.ts";
 import { jobsGroup } from "./jobs.ts";
 import { messagesGroup } from "./messages.ts";
 import { COLLAR } from "./names.ts";
@@ -30,11 +33,13 @@ export type CollarDaemon = {
   readonly roster: Effect.Effect<readonly RosterBot[]>;
   /** Hands a row just queued to its bot. */
   readonly deliver: (row: InboxRow) => Effect.Effect<void>;
+  /** The daemon's own way to make a bot, the one the app's New bot uses. */
+  readonly createBot: (name: string, description: string, avatar?: number, model?: string, extra?: NewBotExtra) => Effect.Effect<number, BotError>;
 };
 
 export type CollarGroup = (daemon: CollarDaemon) => readonly TopTool[];
 
-const GROUPS: readonly CollarGroup[] = [wakeGroup, backgroundGroup, jobsGroup, asksGroup, tasksGroup, messagesGroup];
+const GROUPS: readonly CollarGroup[] = [wakeGroup, backgroundGroup, jobsGroup, asksGroup, tasksGroup, messagesGroup, createGroup];
 
 export function collarTools(daemon: CollarDaemon): TopTool[] {
   const tools = GROUPS.flatMap((group) => group(daemon)).map((tool): TopTool => ({ ...tool, name: `${COLLAR}__${tool.name}` }));
