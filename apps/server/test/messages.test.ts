@@ -250,6 +250,7 @@ test("names resolve case-insensitively; an unknown or shared name is refused wit
     toolsOf: h.daemon.toolsOf,
     roster: Effect.succeed(roster),
     deliver: () => Effect.void,
+    createBot: h.daemon.createBot,
   })[0]!;
   const run = async (args: Record<string, unknown>) => (await h.run(tool.run(args, { key: `r${++sent}`, bot: atlas }))).content[0] as { text: string };
   assert.match((await run({ to: "Nobody", text: "hi" })).text, /^Not sent: there's no bot named Nobody\. You can message: Clio, Clio, Bolt\.$/);

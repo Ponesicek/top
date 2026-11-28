@@ -7,6 +7,7 @@ import type {
   BotSummary,
   Citation,
   ConversationSnapshot,
+  CreatedBot,
   Entry,
   FileChange,
   Gap,
@@ -68,6 +69,8 @@ export type Row =
   | { readonly kind: "peer"; readonly key: string; readonly peer: PeerMessage; readonly text: string; readonly at: number }
   /** A message this bot sent another (collar__message_bot's receipt). */
   | { readonly kind: "botMessage"; readonly key: string; readonly message: BotMessageSent; readonly at: number }
+  /** A bot this bot made (collar__create_bot's receipt). */
+  | { readonly kind: "createdBot"; readonly key: string; readonly bot: CreatedBot; readonly at: number }
   | { readonly kind: "taskQuestion"; readonly key: string; readonly task: WaitingTask }
   | { readonly kind: "files"; readonly key: string; readonly seq: number; readonly files: readonly FileChange[] }
   | { readonly kind: "working"; readonly key: "working" };
@@ -186,6 +189,18 @@ function botMessageRow(entry: ToolEntry, message: BotMessageSent): BotMessageRow
   return row;
 }
 
+type CreatedBotRow = Extract<Row, { kind: "createdBot" }>;
+const createdBotRows = new WeakMap<ToolEntry, CreatedBotRow>();
+
+function createdBotRow(entry: ToolEntry, bot: CreatedBot): CreatedBotRow {
+  let row = createdBotRows.get(entry);
+  if (!row) {
+    row = { kind: "createdBot", key: `e${entry.seq}`, bot, at: entry.at };
+    createdBotRows.set(entry, row);
+  }
+  return row;
+}
+
 type AgentRow = Extract<Row, { kind: "agent" }>;
 const agentRows = new WeakMap<ToolEntry, AgentRow>();
 
@@ -212,6 +227,7 @@ export function committedRows(items: readonly TranscriptItem[]): Row[] {
     else if (item.entry.kind === "tool" && item.entry.ask) rows.push(askRow(item.entry, item.entry.ask, settled.get(item.entry.ask.id)));
     else if (item.entry.kind === "tool" && item.entry.agent && !item.entry.isError) rows.push(agentRow(item.entry, item.entry.agent));
     else if (item.entry.kind === "tool" && item.entry.botMessage) rows.push(botMessageRow(item.entry, item.entry.botMessage));
+    else if (item.entry.kind === "tool" && item.entry.createdBot) rows.push(createdBotRow(item.entry, item.entry.createdBot));
     else rows.push(rowForEntry(item.entry));
   }
   for (let i = 0; i < rows.length; i++) {
@@ -314,6 +330,7 @@ export function author(row: DisplayRow): "user" | "bot" | undefined {
     row.kind === "ask" ||
     row.kind === "agent" ||
     row.kind === "botMessage" ||
+    row.kind === "createdBot" ||
     row.kind === "taskQuestion"
   )
     return "bot";

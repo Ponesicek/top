@@ -1,4 +1,4 @@
-import { AgentSpawn, Ask, BotMessageSent, type Entry, type ToolCallView } from "@top/protocol";
+import { AgentSpawn, Ask, BotMessageSent, CreatedBot, type Entry, type ToolCallView } from "@top/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { peerBody } from "./botMessages.ts";
@@ -23,6 +23,7 @@ export function summarize(args: unknown): string {
 const askOf = Schema.decodeUnknownOption(Schema.Struct({ ask: Ask }));
 const agentOf = Schema.decodeUnknownOption(Schema.Struct({ agent: AgentSpawn }));
 const botMessageOf = Schema.decodeUnknownOption(Schema.Struct({ botMessage: BotMessageSent }));
+const createdBotOf = Schema.decodeUnknownOption(Schema.Struct({ createdBot: CreatedBot }));
 const legacyTaskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
 const legacyStartOf = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -104,6 +105,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       const ask = Option.getOrUndefined(askOf(message.details))?.ask;
       const agent = Option.getOrUndefined(agentOf(message.details))?.agent ?? legacyAgent(message.details, text);
       const botMessage = message.isError ? undefined : Option.getOrUndefined(botMessageOf(message.details))?.botMessage;
+      const createdBot = message.isError ? undefined : Option.getOrUndefined(createdBotOf(message.details))?.createdBot;
       return {
         ...base,
         kind: "tool",
@@ -116,6 +118,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         ...(ask ? { ask } : {}),
         ...(agent ? { agent } : {}),
         ...(botMessage ? { botMessage } : {}),
+        ...(createdBot ? { createdBot } : {}),
       };
     }
   }

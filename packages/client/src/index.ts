@@ -53,6 +53,7 @@ export type {
   Citation,
   ContextFileName,
   ContextFileView,
+  CreatedBot,
   Entry,
   FileChange,
   FileView,

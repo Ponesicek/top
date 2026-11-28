@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils.ts";
 import { renderSegments } from "../../markdown.ts";
 import { author, type DisplayRow, rowTime, type ToolGroupRow } from "../../rows.ts";
 import { statusLabel } from "../Sidebar.tsx";
-import { PeerBubble, SentCard } from "./BotMessages.tsx";
+import { CreatedCard, PeerBubble, SentCard } from "./BotMessages.tsx";
 import { MessageAttachments } from "./MessageAttachments.tsx";
 import {
   AnswerError,
@@ -209,6 +209,8 @@ export const renderChatRow: RowRenderer = (rows, index) => {
         <PeerBubble row={row} first={first} />
       ) : row.kind === "botMessage" ? (
         <SentCard row={row} first={first} />
+      ) : row.kind === "createdBot" ? (
+        <CreatedCard row={row} first={first} />
       ) : null}
     </>
   );
