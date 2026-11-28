@@ -753,7 +753,7 @@ const make = Effect.gen(function* () {
             // The folder is this call's from now on: an earlier call that reserved it and never saved its bot can't adopt it.
             yield* q(sql`UPDATE bot_creations SET folder = NULL WHERE folder = ${folder} AND bot IS NULL AND key != ${key}`);
             yield* q(sql`INSERT INTO bot_creations (key, creator, bot, at, folder) VALUES (${key}, ${creator}, NULL, ${yield* now}, ${folder})
-              ON CONFLICT(key) DO NOTHING`);
+              ON CONFLICT(key) DO UPDATE SET folder = excluded.folder WHERE bot_creations.bot IS NULL`);
           }),
         ),
       madeSinceUser: (bot) =>
