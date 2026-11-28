@@ -123,7 +123,7 @@ test("a call run again, before or after a restart, finds the bot it made and mak
 test("a creation a restart cut off after the files were written is finished by the same call run again; no other call takes the files", async () => {
   const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
   // What the call had done before the daemon died: recorded itself and written the files, not saved the bot.
-  await h.run(h.store.reserveCreation("1:4:call_a", h.bot));
+  await h.run(h.store.reserveCreation("1:4:call_a", h.bot, folderOf(h, "Nova")));
   mkdirSync(folderOf(h, "Nova"), { recursive: true });
   writeFileSync(join(folderOf(h, "Nova"), "SOUL.md"), "# Nova\n\nReviews.\n");
   const other = await call(h, h.bot, { name: "Nova", purpose: "Reviews.", agents: "Cite lines." }, "1:9:call_b");
@@ -143,6 +143,21 @@ test("deleting a bot it made gives the maker no slot back, and running the call 
   assert.equal(replayed.isError, false);
   assert.match(replayed.text, /deleted since/);
   assert.equal(named(h, "Helper 1"), undefined);
+});
+
+test("a bot that takes a deleted one's id is neither what a call made nor charged for what the deleted one made", async () => {
+  const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
+  const orion = await h.run(h.daemon.createBot("Orion", "Plans."));
+  await call(h, orion, { name: "Pip", purpose: "Helps." }, "make-pip");
+  const pip = named(h, "Pip")!.id;
+  // Both gone and purged, the next bots made get their ids back.
+  await h.run(h.daemon.deleteBot(pip));
+  await h.run(h.daemon.deleteBot(orion));
+  const vega = await h.run(h.daemon.createBot("Vega", "Watches."));
+  const lyra = await h.run(h.daemon.createBot("Lyra", "Writes."));
+  assert.deepEqual([vega, lyra], [orion, pip], "the ids were reused (else this test proves nothing)");
+  assert.equal(await h.run(h.store.madeSinceUser(vega)), 0, "Vega isn't charged for Pip");
+  assert.deepEqual(await h.run(h.store.botMadeBy("make-pip")), { id: pip, deleted: true }, "Pip's call made Pip, who's gone, not Lyra");
 });
 
 test("the purpose is kept as one plain paragraph, so the sidebar and rosters show all of it", async () => {
