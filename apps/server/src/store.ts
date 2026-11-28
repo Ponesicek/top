@@ -373,7 +373,7 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
     yield* sql`CREATE INDEX IF NOT EXISTS bot_messages_chain ON bot_messages(chain)`;
   }),
   // Bots made by bots (collar__create_bot): who made it (and as what name). Each making call is kept by its key, apart
-  // from the bots (purging a deleted bot leaves it), so a replay makes none and deleting one doesn't free a slot.
+  // from the bots (purging a deleted bot leaves it), so a replay makes none.
   "12_bot_created_by": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* addColumn("bots", "created_by", "INTEGER");
@@ -384,11 +384,9 @@ const MIGRATIONS: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClie
       bot INTEGER,
       at INTEGER NOT NULL,
       folder TEXT,
-      -- Bot ids can be reused once a deleted bot is purged: these say the bot made, or its maker, is gone.
-      bot_deleted INTEGER NOT NULL DEFAULT 0,
-      creator_deleted INTEGER NOT NULL DEFAULT 0
+      -- Bot ids can be reused once a deleted bot is purged: this says the bot made is gone.
+      bot_deleted INTEGER NOT NULL DEFAULT 0
     )`;
-    yield* sql`CREATE INDEX IF NOT EXISTS bot_creations_creator ON bot_creations(creator, at)`;
   }),
 };
 
@@ -481,8 +479,6 @@ export class Store extends Context.Service<
     readonly creationFolder: (key: string) => Effect.Effect<string | undefined>;
     /** Records a collar__create_bot call, and the empty folder it's about to write, before it writes anything. */
     readonly reserveCreation: (key: string, creator: number, folder: string) => Effect.Effect<void>;
-    /** How many bots this one has made since the user last wrote to it (ever, if they never have). */
-    readonly madeSinceUser: (bot: number) => Effect.Effect<number>;
     /** Lists the bots in this order from now on; a bot made later goes after them. */
     readonly setBotOrder: (ids: readonly number[]) => Effect.Effect<void>;
     readonly legacySouls: Effect.Effect<LegacySoul[]>;
@@ -756,12 +752,6 @@ const make = Effect.gen(function* () {
               ON CONFLICT(key) DO UPDATE SET folder = excluded.folder WHERE bot_creations.bot IS NULL`);
           }),
         ),
-      madeSinceUser: (bot) =>
-        Effect.map(
-          first(sql`SELECT COUNT(*) AS n FROM bot_creations WHERE creator = ${bot} AND creator_deleted = 0 AND bot IS NOT NULL
-            AND at >= COALESCE((SELECT MAX(at) FROM entries WHERE bot = ${bot} AND kind = 'user' AND source IS NULL), 0)`),
-          (row) => Number(row?.n ?? 0),
-        ),
       legacySouls: Effect.map(
         rows(sql`SELECT bot, legacy_souls.name, description FROM legacy_souls JOIN bots ON bots.id = legacy_souls.bot WHERE bots.deleted = 0 ORDER BY bot`),
         (r) => r.map((row) => ({ bot: Number(row.bot), name: String(row.name), description: String(row.description) })),
@@ -772,7 +762,6 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             yield* q(sql`UPDATE bots SET deleted = 1, run_active = 0, name = ${`deleted:${bot}:${randomUUID()}`} WHERE id = ${bot}`);
             yield* q(sql`UPDATE bot_creations SET bot_deleted = 1 WHERE bot = ${bot}`);
-            yield* q(sql`UPDATE bot_creations SET creator_deleted = 1 WHERE creator = ${bot}`);
             const { told } = yield* endBotMessages(bot, "deleted");
             yield* q(sql`UPDATE bot_messages SET state = 'orphaned' WHERE sender = ${bot} AND state = 'open'`);
             yield* q(sql`DELETE FROM inbox WHERE bot = ${bot}`);

@@ -6,15 +6,9 @@ import { defineTool, type ToolResult, text } from "../tools.ts";
 import type { CollarGroup, RosterBot } from "./index.ts";
 
 /**
- * Bots making bots (collar__create_bot). The daemon makes the bot at once, the same way the app's New bot does, and
- * keeps it from running away:
- *
- * - A bot another bot made can't make bots itself, so it's never more than one level deep.
- * - A bot can make at most MAX_MADE_SINCE_USER bots since the user last wrote to it; the user writing again allows more.
- *   Wakes, jobs, tasks and other bots' messages don't, so nothing but the user can keep it making bots.
+ * Bots making bots (collar__create_bot). The daemon makes the bot at once, the same way the app's New bot does, and the
+ * bot it makes is like any other: it can make bots too. Who made it is only recorded, for the "Created by" line.
  */
-export const MAX_MADE_SINCE_USER = 3;
-
 const PURPOSE_PREVIEW_CHARS = 200;
 
 const refused = (why: string): ToolResult => ({ ...text(why), isError: true });
@@ -30,7 +24,7 @@ function receipt(bot: RosterBot, avatar: number): ToolResult {
 }
 
 export const createGroup: CollarGroup = (daemon) => {
-  // One at a time, so two calls in one turn can't both slip under the limit, or race for one name.
+  // One at a time, so two calls in one turn can't race for one name.
   const making = Semaphore.makeUnsafe(1);
   return [
     defineTool({
@@ -40,7 +34,7 @@ export const createGroup: CollarGroup = (daemon) => {
         "Make a new bot for the user, a teammate on this daemon, when a task needs one with its own purpose (a reviewer, a researcher, someone to watch something). It shows in the user's sidebar at once, with its own folder and conversation.",
         "Give it a `name` and its `purpose` (one or two sentences, the line under its name in the app); `soul` adds more to its SOUL.md under that (how it works, its voice), and `agents` writes its AGENTS.md (standing instructions). Each file is at most 8 KB.",
         "It starts idle and knows nothing of your conversation, and gets the default tools only: none of your MCP servers or secrets. To give it work, message it with collar__message_bot once this returns.",
-        `You can make at most ${MAX_MADE_SINCE_USER} bots since the user last wrote to you, and a bot made by a bot can't make bots. Don't make one for what you can do yourself or what an existing bot (<bots>) is for.`,
+        "Don't make one for what you can do yourself or what an existing bot (<bots>) is for.",
       ].join(" "),
       parameters: Type.Object(
         {
@@ -73,16 +67,7 @@ export const createGroup: CollarGroup = (daemon) => {
               return receipt(made, row?.avatar ?? 0);
             }
             const me = (yield* daemon.roster).find((b) => b.id === ctx.bot);
-            const row = yield* store.bot(ctx.bot);
-            if (!me || !row) return refused("Not created: you're being deleted.");
-            if (row.createdBy !== null)
-              return refused(
-                "Not created: you were made by another bot, and bots made by bots can't make bots. Do it yourself, or tell the bot that made you what you need.",
-              );
-            if ((yield* store.madeSinceUser(ctx.bot)) >= MAX_MADE_SINCE_USER)
-              return refused(
-                `Not created: you've made ${MAX_MADE_SINCE_USER} bots since the user last wrote to you, the most Top allows. Tell the user why you need another; they can ask you to.`,
-              );
+            if (!me) return refused("Not created: you're being deleted.");
             // One plain paragraph: it's SOUL.md's first, which the sidebar and every bot's <bots> show.
             const purpose = args.purpose.trim().replace(/\s+/g, " ");
             if (!purpose) return refused("Not created: say what it's for with `purpose`.");

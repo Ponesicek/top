@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_CONTEXT_FILE_BYTES } from "@top/protocol";
 import { test } from "vitest";
-import { MAX_MADE_SINCE_USER } from "../src/collar/create.ts";
 import { fakeClaude } from "../src/fakeClaude.ts";
 import { textOf } from "../src/messages.ts";
 import { toWire } from "../src/wire.ts";
@@ -32,7 +31,6 @@ const settled = async (h: Harness) => {
 };
 const userTexts = async (h: Harness, bot: number) => (await h.entries(bot)).flatMap((e) => (e.kind === "user" ? [textOf(e.message.content)] : []));
 /** As if the user wrote to the bot (and it read it). */
-const userWrites = (h: Harness, bot: number) => h.run(h.store.append(bot, "user", { role: "user", content: "carry on", timestamp: Date.now() }));
 
 test("a bot makes a teammate with one call: it's in the sidebar at once, with its SOUL.md and AGENTS.md, then takes work by message", async () => {
   const h = await harness({ bots: ["Atlas", "Bolt"], gatherMs: 0, context: true });
@@ -117,7 +115,6 @@ test("a call run again, before or after a restart, finds the bot it made and mak
   const replayed = await call(h, atlas, args, "1:4:call_a");
   assert.deepEqual(replayed, made, "the same receipt, not 'already a bot named Nova'");
   assert.equal(h.daemon.bots().filter((b) => b.name === "Nova").length, 1);
-  assert.equal(await h.run(h.store.madeSinceUser(atlas)), 1);
 });
 
 test("a creation a restart cut off after the files were written is finished by the same call run again; no other call takes the files", async () => {
@@ -159,18 +156,17 @@ test("a call that lost its folder to a later one and takes it back can still fin
   assert.equal((await call(h, h.bot, { name: "Nova", purpose: "Reviews." }, "1:4:call_a")).isError, false);
 });
 
-test("deleting a bot it made gives the maker no slot back, and running the call again doesn't make it again", async () => {
+test("running a call again after the bot it made was deleted doesn't make it again", async () => {
   const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
-  for (let i = 1; i <= MAX_MADE_SINCE_USER; i++) await call(h, h.bot, { name: `Helper ${i}`, purpose: "Helps." }, `make-${i}`);
+  await call(h, h.bot, { name: "Helper 1", purpose: "Helps." }, "make-1");
   await h.run(h.daemon.deleteBot(named(h, "Helper 1")!.id));
-  assert.equal((await call(h, h.bot, { name: "Another", purpose: "Helps." })).isError, true, "still capped");
   const replayed = await call(h, h.bot, { name: "Helper 1", purpose: "Helps." }, "make-1");
   assert.equal(replayed.isError, false);
   assert.match(replayed.text, /deleted since/);
   assert.equal(named(h, "Helper 1"), undefined);
 });
 
-test("a bot that takes a deleted one's id is neither what a call made nor charged for what the deleted one made", async () => {
+test("a bot that takes a deleted one's id isn't what a call made", async () => {
   const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
   const orion = await h.run(h.daemon.createBot("Orion", "Plans."));
   await call(h, orion, { name: "Pip", purpose: "Helps." }, "make-pip");
@@ -181,7 +177,6 @@ test("a bot that takes a deleted one's id is neither what a call made nor charge
   const vega = await h.run(h.daemon.createBot("Vega", "Watches."));
   const lyra = await h.run(h.daemon.createBot("Lyra", "Writes."));
   assert.deepEqual([vega, lyra], [orion, pip], "the ids were reused (else this test proves nothing)");
-  assert.equal(await h.run(h.store.madeSinceUser(vega)), 0, "Vega isn't charged for Pip");
   assert.deepEqual(await h.run(h.store.botMadeBy("make-pip")), { id: pip, deleted: true }, "Pip's call made Pip, who's gone, not Lyra");
 });
 
@@ -195,35 +190,27 @@ test("the purpose is kept as one plain paragraph, so the sidebar and rosters sho
   assert.match(heading.text, /plain sentence/);
 });
 
-test(`a bot made by a bot can't make bots, and a bot makes at most ${MAX_MADE_SINCE_USER} since the user last wrote`, async () => {
+test("a bot made by a bot is like any other: it can make bots too, and nothing caps how many", async () => {
   const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
-  const atlas = h.bot;
-  for (let i = 1; i <= MAX_MADE_SINCE_USER; i++) assert.equal((await call(h, atlas, { name: `Helper ${i}`, purpose: "Helps." })).isError, false);
-  const capped = await call(h, atlas, { name: "One too many", purpose: "Helps." });
-  assert.equal(capped.isError, true);
-  assert.match(capped.text, new RegExp(`^Not created: you've made ${MAX_MADE_SINCE_USER} bots since the user last wrote to you`));
-
+  for (let i = 1; i <= 5; i++) assert.equal((await call(h, h.bot, { name: `Helper ${i}`, purpose: "Helps." })).isError, false);
   const helper = named(h, "Helper 1")!.id;
-  const nested = await call(h, helper, { name: "Grandchild", purpose: "Helps." });
-  assert.equal(nested.isError, true);
-  assert.match(nested.text, /^Not created: you were made by another bot, and bots made by bots can't make bots\./);
-
-  // The user writing to Atlas lets it make more; writing to its helper doesn't let the helper.
-  await userWrites(h, atlas);
-  await userWrites(h, helper);
-  assert.equal((await call(h, atlas, { name: "Helper 4", purpose: "Helps." })).isError, false);
-  assert.equal((await call(h, helper, { name: "Grandchild", purpose: "Helps." })).isError, true);
-  assert.equal(h.daemon.bots().length, 1 + MAX_MADE_SINCE_USER + 1);
+  const grandchild = await call(h, helper, { name: "Grandchild", purpose: "Helps." });
+  assert.equal(grandchild.isError, false, grandchild.text);
+  const row = await h.run(h.store.bot(named(h, "Grandchild")!.id));
+  assert.equal(row?.createdBy, helper, "who made it is still recorded");
+  assert.equal(row?.createdByName, "Helper 1");
+  assert.equal(h.daemon.bots().length, 1 + 5 + 1);
 });
 
-test("two calls in one turn can't both slip under the limit", async () => {
+test("two calls in one turn for the same name make one bot", async () => {
   const h = await harness({ bots: ["Atlas"], gatherMs: 60_000, context: true });
-  for (let i = 1; i < MAX_MADE_SINCE_USER; i++) await call(h, h.bot, { name: `Helper ${i}`, purpose: "Helps." });
-  const both = await Promise.all([call(h, h.bot, { name: "Last A", purpose: "Helps." }), call(h, h.bot, { name: "Last B", purpose: "Helps." })]);
+  const both = await Promise.all([call(h, h.bot, { name: "Nova", purpose: "Helps." }), call(h, h.bot, { name: "Nova", purpose: "Helps." })]);
   assert.deepEqual(
     both.map((r) => r.isError),
     [false, true],
   );
+  assert.match(both[1]!.text, /already a bot named Nova/);
+  assert.equal(h.daemon.bots().filter((b) => b.name === "Nova").length, 1);
 });
 
 test("a Claude bot makes a bot through Top's tools over MCP, and can put it on Claude Code too", async () => {
