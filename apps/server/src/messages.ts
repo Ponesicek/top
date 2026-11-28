@@ -1,5 +1,5 @@
 import type { AssistantMessage, ImageContent, SystemMessage, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { AskOutcome, Attachment, Citation, FileChange, QuestionReply, SkillUse } from "@top/protocol";
+import { AskOutcome, Attachment, Citation, FileChange, PeerMessage, QuestionReply, SkillUse } from "@top/protocol";
 import * as Schema from "effect/Schema";
 
 export interface UserText extends TextContent {
@@ -12,6 +12,8 @@ export interface UserImage extends ImageContent {
 export interface TopUserMessage extends UserMessage {
   content: string | (UserText | UserImage)[];
   readonly attachments?: readonly Attachment[];
+  /** From another bot, or about a message to one: who, for the apps. The model reads it in the text. */
+  readonly peer?: PeerMessage;
 }
 
 export type SearchItem = { readonly type: "web_search_call"; readonly id: string; readonly status: string; readonly action?: unknown };
@@ -66,6 +68,7 @@ export const UserView = Schema.Struct({
   role: Schema.Literal("user"),
   content: Schema.Union([Schema.String, Schema.Array(Schema.Union([Text, Image]))]),
   attachments: Optional(Schema.Array(Attachment)),
+  peer: Optional(PeerMessage),
   timestamp: Schema.Number,
 });
 const SearchItemView = Schema.Struct({ type: Schema.Literal("web_search_call"), id: Schema.String, status: Schema.String, action: Optional(Schema.Unknown) });

@@ -48,7 +48,7 @@ export function dayLabel(at: number): string {
 export function prevTime(rows: readonly DisplayRow[], index: number): number | undefined {
   for (let i = index - 1; i >= 0; i--) {
     const r = rows[i]!;
-    if (r.kind === "user" || r.kind === "assistant" || r.kind === "toolgroup") return r.at;
+    if (r.kind === "user" || r.kind === "assistant" || r.kind === "toolgroup" || r.kind === "peer") return r.at;
   }
   return undefined;
 }

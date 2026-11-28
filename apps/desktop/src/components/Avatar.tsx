@@ -152,6 +152,7 @@ function Eye({ kind, x, y, s }: { kind: Eyes["kind"]; x: number; y: number; s: n
 }
 
 const SIZES = {
+  xs: "size-4.5",
   sm: "size-7",
   md: "size-9",
   lg: "size-14",

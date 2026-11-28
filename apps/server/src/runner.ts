@@ -170,7 +170,12 @@ export const makeRunner = Effect.fnUntraced(function* (
         case "user": {
           const requestId = requestIds.get(message);
           const stored = requestId ? yield* store.place(id, requestId, message) : yield* store.append(id, "user", message);
-          yield* events.entry(stored);
+          if (stored) yield* events.entry(stored);
+          else {
+            // A bot's message Stop dropped after it was taken: not saved, so out of what the model is given from now on too.
+            const at = messages.indexOf(message);
+            if (at !== -1) messages.splice(at, 1);
+          }
           if (requestId) yield* events.inbox(id);
           return;
         }
@@ -276,6 +281,8 @@ export const makeRunner = Effect.fnUntraced(function* (
       yield* setStatus("thinking");
       const controller = new AbortController();
       stopRun = controller;
+      // Stopped while the run was being set up (between taking the inbox and here): Claude Code goes by the signal alone.
+      if (abortRequested) controller.abort();
       const ok = yield* Effect.gen(function* () {
         yield* loop(controller.signal, prompts);
         for (let attempt = 0; ; attempt++) {

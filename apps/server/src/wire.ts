@@ -1,6 +1,7 @@
-import { AgentSpawn, Ask, type Entry, type ToolCallView } from "@top/protocol";
+import { AgentSpawn, Ask, BotMessageSent, type Entry, type ToolCallView } from "@top/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { peerBody } from "./botMessages.ts";
 import { textOf } from "./messages.ts";
 import type { StoredEntry } from "./store.ts";
 import { searchStep } from "./websearch.ts";
@@ -21,6 +22,7 @@ export function summarize(args: unknown): string {
 
 const askOf = Schema.decodeUnknownOption(Schema.Struct({ ask: Ask }));
 const agentOf = Schema.decodeUnknownOption(Schema.Struct({ agent: AgentSpawn }));
+const botMessageOf = Schema.decodeUnknownOption(Schema.Struct({ botMessage: BotMessageSent }));
 const legacyTaskOf = Schema.decodeUnknownOption(Schema.Struct({ task: Schema.String }));
 const legacyStartOf = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -58,12 +60,15 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         ...(stored.message.reply ? { reply: stored.message.reply } : {}),
       };
     case "user": {
-      const { content, attachments } = stored.message;
+      const { content, attachments, peer } = stored.message;
       const skill = typeof content === "string" ? undefined : content.flatMap((p) => (p.type === "text" && p.skill ? [p.skill] : []))[0];
+      const said = textOf(typeof content === "string" ? content : content.filter((p) => !(p.type === "text" && (p.attachmentNote || p.skill))));
       return {
         ...base,
         kind: "user",
-        text: textOf(typeof content === "string" ? content : content.filter((p) => !(p.type === "text" && (p.attachmentNote || p.skill)))),
+        // A bot's message shows as it was sent, without the line Top put above it for the model.
+        text: peer && !peer.outcome ? peerBody(said) : said,
+        ...(peer ? { peer } : {}),
         ...(attachments?.length ? { attachments } : {}),
         ...(skill ? { skill } : {}),
         ...(stored.requestId ? { requestId: stored.requestId } : {}),
@@ -98,6 +103,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
       const cut = !full && text.length > TOOL_PREVIEW_CHARS;
       const ask = Option.getOrUndefined(askOf(message.details))?.ask;
       const agent = Option.getOrUndefined(agentOf(message.details))?.agent ?? legacyAgent(message.details, text);
+      const botMessage = message.isError ? undefined : Option.getOrUndefined(botMessageOf(message.details))?.botMessage;
       return {
         ...base,
         kind: "tool",
@@ -109,6 +115,7 @@ export function toWire(stored: StoredEntry, full = false): Entry | undefined {
         ...(stored.outcome ? { outcome: stored.outcome } : {}),
         ...(ask ? { ask } : {}),
         ...(agent ? { agent } : {}),
+        ...(botMessage ? { botMessage } : {}),
       };
     }
   }

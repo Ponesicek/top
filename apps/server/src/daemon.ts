@@ -28,7 +28,8 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import { type Asks, makeAsks } from "./asks.ts";
 import { Attachments } from "./attachments.ts";
-import { collarTools } from "./collar/index.ts";
+import { collarTools, type RosterBot } from "./collar/index.ts";
+import { rosterSection } from "./collar/messages.ts";
 import { contextSections, hasContextFiles, readContextFile, readContextFiles, saveContextFile, seedSoul, soulIdentity } from "./contextFiles.ts";
 import { Events } from "./events.ts";
 import { type FilesFolder, makeFilesFolder } from "./files.ts";
@@ -329,7 +330,18 @@ const make = Effect.gen(function* () {
         { deliver: queued, publish: (waiting) => events.publish({ _tag: "WaitingTasks", tasks: waiting }) },
       )
     : undefined;
-  const collar = collarTools({ store, jobs, wakes, asks, tasks, changed, toolsOf });
+  // Read from each SOUL.md when it's asked for, not from the sidebar's summaries, which only refresh with activity.
+  const roster: Effect.Effect<RosterBot[]> = Effect.suspend(() =>
+    Effect.forEach([...bots.values()], ({ runner }) =>
+      kit.folder
+        ? Effect.map(readContextFile(kit.folder(runner), "SOUL.md").pipe(Effect.provideService(FileSystem.FileSystem, fs)), (file) => {
+            const soul = soulIdentity(file.content);
+            return { id: runner.id, name: soul.name ?? runner.name, about: soul.about ?? "" };
+          })
+        : Effect.succeed({ id: runner.id, name: runner.name, about: "" }),
+    ),
+  );
+  const collar = collarTools({ store, jobs, wakes, asks, tasks, changed, toolsOf, roster, deliver: queued });
   const skills = kit.skills
     ? yield* makeSkills(kit.skills, (view) => events.publish({ _tag: "Skills", view })).pipe(Effect.provideService(FileSystem.FileSystem, fs))
     : undefined;
@@ -369,6 +381,7 @@ const make = Effect.gen(function* () {
       const changing = [
         ...(skills ? [Effect.map(skills.section(bot), (section) => ({ skills: section }))] : []),
         ...(webSearch ? [Effect.succeed({ web_search: WEB_SEARCH_SECTION })] : []),
+        Effect.map(roster, (all) => ({ bots: rosterSection(all, bot.id) })),
         ...(folder
           ? [Effect.map(readContextFiles(folder).pipe(Effect.provideService(FileSystem.FileSystem, fs)), (files) => contextSections(folder, bot.name, files))]
           : []),
@@ -604,7 +617,8 @@ const make = Effect.gen(function* () {
       bots.delete(id);
       toolSources.delete(id);
       yield* FiberMap.remove(dirty, id);
-      yield* store.markDeleted(id);
+      const told = yield* store.markDeleted(id);
+      for (const row of told) yield* queued(row);
       yield* wakes.changed;
       yield* events.publish({ _tag: "BotRemoved", bot: id });
       yield* events.publish({ _tag: "Asks" });
@@ -643,6 +657,13 @@ const make = Effect.gen(function* () {
       yield* runner.abort;
       yield* jobs.stopAll(bot);
       yield* asks.withdraw(bot);
+      // The messages it hadn't replied to end too: their senders hear so once, and the ones it hadn't read are dropped.
+      const ended = yield* store.endBotMessages(bot, "stopped");
+      for (const row of ended.told) yield* queued(row);
+      if (ended.dropped) {
+        yield* events.publish({ _tag: "Inbox", bot });
+        yield* touch(bot);
+      }
       if (tasks) yield* Effect.forkIn(tasks.stopAll(bot), scope);
     }),
     start: Effect.gen(function* () {

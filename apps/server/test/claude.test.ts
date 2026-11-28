@@ -189,6 +189,39 @@ test("Stop interrupts Claude, cuts off the running tool and ends the turn", asyn
   state.release();
 });
 
+test("Stop while a run is being set up keeps Claude from starting it", async () => {
+  const fake = fakeClaude();
+  let hold: Promise<void> | undefined;
+  const h = await harness({
+    claude: fake,
+    models: CLAUDE,
+    store: (store) => ({
+      ...store,
+      // The run marks itself active before it makes its stop signal: hold it there while Stop comes.
+      setRunActive: (bot, active) =>
+        active && hold
+          ? Effect.andThen(
+              Effect.promise(() => hold!),
+              store.setRunActive(bot, active),
+            )
+          : store.setRunActive(bot, active),
+    }),
+  });
+  await h.run(h.daemon.start);
+  let release = () => {};
+  hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await submit(h, "hello");
+  await until("the run to be setting up", async () => (await h.run(h.daemon.runner(h.bot))).busy());
+  await h.run(h.daemon.stop(h.bot));
+  hold = undefined;
+  release();
+  await until("idle", () => idle(h));
+  assert.equal(fake.launches.length, 0, "Claude Code never started");
+  assert.ok(!(await answers(h)).some((a) => a.includes("Claude heard")), "nor answered");
+});
+
 test("steering reaches Claude during the turn, as the next thing it reads", async () => {
   const fake = fakeClaude();
   const { tool, state } = gate("build");
